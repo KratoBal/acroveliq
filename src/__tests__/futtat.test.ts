@@ -8,10 +8,12 @@
 //   - a failure comes without its first error line and the lines before it;
 //   - the log cannot be read back by range or by search;
 //   - a log is readable beyond its owner and the project group;
-//   - an old log survives retention, or the summary is deleted with it.
+//   - an old log survives retention, or the summary is deleted with it;
+//   - a run goes on, or writes a log, without its required hash list; the
+//     switch that lets it go on is taken by any value but "1", or is silent.
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir, userInfo } from 'node:os'
 
@@ -36,6 +38,8 @@ let env: NodeJS.ProcessEnv
 beforeEach(() => {
   const dir = mkdtempSync(join(root, 'case-'))
   env = { ...process.env, FUTTAT_LOG_ROOT: join(dir, 'logs'), FUTTAT_SECRET_HASHES: join(dir, 'hashes.txt'), FUTTAT_GROUP: 'nincs-ilyen-csoport' }
+  delete env.FUTTAT_LENYOMAT_NEM_KOTELEZO
+  writeFileSync(env.FUTTAT_SECRET_HASHES!, '') // the list is required: an empty one is a list
 })
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
@@ -140,19 +144,54 @@ describe('futtat: masking', () => {
     expect(r.text.split('\n').slice(2, 4), 'FUTTAT-HASH-SPANS').toEqual(['POST /bot[TITOK]/sendMessage', 'TELEGRAM_KEY=[TITOK]'])
   })
 
-  it('FUTTAT-HASHLIST-UNREADABLE: a hash list that exists but cannot be read is said aloud, and the patterns still run', () => {
-    if (userInfo().uid === 0) return // root reads a 000 file
-    writeFileSync(env.FUTTAT_SECRET_HASHES!, 'abc 12\n')
-    chmodSync(env.FUTTAT_SECRET_HASHES!, 0o000)
+  // Balázs, 2026-10-12: no run with reduced protection
+  it('FUTTAT-HASHLIST-REQUIRED: a missing or unreadable list stops the run before the command runs or a log is written', () => {
+    const marker = join(env.FUTTAT_LOG_ROOT!, '..', 'futott')
+    const attempt = (extra: NodeJS.ProcessEnv = {}) => {
+      const r = spawnSync('python3', [SCRIPT, 'run', '--feladat', 'proba', '--', 'bash', '-c', `touch '${marker}'`], { env: { ...env, ...extra }, encoding: 'utf-8' })
+      return [r.status, r.stderr.includes('nem fut csökkentett védelemmel'), existsSync(marker), existsSync(env.FUTTAT_LOG_ROOT!)]
+    }
+    const stopped = [3, true, false, false]
+    rmSync(env.FUTTAT_SECRET_HASHES!)
+    const missing = attempt()
+    const switchNotOne = attempt({ FUTTAT_LENYOMAT_NEM_KOTELEZO: '0' })
+    const results = [missing, switchNotOne]
+    if (userInfo().uid !== 0) {
+      // root reads a 000 file
+      writeFileSync(env.FUTTAT_SECRET_HASHES!, 'abc 12\n')
+      chmodSync(env.FUTTAT_SECRET_HASHES!, 0o000)
+      results.push(attempt())
+      chmodSync(env.FUTTAT_SECRET_HASHES!, 0o600)
+    }
+    expect(results, 'FUTTAT-HASHLIST-REQUIRED').toEqual(results.map(() => stopped))
+  })
+
+  it('FUTTAT-HASHLIST-OPTIONAL: with the switch on, the run goes on with the patterns and says so on screen, in the log and in the summary', () => {
+    env.FUTTAT_LENYOMAT_NEM_KOTELEZO = '1'
+    rmSync(env.FUTTAT_SECRET_HASHES!)
     const r = run(`echo 'kulcs ${GITHUB_TOKEN}'; exit 5`)
-    chmodSync(env.FUTTAT_SECRET_HASHES!, 0o600)
-    expect([
+    const shown = [
       r.code,
-      r.out.includes('a lenyomat-lista nem olvasható'),
-      r.text.split('\n')[2]!.startsWith('# figyelem: a lenyomat-lista nem olvasható'),
-      r.summary.figyelmeztetes?.includes('csak a minták szűrtek'),
+      r.out.includes('kötelezősége kikapcsolva (FUTTAT_LENYOMAT_NEM_KOTELEZO=1)'),
+      r.text.split('\n')[2]!.startsWith('# figyelem: a lenyomat-lista kötelezősége kikapcsolva'),
+      r.summary.figyelmeztetes?.includes('a lenyomat-lista hiányzik'),
       r.text.includes('kulcs [TITOK]'),
-    ], 'FUTTAT-HASHLIST-UNREADABLE').toEqual([5, true, true, true, true])
+    ]
+    const results = [shown]
+    if (userInfo().uid !== 0) {
+      writeFileSync(env.FUTTAT_SECRET_HASHES!, 'abc 12\n')
+      chmodSync(env.FUTTAT_SECRET_HASHES!, 0o000)
+      const u = run(`echo 'kulcs ${GITHUB_TOKEN}'; exit 5`)
+      chmodSync(env.FUTTAT_SECRET_HASHES!, 0o600)
+      results.push([
+        u.code,
+        u.out.includes('kötelezősége kikapcsolva'),
+        u.out.includes('a lenyomat-lista nem olvasható'),
+        u.summary.figyelmeztetes?.includes('csak a minták szűrtek'),
+        u.text.includes('kulcs [TITOK]'),
+      ])
+    }
+    expect(results, 'FUTTAT-HASHLIST-OPTIONAL').toEqual(results.map(() => [5, true, true, true, true]))
   })
 
   it('FUTTAT-LONG-RUN: a run over 4096 characters is not windowed, a secret at its delimiters is still found', () => {
@@ -170,6 +209,25 @@ describe('futtat: masking', () => {
     const started = Date.now()
     const r = run(`h=$(printf 'ab/%.0s' $(seq 1 33333)); printf '%s' "\${h}suru-futam-titka-88/\${h}"; echo`)
     expect([Date.now() - started < 3_000, r.text.split('\n')[2]!.includes('/[TITOK]/')], 'FUTTAT-LONG-RUN-LINEAR').toEqual([true, true])
+  })
+
+  // acrobot's live run: the list lost the deployment's 0640 on every add
+  it('FUTTAT-HASHLIST-MODE: an existing list keeps its group bits and loses only its world bits; a new one is 0640 with the group, 0600 without it', () => {
+    writeFileSync(env.FUTTAT_SECRET_HASHES!, '')
+    chmodSync(env.FUTTAT_SECRET_HASHES!, 0o640)
+    execFileSync('python3', [SCRIPT, 'lenyomat-hozzaad'], { env, input: 'meglevo-lista-titka-11\n' })
+    const kept = (statSync(env.FUTTAT_SECRET_HASHES!).mode & 0o777).toString(8)
+    chmodSync(env.FUTTAT_SECRET_HASHES!, 0o664)
+    execFileSync('python3', [SCRIPT, 'lenyomat-hozzaad'], { env, input: 'szukito-proba-titok-2\n' })
+    const narrowed = (statSync(env.FUTTAT_SECRET_HASHES!).mode & 0o777).toString(8)
+    rmSync(env.FUTTAT_SECRET_HASHES!)
+    execFileSync('python3', [SCRIPT, 'lenyomat-hozzaad'], { env, input: 'uj-lista-titka-csoport-nelkul\n' })
+    const alone = (statSync(env.FUTTAT_SECRET_HASHES!).mode & 0o777).toString(8)
+    rmSync(env.FUTTAT_SECRET_HASHES!)
+    const group = execFileSync('id', ['-gn'], { encoding: 'utf-8' }).trim()
+    execFileSync('python3', [SCRIPT, 'lenyomat-hozzaad'], { env: { ...env, FUTTAT_GROUP: group }, input: 'uj-lista-titka-csoporttal\n' })
+    const grouped = (statSync(env.FUTTAT_SECRET_HASHES!).mode & 0o777).toString(8)
+    expect([kept, narrowed, alone, grouped], 'FUTTAT-HASHLIST-MODE').toEqual(['640', '660', '600', '640'])
   })
 
   it('refuses a secret value too short to search for, and stores only its hash', () => {
