@@ -20,7 +20,8 @@ bash /home/marveen/marveen/scripts/futtat.sh run --projekt acropora --feladat <k
     - diff: fájlonként a `+/-`, és az összesen;
   - **hibánál mindig az első hibasor és az előtte álló N sor** (`--kontextus`, alapból 10);
   - mindig a napló útvonala, a kihagyott sorok száma és a cserék száma.
-- **A kilépési kód a futtatott parancsé**, tehát egy `&&` lánc ugyanúgy megáll.
+- **A kilépési kód a futtatott parancsé**, tehát egy `&&` lánc ugyanúgy megáll. Kivétel, ha a parancs el sem
+  indult: `2` rossz hívásnál, `3` hiányzó vagy olvashatatlan lenyomat-listánál.
 - **A fajta** a parancsból adódik (`test`, `typecheck`, `build`, `diff`, `kereses`, `egyeb`);
   `--fajta`-val felülírható.
 - **Az összefoglaló** a napló mellett `.summary.json`-ként is megmarad.
@@ -46,6 +47,13 @@ A szűrés sorrendben három lépés:
    ```bash
    bash /home/marveen/marveen/scripts/futtat.sh lenyomat-hozzaad < titkok.txt   # soronként egy érték, csak a lenyomat íródik
    ```
+
+   **A lista kötelező.** Ha hiányzik vagy nem olvasható, a futtató nem fut csökkentett
+   védelemmel: nem futtatja a parancsot, nem ír naplót, és `3`-as kóddal, egyértelmű
+   üzenettel áll meg. Egy üres lista lista, azzal fut. Ha egy ágenst most vettek fel a
+   `logs-<projekt>` csoportba, a tagság a következő indulásától él, addig a futtató megáll.
+   Kikapcsolni csak a `FUTTAT_LENYOMAT_NEM_KOTELEZO=1` környezeti változóval lehet (tesztekhez);
+   ilyenkor a kimenet, a napló fejléce és az összefoglaló is kiírja, hogy ki van kapcsolva.
 
 2. **Titok-alakú minták:**
    - GitHub-, Slack-, OpenAI- és Anthropic-tokenek, AWS-kulcs, JWT;

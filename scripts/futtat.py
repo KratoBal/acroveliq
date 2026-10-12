@@ -50,6 +50,11 @@ REPO = Path(__file__).resolve().parent.parent
 LOG_ROOT = Path(os.environ.get("FUTTAT_LOG_ROOT", REPO / "logs"))
 HASH_LIST = Path(os.environ.get("FUTTAT_SECRET_HASHES", REPO / "store" / "secret-hashes.txt"))
 RETENTION_DAYS = 30
+# The hash list is required (Balázs, 2026-10-12): a run without it would hide
+# only the shapes the patterns know. Only this variable, set to exactly "1",
+# lets a run go on without it, and the run says so (tests).
+HASH_LIST_OPTIONAL_ENV = "FUTTAT_LENYOMAT_NEM_KOTELEZO"
+HASH_LIST_STOP_CODE = 3
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
 # ---- masking ---------------------------------------------------------------
@@ -100,7 +105,11 @@ class HashListUnreadable(Exception):
     """The hash list exists but cannot be read: the known-value layer is OFF."""
 
 
-def load_hashes(path: Path = HASH_LIST) -> dict[int | None, set[str]]:
+class HashListMissing(Exception):
+    """There is no hash list, and the caller needs one."""
+
+
+def load_hashes(path: Path = HASH_LIST, missing_ok: bool = True) -> dict[int | None, set[str]]:
     """The hash list: `<sha256> <length>` per line. The length lets a secret
     be found anywhere inside a run, also glued to other text
     (`/bot<TOKEN>/...`); a line without a length is matched only at delimiter
@@ -109,7 +118,9 @@ def load_hashes(path: Path = HASH_LIST) -> dict[int | None, set[str]]:
     try:
         text = path.read_text()
     except FileNotFoundError:
-        return buckets  # no list yet: nothing to match, and nothing is hidden
+        if missing_ok:
+            return buckets  # adding the first hash: there is no list yet
+        raise HashListMissing(str(path)) from None
     except OSError as error:
         # readable or not is not the same as empty (barracuda, #17): an agent
         # that cannot read the list must be told its first layer is off
@@ -405,6 +416,32 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not command:
         print("FAIL: nincs parancs (futtat.py run --projekt P --feladat T -- PARANCS ...)", file=sys.stderr)
         return 2
+    # Before anything is written or run: a required list that is missing or
+    # unreadable stops the run, with no log (Balázs, 2026-10-12).
+    optional = os.environ.get(HASH_LIST_OPTIONAL_ENV) == "1"
+    warnings: list[str] = []
+    try:
+        hashes = load_hashes(missing_ok=False)
+    except (HashListMissing, HashListUnreadable) as error:
+        what = "hiányzik" if isinstance(error, HashListMissing) else "nem olvasható"
+        if not optional:
+            hint = (
+                f" Ha most kerültél a {group_name(args.projekt)} csoportba, a tagság a következő indulástól él."
+                if isinstance(error, HashListUnreadable)
+                else ""
+            )
+            print(
+                f"FAIL: a lenyomat-lista {what} ({error}). A futtató nem fut csökkentett védelemmel: "
+                f"nem futtatta a parancsot, és nem írt naplót.{hint}",
+                file=sys.stderr,
+            )
+            return HASH_LIST_STOP_CODE
+        hashes = {}
+        warnings.append(f"a lenyomat-lista {what} ({error}), csak a minták szűrtek")
+    if optional:
+        warnings.insert(0, f"a lenyomat-lista kötelezősége kikapcsolva ({HASH_LIST_OPTIONAL_ENV}=1)")
+    hash_warning = "; ".join(warnings)
+
     kind = args.fajta or infer_kind(command)
     gid = project_group(args.projekt)
     directory = LOG_ROOT / args.projekt / args.feladat
@@ -414,10 +451,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     stamp = now.strftime("%Y%m%dT%H%M%S") + f"{now.microsecond // 1000:03d}Z"
     log_path = directory / f"{stamp}-{kind}.log"
 
-    try:
-        hashes, hash_warning = load_hashes(), ""
-    except HashListUnreadable as error:
-        hashes, hash_warning = {}, f"a lenyomat-lista nem olvasható ({error}), csak a minták szűrtek"
     masker = Masker(hashes)
     started = time.monotonic()
     lines: list[str] = []
@@ -513,10 +546,18 @@ def cmd_lenyomat(args: argparse.Namespace) -> int:
         return 1
     new = [v for v in values if sha(v) not in known.get(len(v), set()) | known.get(None, set())]
     HASH_LIST.parent.mkdir(parents=True, exist_ok=True)
-    with HASH_LIST.open("a") as handle:
+    existed = HASH_LIST.exists()
+    # A NEW list is created with its final mode at once (no umask window):
+    # 0640 with the project group, else 0600. An EXISTING list keeps its mode
+    # and group (acrobot, live run 2026-10-12): the deployment sets 0640 with
+    # logs-acropora so the agents can read it, and a chmod here undid that.
+    gid = None if existed else project_group("acropora")
+    fd = os.open(HASH_LIST, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640 if gid is not None else 0o600)
+    with os.fdopen(fd, "a") as handle:
         for value in new:
             handle.write(f"{sha(value)} {len(value)}\n")
-    os.chmod(HASH_LIST, 0o600)
+    if not existed:
+        protect_file(HASH_LIST, gid)
     print(f"{len(new)} új lenyomat ({len(values) - len(new)} már szerepelt)")
     return 0
 
