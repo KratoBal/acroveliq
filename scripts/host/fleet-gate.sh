@@ -198,6 +198,10 @@ case "$OP" in
     # no ForceCommand anywhere in the main file: our constraint is the key
     # line's command=, and a ForceCommand would override or replace it (acrobot 28820)
     forcecmds=$(grep -ciE '^[[:space:]]*ForceCommand[[:space:]]' "$SSHD_CONFIG" 2>/dev/null || true)
+    # the only Include may be the usual one: another path would bring settings
+    # this check does not read (barracuda, #31)
+    includes=$(grep -iE '^[[:space:]]*Include[[:space:]]' "$SSHD_CONFIG" 2>/dev/null \
+      | grep -cvE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf[[:space:]]*$' || true)
     # any Match, authorized-keys or ForceCommand setting in the included files
     dropins=0
     if [ -d "$SSHD_CONFIG_D" ]; then
@@ -213,8 +217,8 @@ case "$OP" in
       forced=0
       keys=0
     fi
-    echo "match=${match:-0} others=${others:-0} keyopts=${keyopts:-0} ours=${ours:-0} forcecmds=${forcecmds:-0} dropins=${dropins:-0} keyfile=$keyfile keys=${keys:-0} forced=${forced:-0}"
-    [ "${match:-0}" = 1 ] && [ "${others:-0}" = 0 ] && [ "${keyopts:-0}" = 1 ] && [ "${ours:-0}" = 1 ] && [ "${forcecmds:-0}" = 0 ] && [ "${dropins:-0}" = 0 ] \
+    echo "match=${match:-0} others=${others:-0} keyopts=${keyopts:-0} ours=${ours:-0} forcecmds=${forcecmds:-0} includes=${includes:-0} dropins=${dropins:-0} keyfile=$keyfile keys=${keys:-0} forced=${forced:-0}"
+    [ "${match:-0}" = 1 ] && [ "${others:-0}" = 0 ] && [ "${keyopts:-0}" = 1 ] && [ "${ours:-0}" = 1 ] && [ "${forcecmds:-0}" = 0 ] && [ "${includes:-0}" = 0 ] && [ "${dropins:-0}" = 0 ] \
       && [ "$keyfile" = "$KEYFILE_EXPECT" ] && [ "${keys:-0}" -ge 1 ] && [ "${forced:-0}" = "${keys:-0}" ] || exit 1
     exit 0
     ;;
