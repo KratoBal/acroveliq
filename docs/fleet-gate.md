@@ -20,6 +20,7 @@ akkor az éles, ha a próba-sor (lent) minden sora zöld rajta.
 | `system-df`, `system-df --format` | `docker system df` (a táblázat, vagy `Type\|Size\|Reclaimable`) | mindkettő |
 | `df`, `df -P` | `df -h` (vagy `-P`) `/ /var/lib/docker` | mindkettő |
 | `uptime`, `reboot-required`, `apt-check` | olvasás (`apt-check --human-readable`) | mindkettő |
+| `sshd-match` | áll-e még a kapu: a `Match User fleet` blokk az `sshd_config`-ban, a kulcsfájl `root:root 0644`, és MINDEN kulcssora kényszerített (`restrict,from=...,command=...`); kiírja, és 1-gyel lép ki, ha bármelyik nem stimmel | mindkettő |
 | `builder-prune` | `docker builder prune -f` | mindkettő |
 | `image-prune-2h` | `docker image prune -a -f --filter until=2h` | csak stage |
 | `psql-ro <kulcs> <adatbázis> [plain\|tuples\|tuples-pipe\|tuples-spaced-pipe]` | psql a csak olvasó `fleet_ro` szereppel (a kapu listájából, nem a hívótól), az SQL a stdin-en; backslash az SQL-ben tilos | éles: OS; stage: AI |
@@ -156,12 +157,18 @@ MELLETT is adna kulcsot (barracuda, #30).
 
 **Ami a kaput csendben elviheti: az `sshd_config` cseréje.** Egy csomagfrissítés, ami felülírja a
 fájlt, a `Match` blokkal együtt a kaput is viszi, és onnantól a `~fleet/.ssh/authorized_keys`
-régi, kényszer nélküli sora él újra (az a visszaállítás alapja, ezért marad a helyén). A heti
-frissítés-átnézésben érdemes rootként ellenőrizni:
+régi, kényszer nélküli sora él újra (az a visszaállítás alapja, ezért marad a helyén). Ezt a kapu
+`sshd-match` művelete root nélkül méri (mindkét fájl mindenki számára olvasható), és a heti
+frissítés-átnézés a kapun át hívja (barracuda, #30):
 
 ```bash
-cd /root && grep -c '^Match User fleet' /etc/ssh/sshd_config      # 1
+cd /home/marveen/marveen && ssh -i /home/marveen/.ssh/id_ed25519_acropora_monitor fleet@162.55.216.28 sshd-match; echo $?
+                                             # match=1 keyfile=root:root:644 keys=1 forced=1, kilépés: 0
 ```
+
+Amíg a `Match` blokk hiányzik, ez a hívás a régi, kényszer nélküli kulccsal megy át, tehát a
+kapu nem fut: a kimenet ilyenkor nem `match=...`, hanem a régi parancs-értelmezés hibája. Mindkét
+eset riasztás: a heti átnézés csak a `match=1 ... ` sort és a 0-s kilépést fogadja el.
 
 A teszt gépen ezen felül (a `restore-probe` nem tölt le képet):
 
@@ -296,7 +303,7 @@ elutasítást kap). A megfeleltetés:
 | `docker exec $c tar ... \| gzip -1 > ~/backups/dokumentumok/...` és a `find ... \| wc -l` ellenőrzés | `backup-docstore` |
 | a kereszt-másolás | `h=$(ssh <forrás> backup-sum dump <db> <dátum> \| cut -d' ' -f1)`, utána `ssh <forrás> backup-get dump <db> <dátum> \| ssh <cél> backup-put dump <db> <dátum> "$h"` (a dokumentumoknál `docstore <dátum>`). Egy félúton elhalt másolat így nem lesz végleges, és az ismételt futás a jót még aznap fel tudja tenni |
 | `find ~/backups -name '*.dump' -mtime +14 -delete` | `backup-prune` (a dokumentum-csomagokat 7 nap után) |
-| `apt-check --human-readable \| head -4`, `reboot-required` | `apt-check`, `reboot-required` (a `head` a konténerben) |
+| `apt-check --human-readable \| head -4`, `reboot-required` | `apt-check`, `reboot-required` (a `head` a konténerben), és új: `sshd-match` (áll-e még a kapu; a 0-s kilépést és a `match=1` sort kell látni) |
 | `docker ps --filter name=proxy ...`, `docker ps --format "{{.Image}}" \| sort -u` | `ps`, a szűrés a konténerben |
 | `docker exec $C env \| grep -E "^MEDUSA_(...)="` | `env-get` |
 | `docker exec -i iwm34... psql -U acropora -d acropora -tA` | `psql-ro iwm34jaqp9xmwb72qkrqkwhy acropora tuples` |
