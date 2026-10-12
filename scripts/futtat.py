@@ -438,6 +438,11 @@ def cmd_run(args: argparse.Namespace) -> int:
             return HASH_LIST_STOP_CODE
         hashes = {}
         warnings.append(f"a lenyomat-lista {what} ({error}), csak a minták szűrtek")
+    else:
+        # an empty list satisfies the requirement, not the protection
+        # (barracuda, #23): say so, as loudly as the switch
+        if not any(hashes.values()):
+            warnings.append("a lenyomat-lista üres, csak a minták szűrtek")
     if optional:
         warnings.insert(0, f"a lenyomat-lista kötelezősége kikapcsolva ({HASH_LIST_OPTIONAL_ENV}=1)")
     hash_warning = "; ".join(warnings)
