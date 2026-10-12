@@ -49,6 +49,18 @@ describe('the CLAUDE.md template calls the helpers, not the token', () => {
   })
 })
 
+// barracuda #36: a real schedule prompt is full of quotes and dollar signs, so
+// its example must take the prompt from a file, as the template's own rule says.
+describe('the schedule example takes its prompt from a file', () => {
+  it('in the template and in the creation prompt', () => {
+    const lines = [TEMPLATE, SCAFFOLD].flatMap((t) =>
+      t.split('\n').filter((l) => l.includes('fleet-api.sh schedule-new') || l.includes('${fleetApi} schedule-new')),
+    )
+    expect(lines).toHaveLength(2)
+    for (const line of lines) expect(line, line).toMatch(/schedule-new "[^"]+" "[^"]+" - .*< prompt\.txt/)
+  })
+})
+
 describe('the generated agent text calls the helpers', () => {
   const autonomy = fn('function buildAutonomyBody', '\n}\n')
   const created = fn('export async function generateClaudeMd', 'export async function generateSoulMd')
