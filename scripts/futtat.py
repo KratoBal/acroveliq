@@ -53,70 +53,112 @@ SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
 # ---- masking ---------------------------------------------------------------
 
-# A candidate secret: a run of token characters, at least 8 long. Each run is
-# hashed whole, and also split at the usual delimiters (KEY=value, user:pass).
+# A candidate secret: a run of token characters, at least 8 long. Within a run,
+# every stretch that starts and ends at a delimiter boundary (=, :, @, /) and is
+# at least 8 long is hashed too (barracuda, #17): a secret may itself contain a
+# delimiter (a Telegram bot token, `123456:ABC...`), end in base64 padding
+# (`KEY=abc==`), or be glued into a path (`/bot<TOKEN>/sendMessage`).
 CANDIDATE = re.compile(r"[A-Za-z0-9_\-.+/=:@~]{8,}")
-SPLIT = re.compile(r"[=:@]")
+DELIMITERS = "=:@/"
+MIN_SECRET = 8
 
 # (label, pattern[, replacement]); without a replacement the match becomes [LABEL]
 SECRET_PATTERNS: list[tuple] = [
-    ("TITOK", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----")),
     ("TITOK", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}\b")),
     ("TITOK", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{40,}\b")),
     ("TITOK", re.compile(r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_\-]{20,}\b")),
+    # Stripe: an underscore after the prefix, not a dash (barracuda, #17)
+    ("TITOK", re.compile(r"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}\b|\bwhsec_[A-Za-z0-9]{16,}\b")),
+    ("TITOK", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
     ("TITOK", re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}\b")),
     ("TITOK", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("TITOK", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b")),
-    ("TITOK", re.compile(r"(?i)\b(bearer )[A-Za-z0-9_\-.=]{16,}"), r"\1[TITOK]"),
+    ("TITOK", re.compile(r"(?i)\b((?:bearer|basic) )[A-Za-z0-9_\-.=+/]{16,}"), r"\1[TITOK]"),
     # the credentials of a connection string: scheme://USER:PASSWORD@host
     ("TITOK", re.compile(r"(?<=://)[^\s/:@]+:[^\s/@]+(?=@)")),
-    # KEY=value where the key names a secret
-    ("TITOK", re.compile(r"(?i)\b(password|passwd|secret|token|api_key|apikey)=[^\s'\"&]{6,}"), r"\1=[TITOK]"),
+    # KEY=value, KEY: value, "KEY": "value" where the key names a secret, also as
+    # the end of an environment-variable name (DB_PASSWORD, API_TOKEN; barracuda, #17)
+    ("TITOK", re.compile(r"(?i)\b([A-Z0-9_]*(?:password|passwd|secret|token|api_?key)[\"']?\s*[=:]\s*[\"']?)[^\s'\"&,]{6,}"), r"\1[TITOK]"),
 ]
 
 PERSONAL_PATTERNS: list[tuple] = [
     ("EMAIL", re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")),
     ("IBAN", re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,4})?\b")),
     ("ADOSZAM", re.compile(r"\b\d{8}-\d-\d{2}\b")),
-    ("TELEFON", re.compile(r"(?<![\w.])(?:\+36|06)[ -/]?(?:1|[2-9]\d)[ -/]?\d{3}[ -/]?\d{3,4}\b")),
+    # [ /-]: a space, a slash or a hyphen (not the range from space to slash)
+    ("TELEFON", re.compile(r"(?<![\w.])(?:\+36|06)[ /-]?(?:1|[2-9]\d)[ /-]?\d{3}[ /-]?\d{3,4}\b")),
 ]
 
 
-def load_hashes(path: Path = HASH_LIST) -> set[str]:
+def load_hashes(path: Path = HASH_LIST) -> dict[int | None, set[str]]:
+    """The hash list: `<sha256> <length>` per line. The length lets a secret
+    be found anywhere inside a run, also glued to other text
+    (`/bot<TOKEN>/...`); a line without a length is matched only at delimiter
+    boundaries (bucket None)."""
+    buckets: dict[int | None, set[str]] = {}
     try:
-        return {line.strip() for line in path.read_text().splitlines() if line.strip() and not line.startswith("#")}
+        text = path.read_text()
     except OSError:
-        return set()
+        return buckets
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts or parts[0].startswith("#"):
+            continue
+        length = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        buckets.setdefault(length, set()).add(parts[0])
+    return buckets
 
 
 def sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-class Masker:
-    """Masks one line at a time and counts what it replaced."""
+PEM_BEGIN = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
+PEM_END = re.compile(r"-----END [A-Z0-9 ]*PRIVATE KEY-----")
 
-    def __init__(self, hashes: set[str]):
-        self.hashes = hashes
+
+class Masker:
+    """Masks one line at a time and counts what it replaced. A private key spans
+    lines, so from its BEGIN line to its END line every line is masked
+    (barracuda, #17: a single-text pattern never matched a real key)."""
+
+    def __init__(self, hashes: dict[int | None, set[str]]):
+        self.unsized = hashes.get(None, set())
+        self.sized = {length: digests for length, digests in hashes.items() if length is not None}
         self.count = 0
+        self.in_key = False
 
     def _known(self, line: str) -> str:
-        if not self.hashes:
+        if not self.unsized and not self.sized:
             return line
+
         def replace(match: re.Match[str]) -> str:
             token = match.group(0)
-            if sha(token) in self.hashes:
-                self.count += 1
-                return "[TITOK]"
-            parts = SPLIT.split(token)
-            if len(parts) > 1 and any(len(p) >= 8 and sha(p) in self.hashes for p in parts):
-                out = token
-                for part in parts:
-                    if len(part) >= 8 and sha(part) in self.hashes:
-                        self.count += 1
-                        out = out.replace(part, "[TITOK]")
-                return out
-            return token
+            found: list[tuple[int, int]] = []
+            # a known length: every window of that length, anywhere in the run
+            for length, digests in self.sized.items():
+                for a in range(0, len(token) - length + 1):
+                    if sha(token[a : a + length]) in digests:
+                        found.append((a, a + length))
+            # no length known: stretches between delimiter boundaries
+            if self.unsized:
+                starts = [0] + [i + 1 for i, c in enumerate(token) if c in DELIMITERS]
+                ends = [i for i, c in enumerate(token) if c in DELIMITERS] + [len(token)]
+                found += [(a, b) for a in starts for b in ends if b - a >= MIN_SECRET and sha(token[a:b]) in self.unsized]
+            spans = sorted(found, key=lambda span: span[0] - span[1])  # the longest first
+            taken: list[tuple[int, int]] = []
+            for a, b in spans:
+                if all(b <= x or a >= y for x, y in taken):
+                    taken.append((a, b))
+            if not taken:
+                return token
+            self.count += len(taken)
+            out, last = [], 0
+            for a, b in sorted(taken):
+                out += [token[last:a], "[TITOK]"]
+                last = b
+            return "".join(out + [token[last:]])
+
         return CANDIDATE.sub(replace, line)
 
     def _patterns(self, line: str, patterns: list[tuple]) -> str:
@@ -126,6 +168,10 @@ class Masker:
         return line
 
     def line(self, line: str) -> str:
+        if self.in_key or PEM_BEGIN.search(line):
+            self.in_key = not PEM_END.search(line)
+            self.count += 1
+            return "[TITOK]"
         line = self._known(line)
         line = self._patterns(line, SECRET_PATTERNS)
         return self._patterns(line, PERSONAL_PATTERNS)
@@ -274,23 +320,34 @@ def ensure_dir(project_dir: Path, task_dir: Path, gid: int | None) -> None:
     log root is left alone, because every project's agents create under it."""
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
     for part in (project_dir, task_dir):
-        part.mkdir(exist_ok=True)
+        try:
+            part.mkdir(exist_ok=True)
+        except PermissionError:
+            sys.exit(f"FAIL: {part} nem hozható létre (jog). A {group_name(project_dir.name)} csoport tagja vagy?")
         try:
             if gid is not None:
                 os.chown(part, -1, gid)
-                os.chmod(part, 0o2750)
+                # 2770: several agents of a project (different OS users) create
+                # their task directories here (barracuda, #17); setgid keeps the group
+                os.chmod(part, 0o2770)
             else:
                 os.chmod(part, 0o700)
         except PermissionError:
             pass  # created by another agent of the project: its owner set it
 
 
-def protect_file(path: Path, gid: int | None) -> None:
+def protect_file(path: Path, gid: int | None) -> bool:
+    """0640 with the project group; 0600 without it, or when the group cannot
+    be set (the agent is not a member). Answers whether the group was set."""
     if gid is not None:
-        os.chown(path, -1, gid)
-        os.chmod(path, 0o640)
-    else:
-        os.chmod(path, 0o600)
+        try:
+            os.chown(path, -1, gid)
+            os.chmod(path, 0o640)
+            return True
+        except PermissionError:
+            pass
+    os.chmod(path, 0o600)
+    return False
 
 
 def prune(root: Path, days: int, now: float) -> int:
@@ -343,7 +400,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         f"# fajta={kind} kilepes={code} ido={duration:.1f}s sorok={len(lines)} cserek={masker.count}",
     ]
     log_path.write_text("\n".join(header + lines) + "\n")
-    protect_file(log_path, gid)
+    grouped = protect_file(log_path, gid)
 
     body = summarize(kind, lines, code, args.kontextus)
     shown = sum(1 for line in body if not line.startswith("első hiba"))
@@ -368,6 +425,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"napló: {log_path} ({summary['kihagyott_sorok']} sor kihagyva; cserék: {masker.count})")
     if gid is None:
         print(f"figyelem: nincs {group_name(args.projekt)} csoport, a napló csak a tulajdonosé (0600)")
+    elif not grouped:
+        print(f"figyelem: a {group_name(args.projekt)} csoport nem állítható be (nem vagy tagja?), a napló csak a tulajdonosé (0600)")
     return code
 
 
@@ -412,11 +471,11 @@ def cmd_lenyomat(args: argparse.Namespace) -> int:
         print(f"FAIL: {len(short)} érték 8 karakternél rövidebb, ezt a kimenetben nem lehet biztonságosan keresni", file=sys.stderr)
         return 2
     known = load_hashes()
-    new = [sha(v) for v in values if sha(v) not in known]
+    new = [v for v in values if sha(v) not in known.get(len(v), set()) | known.get(None, set())]
     HASH_LIST.parent.mkdir(parents=True, exist_ok=True)
     with HASH_LIST.open("a") as handle:
-        for digest in new:
-            handle.write(digest + "\n")
+        for value in new:
+            handle.write(f"{sha(value)} {len(value)}\n")
     os.chmod(HASH_LIST, 0o600)
     print(f"{len(new)} új lenyomat ({len(values) - len(new)} már szerepelt)")
     return 0

@@ -83,6 +83,49 @@ describe('futtat: masking', () => {
     expect(r.text.split('\n').at(-2), 'FUTTAT-PERSONAL').toBe('tel [TELEFON], adoszam [ADOSZAM], iban [IBAN]')
   })
 
+  // barracuda, #17
+  it('FUTTAT-PEM: a multi-line private key is masked from its BEGIN line to its END line', () => {
+    const r = run([
+      `echo 'elotte'`,
+      `echo '-----BEGIN OPENSSH PRIVATE KEY-----'`,
+      `echo 'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW'`,
+      `echo 'QyNTUxOQAAACBkaXRhbGFsdC1rdWxjcy1jc2FrLXRlc3p0aGV6LWtpdGFsYWx0AAAA'`,
+      `echo '-----END OPENSSH PRIVATE KEY-----'`,
+      `echo 'utana'`,
+    ].join('; '))
+    expect(r.text.split('\n').slice(2, 8), 'FUTTAT-PEM').toEqual(['elotte', '[TITOK]', '[TITOK]', '[TITOK]', '[TITOK]', 'utana'])
+  })
+
+  it('FUTTAT-KEYVALUE: environment-variable, YAML and JSON key forms, Stripe, Google and Basic credentials', () => {
+    const r = run([
+      `echo 'DASHBOARD_TOKEN=abc123def456ghi'`,
+      `echo 'DB_PASSWORD: "jelszo-hosszu-1"'`,
+      `echo '{"stripe_secret": "titok-ertek-99"}'`,
+      `echo 'kulcs sk_live_abcdefghijklmnop1234 es whsec_abcdefghijklmnop1234'`,
+      `echo 'google AIzaSyA1234567890abcdefghijklmnopqrstuv'`,
+      `echo 'Authorization: Basic dXNlcjpqZWxzem8xMjM0NTY='`,
+      `echo 'input_tokens: 123456 marad'`,
+    ].join('; '))
+    expect(r.text.split('\n').slice(2, 9), 'FUTTAT-KEYVALUE').toEqual([
+      'DASHBOARD_TOKEN=[TITOK]',
+      'DB_PASSWORD: "[TITOK]"',
+      '{"stripe_secret": "[TITOK]"}',
+      'kulcs [TITOK] es [TITOK]',
+      'google [TITOK]',
+      'Authorization: Basic [TITOK]',
+      'input_tokens: 123456 marad',
+    ])
+  })
+
+  it('FUTTAT-HASH-SPANS: a known secret with a colon, with base64 padding, or glued into a path is still found', () => {
+    execFileSync('python3', [SCRIPT, 'lenyomat-hozzaad'], { env, input: '123456789:ABCdefGhIJKlmnoPQRstu\nYWJjZGVmZ2hpams==\n' })
+    const r = run([
+      `echo 'POST /bot123456789:ABCdefGhIJKlmnoPQRstu/sendMessage'`,
+      `echo 'TELEGRAM_KEY=YWJjZGVmZ2hpams=='`,
+    ].join('; '))
+    expect(r.text.split('\n').slice(2, 4), 'FUTTAT-HASH-SPANS').toEqual(['POST /bot[TITOK]/sendMessage', 'TELEGRAM_KEY=[TITOK]'])
+  })
+
   it('refuses a secret value too short to search for, and stores only its hash', () => {
     const short = spawnSync('python3', [SCRIPT, 'lenyomat-hozzaad'], { env, input: 'rovid\n', encoding: 'utf-8' })
     expect(short.status).toBe(2)
@@ -157,7 +200,15 @@ describe('futtat: the log', () => {
     const aloneModes = [mode(alone.log), mode(dir(alone.log))] // before the second run re-sets the shared task dir
     env.FUTTAT_GROUP = userInfo().username === 'root' ? 'root' : execFileSync('id', ['-gn'], { encoding: 'utf-8' }).trim()
     const grouped = run('echo csoporttal')
-    expect([...aloneModes, mode(grouped.log), mode(dir(grouped.log))], 'FUTTAT-PERMS').toEqual(['600', '700', '640', '2750'])
+    // 2770: several agents of a project (different OS users) create task directories here
+    expect([...aloneModes, mode(grouped.log), mode(dir(grouped.log))], 'FUTTAT-PERMS').toEqual(['600', '700', '640', '2770'])
+  })
+
+  it('FUTTAT-GROUP-DENIED: a group the agent is not in falls back to owner-only, and the run still reports', () => {
+    if (userInfo().uid === 0) return // root may set any group
+    env.FUTTAT_GROUP = 'root' // exists, and an agent is not a member
+    const r = run('echo valami; exit 4')
+    expect([r.code, (statSync(r.log).mode & 0o777).toString(8), r.out.includes('nem állítható be')], 'FUTTAT-GROUP-DENIED').toEqual([4, '600', true])
   })
 
   it('FUTTAT-RETENTION: a log older than 30 days goes, its summary and a fresh log stay', () => {
