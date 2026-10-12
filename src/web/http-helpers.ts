@@ -31,11 +31,35 @@ export class RequestBodyTooLargeError extends Error {
   }
 }
 
+// A body the access check already read (acrovelIQ P0-1, PR 3b: the owner of
+// a request can be a body field). The stream is read once; the handler's own
+// readBody gets the same bytes, its own size limit still applied.
+const BODY_CACHE = Symbol('marveen.bodyCache')
+type BodyCarrier = http.IncomingMessage & { [BODY_CACHE]?: Promise<Buffer> }
+
+/** Reads the body once and keeps it for the handler's readBody. */
+export function primeBody(req: http.IncomingMessage): Promise<Buffer> {
+  const carrier = req as BodyCarrier
+  carrier[BODY_CACHE] ??= readStream(req, DEFAULT_READ_BODY_MAX_BYTES)
+  return carrier[BODY_CACHE]
+}
+
 export function readBody(
   req: http.IncomingMessage,
   opts: { maxBytes?: number } = {},
 ): Promise<Buffer> {
   const maxBytes = opts.maxBytes ?? DEFAULT_READ_BODY_MAX_BYTES
+  const cached = (req as BodyCarrier)[BODY_CACHE]
+  if (cached) {
+    return cached.then((body) => {
+      if (body.length > maxBytes) throw new RequestBodyTooLargeError(maxBytes)
+      return body
+    })
+  }
+  return readStream(req, maxBytes)
+}
+
+function readStream(req: http.IncomingMessage, maxBytes: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let total = 0

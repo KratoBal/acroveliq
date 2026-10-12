@@ -23,8 +23,8 @@ const D: Caller = { column: 'D', name: 'device:iphone' }
 const F: Caller = { column: 'F', name: 'masik-flotta' }
 
 /** The decision for a concrete request: the rule from the route matcher, then decide(). */
-const allowed = (method: string, path: string, caller: Caller, owner?: string | null, shared = false) =>
-  decide(matchRouteRule(method, path), caller, owner, shared).allowed
+const allowed = (method: string, path: string, caller: Caller, owner?: string | readonly string[] | null) =>
+  decide(matchRouteRule(method, path), caller, owner).allowed
 
 describe('the access matrix', () => {
   it('ACCESS-COMPLETE: every rule has a grant for every column, and every `own` grant knows where its owner is', () => {
@@ -51,63 +51,67 @@ describe('the access matrix', () => {
   })
 
   it('ACCESS-TABLE: route by route and caller by caller, the expected allow or 403', () => {
-    // [method, path, caller, owner (for `own`), shared?, expected]
-    const table: Array<[string, string, Caller, string | null | undefined, boolean, boolean]> = [
+    // [method, path, caller, owner (for `own`), expected]
+    const table: Array<[string, string, Caller, string | readonly string[] | null | undefined, boolean]> = [
       // the brief's cases
-      ['POST', '/api/schedules', G, 'acrobot', false, false], // a schedule on the main agent with an agent token
-      ['POST', '/api/schedules', G, 'murena', false, true], // its own schedule
-      ['POST', '/api/schedules', S, 'acrobot', false, true], // the session schedules for anyone
-      ['POST', '/api/schedules', L, 'murena', false, false], // the shared token: no scheduling
-      ['PATCH', '/api/approvals/42', A, undefined, false, false], // approval decided with the main agent's token
-      ['PATCH', '/api/approvals/42', G, 'murena', false, false], // even its own request
-      ['PATCH', '/api/approvals/42', L, undefined, false, false],
-      ['PATCH', '/api/approvals/42', D, undefined, false, false],
-      ['PATCH', '/api/approvals/42', S, undefined, false, true],
-      ['POST', '/api/agents/murena/start', L, undefined, false, false], // the shared token on a critical route
-      ['POST', '/api/settings', L, undefined, false, false],
-      ['GET', '/api/vault/github-token', L, undefined, false, false],
+      ['POST', '/api/schedules', G, 'acrobot', false], // a schedule on the main agent with an agent token
+      ['POST', '/api/schedules', G, 'murena', true], // its own schedule
+      ['POST', '/api/schedules', S, 'acrobot', true], // the session schedules for anyone
+      ['POST', '/api/schedules', L, 'murena', false], // the shared token: no scheduling
+      ['PATCH', '/api/approvals/42', A, undefined, false], // approval decided with the main agent's token
+      ['PATCH', '/api/approvals/42', G, 'murena', false], // even its own request
+      ['PATCH', '/api/approvals/42', L, undefined, false],
+      ['PATCH', '/api/approvals/42', D, undefined, false],
+      ['PATCH', '/api/approvals/42', S, undefined, true],
+      ['POST', '/api/agents/murena/start', L, undefined, false], // the shared token on a critical route
+      ['POST', '/api/settings', L, undefined, false],
+      ['GET', '/api/vault/github-token', L, undefined, false],
       // messages: anyone sends (the sender is set from the token in 3b); reading is own
-      ['POST', '/api/messages', G, undefined, false, true],
-      ['POST', '/api/messages', L, undefined, false, true],
-      ['GET', '/api/messages', G, 'nautilus', false, false],
-      ['GET', '/api/messages', G, 'murena', false, true],
-      ['PUT', '/api/messages/17', G, 'nautilus', false, false],
-      // memory: own and shared, not another agent's, not the main agent's by default
-      ['POST', '/api/memories', G, 'murena', false, true],
-      ['POST', '/api/memories', G, 'acrobot', true, true],
-      ['POST', '/api/memories', G, 'acrobot', false, false],
+      ['POST', '/api/messages', G, undefined, true],
+      ['POST', '/api/messages', L, undefined, true],
+      ['GET', '/api/messages', G, 'nautilus', false],
+      ['GET', '/api/messages', G, 'murena', true],
+      ['PUT', '/api/messages/17', G, 'nautilus', false],
+      // memory: its own namespace only; `shared` is a category, the record still names its writer
+      ['POST', '/api/memories', G, 'murena', true],
+      ['POST', '/api/memories', G, 'acrobot', false],
+      ['PUT', '/api/memories/12', G, 'nautilus', false],
+      ['DELETE', '/api/memories/12', G, 'murena', true],
+      // a message: read by either party, closed only by its recipient
+      ['GET', '/api/messages/17', G, ['nautilus', 'murena'], true],
+      ['GET', '/api/messages/17', G, ['nautilus', 'acrobot'], false],
       // kanban: create and comment open; a card change only on its own card
-      ['POST', '/api/kanban', G, undefined, false, true],
-      ['POST', '/api/kanban/0a1b2c3d/comments', G, undefined, false, true],
-      ['POST', '/api/kanban/0a1b2c3d/move', G, 'nautilus', false, false],
-      ['POST', '/api/kanban/0a1b2c3d/move', G, 'murena', false, true],
+      ['POST', '/api/kanban', G, undefined, true],
+      ['POST', '/api/kanban/0a1b2c3d/comments', G, undefined, true],
+      ['POST', '/api/kanban/0a1b2c3d/move', G, 'nautilus', false],
+      ['POST', '/api/kanban/0a1b2c3d/move', G, 'murena', true],
       // sessions: the supervisor, the agent itself and a device read; not the shared token
-      ['GET', '/api/agents/nautilus/pane/stream', G, 'nautilus', false, false],
-      ['GET', '/api/agents/murena/pane/stream', G, 'murena', false, true],
-      ['GET', '/api/agents/murena/pane/stream', A, undefined, false, true],
-      ['GET', '/api/agents/murena/pane/stream', D, undefined, false, true],
-      ['GET', '/api/agents/murena/pane/stream', L, undefined, false, false],
-      ['POST', '/api/agents/murena/keys', A, undefined, false, false], // writing into a pane: the session only
+      ['GET', '/api/agents/nautilus/pane/stream', G, 'nautilus', false],
+      ['GET', '/api/agents/murena/pane/stream', G, 'murena', true],
+      ['GET', '/api/agents/murena/pane/stream', A, undefined, true],
+      ['GET', '/api/agents/murena/pane/stream', D, undefined, true],
+      ['GET', '/api/agents/murena/pane/stream', L, undefined, false],
+      ['POST', '/api/agents/murena/keys', A, undefined, false], // writing into a pane: the session only
       // lifecycle: the session and the main agent
-      ['POST', '/api/agents/murena/restart', A, undefined, false, true],
-      ['POST', '/api/agents/murena/restart', G, 'murena', false, false],
+      ['POST', '/api/agents/murena/restart', A, undefined, true],
+      ['POST', '/api/agents/murena/restart', G, 'murena', false],
       // the shared-token handout: the session only
-      ['GET', '/api/voice/directive', A, undefined, false, false],
+      ['GET', '/api/voice/directive', A, undefined, false],
       // reads and telemetry: everyone
-      ['GET', '/api/agents/activity', G, undefined, false, true],
-      ['POST', '/api/token-usage/collect', G, undefined, false, true],
+      ['GET', '/api/agents/activity', G, undefined, true],
+      ['POST', '/api/token-usage/collect', G, undefined, true],
       // devices: usual writes yes, administration no
-      ['POST', '/api/memories', D, undefined, false, true],
-      ['POST', '/api/settings', D, undefined, false, false],
-      ['POST', '/api/autonomy', D, undefined, false, false],
+      ['POST', '/api/memories', D, undefined, true],
+      ['POST', '/api/settings', D, undefined, false],
+      ['POST', '/api/autonomy', D, undefined, false],
       // federation peers: the wire endpoints only
-      ['POST', '/api/federation/inbox', F, undefined, false, true],
-      ['GET', '/api/federation/manifest', F, undefined, false, true],
-      ['GET', '/api/agents', F, undefined, false, false],
+      ['POST', '/api/federation/inbox', F, undefined, true],
+      ['GET', '/api/federation/manifest', F, undefined, true],
+      ['GET', '/api/agents', F, undefined, false],
     ]
     const wrong = table
-      .filter(([method, path, caller, owner, shared, expected]) => allowed(method, path, caller, owner, shared) !== expected)
-      .map(([method, path, caller, owner, , expected]) => `${method} ${path} ${caller.column}${owner ? ` owner ${owner}` : ''}: expected ${expected ? 'allow' : '403'}`)
+      .filter(([method, path, caller, owner, expected]) => allowed(method, path, caller, owner) !== expected)
+      .map(([method, path, caller, owner, expected]) => `${method} ${path} ${caller.column}${owner ? ` owner ${owner}` : ''}: expected ${expected ? 'allow' : '403'}`)
     expect(wrong, 'ACCESS-TABLE').toEqual([])
   })
 

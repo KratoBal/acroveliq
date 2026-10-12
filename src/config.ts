@@ -231,6 +231,9 @@ export function brandSlug(raw: string): string {
 // (NFKD + ASCII + lowercase dashes). Older installs without this env var
 // fall back to "marveen" so nothing breaks when upgrading in place.
 export const MAIN_AGENT_ID = env['MAIN_AGENT_ID'] ?? 'marveen'
+// The access check's position (acrovelIQ P0-1, src/web/access-enforcement.ts):
+// naplo (default), legacy-szukitett or kikenyszerit. Read once at start.
+export const ACCESS_MODE_SETTING = env['ACCESS_MODE']
 // The hidden heartbeat worker's agent id. Lives here (not in
 // heartbeat-agent-scaffold) so agent-scaffold can key gates on it without an
 // import cycle: heartbeat-agent-scaffold already imports agent-scaffold.
