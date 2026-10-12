@@ -5,6 +5,8 @@ import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './c
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
+import { ensureTaskHandoffSchema } from './task-handoff.js'
+import { ensureTaskUsageSchema } from './task-usage.js'
 
 let db: Database.Database
 // The path the CURRENT handle was opened on (null for ':memory:'). Kept so
@@ -714,6 +716,12 @@ export function initDatabase(dbPathOverride?: string): void {
     `)
     db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_dedup ON token_usage(agent, session_id, timestamp, input_tokens, output_tokens)`)
   }
+
+  // --- Structured task handoff (acrovelIQ token brief, item 3) ---
+  ensureTaskHandoffSchema(db)
+
+  // --- Per-task token measurement (acrovelIQ token brief, item 1) ---
+  ensureTaskUsageSchema(db)
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS token_usage_cursors (
