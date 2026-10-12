@@ -18,8 +18,10 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
    `/api/voice/tts` és a `/api/voice/modality/set` csak S. Ha a telefonos felület ezeket hívja, a hangja a
    kikényszerítéskor elnémul. Mérés: a `request_actors` naplóban `device:` szereplő a voice sorokon.
 2. **A jóváhagyás (A).** A `PATCH /api/approvals/:id` csak S. Ma az Acrobot zárja le a jóváhagyásokat Balázs
-   szöveges válasza után. A kikényszerítés ezért a szerver által ellenőrzött Discord-kód (PR 4) előtt nem
-   kapcsolhat be, különben a jóváhagyási lánc megáll.
+   szöveges válasza után. A PR 4 óta a szerver maga olvassa és ellenőrzi a Discord-választ (egyszer használható,
+   a kéréshez kötött kód, lejárattal), és S-ként dönt; ez az `APPROVAL_DISCORD_CHANNEL_ID`, `_USER_IDS` és
+   `_DECIDER` beállításával kapcsol be. A kikényszerítés csak akkor fordulhat, ha ez be van állítva és egy
+   valódi jóváhagyáson mérten működött, különben a jóváhagyási lánc megáll.
 3. **A régi token (L) kritikus útjai.** Amit ma a közös token kritikus úton hív, az a kikényszerítéskor
    eltörik (például a `POST /api/schedules`). A kapcsoló csak akkor fordul, ha az
    `npx tsx scripts/access-preflight.ts` listája üres (kilépési kód 0): ez a naplóból sorolja fel, mit
@@ -355,7 +357,7 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 
 ## A csoportok indoka
 
-- **approval-decide**: a human decides, not a language model: only from the session (plan 2.4); the server-checked Discord code comes in PR 4
+- **approval-decide**: a human decides, not a language model: only from the session (plan 2.4); the owner's Discord reply is checked on the server and decides as the session (PR 4, approval-discord.ts)
 - **approval-request**: anyone may ask; the decision is the gate
 - **federation-wire**: the federation wire endpoints: peers reach them with their own scoped token (handled apart), not fleet tokens
 - **message-send**: anyone may send; the stored sender is the token's owner, never the body's `from` (PR 3b); the shared token sends as `legacy-ismeretlen`, marked unverified

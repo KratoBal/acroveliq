@@ -12,6 +12,12 @@ import { readBody, json } from '../http-helpers.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
 import { sendTelegramMessage } from '../telegram.js'
 import { claimActor } from '../actor-claims.js'
+import {
+  approvalDiscordConfig,
+  approvalDiscordEnabled,
+  discordTransportFromEnv,
+  postApprovalToDiscord,
+} from '../approval-discord.js'
 import type { RouteContext } from './types.js'
 
 const AUTONOMY_CONFIG_PATH = join(PROJECT_ROOT, 'store', 'autonomy-config.json')
@@ -122,6 +128,22 @@ function notifyOwner(approval: Approval): void {
   })()
 }
 
+// acrovelIQ P0-1 PR 4: the request on Discord with its one-time code, so the
+// owner's reply is read and checked by the server (`approval-discord.ts`).
+// Off unless configured; fire-and-forget like the Telegram notice.
+function notifyDiscord(approval: Approval): void {
+  const cfg = approvalDiscordConfig()
+  if (!approvalDiscordEnabled(cfg)) return
+  const transport = discordTransportFromEnv()
+  if (!transport) {
+    logger.warn({ approvalId: approval.id }, 'approval Discord post suppressed: no DISCORD_BOT_TOKEN')
+    return
+  }
+  void postApprovalToDiscord(approval, transport, cfg).catch((err) =>
+    logger.warn({ err, approvalId: approval.id }, 'approval Discord code could not be set'),
+  )
+}
+
 function notifyMainAgent(approval: Approval): void {
   // APPROVALVAK821 (b): when the requester IS the main agent, this used to
   // deliver the notification back to the requester itself -- which counted as
@@ -204,6 +226,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
     notifyOwner(approval)
     notifyMainAgent(approval)
+    notifyDiscord(approval)
     logger.info({ id, agent_id, category }, 'Approval request created')
     json(res, approval, 201)
     return true

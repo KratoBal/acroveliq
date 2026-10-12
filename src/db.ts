@@ -965,6 +965,15 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_agent ON approvals(agent_id, requested_at)`)
+  // acrovelIQ P0-1 PR 4: the one-time code a Discord reply must carry, and the
+  // evidence of the decision (which message decided it).
+  for (const column of ['discord_code TEXT', 'decision_ref TEXT']) {
+    try {
+      db.exec(`ALTER TABLE approvals ADD COLUMN ${column}`)
+    } catch {
+      // already there
+    }
+  }
 
   // --- Dashboard browser login (OPTIONAL; the bearer token stays primary) ---
   // Zero rows here = exactly the token-only behavior. A row is created only when
@@ -3479,6 +3488,8 @@ export interface Approval {
   requested_at: number
   resolved_at: number | null
   resolved_by: string | null
+  discord_code?: string | null
+  decision_ref?: string | null
 }
 
 export function createApproval(params: {
@@ -3537,6 +3548,33 @@ export function resolveApproval(id: string, status: 'approved' | 'rejected' | 't
 export function setApprovalTelegramMessageId(id: string, telegramMessageId: number): boolean {
   return db.prepare('UPDATE approvals SET telegram_message_id = ? WHERE id = ?')
     .run(telegramMessageId, id).changes > 0
+}
+
+/** The pending approvals carrying a Discord code (acrovelIQ P0-1 PR 4). */
+export function pendingDiscordApprovals(): Approval[] {
+  return db.prepare(
+    "SELECT * FROM approvals WHERE status = 'pending' AND discord_code IS NOT NULL",
+  ).all() as Approval[]
+}
+
+export function setApprovalDiscordCode(id: string, code: string): boolean {
+  return db.prepare('UPDATE approvals SET discord_code = ? WHERE id = ?')
+    .run(code, id).changes > 0
+}
+
+/** One write: decided only if still pending, with the evidence (P0-1 PR 4). */
+export function resolveApprovalWithRef(
+  id: string,
+  status: 'approved' | 'rejected',
+  resolvedBy: string,
+  ref: string,
+): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare(`
+    UPDATE approvals
+    SET status = ?, resolved_at = ?, resolved_by = ?, decision_ref = ?
+    WHERE id = ? AND status = 'pending'
+  `).run(status, now, resolvedBy, ref, id).changes > 0
 }
 
 export function listApprovals(opts: {
