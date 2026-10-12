@@ -35,6 +35,36 @@ function resolveScheduleDir(rawName: string): { name: string; dir: string } | nu
   } catch { return null }
 }
 
+// Fields that make a task run something as the dashboard's own user (a
+// command task's shell command, a pre-check script) or inside another agent's
+// session (targetSession). Through the API only Balázs's session writes them,
+// in every access mode: this is a privilege escalation, not an access filter,
+// so it does not wait for the setting (acrobot 28679). `type` is closed only
+// for `command`: the agents create `task` and `heartbeat` tasks through the
+// API today. A value equal to the task's current one is not a change: the
+// dashboard form sends `type` (and a set targetSession) on every save. On
+// disk the operator still writes anything.
+const SESSION_ONLY_FIELDS = ['command', 'preCheck', 'targetSession'] as const
+const AGENT_TASK_TYPES = new Set(['task', 'heartbeat'])
+
+/** The session-only fields a non-session caller tried to change; empty when none. `current` is the task's config on an update. */
+export function sessionOnlyFieldsSet(ctx: RouteContext, data: unknown, current: Record<string, unknown> = {}): string[] {
+  if (ctx.auth?.kind === 'session' || !data || typeof data !== 'object') return []
+  const record = data as Record<string, unknown>
+  const changes = (field: string) => field in record && record[field] !== current[field]
+  const set: string[] = SESSION_ONLY_FIELDS.filter(changes)
+  if (changes('type') && !(typeof record.type === 'string' && AGENT_TASK_TYPES.has(record.type))) set.push('type')
+  return set
+}
+
+function rejectSessionOnly(ctx: RouteContext, data: unknown, name: string, current?: Record<string, unknown>): boolean {
+  const set = sessionOnlyFieldsSet(ctx, data, current)
+  if (!set.length) return false
+  logger.warn({ name, fields: set, actor: ctx.auth?.actor ?? ctx.auth?.kind }, 'scheduled task: session-only fields refused')
+  json(ctx.res, { error: `only the dashboard session may set ${set.join(', ')} (type only as task or heartbeat)` }, 403)
+  return true
+}
+
 export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -130,6 +160,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     }
     const name = sanitizeScheduleName(data.name || '')
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
+    if (rejectSessionOnly(ctx, data, name)) return true
     if (!data.prompt?.trim()) { json(res, { error: 'Prompt is required' }, 400); return true }
     if (data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
       json(res, {
@@ -179,6 +210,9 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const data = JSON.parse(body.toString()) as {
       description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string
     }
+    let current: Record<string, unknown> = {}
+    try { current = JSON.parse(readFileOr(join(dir, 'task-config.json'), '{}')) as Record<string, unknown> } catch { /* none */ }
+    if (rejectSessionOnly(ctx, data, name, current)) return true
     if (data.prompt !== undefined && data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
       json(res, {
         error: `Prompt too large (${data.prompt.length} chars, max ${MAX_SCHEDULED_TASK_PROMPT_LEN})`,
