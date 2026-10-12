@@ -94,13 +94,13 @@ async function call(as: CallerSource, method: string, path: string, body?: unkno
 
 describe('access enforcement: the setting', () => {
   it('ACCESS-MODE: three positions, naplo by default, a typo enforces; no enforcing position leaves the shared token unchecked', () => {
-    const parsed = [undefined, '', 'naplo', 'legacy-szukitett', 'kikenyszerit', 'kikényszerít', 'off'].map((raw) => {
+    const parsed = [undefined, '', 'naplo', ' NAPLO ', 'legacy-szukitett', 'kikenyszerit', 'kikényszerít', 'off'].map((raw) => {
       const p = parseAccessMode(raw)
       return [p.mode, p.problem !== null]
     })
     const table = ACCESS_MODES.map((m) => (['S', 'A', 'G', 'L', 'D', 'F'] as const).map((c) => enforces(m, c)))
     expect([parsed, table], 'ACCESS-MODE').toEqual([
-      [['naplo', false], ['naplo', false], ['naplo', false], ['legacy-szukitett', false], ['kikenyszerit', false], ['kikenyszerit', true], ['kikenyszerit', true]],
+      [['naplo', false], ['naplo', false], ['naplo', false], ['naplo', false], ['legacy-szukitett', false], ['kikenyszerit', false], ['kikenyszerit', true], ['kikenyszerit', true]],
       [
         [false, false, false, false, false, false], // naplo: logs only
         [false, false, false, true, false, false], // legacy-szukitett: the shared token
@@ -148,6 +148,7 @@ describe('access enforcement: through the gate', () => {
       [G, 'POST', '/api/schedules', { agent: 'murena' }, 200],
       [S, 'POST', '/api/schedules', { agent: 'acrobot' }, 200],
       [G, 'PUT', '/api/schedules/murena-feladat', { prompt: 'x' }, 200],
+      [G, 'PUT', '/api/schedules/murena-feladat', { prompt: 'x', agent: 'acrobot' }, 403], // moving its task to the main agent
       [G, 'POST', '/api/schedules/fo-feladat/run', undefined, 403], // a task without an agent is the main agent's
       [A, 'POST', '/api/schedules/fo-feladat/run', undefined, 200],
       // an approval decided with an agent token, whatever resolved_by says
@@ -170,6 +171,8 @@ describe('access enforcement: through the gate', () => {
       // cards and memories: own only; moving a memory to another writer is not own
       [G, 'POST', '/api/kanban/c-murena/move', { status: 'done' }, 200],
       [G, 'POST', '/api/kanban/c-nautilus/move', { status: 'done' }, 403],
+      [G, 'DELETE', '/api/kanban/c-murena/labels/c-nautilus', undefined, 200], // two parameters: the card is :id
+      [G, 'DELETE', '/api/kanban/c-nautilus/labels/c-murena', undefined, 403],
       [G, 'POST', '/api/memories', { agent_id: 'murena', content: 'x' }, 200],
       [G, 'POST', '/api/memories', { agent_id: 'acrobot', category: 'shared', content: 'x' }, 403],
       [G, 'PUT', '/api/memories/5', { content: 'y' }, 200],
@@ -205,12 +208,17 @@ describe('access enforcement: through the gate', () => {
     ])
   })
 
-  it('ACCESS-LOG-NO-VALUES: the denial log keeps the route pattern and the group, never a value from the request', async () => {
+  it('ACCESS-LOG-NO-VALUES: the denial log keeps the route pattern and the group, never a value from the request; a 403 names no owner', async () => {
     mode = 'kikenyszerit'
-    await call(G, 'POST', '/api/memories', { agent_id: 'titkos-ertek-a-torzsben', content: 'x' })
-    await call(G, 'GET', '/api/agents/titkos-ertek-az-utban/conversation')
+    const fromBody = await call(G, 'POST', '/api/memories', { agent_id: 'titkos-ertek-a-torzsben', content: 'x' })
+    const fromPath = await call(G, 'GET', '/api/agents/titkos-ertek-az-utban/conversation')
+    const others = await call(G, 'GET', '/api/messages/18') // nautilus to acrobot: none of murena's business
     const dump = JSON.stringify(getDb().prepare('SELECT * FROM access_decisions').all())
-    expect([dump.includes('titkos-ertek'), dump.includes('/api/agents/:name/conversation')], 'ACCESS-LOG-NO-VALUES').toEqual([false, true])
+    const answers = fromBody.body + fromPath.body + others.body
+    expect(
+      [dump.includes('titkos-ertek'), dump.includes('/api/agents/:name/conversation'), answers.includes('titkos-ertek'), /nautilus|acrobot/.test(answers), others.status],
+      'ACCESS-LOG-NO-VALUES',
+    ).toEqual([false, true, false, false, 403])
   })
 
   // The session's exemption in the failure branch is not measured here: the

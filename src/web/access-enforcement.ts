@@ -32,7 +32,8 @@ export type AccessMode = (typeof ACCESS_MODES)[number]
 
 /** The setting's position; `problem` is set when the raw value was not one of the three. */
 export function parseAccessMode(raw: string | undefined): { mode: AccessMode; problem: string | null } {
-  const value = raw?.trim() ?? ''
+  // case is not a typo: `NAPLO` is naplo (barracuda, #25)
+  const value = raw?.trim().toLowerCase() ?? ''
   if (!value) return { mode: 'naplo', problem: null }
   if ((ACCESS_MODES as readonly string[]).includes(value)) return { mode: value as AccessMode, problem: null }
   return {
@@ -138,7 +139,8 @@ export async function resolveOwner(
   if (source.from === 'query') return url.searchParams.get(source.name) || null
   if (source.from === 'body') return bodyField(await parsedBody(req), source.name, source.defaultsToMain ?? false, deps.mainAgent)
 
-  const id = Object.values(params)[0]
+  // the id by its name: a later route with two parameters takes the right one (barracuda, #25)
+  const id = params[source.param]
   if (!id) return null
   switch (source.record) {
     case 'kanban-card': {
@@ -161,8 +163,13 @@ export async function resolveOwner(
       const moved = bodyField(await parsedBody(req), 'agent_id', false, deps.mainAgent)
       return moved === null || moved === row.agent_id ? row.agent_id : null
     }
-    case 'schedule':
-      return deps.scheduleAgent(id)
+    case 'schedule': {
+      const agent = deps.scheduleAgent(id)
+      if (!agent || req.method !== 'PUT') return agent
+      // an update that names another agent moves the task: not the caller's own
+      const moved = bodyField(await parsedBody(req), 'agent', false, deps.mainAgent)
+      return moved === null || moved === agent ? agent : null
+    }
   }
 }
 
@@ -222,7 +229,7 @@ export function ensureAccessDecisionSchema(db: Database.Database): void {
 
 let lastPrunedDay = ''
 
-/** The reason without the owner: an owner can come from a request body, and no request value is kept. */
+/** The reason without the owner: an owner can come from a request body, and no request value is kept; nor does a 403 name whose record it is. */
 const logReason = (reason: string) => reason.replace(/ \(owner [^)]*\)$/, '')
 
 /**
@@ -267,7 +274,8 @@ export async function accessGate(
     if (!verdict || verdict.decision.allowed) return false
     recordAccessDenial(deps.db, verdict, mode, request.method, Math.floor(Date.now() / 1000))
     if (!verdict.enforced) return false
-    json(request.res, { error: 'Forbidden', reason: verdict.decision.reason }, 403)
+    // without the owner: a 403 must not tell an outsider whose record it is (barracuda, #25)
+    json(request.res, { error: 'Forbidden', reason: logReason(verdict.decision.reason) }, 403)
     return true
   } catch (err) {
     logger.error({ err, method: request.method, path: request.path }, 'access check failed')

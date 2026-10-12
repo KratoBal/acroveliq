@@ -36,10 +36,10 @@ export type OwnerSource =
   | { from: 'param'; name: string }
   | { from: 'query'; name: string }
   | { from: 'body'; name: string; defaultsToMain?: boolean }
-  | { from: 'lookup'; record: LookupRecord }
+  | { from: 'lookup'; record: LookupRecord; param: string }
 
 /**
- * A record looked up by the id in the path: its owner. A card's assignee, a
+ * A record looked up by an id in the path (the named parameter): its owner. A card's assignee, a
  * schedule's agent, a message's recipient, a memory's writer; a message's
  * participants (either may read it).
  */
@@ -110,7 +110,7 @@ const GROUPS: Group[] = [
     name: 'message-state',
     match: is('PUT', '/api/messages/:id'),
     grants: g('yes', 'yes', 'own', 'yes', 'yes'),
-    owner: { from: 'lookup', record: 'message-recipient' },
+    owner: { from: 'lookup', record: 'message-recipient', param: 'id' },
     why: 'closing a message can inject text into a pane: an agent only its own messages (the recipient)',
   },
   {
@@ -124,7 +124,7 @@ const GROUPS: Group[] = [
     name: 'message-read-one',
     match: is('GET', '/api/messages/:id'),
     grants: g('yes', 'yes', 'own', 'yes', 'yes'),
-    owner: { from: 'lookup', record: 'message-participants' },
+    owner: { from: 'lookup', record: 'message-participants', param: 'id' },
     why: 'an agent reads its own messages, sent or received (plan 3)',
   },
   {
@@ -143,8 +143,8 @@ const GROUPS: Group[] = [
       is('POST', '/api/schedules/:name/run'),
     ),
     grants: g('yes', 'own', 'own', 'no', 'no'),
-    owner: { from: 'lookup', record: 'schedule' },
-    why: 'only its own scheduled task, run-now included (plan 3)',
+    owner: { from: 'lookup', record: 'schedule', param: 'name' },
+    why: 'only its own scheduled task, run-now included (plan 3); an update that would move it to another agent is not its own',
   },
   {
     name: 'agent-lifecycle',
@@ -190,7 +190,7 @@ const GROUPS: Group[] = [
     name: 'memory-change',
     match: (r) => r.module === 'memories' && writes(r) && r.path === '/api/memories/:id',
     grants: g('yes', 'yes', 'own', 'yes', 'yes'),
-    owner: { from: 'lookup', record: 'memory' },
+    owner: { from: 'lookup', record: 'memory', param: 'id' },
     why: 'an agent changes or deletes only its own memories; an update that would move one to another writer is not its own',
   },
   {
@@ -211,7 +211,7 @@ const GROUPS: Group[] = [
     name: 'kanban-card-change',
     match: (r) => r.module === 'kanban' && /^\/api\/kanban\/:id(\/(move|archive|unarchive|labels|labels\/:labelId|breakdown|breakdown\/accept))?$/.test(r.path) && writes(r),
     grants: g('yes', 'yes', 'own', 'yes', 'yes'),
-    owner: { from: 'lookup', record: 'kanban-card' },
+    owner: { from: 'lookup', record: 'kanban-card', param: 'id' },
     why: 'an agent changes the cards assigned to it (plan 3); creating a card and commenting stay open',
   },
   {
@@ -303,7 +303,7 @@ const BEFORE_ENFORCING = [
 export function renderAccessMatrix(rules: readonly RouteRule[] = ROUTE_RULES): string {
   const mark = (grant: Grant) => (grant === 'yes' ? '✓' : grant === 'no' ? '✗' : 'saját')
   const owner = (source?: OwnerSource) =>
-    !source ? '' : source.from === 'lookup' ? `rekord: ${source.record}` : `${source.from}: ${source.name}`
+    !source ? '' : source.from === 'lookup' ? `rekord: ${source.record} (:${source.param})` : `${source.from}: ${source.name}`
   const lines = [
     '# Jogosultsági mátrix (acrovelIQ P0-1)',
     '',
