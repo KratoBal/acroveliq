@@ -22,7 +22,7 @@ akkor az éles, ha a próba-sor (lent) minden sora zöld rajta.
 | `uptime`, `reboot-required`, `apt-check` | olvasás (`apt-check --human-readable`) | mindkettő |
 | `builder-prune` | `docker builder prune -f` | mindkettő |
 | `image-prune-2h` | `docker image prune -a -f --filter until=2h` | csak stage |
-| `psql-ro <kulcs> <adatbázis> <felhasználó> [plain\|tuples\|tuples-pipe\|tuples-spaced-pipe]` | psql, az SQL a stdin-en, `default_transaction_read_only=on` alapértékkel; backslash az SQL-ben tilos | éles: OS; stage: AI |
+| `psql-ro <kulcs> <adatbázis> [plain\|tuples\|tuples-pipe\|tuples-spaced-pipe]` | psql a csak olvasó `fleet_ro` szereppel (a kapu listájából, nem a hívótól), az SQL a stdin-en; backslash az SQL-ben tilos | éles: OS; stage: AI |
 | `coolify-deployments <app uuid>`, `coolify-deploy-log <deployment uuid>` | a Coolify adatbázisának két rögzített olvasása (a kapu építi az SQL-t, a 24 jeles uuid az egyetlen argumentum) | stage |
 | `pg-dump <kulcs> <adatbázis> <felhasználó>` | `pg_dump -Fc` a stdout-ra | éles: OS, Commerce; stage: AI |
 | `pg-restore-list <kulcs>` | `pg_restore -l`, a dump a stdin-en | éles: OS, Commerce; stage: AI |
@@ -55,6 +55,9 @@ passwd -S fleet                              # a második mező: L (zárolt jels
 sshd -T | grep -Ei '^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin) '
                                              # passwordauthentication no, kbdinteractiveauthentication no
 sudo -l -U fleet                             # éles: nincs; teszt: jelszót kér (a jelszó zárolt)
+grep -n '^Match' /etc/ssh/sshd_config        # a meglévő Match blokkok (a telepítés a fájl végére tesz egyet)
+ls -ld ~fleet ~fleet/.ssh                    # fleet:fleet 0750 és 0700: ezért megy a kulcs a home-on kívülre
+tailscale debug prefs | grep -i runssh       # élesen ma: "RunSSH": true (lásd a Tailscale SSH pontot)
 ```
 
 Ha a `hostname -s` mást ad, a kapu azon a gépen mindent elutasít: előbb szólj.
@@ -70,19 +73,79 @@ cd /tmp && scp root@162.55.216.28:/opt/marveen-docker/data/marveen/scripts/host/
 cd /tmp && scp ./fleet-gate.sh root@<a cél gép>:/tmp/fleet-gate.sh
 ```
 
-A célgépen, rootként:
+**1. A csak olvasó adatbázis-szerep** (Balázs, 12:23 UTC; a kapu `psql-ro` művelete ezzel
+csatlakozik, ezért a kapu ELŐTT kell létrehozni). Gépenként és adatbázisonként egyszer, a
+konténerben a saját superuserével:
+
+| Gép | Konténer (a név eleje) | Adatbázis | Superuser |
+|---|---|---|---|
+| `acropora-prod-01` | `iwm34jaqp9xmwb72qkrqkwhy` | `acropora` | `acropora` |
+| `acropora-ai-stage-01` | `cpnjvtte02yakzs9vb0jffky` | `acropora_ai` | `acropora_ai` |
 
 ```bash
 cd /root
-sha256sum /tmp/fleet-gate.sh                 # egyezzen a repóbeli fájléval (a flotta megadja)
+C=$(docker ps --format '{{.Names}}' | grep '^iwm34jaqp9xmwb72qkrqkwhy' | head -1)   # a stage-en: ^cpnjvtte02yakzs9vb0jffky
+docker exec "$C" psql -U acropora -d acropora -Atc 'show server_version'           # 14 vagy újabb kell (pg_read_all_data)
+docker exec -i "$C" psql -U acropora -d acropora -v ON_ERROR_STOP=1 <<'SQL'
+CREATE ROLE fleet_ro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+GRANT pg_read_all_data TO fleet_ro;
+ALTER ROLE fleet_ro SET default_transaction_read_only = on;
+SQL
+docker exec -i "$C" psql -U fleet_ro -d acropora -At <<'SQL'
+select current_user, pg_has_role(current_user, 'pg_execute_server_program', 'member');
+SQL
+                                             # fleet_ro|f
+```
+
+A szerepnek **nincs jelszava, és nem is kap**: a kapu `docker exec`-kel, a konténeren BELÜL, a
+helyi socketen csatlakozik, és a hivatalos Postgres-kép a helyi socketet engedi. Ha a fenti
+utolsó sor jelszót kér, a konténer `pg_hba.conf`-ja más: akkor állj meg és szólj, a jelszó
+semmiképp ne kerüljön a kapuba. A Coolify adatbázisához nem kell szerep: oda a kapu csak két
+rögzített SQL-t visz.
+
+**2. A kapu és a kulcs.** A kulcs-kényszer a `fleet` home-ján KÍVÜL áll (barracuda és acrobot,
+2026-10-12): a `/home/fleet` ma `fleet:fleet 0750`, a `~/.ssh` `fleet:fleet 0700`, vagyis a `fleet`
+a saját `.ssh`-ját át tudná nevezni, és vele a kényszert is. Az sshd ezért a `fleet`
+kulcsait a `/etc/ssh/authorized_keys/fleet`-ből olvassa, ami root tulajdonú.
+
+Előbb mérd meg, honnan jön a flotta forgalma erre a gépre (a `from=` ezt a címet engedi csak):
+
+```bash
+cd /root && journalctl -u ssh --since -24h | grep 'Accepted publickey for fleet' | awk '{print $11}' | sort | uniq -c
+```
+
+Utána (a `FORRAS` a mért cím vagy címek, vesszővel):
+
+```bash
+cd /root
+FORRAS='<a mért cím>'
 install -o root -g root -m 0755 /tmp/fleet-gate.sh /usr/local/sbin/fleet-gate
-cp -p ~fleet/.ssh/authorized_keys ~fleet/.ssh/authorized_keys.pre-b8
-sed -i 's#^ssh-ed25519 #command="/usr/local/sbin/fleet-gate",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 #' ~fleet/.ssh/authorized_keys
-grep -c '^command="/usr/local/sbin/fleet-gate"' ~fleet/.ssh/authorized_keys   # 1
-chown root:root ~fleet/.ssh ~fleet/.ssh/authorized_keys
-chmod 0755 ~fleet/.ssh && chmod 0644 ~fleet/.ssh/authorized_keys
+sha256sum /usr/local/sbin/fleet-gate         # egyezzen a repóbeli fájléval (a flotta megadja)
+KULCS=$(grep -E '^ssh-ed25519 ' ~fleet/.ssh/authorized_keys)
+install -d -o root -g root -m 0755 /etc/ssh/authorized_keys
+printf 'restrict,from="%s",command="/usr/local/sbin/fleet-gate" %s\n' "$FORRAS" "$KULCS" > /etc/ssh/authorized_keys/fleet
+chown root:root /etc/ssh/authorized_keys/fleet && chmod 0644 /etc/ssh/authorized_keys/fleet
+cp -p /etc/ssh/sshd_config /etc/ssh/sshd_config.pre-b8
+printf '\nMatch User fleet\n    AuthorizedKeysFile /etc/ssh/authorized_keys/%%u\n' >> /etc/ssh/sshd_config
+sshd -t && systemctl reload ssh
 usermod -s /bin/sh fleet
 ```
+
+A `Match` blokk a fájl VÉGÉRE kerül, és nem egy `sshd_config.d` alatti fájlba: az `Include` a fő
+fájl elején áll, és egy oda tett `Match` a fő fájl utána következő beállításait is elnyelné. A
+`restrict` minden továbbítást, pty-t és `~/.ssh/rc`-t tilt; a `from=` csak a mért címről enged
+belépni ezzel a kulccsal.
+
+**Ellenőrzés a betöltött beállításon** (a `FORRAS` egyik címével):
+
+```bash
+cd /root && sshd -T -C user=fleet,host=x,addr=<a mért cím> | grep -iE 'forcecommand|authorizedkeysfile|permituserenvironment'
+                                             # authorizedkeysfile /etc/ssh/authorized_keys/%u
+                                             # forcecommand none
+                                             # permituserenvironment no
+```
+
+A `forcecommand none` helyes: a kényszer a kulcssorban áll (`command=`), nem az sshd-ben.
 
 A teszt gépen ezen felül (a `restore-probe` nem tölt le képet):
 
@@ -90,12 +153,18 @@ A teszt gépen ezen felül (a `restore-probe` nem tölt le képet):
 cd /root && docker pull postgres:16-alpine
 ```
 
-**Miért a root-tulajdon és a `/bin/sh`** (barracuda, #28): ha a `fleet` felhasználóként valaha
-mégis futna valami, a saját `authorized_keys`-éből le tudná venni a `command=` kényszert. Root
-tulajdonnal nem tudja; az sshd elfogadja a root tulajdonú `.ssh`-t és `authorized_keys`-t. A
-`bash` pedig Debianon a nem interaktív ssh-parancs előtt is beolvassa a `~/.bashrc`-t, vagyis egy
-írható `.bashrc` a kapu ELŐTT futna. A `/bin/sh` (dash) egy `-c` parancsnál nem olvas indító
-fájlt. A kapu maga `bash` alatt fut, a saját első sora szerint.
+**Miért a `/bin/sh`** (barracuda, #28): a `bash` Debianon a nem interaktív ssh-parancs előtt is
+beolvassa a `~/.bashrc`-t, vagyis egy írható `.bashrc` a kapu ELŐTT futna. A `/bin/sh` (dash) egy
+`-c` parancsnál nem olvas indító fájlt. A kapu maga `bash` alatt fut, a saját első sora szerint.
+
+**Az éles gép Tailscale SSH-ja.** Az élesen a Tailscale SSH be van kapcsolva (`RunSSH true`). A
+tailnet szabálya ma csak a `group:admin`-nak enged belépést a `tag:prod` gépekre, „check”
+megerősítéssel, tehát a flotta nem éri el (acrobot mérte, 2026-10-12). Ez a kapun KÍVÜLI út a
+gépre: ha nem használod, kapcsold ki:
+
+```bash
+cd /root && tailscale set --ssh=false && tailscale debug prefs | grep -i runssh   # "RunSSH": false
+```
 
 A `fleet` **marad a docker csoportban**: a kapu a nevében fut, és neki el kell érnie a Dockert.
 A kulcson át vezető utat a kényszer zárja le.
@@ -167,6 +236,22 @@ ssh -i $K fleet@100.88.199.87 ps                                    # a konténe
 
 A gépen: `journalctl -t fleet-gate -n 20` mutatja az `allow` és `deny` sorokat.
 
+**A csak olvasó szerep mérése a kapun át** (az élesen; a stage-en `100.88.199.87`,
+`cpnjvtte02yakzs9vb0jffky acropora_ai`, és a `"User"` helyett `conversations`):
+
+```bash
+cd /home/marveen/marveen && K=/home/marveen/.ssh/id_ed25519_acropora_monitor && G="ssh -i $K fleet@162.55.216.28 psql-ro iwm34jaqp9xmwb72qkrqkwhy acropora tuples"
+printf 'select count(*) from "User";\n' | $G                              # egy szám
+printf 'create table b8_proba (i int);\n' | $G                            # ERROR: permission denied for schema public
+printf 'set default_transaction_read_only = off;\nupdate "User" set "displayName" = "displayName" where false;\n' | $G
+                                                                          # ERROR: permission denied for table User
+printf "copy (select 1) to program 'id';\n" | $G                          # ERROR: ... must be superuser or ... pg_execute_server_program
+```
+
+A második és a harmadik sor a lényeg: az írás nem a `default_transaction_read_only` miatt bukik
+el (azt a harmadik sor kikapcsolja), hanem a jog hiánya miatt. A repó tesztje valódi Postgrest
+nem ér el, ezért ez a mérés a telepítés része.
+
 ## Próba-sor: ezeknek kell zöldnek lenniük a kapun át
 
 A teszt gépen előbb a stage-sorok, az élesítés után az éles sorok. A két telepítés között (lásd a köztes állapotot) a parancsok a checkoutból futnak: a `cd /home/marveen/marveen` helyett `cd /home/marveen/fleet-gate-proba`.
@@ -198,7 +283,7 @@ elutasítást kap). A megfeleltetés:
 | `apt-check --human-readable \| head -4`, `reboot-required` | `apt-check`, `reboot-required` (a `head` a konténerben) |
 | `docker ps --filter name=proxy ...`, `docker ps --format "{{.Image}}" \| sort -u` | `ps`, a szűrés a konténerben |
 | `docker exec $C env \| grep -E "^MEDUSA_(...)="` | `env-get` |
-| `docker exec -i iwm34... psql -U acropora -d acropora -tA` | `psql-ro iwm34jaqp9xmwb72qkrqkwhy acropora acropora tuples` |
+| `docker exec -i iwm34... psql -U acropora -d acropora -tA` | `psql-ro iwm34jaqp9xmwb72qkrqkwhy acropora tuples` |
 
 ## Ami a kapu után NEM megy (szándékosan)
 
@@ -210,13 +295,13 @@ elutasítást kap). A megfeleltetés:
 
 ## Korlátok, amiket tudni kell
 
-- **A `psql-ro` olvasása alapérték, nem zár.** A `PGOPTIONS` beállítja a
-  `default_transaction_read_only=on` értéket, így egy sima író utasítás hibát ad. De a
-  felhasználók (`acropora`, `acropora_ai`) valószínűleg superuserek a saját adatbázisukban: egy
-  session ezt vissza tudja kapcsolni, és a `COPY ... TO PROGRAM` superuserként shellt ad a
-  DB-konténerben, a backslash-tilalom ellenére is (ez SQL, nem psql meta-parancs). A valódi zár
-  egy csak olvasó adatbázis-szerep (`GRANT SELECT`), ami külön döntés. A kapu a backslash
-  tiltásával a psql meta-parancsait (`\!`) zárja ki.
+- **A `psql-ro` a `fleet_ro` szereppel csatlakozik** (Balázs, 12:23 UTC): `pg_read_all_data`, se
+  superuser, se `pg_execute_server_program`. Írni nem tud, és a `COPY ... TO PROGRAM` sem ad neki
+  shellt. A szerepet a kapu listája adja, a hívó nem választhat másikat. A `PGOPTIONS` és a
+  backslash-tilalom (a psql `\!` meta-parancsa) ezen felül marad.
+- **Amit a szerep NEM zár: az olvasást.** A `pg_read_all_data` minden táblát lát, a
+  jelszó-hasheket és a tárolt titkokat is. Ez olvasási kitettség, a flotta mai lekérdezéseihez
+  kell; ha egyszer szűkebb kell, a szerep `GRANT SELECT` listára cserélhető.
 - **A `psql-ro` a DB-konténeren belül marad**, nem jut a gépre: a legrosszabb eset az adatbázis és
   a konténere. **Ezért nincs a listán a Coolify adatbázisa** (barracuda, #28): aki abba írhat, az
   dönti el, mit és milyen csatolással telepít a Coolify, vagyis root a gépen. A két olvasása
@@ -231,11 +316,12 @@ elutasítást kap). A megfeleltetés:
 
 ```bash
 cd /root
-cp ~fleet/.ssh/authorized_keys.pre-b8 ~fleet/.ssh/authorized_keys
+cp -p /etc/ssh/sshd_config.pre-b8 /etc/ssh/sshd_config && sshd -t && systemctl reload ssh
 ```
 
-Ez csak a sor tartalmát állítja vissza (a kényszer nélküli kulcsot); a fájl root tulajdonban
-marad, és az sshd így is elfogadja. A `/bin/sh` login shell is maradhat: a régi működéshez nem
-kell a `bash` (ha mégis: `usermod -s /bin/bash fleet`).
+Ezzel az sshd újra a `~fleet/.ssh/authorized_keys`-t olvassa, amiben a kulcs kényszer nélkül
+áll (a telepítés nem nyúlt hozzá). A `/etc/ssh/authorized_keys/fleet` maradhat, azt az sshd ilyenkor
+nem olvassa. A `/bin/sh` login shell is maradhat (ha mégis: `usermod -s /bin/bash fleet`). A
+`fleet_ro` szerep is maradhat; ha el kell vinni: `DROP ROLE fleet_ro;` a konténerben.
 
 A `/usr/local/sbin/fleet-gate` maradhat: kényszer nélkül senki nem hívja.
