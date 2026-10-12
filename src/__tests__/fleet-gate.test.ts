@@ -77,6 +77,11 @@ esac`,
       `LOGGER=${stub('logger', ':')}`,
       `REBOOT_FILE=${join(dir, 'reboot-required')}`,
       `BACKUP_ROOT=${join(dir, 'backups')}`,
+      `SSHD_CONFIG=${join(dir, 'sshd_config')}`,
+      `SSHD_CONFIG_D=${join(dir, 'sshd_config.d')}`,
+      `KEYFILE=${join(dir, 'fleet.keys')}`,
+      // the test cannot own a file as root: the expected owner is the test's own
+      `KEYFILE_EXPECT="${OWNER}:644"`,
     ].join('\n') + '\n',
   )
   const run = (command: string | undefined, input = '') => {
@@ -94,6 +99,8 @@ esac`,
 
 const sha = (text: string) => createHash('sha256').update(Buffer.from(text, 'latin1')).digest('hex')
 const ZEROS = '0'.repeat(64)
+
+const OWNER = `${spawnSync('id', ['-un'], { encoding: 'utf-8' }).stdout.trim()}:${spawnSync('id', ['-gn'], { encoding: 'utf-8' }).stdout.trim()}`
 
 const today = () => {
   const r = spawnSync('date', ['+%F'], { encoding: 'utf-8' })
@@ -194,6 +201,59 @@ describe('fleet-gate: what passes', () => {
     expect([no.out, yes.out, count.out.trim(), count.calls.some((c) => c.includes('[sh]'))], 'GATE-REBOOT-AND-COUNT').toEqual([
       'NEM\n', 'IGEN\nlinux-image\n', '2', false,
     ])
+  })
+
+  it('GATE-SSHD-MATCH: says whether the gate still stands: the Match block, a root-owned 0644 key file, every key line forced', () => {
+    const w = world(PROD)
+    const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKitalaltKulcsAnyag fleet'
+    const forced = `restrict,from="172.17.0.2",command="/usr/local/sbin/fleet-gate" ${KEY}`
+    const setUp = (config: string | null, keys: string | null, mode = 0o644, dropin: string | null = null) => {
+      const cfg = join(w.dir, 'sshd_config')
+      const kf = join(w.dir, 'fleet.keys')
+      const dir = join(w.dir, 'sshd_config.d')
+      rmSync(cfg, { force: true })
+      rmSync(kf, { force: true })
+      rmSync(dir, { recursive: true, force: true })
+      mkdirSync(dir)
+      writeFileSync(join(dir, '50-cloud-init.conf'), 'PasswordAuthentication no\n')
+      if (dropin !== null) writeFileSync(join(dir, '60-masik.conf'), dropin)
+      if (config !== null) writeFileSync(cfg, config)
+      if (keys !== null) {
+        writeFileSync(kf, keys)
+        chmodSync(kf, mode)
+      }
+      const r = w.run('sshd-match')
+      return [r.code, r.out.trim()]
+    }
+    const MATCH = 'PasswordAuthentication no\n\nMatch User fleet\n    AuthorizedKeysFile /etc/ssh/authorized_keys/%u\n'
+    expect(
+      [
+        setUp(MATCH, `# a flotta kulcsa\n${forced}\n`),
+        setUp('PasswordAuthentication no\n', `${forced}\n`), // a package update replaced sshd_config
+        setUp(MATCH, null), // no key file
+        setUp(MATCH, `${forced}\n`, 0o666), // writable by others
+        setUp(MATCH, `${forced}\n${KEY}\n`), // a second, plain key line
+        setUp(MATCH, `command="/usr/local/sbin/fleet-gate" ${KEY}\n`), // forced, but without restrict and from=
+        setUp(`${MATCH}${MATCH}`, `${forced}\n`), // twice
+        setUp(MATCH.replace('Match User fleet', 'Match User fleetadmin'), `${forced}\n`), // another user, not a prefix match
+        setUp(`Match all\n    AuthorizedKeysFile .ssh/authorized_keys\n${MATCH}`, `${forced}\n`), // an earlier Match all wins
+        setUp(MATCH, `${forced}\n`, 0o644, 'Match User fleet\n    AuthorizedKeysFile .ssh/authorized_keys\n'), // an included Match wins
+        setUp(MATCH, `${forced}\n`, 0o644, 'AuthorizedKeysFile .ssh/authorized_keys\n'), // an included global setting
+        setUp(`Match Group sftp\n    ChrootDirectory /srv\n${MATCH}`, `${forced}\n`), // an unrelated Match is fine
+        setUp(`Match Group docker\n    AuthorizedKeysFile .ssh/authorized_keys\n${MATCH}`, `${forced}\n`), // fleet is in docker
+        setUp(`Match Address 172.17.0.2\n    AuthorizedKeysCommand /usr/bin/kulcs\n${MATCH}`, `${forced}\n`), // by address
+        setUp(`AuthorizedKeysFile .ssh/authorized_keys\n${MATCH}`, `${forced}\n`), // a global one: stricter than needed, the safe way
+        setUp('Match User fleet\n', `${forced}\n`), // our block without its key file
+        setUp(MATCH.replace('/etc/ssh/authorized_keys/%u', '.ssh/authorized_keys'), `${forced}\n`), // our block, the old path
+        setUp(`${MATCH}#AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2\n`, `${forced}\n`), // a comment is fine
+        setUp('Match User fleet\nMatch Group docker\n    AuthorizedKeysFile /etc/ssh/authorized_keys/%u\n', `${forced}\n`), // our path, but in another block
+        setUp(`${MATCH}    ForceCommand /bin/true\n`, `${forced}\n`), // a ForceCommand, even in our block
+        setUp(`ForceCommand /bin/true\n${MATCH}`, `${forced}\n`), // a global ForceCommand
+        setUp(MATCH, `${forced}\n`, 0o644, 'ForceCommand /bin/true\n'), // an included ForceCommand, no Match around it
+      ].map(([code]) => code),
+      'GATE-SSHD-MATCH',
+    ).toEqual([0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1])
+    expect(setUp(MATCH, `${forced}\n`)[1], 'GATE-SSHD-MATCH output').toBe(`match=1 others=0 keyopts=1 ours=1 forcecmds=0 dropins=0 keyfile=${OWNER}:644 keys=1 forced=1`)
   })
 
   it('GATE-RESTORE-PROBE: on the stage host a throwaway container takes the dump, answers the fixed count and is removed', () => {

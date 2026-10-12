@@ -28,6 +28,10 @@ DF=/bin/df
 UPTIME=/usr/bin/uptime
 APT_CHECK=/usr/lib/update-notifier/apt-check
 REBOOT_FILE=/var/run/reboot-required
+SSHD_CONFIG=/etc/ssh/sshd_config
+SSHD_CONFIG_D=/etc/ssh/sshd_config.d
+KEYFILE=/etc/ssh/authorized_keys/fleet
+KEYFILE_EXPECT="root:root:644"
 # the fleet user's home from the account database, not from the environment
 BACKUP_ROOT="$(getent passwd "$(id -un)" | cut -d: -f6)/backups"
 BACKUP_MAX_BYTES=$((2 * 1024 * 1024 * 1024))
@@ -61,7 +65,7 @@ BACKUP_PUT=""  # what this host may store from the other one
 host_config() {
   case "$HOST" in
     acropora-prod-01)
-      OPS="ps system-df df uptime reboot-required apt-check builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-sum backup-put backup-prune"
+      OPS="ps system-df df uptime reboot-required apt-check sshd-match builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-sum backup-put backup-prune"
       # psql-ro connects as fleet_ro, a read-only role (pg_read_all_data, no
       # superuser): docs/fleet-gate.md, "A csak olvasó szerep"
       PSQL_TARGETS="iwm34jaqp9xmwb72qkrqkwhy:acropora:fleet_ro"
@@ -74,7 +78,7 @@ host_config() {
       BACKUP_PUT="dump:acropora_ai"
       ;;
     acropora-ai-stage-01)
-      OPS="ps system-df df uptime reboot-required apt-check builder-prune image-prune-2h psql-ro pg-dump pg-restore-list restore-probe backup-db backup-get backup-sum backup-put backup-prune coolify-deployments coolify-deploy-log"
+      OPS="ps system-df df uptime reboot-required apt-check sshd-match builder-prune image-prune-2h psql-ro pg-dump pg-restore-list restore-probe backup-db backup-get backup-sum backup-put backup-prune coolify-deployments coolify-deploy-log"
       # NOT coolify-db: who writes the Coolify database decides what Coolify
       # deploys, with which mounts; that is root on the host (barracuda, #28).
       # Its two reads are named operations with the SQL built here.
@@ -163,6 +167,55 @@ case "$OP" in
     else
       echo "NEM"
     fi
+    exit 0
+    ;;
+  sshd-match)
+    # sshd-match: does the gate still stand? The Match block that points sshd at
+    # the root-owned key file, that file's owner and mode, and the forced
+    # command on its key line. A package update replacing sshd_config would take
+    # the Match block and the gate with it, silently (barracuda, #30). EVERY key
+    # line must be forced: a second, plain line would be a way around. And sshd
+    # takes the FIRST value of a keyword: a Match block in sshd_config.d (the
+    # Include stands at the top of the main file) or an earlier Match covering
+    # fleet or all would win over ours at the end (barracuda, #31). Reads only;
+    # all these files are world-readable. Exit 1 when anything is off. The full
+    # proof stays `sshd -T -C user=fleet,...` at install time.
+    args 0; allow sshd-match
+    match=$(grep -cE '^Match[[:space:]]+User[[:space:]]+fleet[[:space:]]*$' "$SSHD_CONFIG" 2>/dev/null || true)
+    # another Match line in the main file that names fleet or all
+    others=$(grep -iE '^[[:space:]]*Match[[:space:]]' "$SSHD_CONFIG" 2>/dev/null \
+      | grep -vE '^Match[[:space:]]+User[[:space:]]+fleet[[:space:]]*$' \
+      | grep -ciE '[[:space:],!*](fleet|all)([[:space:],]|$)' || true)
+    # the whole rule for the main file: exactly ONE authorized-keys setting, and
+    # it is ours, inside our block. A `Match Group docker` or `Match Address`
+    # block with its own key setting would win over ours whatever it names
+    # (barracuda, #31)
+    keyopts=$(grep -ciE '^[[:space:]]*(AuthorizedKeysFile|AuthorizedKeysCommand)[[:space:]]' "$SSHD_CONFIG" 2>/dev/null || true)
+    ours=$(awk '/^Match[[:space:]]+User[[:space:]]+fleet[[:space:]]*$/ { m = 1; next }
+                /^[[:space:]]*Match[[:space:]]/ { m = 0 }
+                m && tolower($1) == "authorizedkeysfile" && $2 == "/etc/ssh/authorized_keys/%u" && NF == 2 { c++ }
+                END { print c + 0 }' "$SSHD_CONFIG" 2>/dev/null || echo 0)
+    # no ForceCommand anywhere in the main file: our constraint is the key
+    # line's command=, and a ForceCommand would override or replace it (acrobot 28820)
+    forcecmds=$(grep -ciE '^[[:space:]]*ForceCommand[[:space:]]' "$SSHD_CONFIG" 2>/dev/null || true)
+    # any Match, authorized-keys or ForceCommand setting in the included files
+    dropins=0
+    if [ -d "$SSHD_CONFIG_D" ]; then
+      dropins=$(find "$SSHD_CONFIG_D" -maxdepth 1 -type f -name '*.conf' -exec cat {} + 2>/dev/null \
+        | grep -ciE '^[[:space:]]*(Match|AuthorizedKeysFile|AuthorizedKeysCommand|ForceCommand)[[:space:]]' || true)
+    fi
+    if [ -f "$KEYFILE" ]; then
+      keyfile="$(stat -c '%U:%G:%a' "$KEYFILE")"
+      forced=$(grep -c '^restrict,from="[^"]*",command="/usr/local/sbin/fleet-gate" ' "$KEYFILE" || true)
+      keys=$(grep -cvE '^[[:space:]]*(#|$)' "$KEYFILE" || true)
+    else
+      keyfile="nincs"
+      forced=0
+      keys=0
+    fi
+    echo "match=${match:-0} others=${others:-0} keyopts=${keyopts:-0} ours=${ours:-0} forcecmds=${forcecmds:-0} dropins=${dropins:-0} keyfile=$keyfile keys=${keys:-0} forced=${forced:-0}"
+    [ "${match:-0}" = 1 ] && [ "${others:-0}" = 0 ] && [ "${keyopts:-0}" = 1 ] && [ "${ours:-0}" = 1 ] && [ "${forcecmds:-0}" = 0 ] && [ "${dropins:-0}" = 0 ] \
+      && [ "$keyfile" = "$KEYFILE_EXPECT" ] && [ "${keys:-0}" -ge 1 ] && [ "${forced:-0}" = "${keys:-0}" ] || exit 1
     exit 0
     ;;
   apt-check)
