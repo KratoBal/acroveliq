@@ -140,10 +140,13 @@ cd /home/marveen/fleet-gate-proba && bash scripts/visszaallitasi-proba.sh ai
 A szkriptek a kulcsot, a `store/`-t és a munkamappát abszolút úton érik el, tehát a checkoutból
 ugyanúgy futnak, mint az élő fából.
 
-**Ha az ablak nem fér egy ülésbe**, a stage-re szóló ütemezett feladatokat (a stage takarítás
-előszűrőjét viselő feladat, a heti visszaállítási próba, a napi mentés) az ablakra érdemes
-kikapcsolni, és az 5. lépésben visszakapcsolni: az élő fából futva elbuknak, és az előszűrő
-hibánál „fail open”, vagyis minden futáskor egy hibaüzenettel felkelti az ágenst (barracuda, #29). A napi mentés AI-részét az ablak alatt a fenti megfeleltetés
+**Ha az ablak nem fér egy ülésbe**, a CSAK a stage-re szóló ütemezett feladatokat (a stage
+takarítás előszűrőjét viselő feladat, a heti visszaállítási próba) az ablakra érdemes kikapcsolni,
+és az 5. lépésben visszakapcsolni: az élő fából futva elbuknak, és az előszűrő hibánál „fail
+open”, vagyis minden futáskor egy hibaüzenettel felkelti az ágenst (barracuda, #29). **A napi
+mentés maradjon bekapcsolva:** az éles adatbázisok (OS, Commerce, dokumentumok) mentése a 3.
+lépésig az élő fából is megy, és csak az AI-része bukik, amit a fenti kézi futtatás pótol. Egy
+mentés nélküli ablak rosszabb, mint egy hibaüzenet. A napi mentés AI-részét az ablak alatt a fenti megfeleltetés
 új alakjaival, kézzel kell futtatni ugyanebből a checkoutból, ha az ablak egy napnál hosszabb.
 
 Ha kész (5. lépés után):
