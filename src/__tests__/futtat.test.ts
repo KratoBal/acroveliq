@@ -148,6 +148,16 @@ describe('futtat: masking', () => {
     expect(r.text.split('\n')[2], 'FUTTAT-LONG-RUN').toBe(`${filler}/[TITOK]/${filler}`)
   })
 
+  it('FUTTAT-LONG-RUN-LINEAR: a 200 000-character run full of delimiters finishes fast, its secret found', () => {
+    execFileSync('python3', [SCRIPT, 'lenyomat-hozzaad'], { env, input: 'suru-futam-titka-88\n' })
+    // a length-less legacy line too, which must not make the run quadratic either
+    writeFileSync(env.FUTTAT_SECRET_HASHES!, readFileSync(env.FUTTAT_SECRET_HASHES!, 'utf-8') + 'a'.repeat(64) + '\n')
+    // built inside bash: one argument may not exceed 128 KB (MAX_ARG_STRLEN)
+    const started = Date.now()
+    const r = run(`h=$(printf 'ab/%.0s' $(seq 1 33333)); printf '%s' "\${h}suru-futam-titka-88/\${h}"; echo`)
+    expect([Date.now() - started < 3_000, r.text.split('\n')[2]!.includes('/[TITOK]/')], 'FUTTAT-LONG-RUN-LINEAR').toEqual([true, true])
+  })
+
   it('refuses a secret value too short to search for, and stores only its hash', () => {
     const short = spawnSync('python3', [SCRIPT, 'lenyomat-hozzaad'], { env, input: 'rovid\n', encoding: 'utf-8' })
     expect(short.status).toBe(2)

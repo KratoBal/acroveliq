@@ -34,6 +34,7 @@ owner-only (0700/0600) and says so: stricter, never looser.
 from __future__ import annotations
 
 import argparse
+import bisect
 import grp
 import hashlib
 import json
@@ -64,6 +65,8 @@ MIN_SECRET = 8
 # A run longer than this (a minified bundle line, a data: URI) is only split at
 # delimiter boundaries, not windowed per length: millions of hashes otherwise
 WINDOW_LIMIT = 4096
+# a hash without a length is looked for in stretches up to this long
+UNSIZED_MAX = 512
 
 # (label, pattern[, replacement]); without a replacement the match becomes [LABEL]
 SECRET_PATTERNS: list[tuple] = [
@@ -151,12 +154,26 @@ class Masker:
                 for a in range(0, len(token) - length + 1):
                     if sha(token[a : a + length]) in digests:
                         found.append((a, a + length))
-            # no length known, or a run too long to window: delimiter boundaries
-            boundary = self.unsized | (set().union(*self.sized.values()) if len(token) > WINDOW_LIMIT and self.sized else set())
-            if boundary:
+            # no length known, or a run too long to window: delimiter boundaries,
+            # but never every start with every end (barracuda, #17: quadratic on a
+            # long base64 run). A known length pairs a start only with the end
+            # exactly that far; a length-less hash only with ends within UNSIZED_MAX.
+            long_run = len(token) > WINDOW_LIMIT
+            if self.unsized or (long_run and self.sized):
                 starts = [0] + [i + 1 for i, c in enumerate(token) if c in DELIMITERS]
                 ends = [i for i, c in enumerate(token) if c in DELIMITERS] + [len(token)]
-                found += [(a, b) for a in starts for b in ends if b - a >= MIN_SECRET and sha(token[a:b]) in boundary]
+                end_set = set(ends)
+                if long_run:
+                    for length, digests in self.sized.items():
+                        found += [(a, a + length) for a in starts if a + length in end_set and sha(token[a : a + length]) in digests]
+                # a length-less (legacy) hash only in runs within the limit: on a
+                # dense long run even a 512 cap is ~10 million hashes. lenyomat-hozzaad
+                # always records the length, so such lines are only old ones.
+                if self.unsized and not long_run:
+                    for a in starts:
+                        for b in ends[bisect.bisect_left(ends, a + MIN_SECRET) : bisect.bisect_right(ends, a + UNSIZED_MAX)]:
+                            if sha(token[a:b]) in self.unsized:
+                                found.append((a, b))
             spans = sorted(found, key=lambda span: span[0] - span[1])  # the longest first
             taken: list[tuple[int, int]] = []
             for a, b in spans:
