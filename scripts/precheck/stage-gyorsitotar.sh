@@ -7,7 +7,13 @@
 # Every other case wakes the agent with the measurement as a prefix, including
 # an unreachable host: ssh failure exits non-zero and the runner fails open.
 # The runner kills this after 10 s, so the ssh timeouts stay under that.
-m=$(timeout 8 ssh -o BatchMode=yes -o ConnectTimeout=5 -i /home/marveen/.ssh/id_ed25519_acropora_monitor fleet@100.88.199.87 "df -P / | tail -1; docker system df --format '{{.Type}}|{{.Size}}|{{.Reclaimable}}'") || exit 1
+# TWO disks since 2026-10-06: /var/lib/docker (and containerd) are bind mounts
+# from the 100 GB volume, so "df /" alone no longer sees what Docker fills.
+# The fuller of the two decides.
+# fleet-gate (B8): two operations, 4 s each, under the runner's 10 s
+gate() { timeout 4 ssh -o BatchMode=yes -o ConnectTimeout=3 -i /home/marveen/.ssh/id_ed25519_acropora_monitor fleet@100.88.199.87 "$@"; }
+# (df's header line has no "%", so the parser below skips it)
+m=$(gate df -P && gate system-df --format) || exit 1
 printf '%s\n' "$m" | python3 -c '
 import re, sys
 lines = sys.stdin.read().splitlines()
@@ -17,10 +23,12 @@ def size(v):
     if not m: raise SystemExit(1)
     return float(m.group(1)) * units[m.group(2)]
 disk = cache = None
+disks = []
 for l in lines:
     if l.startswith("Build Cache|"): cache = size(l.split("|")[2])
-    elif "%" in l and not "|" in l: disk = int(re.search(r"(\d+)%", l).group(1))
+    elif "%" in l and not "|" in l: disks.append(int(re.search(r"(\d+)%", l).group(1)))
+if disks: disk = max(disks)
 if disk is None or cache is None: raise SystemExit(1)
 if cache < 2e9 and disk < 80: print("SKIP")
-else: print("[preCheck meres] lemez %d%%, Build Cache visszanyerheto %.2f GB" % (disk, cache / 1e9))
+else: print("[preCheck meres] lemez %d%% (gyoker es Docker-lemez kozul a telebb: %s), Build Cache visszanyerheto %.2f GB" % (disk, "/".join(map(str, disks)), cache / 1e9))
 '
