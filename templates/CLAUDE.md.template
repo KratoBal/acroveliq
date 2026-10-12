@@ -97,29 +97,26 @@ A memória 3 rétegből áll (hot/warm/cold) + napi napló.
 
 ### NINCS MENTAL NOTE! Ha meg kell jegyezni -> AZONNAL mentsd:
 
-A dashboard `/api/*` végpontjai Bearer tokennel védettek. A token a
-`store/.dashboard-token` fájlban van, minden példában behúzva.
+A dashboard `/api/*` végpontjai Bearer tokennel védettek. **A tokent ne olvasd fel
+magad:** minden hívás a `scripts/fleet-api.sh` (és az üzenethez a `scripts/agent-msg.sh`)
+segéden megy, ami a hívó ágens SAJÁT tokenjét adja, és ha az még nincs kiadva, a közös
+tokent, egy figyelmeztető sorral (acrovelIQ P0-1). Teljes úttal hívd: a relatív alak az
+engedélylistára nem illeszkedik. Szöveges tartalmat FÁJLBÓL adj át, átirányítással
+(`- < fajl.txt`): a shellen átmenő szövegben a `$` és a backtick csendben módosul.
 
 Memória mentés:
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/memories \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"agent_id":"{{MAIN_AGENT_ID}}","content":"MIT","category":"CATEGORY","keywords":"kulcsszó1, kulcsszó2"}'
+bash {{INSTALL_DIR}}/scripts/fleet-api.sh memory {{MAIN_AGENT_ID}} CATEGORY - "kulcsszó1, kulcsszó2" < emlek.txt
 ```
 
-Napi napló (append-only):
+Napi napló (append-only; a `## HH:MM` fejlécet a segéd írja, a hívás pillanatából):
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/daily-log \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"agent_id":"{{MAIN_AGENT_ID}}","content":"## HH:MM -- Téma\nMi történt, mi lett az eredmény"}'
+bash {{INSTALL_DIR}}/scripts/fleet-api.sh daily-log-now {{MAIN_AGENT_ID}} "Téma" - < naplo.txt
 ```
 
 Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
 ```bash
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:{{WEB_PORT}}/api/memories?agent={{MAIN_AGENT_ID}}&q=KULCSSZÓ&category=warm"
+bash {{INSTALL_DIR}}/scripts/fleet-api.sh memory-search {{MAIN_AGENT_ID}} "KULCSSZÓ" warm
 ```
 
 ## Kanban tábla
@@ -130,34 +127,25 @@ parancssori eszközzel nyúlj hozzá, és `jq`-t se feltételezz**: egyik sincs 
 unzip), és ott a hívás `exit 127`-tel elhal. A tábla útja a dashboard API -- ugyanaz a
 Bearer token, mint a memóriánál. Szűréshez/számoláshoz `python3` van mindig kéznél.
 
-Kártyák listázása (JSON tömb: id, title, status, assignee, priority, updated_at, archived_at):
+Kártyák listázása (JSON tömb: id, title, status, assignee, priority, updated_at, archived_at;
+a végpont `GET /api/kanban`):
 ```bash
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  http://localhost:{{WEB_PORT}}/api/kanban
+bash {{INSTALL_DIR}}/scripts/fleet-api.sh kanban-list
 ```
 
-Új kártya:
+Új kártya (`POST /api/kanban`):
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"title":"CÍM","status":"planned","assignee":"{{MAIN_AGENT_ID}}","priority":"normal"}'
+bash {{INSTALL_DIR}}/scripts/fleet-api.sh kanban-new "CÍM" planned {{MAIN_AGENT_ID}} normal
 ```
 
-Kártya mozgatása:
+Kártya mozgatása (`POST /api/kanban/KARTYA_ID/move`):
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/move \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"status":"in_progress"}'
+bash {{INSTALL_DIR}}/scripts/fleet-api.sh kanban-move KARTYA_ID in_progress {{MAIN_AGENT_ID}}
 ```
 
-Komment a kártyára (az eredmény ide kerül, a dashboardon ez látszik):
+Komment a kártyára (`POST /api/kanban/KARTYA_ID/comments`; az eredmény ide kerül, a dashboardon ez látszik):
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/comments \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"author":"{{MAIN_AGENT_ID}}","content":"AZ EREDMÉNY RÖVIDEN"}'
+bash {{INSTALL_DIR}}/scripts/fleet-api.sh kanban-comment KARTYA_ID {{MAIN_AGENT_ID}} - < eredmeny.txt
 ```
 
 Archiválás: `POST /api/kanban/KARTYA_ID/archive`, üres törzzsel.
@@ -173,10 +161,7 @@ Az ütemezett feladatok a `~/.claude/scheduled-tasks/` mappában élnek, fájl-a
 ### Feladat létrehozása API-n keresztül
 
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/schedules \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt amit végre kell hajtani", "schedule": "0 8 * * *", "agent": "{{MAIN_AGENT_ID}}", "type": "heartbeat"}'
+bash {{INSTALL_DIR}}/scripts/fleet-api.sh schedule-new "feladat-nev" "Rövid leírás" "A részletes prompt amit végre kell hajtani" "0 8 * * *" {{MAIN_AGENT_ID}} heartbeat
 ```
 
 ### Típusok:
@@ -200,21 +185,21 @@ Az ágensek közvetlenül tudnak egymásnak üzenni egy közös SQLite üzenetso
 
 ### Üzenet küldése másik ágensnek
 
-Ha delegálni akarsz egy feladatot másik ágensnek, használd az API-t:
+Ha delegálni akarsz egy feladatot másik ágensnek, a `scripts/agent-msg.sh` segédet
+használd (`POST /api/messages`; a saját tokeneddel, HTTP-státusz és `id` ellenőrzéssel,
+3x újraküldéssel, hiba-naplóval):
 
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/messages \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"from": "{{MAIN_AGENT_ID}}", "to": "TARGET_AGENT", "content": "Feladat leírása."}'
+bash {{INSTALL_DIR}}/scripts/agent-msg.sh {{MAIN_AGENT_ID}} TARGET_AGENT - < uzenet.txt   # -> OK id=<n>  vagy  FAIL
 ```
 
-**MEGBÍZHATÓ KÜLDÉS (verify + retry) — KÖTELEZŐ:** a gyakori `curl -s ... >/dev/null && echo sent` minta VESZÉLYES: a curl `0`-val tér vissza akkor is, ha a szerver ELUTASÍTOTTA a kérést (401/400/5xx), így NÉMA küldés-hiba keletkezik — a címzett sosem kapja meg az üzenetet, és két ágens végtelenül várhat egymásra. Egy üzenet CSAK akkor számít elküldöttnek, ha a válaszban visszajött egy `id` (`{"id":<n>,"status":"pending",...}` HTTP 200-zal). Vagy használd a `scripts/agent-msg.sh` helpert (HTTP-státusz + `id` ellenőrzés + 3x újraküldés + hiba-napló), vagy nyers curl-nél KÖTELEZŐ ellenőrizni a HTTP-kódot ÉS az `id`-t, és újraküldeni ha nincs:
-
-```bash
-bash scripts/agent-msg.sh {{MAIN_AGENT_ID}} TARGET_AGENT "Feladat leírása."   # -> OK id=<n>  vagy  FAIL
-# nagy/soktoros üzenethez a content jöhet STDIN-en:  echo "..." | bash scripts/agent-msg.sh {{MAIN_AGENT_ID}} TARGET_AGENT -
-```
+**MEGBÍZHATÓ KÜLDÉS — KÖTELEZŐ:** egy üzenet CSAK akkor számít elküldöttnek, ha a segéd
+`OK id=<n>`-t ír. Az `id` a SORBA KERÜLÉST igazolja, nem a kézbesítést: azt a
+`bash {{INSTALL_DIR}}/scripts/fleet-api.sh message-status <id>` mondja meg (`pending` kontra `delivered`). Nyers curl-t
+ne használj: a curl `0`-val tér vissza akkor is, ha a szerver ELUTASÍTOTTA a kérést
+(401/400/5xx), így NÉMA küldés-hiba keletkezik. A tartalmat fájlból add át, átirányítással
+(nem pipe-pal és nem idézőjelben): az idézőjeles szöveg a parancssoron szétesik, és a
+segéd csak egy darabját küldi el.
 
 A rendszer automatikusan:
 1. Beírja az üzenetet a célpont ágens tmux session-jébe
@@ -224,6 +209,7 @@ A rendszer automatikusan:
 ### Fontos szabályok
 - Csak futó ágensnek lehet üzenni (tmux session kell hozzá)
 - Az elérhető ágensek listája: `curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" http://localhost:{{WEB_PORT}}/api/agents`
+  (Erre ma még nincs segéd-parancs, ezért ez az egy nyers hívás marad; acrovelIQ P0-1, 2. lépés.)
 
 ### Sub-ágens ismeretlen-sender ping kezelése (auto-approval, default-deny)
 
