@@ -110,9 +110,15 @@ A hívó szkriptek a #28 óta a kapu nyelvén beszélnek (`ssh fleet@<gép> ps`)
   (`precheck/stage-gyorsitotar.sh`), az AI mentés a NAS-ra (`ai-db-nas-mentes.sh`), a
   visszaállítási próba (`visszaallitasi-proba.sh`), a kirakat telepítési állapota
   (`kirakat-telepites.sh`), és a napi mentés AI-része a kereszt-másolással együtt.
-- **Az éles gépre szóló hívók az élő fából még mennek.**
-- **A `lemez-allapot.sh` mindkét gépre szól:** az élő fa régi alakja a stage-en bukik, az új alak
-  az élesen bukna. Az ablak alatt a stage-részét a lenti checkoutból futtasd.
+- **Az éles gépre szóló hívók az élő fából még mennek, de CSAK az 1. és a 3. lépés között.** Az éles
+  kapu után (3. lépés) az élő fa régi alakja ott is elutasítást kap: **a 3. lépéstől az 5.-ig az élő
+  fából semmi nem megy át**, ezért a 4. és az 5. lépés közvetlenül utána jöjjön.
+- **A `lemez-allapot.sh` mindkét gépre szól:** az élő fa régi alakja a stage-en bukik. A
+  checkoutból futtatva az ÉLES részét az új nyelven hívja, amit az éles gép a kapu előtt nem
+  ért: a `ps` vagy a `df` ott sima Unix-parancsként LEFUT, és mást ír ki, mint amit a szkript vár
+  (például folyamatlistát a konténerlista helyett). Ez félrevezető kimenet, nem elutasítás. **Az
+  ablak alatt a checkoutból futtatott `lemez-allapot.sh` éles része nem mérvadó, csak a
+  stage-része.**
 
 **Az ablak rövid legyen: a két telepítést lehetőleg egy ülésben végezd.** A sorrend:
 
@@ -132,7 +138,12 @@ cd /home/marveen/fleet-gate-proba && bash scripts/visszaallitasi-proba.sh ai
 ```
 
 A szkriptek a kulcsot, a `store/`-t és a munkamappát abszolút úton érik el, tehát a checkoutból
-ugyanúgy futnak, mint az élő fából. A napi mentés AI-részét az ablak alatt a fenti megfeleltetés
+ugyanúgy futnak, mint az élő fából.
+
+**Ha az ablak nem fér egy ülésbe**, a stage-re szóló ütemezett feladatokat (a stage takarítás
+előszűrőjét viselő feladat, a heti visszaállítási próba, a napi mentés) az ablakra érdemes
+kikapcsolni, és az 5. lépésben visszakapcsolni: az élő fából futva elbuknak, és az előszűrő
+hibánál „fail open”, vagyis minden futáskor egy hibaüzenettel felkelti az ágenst (barracuda, #29). A napi mentés AI-részét az ablak alatt a fenti megfeleltetés
 új alakjaival, kézzel kell futtatni ugyanebből a checkoutból, ha az ablak egy napnál hosszabb.
 
 Ha kész (5. lépés után):
