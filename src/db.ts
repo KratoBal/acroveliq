@@ -8,6 +8,7 @@ import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { ensureTaskHandoffSchema } from './task-handoff.js'
 import { ensureTaskUsageSchema } from './task-usage.js'
 import { ensurePrincipalSchema } from './web/auth-principals.js'
+import { ensureAccessDecisionSchema } from './web/access-enforcement.js'
 
 let db: Database.Database
 // The path the CURRENT handle was opened on (null for ':memory:'). Kept so
@@ -726,6 +727,7 @@ export function initDatabase(dbPathOverride?: string): void {
 
   // --- Per-actor tokens and the actor log (acrovelIQ P0-1, step 1) ---
   ensurePrincipalSchema(db)
+  ensureAccessDecisionSchema(db)
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS token_usage_cursors (

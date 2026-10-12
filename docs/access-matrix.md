@@ -9,6 +9,25 @@ Oszlopok: **S** Balázs munkamenete, **A** az Acrobot tokenje, **G** egy másik 
 **A D oszlop külön döntés** (acrobot, 2026-10-12, 28623): a D mindent olvas és a szokásos írásokat
 megkapja, de adminisztratív és jóváhagyó műveletet nem. Balázs a telepítéskor dönthet másképp.
 
+## Döntendő a bekapcsolás előtt
+
+A beállítás (`ACCESS_MODE`) alapból `naplo`: semmit nem tilt, csak naplózza, mit tiltana. A `kikenyszerit`
+vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
+
+1. **A telefon hangja (D).** A voice modul minden írása adminisztráció, tehát a `POST /api/voice/stt`, a
+   `/api/voice/tts` és a `/api/voice/modality/set` csak S. Ha a telefonos felület ezeket hívja, a hangja a
+   kikényszerítéskor elnémul. Mérés: a `request_actors` naplóban `device:` szereplő a voice sorokon.
+2. **A jóváhagyás (A).** A `PATCH /api/approvals/:id` csak S. Ma az Acrobot zárja le a jóváhagyásokat Balázs
+   szöveges válasza után. A kikényszerítés ezért a szerver által ellenőrzött Discord-kód (PR 4) előtt nem
+   kapcsolhat be, különben a jóváhagyási lánc megáll.
+3. **A régi token (L) kritikus útjai.** Amit ma a közös token kritikus úton hív, az a kikényszerítéskor
+   eltörik (például a `POST /api/schedules`). A kapcsoló csak akkor fordul, ha az
+   `npx tsx scripts/access-preflight.ts` listája üres (kilépési kód 0): ez a naplóból sorolja fel, mit
+   tiltott volna. Ez eljárás, nem zár: a beállítást a kód nem tagadja meg.
+4. **Az önbevallott szereplők.** Az üzenet feladója, a jóváhagyás eldöntője, az átadó rekord `agent` mezője
+   és a tokenmérési esemény `actor` mezője ma a kérés törzséből jön. Ezeket a szervernek a tokenből kell
+   kitöltenie (a következő PR).
+
 | Metódus | Útvonal | Osztály | S | A | G | L | D | Csoport | Tulajdonos |
 |---|---|---|---|---|---|---|---|---|---|
 | GET | `/api/models/available` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
@@ -149,22 +168,22 @@ megkapja, de adminisztratív és jóváhagyó műveletet nem. Balázs a telepít
 | PUT | `/api/kanban/labels/:id` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
 | DELETE | `/api/kanban/labels/:id` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
 | GET | `/api/kanban/:id/labels` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
-| POST | `/api/kanban/:id/labels` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card |
-| DELETE | `/api/kanban/:id/labels/:labelId` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card |
+| POST | `/api/kanban/:id/labels` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
+| DELETE | `/api/kanban/:id/labels/:labelId` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
 | GET | `/api/kanban-projects` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | GET | `/api/kanban/assignees` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | POST | `/api/kanban` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
-| PUT | `/api/kanban/:id` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card |
-| DELETE | `/api/kanban/:id` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card |
-| POST | `/api/kanban/:id/move` | KRITIKUS | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card |
-| POST | `/api/kanban/:id/archive` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card |
+| PUT | `/api/kanban/:id` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
+| DELETE | `/api/kanban/:id` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
+| POST | `/api/kanban/:id/move` | KRITIKUS | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
+| POST | `/api/kanban/:id/archive` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
 | GET | `/api/kanban/archived` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
-| POST | `/api/kanban/:id/unarchive` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card |
+| POST | `/api/kanban/:id/unarchive` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
 | GET | `/api/kanban/:id/comments` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | POST | `/api/kanban/:id/comments` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
 | GET | `/api/kanban/:id/events` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
-| POST | `/api/kanban/:id/breakdown` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card |
-| POST | `/api/kanban/:id/breakdown/accept` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card |
+| POST | `/api/kanban/:id/breakdown` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
+| POST | `/api/kanban/:id/breakdown/accept` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
 | GET | `/api/kanban/:id/children` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | GET | `/api/skills` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | GET | `/api/skills/local` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
@@ -198,24 +217,24 @@ megkapja, de adminisztratív és jóváhagyó műveletet nem. Balázs a telepít
 | GET | `/api/messages/threads` | OLVASO | ✓ | ✓ | saját | ✓ | ✓ | message-read | query: agent |
 | GET | `/api/messages/backlog` | OLVASO | ✓ | ✓ | saját | ✓ | ✓ | message-read | query: agent |
 | GET | `/api/messages` | OLVASO | ✓ | ✓ | saját | ✓ | ✓ | message-read | query: agent |
-| GET | `/api/messages/:id` | OLVASO | ✓ | ✓ | saját | ✓ | ✓ | message-read-one | rekord: message |
-| PUT | `/api/messages/:id` | KRITIKUS | ✓ | ✓ | saját | ✓ | ✓ | message-state | rekord: message |
+| GET | `/api/messages/:id` | OLVASO | ✓ | ✓ | saját | ✓ | ✓ | message-read-one | rekord: message-participants (:id) |
+| PUT | `/api/messages/:id` | KRITIKUS | ✓ | ✓ | saját | ✓ | ✓ | message-state | rekord: message-recipient (:id) |
 | POST | `/api/memories` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | memory-write | body: agent_id |
 | GET | `/api/memories` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | POST | `/api/memories/import` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | memory-write | body: agent_id |
 | POST | `/api/memories/backfill` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | memory-write | body: agent_id |
 | GET | `/api/memories/stats` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
-| PUT | `/api/memories/:id` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | memory-write | body: agent_id |
-| DELETE | `/api/memories/:id` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | memory-write | body: agent_id |
+| PUT | `/api/memories/:id` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | memory-change | rekord: memory (:id) |
+| DELETE | `/api/memories/:id` | ERZEKENY | ✓ | ✓ | saját | ✓ | ✓ | memory-change | rekord: memory (:id) |
 | GET | `/api/schedules/agents` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | POST | `/api/schedules/expand-questions` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
 | POST | `/api/schedules/expand-prompt` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
 | GET | `/api/schedules` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | POST | `/api/schedules` | KRITIKUS | ✓ | saját | saját | ✗ | ✗ | schedule-create | body: agent |
-| PUT | `/api/schedules/:name` | KRITIKUS | ✓ | saját | saját | ✗ | ✗ | schedule-change | rekord: schedule |
-| DELETE | `/api/schedules/:name` | ERZEKENY | ✓ | saját | saját | ✗ | ✗ | schedule-change | rekord: schedule |
-| POST | `/api/schedules/:name/toggle` | KRITIKUS | ✓ | saját | saját | ✗ | ✗ | schedule-change | rekord: schedule |
-| POST | `/api/schedules/:name/run` | KRITIKUS | ✓ | saját | saját | ✗ | ✗ | schedule-change | rekord: schedule |
+| PUT | `/api/schedules/:name` | KRITIKUS | ✓ | saját | saját | ✗ | ✗ | schedule-change | rekord: schedule (:name) |
+| DELETE | `/api/schedules/:name` | ERZEKENY | ✓ | saját | saját | ✗ | ✗ | schedule-change | rekord: schedule (:name) |
+| POST | `/api/schedules/:name/toggle` | KRITIKUS | ✓ | saját | saját | ✗ | ✗ | schedule-change | rekord: schedule (:name) |
+| POST | `/api/schedules/:name/run` | KRITIKUS | ✓ | saját | saját | ✗ | ✗ | schedule-change | rekord: schedule (:name) |
 | GET | `/api/schedules/pending` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | GET | `/api/schedules/:name/runs` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | DELETE | `/api/schedules/pending/:id` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
@@ -333,16 +352,17 @@ megkapja, de adminisztratív és jóváhagyó műveletet nem. Balázs a telepít
 - **message-send**: anyone may send; the stored sender is the token's owner, never the body's `from` (PR 3b); the shared token sends as `legacy-ismeretlen`, marked unverified
 - **message-state**: closing a message can inject text into a pane: an agent only its own messages (the recipient)
 - **message-read**: an agent reads its own messages (plan 3)
-- **message-read-one**: an agent reads its own messages (plan 3)
+- **message-read-one**: an agent reads its own messages, sent or received (plan 3)
 - **schedule-create**: only its own scheduled task; on another agent only from the session (plan 3); an agent-created task runs with a peer frame (PR 3b)
-- **schedule-change**: only its own scheduled task, run-now included (plan 3)
+- **schedule-change**: only its own scheduled task, run-now included (plan 3); an update that would move it to another agent is not its own
 - **agent-lifecycle**: starting, stopping, restarting agents: the session and the main agent (plan 3)
 - **terminal-write**: text into a pane: only the session; the main agent keeps its tmux path, which the OS permissions govern (plan 3)
 - **session-read**: another agent's whole session: the supervisor and the agent itself; a device reads it (the phone dashboard shows panes; acrobot's D list names no read)
 - **agent-taskstate**: switches the pane-injection permission of an agent: only its own
 - **agent-self-settings**: an agent's own settings (context guard, auto-restart, avatar, capabilities, its channel tests and invites)
 - **log-prune**: deletes the shared tool log: the session and the main agent
-- **memory-write**: an agent writes its own namespace and `shared` (plan 3); a missing agent_id is the main agent's, so it is not "own"
+- **memory-change**: an agent changes or deletes only its own memories; an update that would move one to another writer is not its own
+- **memory-write**: an agent writes its own namespace (plan 3). `shared` is a category: the record still names its writer, so that must be the caller. A missing agent_id is the main agent's, so it is not "own"
 - **daily-log-write**: an agent writes its own daily log (plan 3)
 - **kanban-card-change**: an agent changes the cards assigned to it (plan 3); creating a card and commenting stay open
 - **administration**: profiles, autonomy, settings, updates, migration, vault, security, connectors, federation: only the session (plan 3)
