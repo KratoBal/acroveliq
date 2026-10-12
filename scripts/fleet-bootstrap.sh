@@ -136,21 +136,37 @@ step "2c. the futtat log tree and the secret-hash list (logs-acropora, 2770 / 06
 # umask and group, and an agent under another uid then cannot open a task folder under it
 # (barracuda, marveen #17 review). setgid (2770) keeps every new task folder in the group.
 LOGROOT="$ROOT/logs"
+# THESE PATHS ARE OWNED BY THE ROUTER USER, SO AS ROOT THEY ARE TOUCHED AS THE ROUTER USER
+# (barracuda, #24 v3 review). install/chgrp/chmod follow a symlink: if marveen swaps logs/
+# for a link to /etc/sudoers.d, a root chmod 2770 lands there. runuser drops to marveen
+# (with a fresh group list, so the logs-acropora membership added just above counts), and a
+# link is refused outright, before anything touches its target.
+# Not as root (the old path), sudo -n here only exists while the blanket rule does, and then
+# marveen is root-equivalent anyway: nothing to escalate to.
+as_owner() { if (( AS_ROOT )); then run runuser -u "$ROUTER_USER" -- "$@"; else run sudo -n "$@"; fi }
+no_link() { [[ -L "$1" ]] && fail "$1 is a symlink (-> $(readlink "$1")); refusing to change it or its target"; return 0; }
 if id -nG "$ROUTER_USER" | tr ' ' '\n' | grep -qx logs-acropora; then echo "ok: $ROUTER_USER in logs-acropora"
 else run sudo -n usermod -aG logs-acropora "$ROUTER_USER" || fail "could not add $ROUTER_USER to logs-acropora"; echo "added: $ROUTER_USER -> logs-acropora"; fi
 for d in "$LOGROOT" "$LOGROOT/acropora"; do
+  no_link "$d"
   if [[ -d "$d" ]] && [[ "$(stat -c '%G %a' "$d")" == "logs-acropora 2770" ]]; then
     echo "ok: $d"
   else
-    run sudo -n install -d -o "$ROUTER_USER" -g logs-acropora -m 2770 "$d" || fail "could not create $d"
-    run sudo -n chgrp logs-acropora "$d"; run sudo -n chmod 2770 "$d"
+    as_owner install -d -g logs-acropora -m 2770 "$d" || fail "could not create $d"
+    as_owner chgrp logs-acropora "$d" || fail "could not chgrp $d"
+    as_owner chmod 2770 "$d" || fail "could not chmod $d"
     echo "set: $d (logs-acropora 2770)"
   fi
 done
 HASHES="$ROOT/store/secret-hashes.txt"
+no_link "$HASHES"
 if [[ -f "$HASHES" ]]; then
   if [[ "$(stat -c '%G %a' "$HASHES")" == "logs-acropora 640" ]]; then echo "ok: $HASHES"
-  else run sudo -n chgrp logs-acropora "$HASHES"; run sudo -n chmod 0640 "$HASHES"; echo "set: $HASHES (logs-acropora 0640)"; fi
+  else
+    as_owner chgrp logs-acropora "$HASHES" || fail "could not chgrp $HASHES"
+    as_owner chmod 0640 "$HASHES" || fail "could not chmod $HASHES"
+    echo "set: $HASHES (logs-acropora 0640)"
+  fi
 else
   echo "note: $HASHES does not exist yet (futtat.sh lenyomat-hozzaad creates it; rerun this step after)"
 fi
@@ -330,7 +346,7 @@ else
     fail "an unrestricted sudo rule is still granted to $ROUTER_USER"
   fi
   # A shell or an editor of sudo itself is unrestricted under another name.
-  if printf '%s\n' "$allowed" | grep -Eq '\((ALL|root)( ?: ?(ALL|root))?\) .*(/bin/(ba|da|z)?sh|/usr/bin/env|/bin/su|/usr/bin/sudo|/usr/sbin/visudo|/usr/bin/tee)( |,|$)'; then
+  if printf '%s\n' "$allowed" | grep -Eq '\((ALL|root)( ?: ?(ALL|root))?\) .*((/usr)?/bin/(ba|da|z)?sh|/usr/bin/env|(/usr)?/bin/su|/usr/bin/sudo|/usr/sbin/visudo|/usr/bin/tee)( |,|$)'; then
     fail "a root shell-equivalent sudo rule (sh, bash, env, su, sudo, visudo, tee) is granted to $ROUTER_USER"
   fi
   echo "ok: $ROUTER_USER has no unrestricted sudo rule"
