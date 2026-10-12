@@ -788,8 +788,15 @@ print(json.dumps({
 import json, sys
 d = json.load(sys.stdin)
 print("id: %s | status: %s" % (d.get("id"), d.get("status")))
-if d.get("decided_at"):
-    print("dontes ideje: %s" % d.get("decided_at"))
+# az approvals tabla resolved_at (epoch masodperc) es resolved_by mezot tarol; a
+# korabbi decided_at kulcs sosem letezett, ezert a dontes ideje sosem latszott
+# (barracuda, #36)
+if d.get("resolved_at"):
+    import datetime
+    mikor = datetime.datetime.fromtimestamp(int(d["resolved_at"])).astimezone()
+    print("dontes ideje: %s" % mikor.strftime("%Y-%m-%d %H:%M:%S %z"))
+if d.get("resolved_by"):
+    print("dontott: %s" % d.get("resolved_by"))
 if d.get("action_description"):
     print("mit kert: %s" % d.get("action_description"))
 '
