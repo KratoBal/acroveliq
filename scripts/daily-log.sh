@@ -17,7 +17,14 @@
 set -u
 
 ROOT=/home/marveen/marveen
-TOKEN_FILE="$ROOT/store/.dashboard-token"
+# the calling user's own token if handed out, else the shared one, loudly (P0-1, plan 5.2)
+if [ -r "$ROOT/scripts/lib/dashboard-token.sh" ]; then
+  . "$ROOT/scripts/lib/dashboard-token.sh"
+  TOKEN_FILE="$(dashboard_token_file "$ROOT")"
+else
+  echo "dashboard-token: scripts/lib/dashboard-token.sh missing, using the shared token" >&2
+  TOKEN_FILE="$ROOT/store/.dashboard-token"
+fi
 PORT="$(sed -n 's/^WEB_PORT=//p' "$ROOT/.env" 2>/dev/null | head -1 | tr -d '"')"
 PORT="${PORT:-3420}"
 

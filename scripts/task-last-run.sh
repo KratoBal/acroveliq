@@ -46,7 +46,13 @@
 #   task-last-run.sh pr-figyeles 24  # ebbol az utolso 24 oraban allok
 set -uo pipefail
 
-TOKEN_FILE="${MARVEEN_TOKEN_FILE:-/home/marveen/marveen/store/.dashboard-token}"
+# an explicit MARVEEN_TOKEN_FILE wins; otherwise the calling user's own token (P0-1, plan 5.2)
+TL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -z "${MARVEEN_TOKEN_FILE:-}" ] && [ -r "$TL_ROOT/scripts/lib/dashboard-token.sh" ]; then
+  . "$TL_ROOT/scripts/lib/dashboard-token.sh"
+  MARVEEN_TOKEN_FILE="$(dashboard_token_file "$TL_ROOT")"
+fi
+TOKEN_FILE="${MARVEEN_TOKEN_FILE:-$TL_ROOT/store/.dashboard-token}"
 PORT="${MARVEEN_WEB_PORT:-3420}"
 
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: nincs olvashato token: $TOKEN_FILE" >&2; exit 1; }
