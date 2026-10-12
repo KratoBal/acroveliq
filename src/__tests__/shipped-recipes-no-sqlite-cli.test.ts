@@ -89,10 +89,14 @@ describe('shipped recipes only use binaries the installer guarantees', () => {
     // each operation asserted on its own: a single toContain('/api/kanban')
     // passed even when the LIST endpoint had been broken, because the move and
     // comment URLs still carried the substring (mutation control, 2026-08-04).
-    expect(section).toMatch(/^\s*http:\/\/localhost:\{\{WEB_PORT\}\}\/api\/kanban$/m)             // list (bare URL on its own line)
-    expect(section).toMatch(/-X POST http:\/\/localhost:\{\{WEB_PORT\}\}\/api\/kanban\s*\\/)      // create
-    expect(section).toMatch(/\/api\/kanban\/KARTYA_ID\/move/)                                     // move
-    expect(section).toMatch(/\/api\/kanban\/KARTYA_ID\/comments/)                                 // comment
+    // Since acrovelIQ P0-1 (plan 5.2) each one goes through the helper, which
+    // presents the agent's own token; the endpoint is still named beside it.
+    expect(section).toMatch(/fleet-api\.sh kanban-list$/m)                                       // list
+    expect(section).toMatch(/fleet-api\.sh kanban-new "/)                                         // create
+    expect(section).toMatch(/fleet-api\.sh kanban-move KARTYA_ID /)                               // move
+    expect(section).toMatch(/fleet-api\.sh kanban-comment KARTYA_ID /)                            // comment
+    expect(section).toMatch(/GET \/api\/kanban/)
+    expect(section).not.toContain('.dashboard-token')
     expect(section).toMatch(/sqlite3/)   // it must WARN about it
   })
 })
