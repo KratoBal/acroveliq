@@ -100,6 +100,47 @@ fájlt. A kapu maga `bash` alatt fut, a saját első sora szerint.
 A `fleet` **marad a docker csoportban**: a kapu a nevében fut, és neki el kell érnie a Dockert.
 A kulcson át vezető utat a kényszer zárja le.
 
+## A köztes állapot: a kapu a stage gépen már áll, az élesen még nem
+
+A hívó szkriptek a #28 óta a kapu nyelvén beszélnek (`ssh fleet@<gép> ps`). A flotta élő fája
+(`/home/marveen/marveen`) ezt a változatot csak akkor kapja meg, amikor a kapu MINDKÉT gépen áll,
+és az ütemezett feladatokat is akkor írja át acrobot. A két telepítés között tehát:
+
+- **A stage gépre szóló régi hívók az élő fából elutasítást kapnak:** a stage takarítás előszűrője
+  (`precheck/stage-gyorsitotar.sh`), az AI mentés a NAS-ra (`ai-db-nas-mentes.sh`), a
+  visszaállítási próba (`visszaallitasi-proba.sh`), a kirakat telepítési állapota
+  (`kirakat-telepites.sh`), és a napi mentés AI-része a kereszt-másolással együtt.
+- **Az éles gépre szóló hívók az élő fából még mennek.**
+- **A `lemez-allapot.sh` mindkét gépre szól:** az élő fa régi alakja a stage-en bukik, az új alak
+  az élesen bukna. Az ablak alatt a stage-részét a lenti checkoutból futtasd.
+
+**Az ablak rövid legyen: a két telepítést lehetőleg egy ülésben végezd.** A sorrend:
+
+1. A kapu a stage gépen (a fenti lépések).
+2. A stage próba-sorai egy **külön checkoutból**, a #28 állapotán (lent).
+3. A kapu az éles gépen.
+4. Az éles próba-sorai ugyanabból a checkoutból.
+5. acrobot frissíti az élő fát és átírja az ütemezett feladatokat; utána a teljes próba-sor az
+   élő fából fut, és a checkout törölhető.
+
+A checkout (a flotta konténerében, a #28 beolvadása után a `main` tartalmazza):
+
+```bash
+cd /home/marveen/marveen && git fetch origin main && git worktree add /home/marveen/fleet-gate-proba origin/main
+cd /home/marveen/fleet-gate-proba && bash scripts/lemez-allapot.sh
+cd /home/marveen/fleet-gate-proba && bash scripts/visszaallitasi-proba.sh ai
+```
+
+A szkriptek a kulcsot, a `store/`-t és a munkamappát abszolút úton érik el, tehát a checkoutból
+ugyanúgy futnak, mint az élő fából. A napi mentés AI-részét az ablak alatt a fenti megfeleltetés
+új alakjaival, kézzel kell futtatni ugyanebből a checkoutból, ha az ablak egy napnál hosszabb.
+
+Ha kész (5. lépés után):
+
+```bash
+cd /home/marveen/marveen && git worktree remove /home/marveen/fleet-gate-proba
+```
+
 ## Lezárási mérés (a flotta konténeréből, a telepítés után)
 
 ```bash
@@ -114,7 +155,7 @@ A gépen: `journalctl -t fleet-gate -n 20` mutatja az `allow` és `deny` sorokat
 
 ## Próba-sor: ezeknek kell zöldnek lenniük a kapun át
 
-A teszt gépen előbb a stage-sorok, az élesítés után az éles sorok.
+A teszt gépen előbb a stage-sorok, az élesítés után az éles sorok. A két telepítés között (lásd a köztes állapotot) a parancsok a checkoutból futnak: a `cd /home/marveen/marveen` helyett `cd /home/marveen/fleet-gate-proba`.
 
 | Mi | Gép | Parancs (a flotta konténeréből) | Várt kimenet |
 |---|---|---|---|
