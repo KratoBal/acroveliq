@@ -12,7 +12,7 @@ import { chownSync, closeSync, existsSync, mkdirSync, openSync, unlinkSync, writ
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 
-import { createPrincipalToken, revokePrincipalToken } from './auth-principals.js'
+import { createPrincipalToken, DEFAULT_PROJECT, revokePrincipalToken } from './auth-principals.js'
 
 const AGENT_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
@@ -92,4 +92,44 @@ export function issueAgentToken(
     throw error
   }
   return { ...result, status: 'issued', id: minted.id }
+}
+
+export interface RevokeResult {
+  status: 'dry-run' | 'revoked'
+  agent: string
+  /** the active principal_tokens rows of the agent (revoked, or to revoke) */
+  ids: number[]
+  path: string
+  /** whether the token file was there (removed, or to remove) */
+  file: boolean
+}
+
+/**
+ * Takes an agent's own token away (the issuer's pair; acrovelIQ P0-1 5.2).
+ * First every active row of the agent is revoked, then the file removed: if
+ * the removal fails, the token is already worthless. Another agent's rows are
+ * never touched. Dry run unless `apply`; nothing prints the token.
+ *
+ * After it, the agent's helpers fall back to the shared token, loudly, which
+ * in `naplo` still carries everything: this is the runbook's way back.
+ */
+export function revokeAgentToken(
+  db: Database.Database,
+  opts: { root: string; agent: string; project?: string; now: number; apply: boolean; fs?: TokenFileOps },
+): RevokeResult {
+  const fs = opts.fs ?? realTokenFileOps
+  if (!AGENT_NAME.test(opts.agent)) throw new Error(`invalid agent name: ${opts.agent}`)
+  const project = opts.project ?? DEFAULT_PROJECT
+  const path = agentTokenPath(opts.root, opts.agent)
+  const ids = (
+    db
+      .prepare('SELECT id FROM principal_tokens WHERE project = ? AND actor = ? AND revoked_at IS NULL ORDER BY id')
+      .all(project, opts.agent) as { id: number }[]
+  ).map((r) => r.id)
+  const file = fs.exists(path)
+  const result: RevokeResult = { status: 'dry-run', agent: opts.agent, ids, path, file }
+  if (!opts.apply) return result
+  for (const id of ids) revokePrincipalToken(db, id, opts.now)
+  if (file) fs.unlink(path)
+  return { ...result, status: 'revoked' }
 }
