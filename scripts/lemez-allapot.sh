@@ -96,7 +96,7 @@ if [[ ! -r "$STAGE_KEY" ]]; then
   echo "  NEM OLVASHATO a kulcs: $STAGE_KEY"
 else
   STAGE_OUT="$(timeout 40 ssh -i "$STAGE_KEY" -o BatchMode=yes -o ConnectTimeout=15 \
-    "$STAGE_HOST" 'df -h /; echo "---DOCKER---"; docker system df' 2>&1)"
+    "$STAGE_HOST" 'df -h / /var/lib/docker; echo "---DOCKER---"; docker system df' 2>&1)"
   RC=$?
   if (( RC != 0 )); then
     echo "  NEM ERHETO EL (kilepesi kod $RC). A kimenet:"
