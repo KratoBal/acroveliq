@@ -103,11 +103,13 @@ describe('ensureAutonomySection', () => {
     setup('agent-b', '# Agent B\n')
     ensureAutonomySection('agent-b')
     const result = read('agent-b')
-    // The approval POST must contain the actual agent name
-    const postIdx = result.indexOf('/api/approvals')
-    const snippet = result.slice(postIdx - 50, postIdx + 300)
-    expect(snippet).toContain('agent-b')
-    expect(snippet).not.toContain('AGENT_NAME')
+    // The approval POST must contain the actual agent name. Measured on the
+    // whole line: since acrovelIQ P0-1 (plan 5.2) the call is the helper
+    // (`approval-new <agent> ...`) and the endpoint is named after it, so the
+    // name sits further before '/api/approvals' than a fixed window covered.
+    const postLine = result.split('\n').find((l) => l.includes('POST') && l.includes('/api/approvals')) ?? ''
+    expect(postLine).toContain('approval-new agent-b ')
+    expect(postLine).not.toContain('AGENT_NAME')
   })
 
   it('(a) level 1 block in the written file does NOT call /api/approvals', () => {
