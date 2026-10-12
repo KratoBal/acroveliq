@@ -10,7 +10,8 @@ import Database from 'better-sqlite3'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { ensurePrincipalSchema } from '../web/auth-principals.js'
-import { agentTokenPath, issueAgentToken, realTokenFileOps, type TokenFileOps } from '../web/agent-token-issue.js'
+import { agentTokenPath, issueAgentToken, realTokenFileOps, revokeAgentToken, type TokenFileOps } from '../web/agent-token-issue.js'
+import { resolvePrincipalToken } from '../web/auth-principals.js'
 
 /*
   AN AGENT'S OWN DASHBOARD TOKEN (acrovelIQ P0-1, plan step 5.2). What turns
@@ -178,5 +179,57 @@ describe('fleet-api.sh presents the resolved token (end to end)', () => {
   it('TOK-E2E: the own token when handed out, the shared one otherwise', async () => {
     expect(await bearerSent(true)).toBe('Bearer own-token')
     expect(await bearerSent(false)).toBe('Bearer shared-token')
+  })
+})
+
+describe('revokeAgentToken', () => {
+  let db: Database.Database
+  let root: string
+  const me = { uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 }
+  beforeEach(() => {
+    db = new Database(':memory:')
+    ensurePrincipalSchema(db)
+    root = mkdtempSync(join(tmpdir(), 'mv-revoke-'))
+  })
+  const issue = (agent: string) => {
+    issueAgentToken(db, { root, agent, owner: me, now: NOW, apply: true })
+    return readFileSync(agentTokenPath(root, agent), 'utf8').trim()
+  }
+
+  it('TOK-REVOKE-DRY: a dry run names the rows and the file, and changes nothing', () => {
+    const token = issue('scout')
+    const r = revokeAgentToken(db, { root, agent: 'scout', now: NOW + 1, apply: false })
+    expect(r).toMatchObject({ status: 'dry-run', ids: [1], file: true })
+    expect(resolvePrincipalToken(db, token, NOW + 2)).not.toBeNull()
+    expect(existsSync(agentTokenPath(root, 'scout'))).toBe(true)
+    expect(JSON.stringify(r)).not.toContain(token)
+  })
+
+  it('TOK-REVOKE: the agent\'s rows revoked, its file gone, another agent untouched', () => {
+    const mine = issue('scout')
+    const other = issue('ranger')
+    const r = revokeAgentToken(db, { root, agent: 'scout', now: NOW + 1, apply: true })
+    expect(r.status).toBe('revoked')
+    expect(resolvePrincipalToken(db, mine, NOW + 2)).toBeNull()
+    expect(existsSync(agentTokenPath(root, 'scout'))).toBe(false)
+    expect(resolvePrincipalToken(db, other, NOW + 2)).not.toBeNull()
+    expect(existsSync(agentTokenPath(root, 'ranger'))).toBe(true)
+  })
+
+  it('TOK-REVOKE-AGAIN: a second run has nothing to do, and no file is fine', () => {
+    issue('scout')
+    revokeAgentToken(db, { root, agent: 'scout', now: NOW + 1, apply: true })
+    expect(revokeAgentToken(db, { root, agent: 'scout', now: NOW + 2, apply: true })).toMatchObject({ ids: [], file: false })
+  })
+
+  it('TOK-REVOKE-FIRST: the row is revoked even if the file removal fails', () => {
+    const token = issue('scout')
+    const failing: TokenFileOps = { ...realTokenFileOps, unlink: () => { throw new Error('EBUSY') } }
+    expect(() => revokeAgentToken(db, { root, agent: 'scout', now: NOW + 1, apply: true, fs: failing })).toThrow('EBUSY')
+    expect(resolvePrincipalToken(db, token, NOW + 2)).toBeNull()
+  })
+
+  it('TOK-REVOKE-NAME: a path-like name is refused', () => {
+    expect(() => revokeAgentToken(db, { root, agent: '../x', now: NOW, apply: true })).toThrow(/invalid agent name/)
   })
 })
