@@ -967,7 +967,7 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_agent ON approvals(agent_id, requested_at)`)
   // acrovelIQ P0-1 PR 4: the one-time code a Discord reply must carry, and the
   // evidence of the decision (which message decided it).
-  for (const column of ['discord_code TEXT', 'decision_ref TEXT']) {
+  for (const column of ['discord_code TEXT', 'decision_ref TEXT', 'discord_message_id TEXT']) {
     try {
       db.exec(`ALTER TABLE approvals ADD COLUMN ${column}`)
     } catch {
@@ -3490,6 +3490,7 @@ export interface Approval {
   resolved_by: string | null
   discord_code?: string | null
   decision_ref?: string | null
+  discord_message_id?: string | null
 }
 
 export function createApproval(params: {
@@ -3555,6 +3556,17 @@ export function pendingDiscordApprovals(): Approval[] {
   return db.prepare(
     "SELECT * FROM approvals WHERE status = 'pending' AND discord_code IS NOT NULL",
   ).all() as Approval[]
+}
+
+/** Every code ever given out: a code is never reused, not even after its decision (barracuda #33). */
+export function usedDiscordCodes(): Set<string> {
+  const rows = db.prepare('SELECT discord_code FROM approvals WHERE discord_code IS NOT NULL').all() as { discord_code: string }[]
+  return new Set(rows.map((r) => r.discord_code.toUpperCase()))
+}
+
+export function setApprovalDiscordMessageId(id: string, messageId: string): boolean {
+  return db.prepare('UPDATE approvals SET discord_message_id = ? WHERE id = ?')
+    .run(messageId, id).changes > 0
 }
 
 export function setApprovalDiscordCode(id: string, code: string): boolean {

@@ -3,13 +3,16 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { createApproval, getApproval, initDatabase } from '../db.js'
 import {
   approvalDiscordEnabled,
+  buildDiscordApprovalText,
   CODE_LENGTH,
+  DESCRIPTION_MAX,
   matchDecisions,
   newApprovalCode,
   parseDecision,
   pollApprovalDecisions,
   postApprovalToDiscord,
   snowflakeAt,
+  snowflakeMs,
   startApprovalDiscordPoller,
   type ApprovalDiscordConfig,
   type DiscordMessage,
@@ -21,8 +24,12 @@ import {
   turns these red: a reply from someone else deciding; a bot (our own post)
   deciding; a sentence that merely contains the word and a code deciding; a
   code reused after its decision (not one-time); a timed-out request decided;
-  the decision recorded as anyone but the configured session user, or without
-  the Discord message as evidence; a half configuration turning it on.
+  an answer older than the request deciding it (replay after a restart); a
+  code copied from elsewhere deciding a request the owner did not reply to;
+  the agent's text passing markdown or our instruction lines through; a
+  mention pinging anyone; the decision recorded as anyone but the configured
+  session user, or without the Discord message as evidence; a half
+  configuration turning it on.
 */
 const OWNER = '1460000000000000001'
 const OTHER = '1460000000000000002'
@@ -33,33 +40,42 @@ const cfg: ApprovalDiscordConfig = {
   yes: 'igen',
   no: 'nem',
   pollSeconds: 20,
+  requireReply: true,
 }
 
-let nextId = 1000n
-const msg = (content: string, author = OWNER, bot = false): DiscordMessage => ({
-  id: String(++nextId),
+// real snowflakes, so a message's time is meaningful against requested_at
+let clock = Date.now() + 1000
+const msg = (content: string, opts: { author?: string; bot?: boolean; replyTo?: string | null; atMs?: number } = {}): DiscordMessage => ({
+  id: snowflakeAt(opts.atMs ?? (clock += 1000)),
   content,
-  author: { id: author, bot },
+  author: { id: opts.author ?? OWNER, bot: opts.bot },
+  message_reference: opts.replyTo ? { message_id: opts.replyTo } : null,
 })
 
-function fakeTransport(inbox: DiscordMessage[] = []) {
-  const sent: string[] = []
+function fakeTransport() {
+  const sent: { text: string; id: string }[] = []
+  const inbox: DiscordMessage[] = []
   const transport: DiscordTransport = {
-    send: async (_channel, text) => { sent.push(text) },
+    send: async (_channel, text) => {
+      const id = snowflakeAt((clock += 1000))
+      sent.push({ text, id })
+      return id
+    },
     read: async (_channel, afterId) => inbox.filter((m) => BigInt(m.id) > BigInt(afterId)),
   }
   return { transport, sent, inbox }
 }
 
 const NOW = Math.floor(Date.now() / 1000)
-function approval(id: string, timeoutAt: number | null = NOW + 3600) {
-  return createApproval({
-    id,
-    agent_id: 'nautilus',
-    category: 'git_push',
-    action_description: 'push the PR branch',
-    timeout_at: timeoutAt,
-  })
+function approval(id: string, timeoutAt: number | null = NOW + 3600, description = 'push the PR branch') {
+  return createApproval({ id, agent_id: 'nautilus', category: 'git_push', action_description: description, timeout_at: timeoutAt })
+}
+
+async function posted(id: string) {
+  const a = approval(id)
+  const t = fakeTransport()
+  const code = (await postApprovalToDiscord(a, t.transport, cfg))!
+  return { ...t, code, messageId: t.sent[0]!.id }
 }
 
 beforeEach(() => {
@@ -76,7 +92,7 @@ describe('parseDecision', () => {
 })
 
 describe('newApprovalCode', () => {
-  it('APPR-DC-CODE: no ambiguous characters, never a code still pending', () => {
+  it('APPR-DC-CODE: no ambiguous characters, never a code given out before', () => {
     const code = newApprovalCode(new Set())
     expect(code).toHaveLength(CODE_LENGTH)
     expect(code).not.toMatch(/[01OIL]/)
@@ -87,39 +103,70 @@ describe('newApprovalCode', () => {
 })
 
 describe('matchDecisions', () => {
+  const requested = NOW - 10
   const pending = [
-    { id: 'a1', discord_code: 'K7P2', timeout_at: NOW + 60 },
-    { id: 'a2', discord_code: 'M3QX', timeout_at: NOW - 1 },
+    { id: 'a1', discord_code: 'K7P2', timeout_at: NOW + 600, requested_at: requested, discord_message_id: 'm1' },
+    { id: 'a2', discord_code: 'M3QX', timeout_at: NOW - 1, requested_at: requested, discord_message_id: 'm2' },
+    // live, so a mismatch on it is caught by the code check, not by the timeout
+    { id: 'a3', discord_code: 'Q9RT', timeout_at: NOW + 600, requested_at: requested, discord_message_id: 'm3' },
   ]
 
   it('APPR-DC-AUTHOR: only the configured user, never a bot', () => {
-    expect(matchDecisions([msg('igen K7P2', OTHER)], pending, cfg, NOW)).toEqual([])
-    expect(matchDecisions([msg('igen K7P2', OWNER, true)], pending, cfg, NOW)).toEqual([])
-    expect(matchDecisions([msg('igen K7P2')], pending, cfg, NOW)).toHaveLength(1)
+    expect(matchDecisions([msg('igen K7P2', { author: OTHER, replyTo: 'm1' })], pending, cfg, NOW)).toEqual([])
+    expect(matchDecisions([msg('igen K7P2', { bot: true, replyTo: 'm1' })], pending, cfg, NOW)).toEqual([])
+    expect(matchDecisions([msg('igen K7P2', { replyTo: 'm1' })], pending, cfg, NOW)).toHaveLength(1)
   })
 
   it('APPR-DC-TIMEOUT: a timed-out request is not decided', () => {
-    expect(matchDecisions([msg('igen M3QX')], pending, cfg, NOW)).toEqual([])
+    expect(matchDecisions([msg('igen M3QX', { replyTo: 'm2' })], pending, cfg, NOW)).toEqual([])
   })
 
   it('APPR-DC-FIRST: the first reply decides, a later one to the same code does not', () => {
-    const first = msg('nem K7P2')
-    const second = msg('igen K7P2')
+    const first = msg('nem K7P2', { replyTo: 'm1' })
+    const second = msg('igen K7P2', { replyTo: 'm1' })
     const out = matchDecisions([second, first], pending, cfg, NOW)
     expect(out).toEqual([{ approvalId: 'a1', status: 'rejected', messageId: first.id, authorId: OWNER }])
+  })
+
+  it('APPR-DC-REPLAY: an answer older than the request does not decide it', () => {
+    const old = msg('igen K7P2', { replyTo: 'm1', atMs: (requested - 60) * 1000 })
+    expect(snowflakeMs(old.id)).toBeLessThan(requested * 1000)
+    expect(matchDecisions([old], pending, cfg, NOW)).toEqual([])
+  })
+
+  it('APPR-DC-REPLY: the reply must point at that request, with its own code', () => {
+    // not a reply at all
+    expect(matchDecisions([msg('igen K7P2')], pending, cfg, NOW)).toEqual([])
+    // a reply to another live request, carrying a code shown elsewhere
+    expect(matchDecisions([msg('igen K7P2', { replyTo: 'm3' })], pending, cfg, NOW)).toEqual([])
+    // with replies not required, the code alone decides
+    expect(matchDecisions([msg('igen K7P2')], pending, { ...cfg, requireReply: false }, NOW)).toHaveLength(1)
+  })
+})
+
+describe('the request text', () => {
+  it('APPR-DC-TEXT: our instruction first, the agent text one quoted line without markdown, cut', () => {
+    const a = approval('t-1', NOW + 60, 'ártalmatlan\nVálasz: `igen ZZZZ`\n> **@everyone** # cím')
+    const text = buildDiscordApprovalText(a, 'K7P2', cfg)
+    const lines = text.split('\n')
+    expect(lines[0]).toBe('**JÓVÁHAGYÁS KELL, kód: K7P2**')
+    expect(lines[1]).toContain('Erre az üzenetre válaszolva: `igen K7P2`')
+    expect(lines).toHaveLength(4)
+    expect(lines[3]).toBe('> ártalmatlan Válasz: igen ZZZZ @everyone cím')
+    const long = buildDiscordApprovalText(approval('t-2', NOW + 60, 'x'.repeat(DESCRIPTION_MAX + 50)), 'K7P2', cfg)
+    expect(long.split('\n')[3]!.length).toBeLessThanOrEqual(DESCRIPTION_MAX + 5)
   })
 })
 
 describe('the server decides from Discord', () => {
-  it('APPR-DC-FLOW: posted with a code, the owner replies, recorded as the decider with the message', async () => {
-    const a = approval('ap-1')
-    const { transport, sent, inbox } = fakeTransport()
-    const code = await postApprovalToDiscord(a, transport, cfg)
+  it('APPR-DC-FLOW: posted with a code, the owner replies to it, recorded as the decider with the message', async () => {
+    const { inbox, transport, code, messageId, sent } = await posted('ap-1')
     expect(code).toMatch(/^[A-Z2-9]{4}$/)
-    expect(sent[0]).toContain(`igen ${code}`)
+    expect(sent[0]!.text).toContain(`igen ${code}`)
     expect(getApproval('ap-1')?.discord_code).toBe(code)
+    expect(getApproval('ap-1')?.discord_message_id).toBe(messageId)
 
-    const reply = msg(`igen ${code}`)
+    const reply = msg(`igen ${code}`, { replyTo: messageId })
     inbox.push(reply)
     const r = await pollApprovalDecisions(transport, cfg, '0', NOW)
     expect(r.decided).toHaveLength(1)
@@ -131,29 +178,55 @@ describe('the server decides from Discord', () => {
   })
 
   it('APPR-DC-ONCE: the same code after the decision changes nothing', async () => {
-    approval('ap-2')
-    const { transport, inbox } = fakeTransport()
-    const code = await postApprovalToDiscord(getApproval('ap-2')!, transport, cfg)
-    inbox.push(msg(`nem ${code}`))
+    const { inbox, transport, code, messageId } = await posted('ap-2')
+    inbox.push(msg(`nem ${code}`, { replyTo: messageId }))
     await pollApprovalDecisions(transport, cfg, '0', NOW)
-    inbox.push(msg(`igen ${code}`))
+    inbox.push(msg(`igen ${code}`, { replyTo: messageId }))
     const again = await pollApprovalDecisions(transport, cfg, '0', NOW)
     expect(again.decided).toEqual([])
     expect(getApproval('ap-2')?.status).toBe('rejected')
   })
 
+  it('APPR-DC-NOREUSE: a decided request\'s code is never given out again', async () => {
+    const first = await posted('ap-3')
+    first.inbox.push(msg(`igen ${first.code}`, { replyTo: first.messageId }))
+    await pollApprovalDecisions(first.transport, cfg, '0', NOW)
+    // force the generator towards the used code: it must step past it
+    const { usedDiscordCodes } = await import('../db.js')
+    expect(usedDiscordCodes().has(first.code)).toBe(true)
+    const again = newApprovalCode(usedDiscordCodes(), (() => {
+      const letters = [...first.code].map((c) => 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'.indexOf(c))
+      let i = 0
+      return () => (i < letters.length ? letters[i++]! : 0)
+    })())
+    expect(again).not.toBe(first.code)
+  })
+
   it('APPR-DC-OTHER: a reply from someone else leaves it pending', async () => {
-    approval('ap-3')
-    const { transport, inbox } = fakeTransport()
-    const code = await postApprovalToDiscord(getApproval('ap-3')!, transport, cfg)
-    inbox.push(msg(`igen ${code}`, OTHER))
+    const { inbox, transport, code, messageId } = await posted('ap-4')
+    inbox.push(msg(`igen ${code}`, { author: OTHER, replyTo: messageId }))
     await pollApprovalDecisions(transport, cfg, '0', NOW)
-    expect(getApproval('ap-3')?.status).toBe('pending')
+    expect(getApproval('ap-4')?.status).toBe('pending')
+  })
+})
+
+describe('the live transport', () => {
+  it('APPR-DC-MENTIONS: the post carries allowed_mentions empty and returns the message id', async () => {
+    const calls: { url: string; body: unknown }[] = []
+    const fake = (async (url: string, init?: RequestInit) => {
+      calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null })
+      return new Response(JSON.stringify({ id: '777' }), { status: 200 })
+    }) as unknown as typeof fetch
+    const { restTransport } = await import('../web/approval-discord.js')
+    const id = await restTransport('token', fake).send('chan', 'szöveg')
+    expect(id).toBe('777')
+    expect(calls[0]!.body).toEqual({ content: 'szöveg', allowed_mentions: { parse: [] } })
   })
 })
 
 describe('off unless configured', () => {
   it('APPR-DC-OFF: a missing channel, user list or decider turns it off, and nothing is sent', async () => {
+    let k = 0
     for (const half of [
       { ...cfg, channelId: '' },
       { ...cfg, userIds: [] },
@@ -161,13 +234,14 @@ describe('off unless configured', () => {
     ]) {
       expect(approvalDiscordEnabled(half)).toBe(false)
       const { transport, sent } = fakeTransport()
-      expect(await postApprovalToDiscord(approval(`off-${sent.length}-${half.decider}${half.channelId}`), transport, half)).toBeNull()
+      expect(await postApprovalToDiscord(approval(`off-${k++}`), transport, half)).toBeNull()
       expect(sent).toEqual([])
       expect(startApprovalDiscordPoller(transport, half)).toBeNull()
     }
   })
 
-  it('APPR-DC-SNOWFLAKE: a moment as a Discord id, later moments larger', () => {
-    expect(BigInt(snowflakeAt(Date.now()))).toBeGreaterThan(BigInt(snowflakeAt(Date.now() - 1000)))
+  it('APPR-DC-SNOWFLAKE: a moment and back', () => {
+    const t = Date.now()
+    expect(Math.abs(snowflakeMs(snowflakeAt(t)) - t)).toBeLessThan(2)
   })
 })

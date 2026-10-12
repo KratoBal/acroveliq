@@ -126,6 +126,12 @@ export const APPROVAL_DISCORD_USER_IDS = (cfg('APPROVAL_DISCORD_USER_IDS') ?? ''
 export const APPROVAL_DISCORD_DECIDER = (cfg('APPROVAL_DISCORD_DECIDER') ?? '').trim()
 export const APPROVAL_DISCORD_YES = (cfg('APPROVAL_DISCORD_YES') ?? 'igen').trim().toLowerCase()
 export const APPROVAL_DISCORD_NO = (cfg('APPROVAL_DISCORD_NO') ?? 'nem').trim().toLowerCase()
+/**
+ * A reply decides only as a Discord reply to the request's own message (on by
+ * default, barracuda #33): the owner answers what he read, and a code shown
+ * elsewhere cannot be used. `off` accepts the code alone.
+ */
+export const APPROVAL_DISCORD_REQUIRE_REPLY = (cfg('APPROVAL_DISCORD_REQUIRE_REPLY') ?? 'on').trim().toLowerCase() !== 'off'
 export const APPROVAL_DISCORD_POLL_SECONDS = Math.max(5, Number(cfg('APPROVAL_DISCORD_POLL_SECONDS') ?? '20') || 20)
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
 

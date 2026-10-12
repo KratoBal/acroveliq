@@ -10,9 +10,17 @@
 // HERE the server posts the request to a Discord channel itself, with a code
 // bound to that approval, and reads the channel back over REST (no gateway, so
 // it does not compete with the plugin's connection). A reply decides only if
-//   - its author is one of the configured Discord users (the owner),
+//   - its author is one of the configured Discord users (the owner), not a bot,
 //   - it is exactly `<yes|no> <code>` for a code that is still pending,
+//   - it is a Discord reply to that request's own message (on by default:
+//     the owner answers what he READ, and a code shown elsewhere, for example
+//     inside another agent's request text, cannot be used; barracuda #33),
+//   - it was written after the request was created (an old answer read back
+//     after a restart cannot decide a new request; barracuda #33),
 //   - the approval has not timed out.
+// A code is never given out twice, not even after its decision.
+// The requesting agent's text goes out neutralised: one quoted line, no
+// backticks, no mentions (`allowed_mentions` empty), with the code line first.
 // The code is one-time by construction: it matches pending rows only, and the
 // decision makes the row non-pending in the same UPDATE. It is bound to one
 // approval, so to one action. The decision is recorded as the configured
@@ -27,6 +35,7 @@ import {
   APPROVAL_DISCORD_DECIDER,
   APPROVAL_DISCORD_NO,
   APPROVAL_DISCORD_POLL_SECONDS,
+  APPROVAL_DISCORD_REQUIRE_REPLY,
   APPROVAL_DISCORD_USER_IDS,
   APPROVAL_DISCORD_YES,
 } from '../config.js'
@@ -34,6 +43,8 @@ import {
   pendingDiscordApprovals,
   resolveApprovalWithRef,
   setApprovalDiscordCode,
+  setApprovalDiscordMessageId,
+  usedDiscordCodes,
   type Approval,
 } from '../db.js'
 import { readEnvFile } from '../env.js'
@@ -47,6 +58,7 @@ export interface ApprovalDiscordConfig {
   yes: string
   no: string
   pollSeconds: number
+  requireReply: boolean
 }
 
 export function approvalDiscordConfig(): ApprovalDiscordConfig {
@@ -57,6 +69,7 @@ export function approvalDiscordConfig(): ApprovalDiscordConfig {
     yes: APPROVAL_DISCORD_YES,
     no: APPROVAL_DISCORD_NO,
     pollSeconds: APPROVAL_DISCORD_POLL_SECONDS,
+    requireReply: APPROVAL_DISCORD_REQUIRE_REPLY,
   }
 }
 
@@ -102,6 +115,8 @@ export interface DiscordMessage {
   id: string
   content: string
   author: { id: string; bot?: boolean }
+  /** set when the message is a Discord reply */
+  message_reference?: { message_id?: string } | null
 }
 
 export interface MatchedDecision {
@@ -117,12 +132,15 @@ export interface MatchedDecision {
  */
 export function matchDecisions(
   messages: readonly DiscordMessage[],
-  pending: readonly Pick<Approval, 'id' | 'discord_code' | 'timeout_at'>[],
-  cfg: Pick<ApprovalDiscordConfig, 'userIds' | 'yes' | 'no'>,
+  pending: readonly Pick<Approval, 'id' | 'discord_code' | 'timeout_at' | 'requested_at' | 'discord_message_id'>[],
+  cfg: Pick<ApprovalDiscordConfig, 'userIds' | 'yes' | 'no' | 'requireReply'>,
   nowSeconds: number,
 ): MatchedDecision[] {
   const byCode = new Map(
     pending.filter((a) => a.discord_code).map((a) => [a.discord_code!.toUpperCase(), a]),
+  )
+  const byMessage = new Map(
+    pending.filter((a) => a.discord_message_id).map((a) => [a.discord_message_id!, a]),
   )
   const decided = new Set<string>()
   const out: MatchedDecision[] = []
@@ -131,8 +149,14 @@ export function matchDecisions(
     if (m.author.bot || !cfg.userIds.includes(m.author.id)) continue
     const parsed = parseDecision(m.content, cfg)
     if (!parsed) continue
-    const approval = byCode.get(parsed.code)
+    // with replies required, the request is the one REPLIED TO, and the code
+    // must be that request's own: a code copied from elsewhere does not match
+    const approval = cfg.requireReply
+      ? byMessage.get(m.message_reference?.message_id ?? '')
+      : byCode.get(parsed.code)
     if (!approval || decided.has(approval.id)) continue
+    if ((approval.discord_code ?? '').toUpperCase() !== parsed.code) continue
+    if (snowflakeMs(m.id) <= approval.requested_at * 1000) continue
     if (approval.timeout_at != null && approval.timeout_at <= nowSeconds) continue
     decided.add(approval.id)
     out.push({ approvalId: approval.id, status: parsed.status, messageId: m.id, authorId: m.author.id })
@@ -140,21 +164,40 @@ export function matchDecisions(
   return out
 }
 
-/** The request as the owner reads it on Discord. Plain text, outgoing copy. */
-export function buildDiscordApprovalText(approval: Approval, code: string, cfg: Pick<ApprovalDiscordConfig, 'yes' | 'no'>): string {
+export const DESCRIPTION_MAX = 500
+
+/**
+ * The requesting agent's words, made inert: one line, no markdown characters,
+ * cut to a limit, quoted. Any agent may create a request, so its text must
+ * not be able to look like our instructions (barracuda #33).
+ */
+export function neutralDescription(text: string): string {
+  const flat = text.replace(/[`>#*_~|]/g, ' ').replace(/\s+/g, ' ').trim()
+  const cut = flat.length > DESCRIPTION_MAX ? `${flat.slice(0, DESCRIPTION_MAX)}...` : flat
+  return `> ${cut}`
+}
+
+/** The request as the owner reads it on Discord: our instruction first, the agent's words last, quoted. */
+export function buildDiscordApprovalText(
+  approval: Approval,
+  code: string,
+  cfg: Pick<ApprovalDiscordConfig, 'yes' | 'no' | 'requireReply'>,
+): string {
   const expires = approval.timeout_at
     ? new Date(approval.timeout_at * 1000).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
     : 'nincs'
+  const how = cfg.requireReply ? 'Erre az üzenetre válaszolva' : 'Válaszként'
   return [
-    `[JÓVÁHAGYÁS KELL] ${approval.agent_id} | ${approval.category}`,
-    approval.action_description,
-    `Lejárat: ${expires}`,
-    `Válasz: \`${cfg.yes} ${code}\` vagy \`${cfg.no} ${code}\` (csak ez a két alak dönt)`,
+    `**JÓVÁHAGYÁS KELL, kód: ${code}**`,
+    `${how}: \`${cfg.yes} ${code}\` vagy \`${cfg.no} ${code}\` (csak ez a két alak dönt). Lejárat: ${expires}`,
+    `Kérő: ${approval.agent_id} | ${approval.category.replace(/[^\w.-]/g, '')}`,
+    neutralDescription(approval.action_description),
   ].join('\n')
 }
 
 export interface DiscordTransport {
-  send(channelId: string, text: string): Promise<void>
+  /** Returns the posted message's id. */
+  send(channelId: string, text: string): Promise<string>
   /** Messages after `afterId`, at most 100, in any order. */
   read(channelId: string, afterId: string): Promise<DiscordMessage[]>
 }
@@ -166,10 +209,12 @@ export function restTransport(token: string, fetchImpl: typeof fetch = fetch): D
       const resp = await fetchImpl(`https://discord.com/api/v10/channels/${channelId}/messages`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ content: text }),
+        // no mention in the request text may ping anyone (barracuda #33)
+        body: JSON.stringify({ content: text, allowed_mentions: { parse: [] } }),
         signal: AbortSignal.timeout(TOOL_TIMEOUTS['discord']),
       })
       if (!resp.ok) throw new Error(`Discord API ${resp.status}`)
+      return ((await resp.json()) as { id: string }).id
     },
     async read(channelId, afterId) {
       const resp = await fetchImpl(
@@ -186,6 +231,11 @@ export function restTransport(token: string, fetchImpl: typeof fetch = fetch): D
 export function discordTransportFromEnv(): DiscordTransport | null {
   const token = (readEnvFile()['DISCORD_BOT_TOKEN'] ?? '').trim()
   return token ? restTransport(token) : null
+}
+
+/** When a Discord id (snowflake) was made, in ms. */
+export function snowflakeMs(id: string): number {
+  return Number((BigInt(id) >> 22n) + 1420070400000n)
 }
 
 /** A Discord snowflake for a moment: the poll starts this far back. */
@@ -205,11 +255,12 @@ export async function postApprovalToDiscord(
   cfg: ApprovalDiscordConfig,
 ): Promise<string | null> {
   if (!approvalDiscordEnabled(cfg)) return null
-  const taken = new Set(pendingDiscordApprovals().map((a) => (a.discord_code ?? '').toUpperCase()))
-  const code = newApprovalCode(taken)
+  const code = newApprovalCode(usedDiscordCodes())
   setApprovalDiscordCode(approval.id, code)
   try {
-    await transport.send(cfg.channelId, buildDiscordApprovalText(approval, code, cfg))
+    const messageId = await transport.send(cfg.channelId, buildDiscordApprovalText(approval, code, cfg))
+    // the reply must point at this message (requireReply)
+    setApprovalDiscordMessageId(approval.id, messageId)
     logger.info({ approvalId: approval.id }, 'approval posted to Discord with its code')
   } catch (err) {
     logger.warn({ err, approvalId: approval.id }, 'approval Discord post FAILED -- only the dashboard can decide it')
