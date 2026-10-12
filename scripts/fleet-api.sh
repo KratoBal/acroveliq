@@ -248,6 +248,63 @@ if short:
   kanban-list)
     get /kanban
     ;;
+  handoff-write)
+    # A STRUKTURALT FELADATATADAS IRASA (acrovelIQ token-brief, 3. pont). A rekord
+    # JSON, FAJLBOL, atiranyitassal: a szoveg dontest, tilalmat es kodallapotot
+    # visz, tehat idezojel, backtick es dollarjel biztosan van benne.
+    # Hianyzo kotelezo mezonel a szerver 400-at ad, es a parancs MINDET kiirja.
+    argc_max 3 "$#" "fleet-api.sh handoff-write <task_id> <agens> - < atadas.json"
+    TASK="${1:?task id required}"; AGENT="${2:?agent required}"; : "${3:?record required (-)}"
+    RECORD="$(arg "$3")"
+    BODY="$(python3 -c '
+import json,sys
+try:
+    record=json.loads(sys.argv[2])
+except ValueError as e:
+    sys.exit("FAIL: a rekord nem ervenyes JSON: %s" % e)
+print(json.dumps({"agent": sys.argv[1], "record": record}))' "$AGENT" "$RECORD")" || { echo "$BODY"; exit 1; }
+    RESP="$(curl -s -X POST "${API}/tasks/${TASK}/handoffs" \
+      -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
+      -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
+    CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
+    if [ "$CODE" = "201" ]; then printf '%s\n' "$JSON"; exit 0; fi
+    printf '%s' "$JSON" | python3 -c '
+import json,sys
+code=sys.argv[1]
+try:
+    body=json.load(sys.stdin)
+except ValueError:
+    body={}
+print("FAIL http=%s: %s" % (code, body.get("error","")))
+for field in body.get("missing",[]):
+    print("  hianyzik: %s" % field)' "${CODE:-?}"
+    exit 1
+    ;;
+  handoff-read)
+    # A STRUKTURALT FELADATATADAS OLVASASA ES A KODALLAPOT VISSZAMERESE. Egy uj
+    # munkamenet ELSO lepese. A szerver meri vissza az ag fejet es a PR-t (a
+    # flotta tokenjevel), es ELTERESNEL a parancs 3-as koddal ALL MEG: a rekord
+    # akkor egy mar nem letezo allapotrol szol, arra epiteni nem szabad.
+    argc_max 1 "$#" "fleet-api.sh handoff-read <task_id>"
+    TASK="${1:?task id required}"
+    RESP="$(curl -s -H "Authorization: Bearer $TOKEN" "${API}/tasks/${TASK}/handoffs/latest?verify=1" -w $'\n%{http_code}' 2>/dev/null || true)"
+    CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
+    [ "$CODE" = "200" ] || { echo "FAIL http=${CODE:-?} $(printf '%s' "$JSON" | head -c 200)"; exit 1; }
+    printf '%s' "$JSON" | python3 -c '
+import json,sys
+d=json.load(sys.stdin); r=d["record"]; c=d["check"]
+print(json.dumps(r, ensure_ascii=False, indent=2))
+print("-- irta: %s, %s (rekord %s)" % (d["agent"], d["created_at"], d["id"]))
+if c["ok"]:
+    print("KODALLAPOT RENDBEN: a rekord a mai allapotrol szol. Kovetkezo lepes: %s" % r["next_step"])
+    sys.exit(0)
+print("ELTERES, ALLJ MEG. A rekord egy azota megvaltozott allapotrol szol:")
+for line in c["mismatches"]:
+    print("  - %s" % line)
+print("Merd le, mi tortent azota, es jelezd, mielott barmit folytatsz.")
+sys.exit(3)'
+    exit $?
+    ;;
   kanban-new)
     argc_max 4 "$#" "fleet-api.sh kanban-new - < cim.txt [status] [assignee] [priority]"
     : "${1:?title required}"; TITLE="$(arg "$1")"; STATUS="${2:-planned}"; ASSIGNEE="${3:-}"; PRIORITY="${4:-normal}"
