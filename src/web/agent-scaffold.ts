@@ -1443,7 +1443,7 @@ bash ${fleetApi} memory-search AGENT_NAME "KULCSSZO" warm   # (GET ${dashboardOr
 Az ütemezett feladatok a ~/.claude/scheduled-tasks/ mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
 
 Feladat létrehozása API-n keresztül:
-bash ${fleetApi} schedule-new "feladat-nev" "Rövid leírás" "A részletes prompt" "0 8 * * *" AGENT_NAME heartbeat   # (POST ${dashboardOrigin}/api/schedules)
+bash ${fleetApi} schedule-new "feladat-nev" "Rövid leírás" - "0 8 * * *" AGENT_NAME heartbeat < prompt.txt   # (POST ${dashboardOrigin}/api/schedules)
 
 Típusok: task (mindig szól az eredménnyel) vagy heartbeat (csak fontosnál szól).
 Cron formátum: perc óra nap hónap hétnapja (pl. 0 8 * * * = minden nap 8:00).

@@ -161,7 +161,7 @@ Az ütemezett feladatok a `~/.claude/scheduled-tasks/` mappában élnek, fájl-a
 ### Feladat létrehozása API-n keresztül
 
 ```bash
-bash {{INSTALL_DIR}}/scripts/fleet-api.sh schedule-new "feladat-nev" "Rövid leírás" "A részletes prompt amit végre kell hajtani" "0 8 * * *" {{MAIN_AGENT_ID}} heartbeat
+bash {{INSTALL_DIR}}/scripts/fleet-api.sh schedule-new "feladat-nev" "Rövid leírás" - "0 8 * * *" {{MAIN_AGENT_ID}} heartbeat < prompt.txt
 ```
 
 ### Típusok:
