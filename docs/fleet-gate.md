@@ -86,6 +86,10 @@ konténerben a saját superuserével:
 cd /root
 C=$(docker ps --format '{{.Names}}' | grep '^iwm34jaqp9xmwb72qkrqkwhy' | head -1)   # a stage-en: ^cpnjvtte02yakzs9vb0jffky
 docker exec "$C" psql -U acropora -d acropora -Atc 'show server_version'           # 14 vagy újabb kell (pg_read_all_data)
+# 15 ALATT a public sémán a CREATE joga mindenkié: a fleet_ro a read-only alapérték kikapcsolása
+# után táblát vagy függvényt hozhatna létre (barracuda, #30). Ilyenkor előbb ez az egy sor:
+#   docker exec "$C" psql -U acropora -d acropora -c 'REVOKE CREATE ON SCHEMA public FROM PUBLIC;'
+# Az alkalmazás saját felhasználóját nem érinti (tulajdonos vagy superuser). 15-től ez az alapállapot.
 docker exec -i "$C" psql -U acropora -d acropora -v ON_ERROR_STOP=1 <<'SQL'
 CREATE ROLE fleet_ro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
 GRANT pg_read_all_data TO fleet_ro;
@@ -139,13 +143,25 @@ belépni ezzel a kulccsal.
 **Ellenőrzés a betöltött beállításon** (a `FORRAS` egyik címével):
 
 ```bash
-cd /root && sshd -T -C user=fleet,host=x,addr=<a mért cím> | grep -iE 'forcecommand|authorizedkeysfile|permituserenvironment'
+cd /root && sshd -T -C user=fleet,host=x,addr=<a mért cím> | grep -iE 'forcecommand|authorizedkeysfile|authorizedkeyscommand |permituserenvironment'
                                              # authorizedkeysfile /etc/ssh/authorized_keys/%u
+                                             # authorizedkeyscommand none
                                              # forcecommand none
                                              # permituserenvironment no
 ```
 
-A `forcecommand none` helyes: a kényszer a kulcssorban áll (`command=`), nem az sshd-ben.
+A `forcecommand none` helyes: a kényszer a kulcssorban áll (`command=`), nem az sshd-ben. Az
+`authorizedkeyscommand none` azért kell, mert egy beállított `AuthorizedKeysCommand` a fájl
+MELLETT is adna kulcsot (barracuda, #30).
+
+**Ami a kaput csendben elviheti: az `sshd_config` cseréje.** Egy csomagfrissítés, ami felülírja a
+fájlt, a `Match` blokkal együtt a kaput is viszi, és onnantól a `~fleet/.ssh/authorized_keys`
+régi, kényszer nélküli sora él újra (az a visszaállítás alapja, ezért marad a helyén). A heti
+frissítés-átnézésben érdemes rootként ellenőrizni:
+
+```bash
+cd /root && grep -c '^Match User fleet' /etc/ssh/sshd_config      # 1
+```
 
 A teszt gépen ezen felül (a `restore-probe` nem tölt le képet):
 
