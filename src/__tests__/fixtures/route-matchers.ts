@@ -28,6 +28,12 @@ export interface RouteMatcher {
   value: string
   /** Methods named in the same condition; null when the condition names none. */
   methods: string[] | null
+  /**
+   * For a matcher whose condition names no method: the methods its block
+   * handles (`if (method === 'GET')` inside it, or after a guard). Each needs a
+   * rule, so a DELETE cannot hide behind one GET rule (barracuda, #19).
+   */
+  blockMethods: string[]
 }
 
 const METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'])
@@ -84,8 +90,73 @@ export function scanRouteMatchers(file: string): RouteMatcher[] {
     return names.length ? names : null
   }
 
-  const add = (node: ts.Node, kind: RouteMatcher['kind'], value: string) =>
-    found.push({ module, line: line(node), kind, value, methods: methodsOf(node) })
+  /** Method literals compared against `method` anywhere inside `region`. */
+  const methodLiterals = (region: ts.Node[]): string[] => {
+    const names = new Set<string>()
+    const mentionsPath = (n: ts.Node): boolean => (ts.isIdentifier(n) && n.text === 'path') || ts.forEachChild(n, mentionsPath) === true
+    const look = (n: ts.Node) => {
+      // an `if` that tests `path` is another matcher's branch: its methods are its own
+      if (ts.isIfStatement(n) && mentionsPath(n.expression)) return
+      if (
+        ts.isBinaryExpression(n) &&
+        (n.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken || n.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken)
+      ) {
+        const sides = [n.left, n.right]
+        const isMethod = sides.some((x) => (ts.isIdentifier(x) && x.text === 'method') || (ts.isPropertyAccessExpression(x) && x.name.text === 'method'))
+        const literal = sides.find(ts.isStringLiteral)
+        if (isMethod && literal && METHODS.has(literal.text)) names.add(literal.text)
+      }
+      ts.forEachChild(n, look)
+    }
+    region.forEach(look)
+    return [...names].sort()
+  }
+
+  /** The statements after `statement` in its block. */
+  const following = (statement: ts.Node): ts.Statement[] => {
+    const block = statement.parent
+    if (!block || !(ts.isBlock(block) || ts.isSourceFile(block))) return []
+    const list = block.statements as ts.NodeArray<ts.Statement>
+    return list.slice(list.indexOf(statement as ts.Statement) + 1)
+  }
+  const returnsEarly = (stmt: ts.Statement) =>
+    ts.isReturnStatement(stmt) || (ts.isBlock(stmt) && stmt.statements.length === 1 && ts.isReturnStatement(stmt.statements[0]!))
+
+  /** The region a method-less matcher governs (see RouteMatcher.blockMethods). */
+  const regionOf = (node: ts.Node): ts.Node[] => {
+    let cursor: ts.Node = node
+    while (cursor.parent && !ts.isStatement(cursor.parent) && !ts.isVariableDeclaration(cursor.parent)) cursor = cursor.parent
+    const holder = cursor.parent
+    if (holder && ts.isIfStatement(holder) && holder.expression === cursor) {
+      // a negative guard (`if (path !== X ...) return false`): the rest of the block
+      if (returnsEarly(holder.thenStatement)) return following(holder)
+      return [holder.thenStatement]
+    }
+    if (holder && ts.isVariableDeclaration(holder) && ts.isIdentifier(holder.name)) {
+      const name = holder.name.text
+      let statement: ts.Node = holder
+      while (statement.parent && !ts.isBlock(statement.parent) && !ts.isSourceFile(statement.parent)) statement = statement.parent
+      const rest = following(statement)
+      // `if (!m) return false` after it: everything below belongs to this matcher
+      const guard = rest.findIndex(
+        (st) =>
+          ts.isIfStatement(st) &&
+          ts.isPrefixUnaryExpression(st.expression) &&
+          ts.isIdentifier(st.expression.operand) &&
+          st.expression.operand.text === name &&
+          returnsEarly(st.thenStatement),
+      )
+      if (guard >= 0) return rest.slice(guard + 1)
+      const uses = (n: ts.Node): boolean => (ts.isIdentifier(n) && n.text === name) || ts.forEachChild(n, uses) === true
+      return rest.filter((st) => ts.isIfStatement(st) && uses(st.expression))
+    }
+    return []
+  }
+
+  const add = (node: ts.Node, kind: RouteMatcher['kind'], value: string) => {
+    const methods = methodsOf(node)
+    found.push({ module, line: line(node), kind, value, methods, blockMethods: methods ? [] : methodLiterals(regionOf(node)) })
+  }
 
   const regexSource = (expr: ts.Expression): string | null => {
     const target = resolve(expr)
@@ -135,7 +206,7 @@ export function scanRouteMatchers(file: string): RouteMatcher[] {
     // 'GET /sutyerak/x' entries of an allowlist Set
     if (ts.isStringLiteral(node) && /^(GET|POST|PUT|DELETE|PATCH) \/\S*$/.test(node.text) && ts.isArrayLiteralExpression(node.parent)) {
       const [method, value] = node.text.split(' ')
-      found.push({ module, line: line(node), kind: 'eq', value: value!, methods: [method!] })
+      found.push({ module, line: line(node), kind: 'eq', value: value!, methods: [method!], blockMethods: [] })
     }
     ts.forEachChild(node, visit)
   }
@@ -177,20 +248,48 @@ export function scanSuspects(file: string): Array<{ module: string; line: number
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true)
   const module = basename(file).replace(/\.ts$/, '')
   const out: Array<{ module: string; line: number; text: string }> = []
+  const consts = new Map<string, ts.Expression>()
+  const collect = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) consts.set(node.name.text, node.initializer)
+    ts.forEachChild(node, collect)
+  }
+  collect(source)
   const isPath = (expr: ts.Expression) => ts.isIdentifier(expr) && expr.text === 'path'
   const routeLike = (expr: ts.Node) => (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) && /^\/(api|sutyerak|\.well-known)\b/.test(expr.text)
   const flag = (node: ts.Node) =>
     out.push({ module, line: source.getLineAndCharacterOfPosition(node.getStart()).line + 1, text: node.getText().slice(0, 120) })
+  // a regex whose source is a route: /^\/api\/x$/ or /\/sutyerak\//
+  const routeRegex = (expr: ts.Node) =>
+    ts.isRegularExpressionLiteral(expr) && /^\/\^?\\\/(api|sutyerak|\.well-known)\b/.test(expr.text)
+  const isEquality = (node: ts.BinaryExpression) =>
+    node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken || node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken
+  const unresolvable = (expr: ts.Expression) =>
+    ts.isTemplateExpression(expr) || (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.PlusToken)
   const visit = (node: ts.Node) => {
-    if (
-      ts.isBinaryExpression(node) &&
-      (node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken || node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken) &&
-      ((routeLike(node.left) && !isPath(node.right)) || (routeLike(node.right) && !isPath(node.left)))
-    )
-      flag(node)
+    if (ts.isBinaryExpression(node) && isEquality(node)) {
+      // a route literal compared with something other than `path`
+      if ((routeLike(node.left) && !isPath(node.right)) || (routeLike(node.right) && !isPath(node.left))) flag(node)
+      // `path` compared with a template or a concatenation: a route the scanner cannot read
+      if ((isPath(node.left) && unresolvable(node.right)) || (isPath(node.right) && unresolvable(node.left))) flag(node)
+    }
+    // switch (path) and its route cases
+    if (ts.isSwitchStatement(node) && isPath(node.expression)) flag(node.expression.parent)
+    if (ts.isCaseClause(node) && routeLike(node.expression)) flag(node.expression)
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
       const { expression: target, name } = node.expression
-      if (['startsWith', 'endsWith', 'includes'].includes(name.text) && !isPath(target) && node.arguments[0] && routeLike(node.arguments[0])) flag(node)
+      const [first] = node.arguments
+      if (['startsWith', 'endsWith', 'includes'].includes(name.text) && !isPath(target) && first && routeLike(first)) flag(node)
+      // a route regex tested on anything but `path`
+      if (name.text === 'match' && !isPath(target) && first && routeRegex(first)) flag(node)
+      if ((name.text === 'exec' || name.text === 'test') && routeRegex(target) && !(first && isPath(first))) flag(node)
+      // `path` tested with a regex the scanner cannot resolve (new RegExp, a parameter)
+      const pathRegexCall =
+        (isPath(target) && name.text === 'match' && first) || ((name.text === 'exec' || name.text === 'test') && first && isPath(first))
+      if (pathRegexCall) {
+        const regex = isPath(target) ? first! : target
+        const resolved = ts.isIdentifier(regex) ? (consts.get(regex.text) ?? regex) : regex
+        if (!ts.isRegularExpressionLiteral(resolved)) flag(node)
+      }
     }
     ts.forEachChild(node, visit)
   }

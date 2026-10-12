@@ -46,8 +46,8 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', path: '/api/agents/:name/channels/slack/smoke-test', module: 'agents', class: 'KRITIKUS' },
   { method: 'POST', path: '/api/agents/:name/channel/reconnect', module: 'agents', class: 'KRITIKUS' },
   { method: 'GET', path: '/api/agents/:name/channel/health', module: 'agents', class: 'OLVASO' },
-  { method: 'POST', path: '/api/agents/:name/channels/:provider/test', module: 'agents', class: 'OLVASO' },
-  { method: 'POST', path: '/api/agents/:name/telegram/test', module: 'agents', class: 'OLVASO', legacy: true },
+  { method: 'POST', path: '/api/agents/:name/channels/:provider/test', module: 'agents', class: 'ERZEKENY', note: "sends a message outward on the channel (barracuda, #19)" },
+  { method: 'POST', path: '/api/agents/:name/telegram/test', module: 'agents', class: 'ERZEKENY', legacy: true, note: "sends a message outward on the channel (barracuda, #19)" },
   { method: 'POST', path: '/api/agents/:name/channels/:provider', module: 'agents', class: 'KRITIKUS' },
   { method: 'POST', path: '/api/agents/:name/telegram', module: 'agents', class: 'KRITIKUS', legacy: true },
   { method: 'DELETE', path: '/api/agents/:name/channels/:provider', module: 'agents', class: 'KRITIKUS' },
@@ -263,7 +263,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'DELETE', path: '/api/agents/:name/skills/:skill', module: 'agents-skills', class: 'KRITIKUS' },
   { method: 'GET', path: '/api/agents/:name/skills', module: 'agents-skills', class: 'OLVASO' },
   { method: 'POST', path: '/api/agents/:name/skills', module: 'agents-skills', class: 'KRITIKUS' },
-  { method: 'POST', path: '/api/migrate/scan', module: 'migrate', class: 'OLVASO', note: "de tetszőleges útvonal-felderítés" },
+  { method: 'POST', path: '/api/migrate/scan', module: 'migrate', class: 'KRITIKUS', note: "arbitrary file-system discovery, a secret-exposure risk (barracuda, #19)" },
   { method: 'POST', path: '/api/migrate/run', module: 'migrate', class: 'KRITIKUS' },
   { method: 'GET', path: '/api/vault/ssh-servers', module: 'vault-ssh', class: 'OLVASO' },
   { method: 'POST', path: '/api/vault/ssh-servers', module: 'vault-ssh', class: 'ERZEKENY' },
@@ -285,7 +285,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', path: '/api/vault/ssh-keys/import', module: 'vault-ssh-keys', class: 'KRITIKUS' },
   { method: 'GET', path: '/api/vault/ssh-keys/:id/public-key', module: 'vault-ssh-keys', class: 'OLVASO' },
   { method: 'DELETE', path: '/api/vault/ssh-keys/:id', module: 'vault-ssh-keys', class: 'KRITIKUS' },
-  { method: 'GET', path: '/api/agents/:name/conversation', module: 'agent-conversation', class: 'OLVASO', note: "bizalmas" },
+  { method: 'GET', path: '/api/agents/:name/conversation', module: 'agent-conversation', class: 'KRITIKUS', note: "another agent's whole session, like the pane stream (barracuda, #19)" },
   { method: 'GET', path: '/api/overview', module: 'overview', class: 'OLVASO' },
   { method: 'ANY', path: '/', module: 'static', class: 'NYILVANOS' },
   { method: 'ANY', path: '/index.html', module: 'static', class: 'NYILVANOS' },
@@ -341,4 +341,9 @@ export const ROUTE_RULES: RouteRule[] = [
   // after the inventory: structured task handoff (#16, 2026-10-12)
   { method: 'POST', path: '/api/tasks/:id/handoffs', module: 'task-handoffs', class: 'ERZEKENY', note: 'append-only handoff record, shared state' },
   { method: 'GET', path: '/api/tasks/:id/handoffs/latest', module: 'task-handoffs', class: 'OLVASO', note: '?verify=1 calls GitHub with the fleet token server-side; the token is never returned' },
+  // after the inventory: task usage (#18, 2026-10-12)
+  { method: 'POST', path: '/api/tasks', module: 'task-usage', class: 'ERZEKENY', note: 'creates or updates a task record' },
+  { method: 'GET', path: '/api/tasks/:id/usage', module: 'task-usage', class: 'OLVASO' },
+  { method: 'POST', path: '/api/tasks/:id/events', module: 'task-usage', class: 'ERZEKENY' },
+  { method: 'POST', path: '/api/tasks/:id/sessions', module: 'task-usage', class: 'ERZEKENY' },
 ]

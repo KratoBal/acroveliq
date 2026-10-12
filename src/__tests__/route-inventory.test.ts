@@ -29,7 +29,14 @@ const ROUTE_FILES = readdirSync(ROUTES_DIR)
   .map((file) => join(ROUTES_DIR, file))
 
 /** Route-like comparisons on something other than `path`, each with its reason. */
-const SUSPECTS_EXPLAINED: Array<{ module: string; text: string; why: string }> = []
+const SUSPECTS_EXPLAINED: Array<{ module: string; text: string; why: string }> = [
+  {
+    module: 'agents',
+    text: 'path.match(newPattern)',
+    why: 'matchChannelRoute builds its regexes at run time; the scanner rebuilds both forms at every call site (channelRouteSources)',
+  },
+  { module: 'agents', text: 'path.match(legacyPattern)', why: 'the legacy form of the same channel regexes, rebuilt at every call site' },
+]
 
 const matchers: RouteMatcher[] = [
   ...ROUTE_FILES.flatMap((file) => scanRouteMatchers(file)),
@@ -43,10 +50,16 @@ const describeMatcher = (m: RouteMatcher) => `${m.module}.ts:${m.line} ${m.kind}
 const describeRule = (r: RouteRule) => `${r.method} ${r.path} (${r.module})`
 
 describe('the route inventory', () => {
-  it('ROUTE-INVENTORY-COVERED: every matcher in the code has a rule', () => {
-    const unruled = matchers
-      .filter((m) => !ROUTE_RULES.some((r) => r.module === m.module && methodFits(r, m) && matcherCovers(m, r.path)))
-      .map(describeMatcher)
+  it('ROUTE-INVENTORY-COVERED: every matcher in the code has a rule, for every method it handles', () => {
+    const ruled = (m: RouteMatcher, method: string | null) =>
+      ROUTE_RULES.some(
+        (r) => r.module === m.module && (method === null || r.method === method || r.method === 'ANY') && matcherCovers(m, r.path),
+      )
+    const unruled = matchers.flatMap((m) => {
+      // the methods in its condition, else the methods its block handles, else any one
+      const methods = m.methods ?? (m.blockMethods.length ? m.blockMethods : [null])
+      return methods.filter((method) => !ruled(m, method)).map((method) => `${describeMatcher(m)}${method ? ` needs ${method}` : ''}`)
+    })
     expect(unruled, 'ROUTE-INVENTORY-COVERED: these routes have no rule in src/web/route-rules.ts').toEqual([])
   })
 
@@ -73,9 +86,8 @@ describe('the route inventory', () => {
       [
         [...new Set(ROUTE_RULES.map((r) => r.module))].filter((m) => !chained.has(m)),
         ROUTE_RULES.filter((r) => !['KRITIKUS', 'ERZEKENY', 'OLVASO', 'NYILVANOS'].includes(r.class)).map(describeRule),
-        ROUTE_RULES.length,
       ],
       'ROUTE-INVENTORY-CHAIN',
-    ).toEqual([[], [], ROUTE_RULES.length])
+    ).toEqual([[], []])
   })
 })
