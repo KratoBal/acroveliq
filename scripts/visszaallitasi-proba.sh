@@ -95,7 +95,7 @@ if [ "$WHAT" = all ] || [ "$WHAT" = ai ]; then
     if ! GOT=$(T=900 sssh restore-probe < "$WORK/ai.dump" 2> "$WORK/ai-restore.err"); then
       fail ai "a visszatoltes hibaval tert vissza: $(head -c 300 "$WORK/ai-restore.err")"
     fi
-    LIVE=$(printf '%s;\n' "$Q" | sssh psql-ro "$AI_LIVE" acropora_ai acropora_ai tuples)
+    LIVE=$(printf '%s;\n' "$Q" | sssh psql-ro "$AI_LIVE" acropora_ai tuples)
     echo "   $F"; echo "   visszatoltve: $GOT"; echo "   elo:          $LIVE"
     # Every count must be a positive number and not above the live one; an empty or schema-only
     # restore prints "conversations=0 ..." which is not an empty string (barracuda's review).
