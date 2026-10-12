@@ -24,6 +24,20 @@ import json
 import urllib.request
 import urllib.error
 
+# the calling user's own dashboard token if handed out, else the shared one,
+# loudly (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py). Defensive:
+# a hook run from elsewhere falls back to the shared path instead of failing.
+def _dashboard_token_file(root):
+    try:
+        import sys as _sys
+        _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
+        if _lib not in _sys.path:
+            _sys.path.insert(0, _lib)
+        from dashboard_token import token_file
+        return token_file(root)
+    except Exception:
+        return os.path.join(root, "store", ".dashboard-token")
+
 # Agent identity comes from the ledger library -- ONE resolver for every hook.
 # This file used to carry its own _agent_id_from_cwd() copy, which drifted:
 # it missed the install-subdirectory case (only `cwd == install` mapped to the
@@ -55,7 +69,7 @@ def _web_port() -> str:
 
 def _dashboard_token() -> str:
     try:
-        with open(os.path.join(_install_dir(), "store", ".dashboard-token")) as f:
+        with open(_dashboard_token_file(_install_dir())) as f:
             return f.read().strip()
     except OSError:
         return ""

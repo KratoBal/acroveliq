@@ -19,7 +19,14 @@ set -uo pipefail
 # base dir = the parent of this script's dir (scripts/..), so it works from any CWD / any install
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${MARVEEN_WEB_PORT:-3420}"
-TOKEN_FILE="$BASE/store/.dashboard-token"
+# the calling user's own token if handed out, else the shared one, loudly (P0-1, plan 5.2)
+if [ -r "$BASE/scripts/lib/dashboard-token.sh" ]; then
+  . "$BASE/scripts/lib/dashboard-token.sh"
+  TOKEN_FILE="$(dashboard_token_file "$BASE")"
+else
+  echo "dashboard-token: scripts/lib/dashboard-token.sh missing, using the shared token" >&2
+  TOKEN_FILE="$BASE/store/.dashboard-token"
+fi
 URL="http://localhost:${PORT}/api/messages"
 LOG="$BASE/store/agent-msg-failures.log"
 

@@ -20,6 +20,20 @@ import os
 import json
 import urllib.request
 
+# the calling user's own dashboard token if handed out, else the shared one,
+# loudly (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py). Defensive:
+# a hook run from elsewhere falls back to the shared path instead of failing.
+def _dashboard_token_file(root):
+    try:
+        import sys as _sys
+        _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
+        if _lib not in _sys.path:
+            _sys.path.insert(0, _lib)
+        from dashboard_token import token_file
+        return token_file(root)
+    except Exception:
+        return os.path.join(root, "store", ".dashboard-token")
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
 
@@ -53,7 +67,7 @@ def main():
         sys.exit(0)  # sub-agents are delivered by the router push path
 
     try:
-        token_path = os.path.join(ledger_lib._install_dir(), "store", ".dashboard-token")
+        token_path = _dashboard_token_file(ledger_lib._install_dir())
         with open(token_path) as f:
             token = f.read().strip()
         if not token:
