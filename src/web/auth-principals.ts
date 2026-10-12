@@ -9,8 +9,9 @@
 //                      is returned once at mint time, the prefix makes a leaked
 //                      value recognisable, expiry is opt-in. A revoked token
 //                      keeps its row (revoked_at) for the audit trail.
-//   request_actors     who called what, counted per day, actor, method and path
-//                      (id-like path segments collapsed), so a day's traffic shows
+//   request_actors     who called what, counted per day, actor, method and ROUTE
+//                      (the route rule's pattern, never the raw path: no value
+//                      from a path, a token or an e-mail, reaches the log), so a day's traffic shows
 //                      which agent already uses its own token and which call
 //                      still comes with the shared one ('legacy').
 //
@@ -21,6 +22,9 @@
 
 import { randomBytes, createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
+
+import { APP_TZ } from '../config.js'
+import { matchRouteRule } from './route-match.js'
 
 export const DEFAULT_PROJECT = 'acropora'
 
@@ -135,24 +139,24 @@ export function actorOf(auth: ActorSource): { project: string; actor: string } {
 }
 
 /**
- * A path as the actor log keeps it: id-like segments (numbers, hex ids, uuids,
- * minted keys) become `:id`, so a day's log is a list of routes, not of ids.
- * Agent names and fixed segments stay.
+ * A request as the actor log keeps it: the pattern of the route rule it
+ * answers to (`/api/agents/:name/channels/:provider/invites/:token`), so the
+ * log holds routes, never a value from a path (barracuda, #20: an invite token
+ * and an e-mail-like username were kept by a segment heuristic). A request no
+ * rule answers is `:ismeretlen`.
  */
-export function normalizeRequestPath(path: string): string {
-  return path
-    .split('/')
-    .map((segment) =>
-      /^\d+$/.test(segment) ||
-      /^[0-9a-f]{8,}$/i.test(segment) ||
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment) ||
-      /^(?:mvdk|mvpt|inv)_/.test(segment)
-        ? ':id'
-        : segment,
-    )
-    .join('/')
-    .slice(0, 300)
+export function routeKey(method: string, path: string): string {
+  return matchRouteRule(method, path)?.path ?? ':ismeretlen'
 }
+
+/** The fleet's day (Budapest), like the other daily breakdowns, not the UTC day. */
+export function localDay(now: number): string {
+  return new Date(now * 1000).toLocaleDateString('en-CA', { timeZone: APP_TZ })
+}
+
+/** How long the actor log keeps a day. */
+export const ACTOR_LOG_DAYS = 90
+let lastPrunedDay = ''
 
 /**
  * Counts one request in the actor log. Only the API and the fleet manifest
@@ -163,12 +167,17 @@ export function recordRequestActor(db: Database.Database, auth: ActorSource, met
   if (!path.startsWith('/api/') && path !== '/.well-known/fleetq') return
   try {
     const { project, actor } = actorOf(auth)
-    const day = new Date(now * 1000).toISOString().slice(0, 10)
+    const day = localDay(now)
+    // once per day: drop the days past the retention
+    if (day !== lastPrunedDay) {
+      lastPrunedDay = day
+      db.prepare('DELETE FROM request_actors WHERE day < ?').run(localDay(now - ACTOR_LOG_DAYS * 86400))
+    }
     db.prepare(
       `INSERT INTO request_actors (day, project, actor, method, path, count, first_seen, last_seen)
        VALUES (?, ?, ?, ?, ?, 1, ?, ?)
        ON CONFLICT (day, project, actor, method, path) DO UPDATE SET count = count + 1, last_seen = excluded.last_seen`,
-    ).run(day, project, actor, method, normalizeRequestPath(path), now, now)
+    ).run(day, project, actor, method, routeKey(method, path), now, now)
   } catch {
     // the log is a measurement, not a gate
   }

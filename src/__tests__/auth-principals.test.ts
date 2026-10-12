@@ -16,11 +16,13 @@ import { resolveAuth } from '../web/auth-gate.js'
 import {
   actorOf,
   createPrincipalToken,
+  ACTOR_LOG_DAYS,
   ensurePrincipalSchema,
-  normalizeRequestPath,
+  localDay,
   recordRequestActor,
   resolvePrincipalToken,
   revokePrincipalToken,
+  routeKey,
 } from '../web/auth-principals.js'
 
 const SHARED = 'b'.repeat(64)
@@ -123,17 +125,42 @@ describe('the caller and the actor log', () => {
     db.close()
     expect(() => recordRequestActor(db, agent, 'GET', '/api/agents', NOW)).not.toThrow() // a closed database
     expect(rows, 'PRINCIPAL-LOG').toEqual([
-      { day: '2025-10-09', actor: 'legacy', method: 'POST', path: '/api/messages', count: 1, first_seen: NOW, last_seen: NOW },
-      { day: '2025-10-09', actor: 'murena', method: 'GET', path: '/api/kanban/:id/comments', count: 2, first_seen: NOW, last_seen: NOW + 5 },
+      { day: localDay(NOW), actor: 'legacy', method: 'POST', path: '/api/messages', count: 1, first_seen: NOW, last_seen: NOW },
+      { day: localDay(NOW), actor: 'murena', method: 'GET', path: '/api/kanban/:id/comments', count: 2, first_seen: NOW, last_seen: NOW + 5 },
     ])
   })
 
-  it('normalizes ids in a path, and keeps names', () => {
-    expect([
-      normalizeRequestPath('/api/agents/murena/pane'),
-      normalizeRequestPath('/api/messages/12345'),
-      normalizeRequestPath('/api/approvals/3f2504e0-4f89-11d3-9a0c-0305e82c3301'),
-      normalizeRequestPath('/api/auth/device-keys/mvdk_abc'),
-    ]).toEqual(['/api/agents/murena/pane', '/api/messages/:id', '/api/approvals/:id', '/api/auth/device-keys/:id'])
+  // barracuda, #20: the log keeps the route's pattern, never a value from a path
+  it('PRINCIPAL-ROUTEKEY: a token, an e-mail-like name or an id never reaches the log, only the route pattern', () => {
+    expect(
+      [
+        routeKey('DELETE', '/api/agents/murena/channels/discord/invites/Zm9vYmFyYmF6cXV4MTIzNDU2'),
+        routeKey('DELETE', '/api/auth/users/balazs@example.com'),
+        routeKey('GET', '/api/agents/activity'),
+        routeKey('GET', '/api/agents/murena'),
+        routeKey('GET', '/api/kanban/ckz9x0abc123def456/comments'),
+        routeKey('GET', '/api/nincs-ilyen/ut'),
+      ],
+      'PRINCIPAL-ROUTEKEY',
+    ).toEqual([
+      '/api/agents/:name/channels/(telegram|slack|discord)/invites/:token',
+      '/api/auth/users/:username',
+      '/api/agents/activity',
+      '/api/agents/:name',
+      '/api/kanban/:id/comments',
+      ':ismeretlen',
+    ])
+  })
+
+  it('PRINCIPAL-RETENTION: a day past the retention is dropped, a recent one stays', () => {
+    const db = new Database(':memory:')
+    ensurePrincipalSchema(db)
+    const later = NOW + 200 * 86400
+    const insert = db.prepare("INSERT INTO request_actors VALUES (?, 'acropora', 'murena', 'GET', '/api/agents', 1, 0, 0)")
+    insert.run(localDay(later - (ACTOR_LOG_DAYS + 5) * 86400))
+    insert.run(localDay(later - 10 * 86400))
+    recordRequestActor(db, { kind: 'token' }, 'GET', '/api/agents', later)
+    const days = (db.prepare('SELECT day FROM request_actors ORDER BY day').all() as { day: string }[]).map((r) => r.day)
+    expect(days, 'PRINCIPAL-RETENTION').toEqual([localDay(later - 10 * 86400), localDay(later)])
   })
 })
