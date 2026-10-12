@@ -19,14 +19,15 @@ interface Compiled {
 
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-export function compileRulePath(path: string): RegExp {
+/** The regex of a rule pattern; with `capture`, each `:param` is a group, in order. */
+export function compileRulePath(path: string, capture = false): RegExp {
   let out = ''
   let rest = path
   while (rest.length) {
     const param = /^:[A-Za-z_]+/.exec(rest)
     const alternatives = /^\(([^)]*)\)/.exec(rest)
     if (param) {
-      out += '[^/]+'
+      out += capture ? '([^/]+)' : '[^/]+'
       rest = rest.slice(param[0].length)
     } else if (alternatives) {
       out += `(?:${alternatives[1]!.split('|').map(escape).join('|')})`
@@ -69,4 +70,24 @@ export function matchRouteRule(method: string, path: string): RouteRule | null {
       best = entry
   }
   return best?.rule ?? null
+}
+
+/**
+ * The `:param` values of a concrete path under a rule pattern, decoded; null
+ * when the path does not match it. Alternatives and a trailing `*` are not
+ * named, so they are not returned.
+ */
+export function ruleParams(rulePath: string, path: string): Record<string, string> | null {
+  const names = [...rulePath.matchAll(/:([A-Za-z_]+)/g)].map((m) => m[1]!)
+  const match = compileRulePath(rulePath, true).exec(path)
+  if (!match) return null
+  const out: Record<string, string> = {}
+  names.forEach((name, i) => {
+    try {
+      out[name] = decodeURIComponent(match[i + 1]!)
+    } catch {
+      out[name] = match[i + 1]!
+    }
+  })
+  return out
 }

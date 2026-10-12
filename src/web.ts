@@ -4,10 +4,12 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
-import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID } from './config.js'
+import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, ACCESS_MODE_SETTING } from './config.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
 import { actorOf, recordRequestActor } from './web/auth-principals.js'
+import { accessGate, parseAccessMode, scheduleAgentFrom } from './web/access-enforcement.js'
+import { SCHEDULED_TASKS_DIR } from './web/scheduled-tasks-io.js'
 import { getDb } from './db.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
@@ -101,6 +103,11 @@ export function startWebServer(port = 3420): http.Server {
   ensureDirs()
 
   const DASHBOARD_TOKEN = loadOrCreateDashboardToken()
+  // the access check's position, once (acrovelIQ P0-1, PR 3b)
+  const access = parseAccessMode(ACCESS_MODE_SETTING)
+  if (access.problem) logger.error(access.problem)
+  logger.info({ mode: access.mode }, 'Access check')
+  const accessDeps = { get db() { return getDb() }, mainAgent: MAIN_AGENT_ID, scheduleAgent: scheduleAgentFrom(SCHEDULED_TASKS_DIR, MAIN_AGENT_ID) }
   const allowedOrigins = new Set([
     `http://localhost:${port}`,
     `http://127.0.0.1:${port}`,
@@ -169,6 +176,10 @@ export function startWebServer(port = 3420): http.Server {
       : auth.kind === 'session' ? { kind: 'session' as const, user: auth.user, ...caller }
       : auth.kind === 'federation' ? { kind: 'federation' as const, peer: auth.peer, ...caller }
       : undefined
+
+    // The access matrix on this request (src/web/access-enforcement.ts):
+    // logged in `naplo`, a 403 where the setting enforces it.
+    if (await accessGate({ auth, method, path, url, req, res }, access.mode, accessDeps)) return
 
     // The mobile-login QR needs a URL the phone can actually reach. When the
     // desktop opens the dashboard on localhost, window.location.origin is

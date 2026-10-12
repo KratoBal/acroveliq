@@ -6,9 +6,8 @@
 // The readable list is docs/access-matrix.md, generated from this file
 // (scripts/access-matrix.ts); a test keeps the two equal.
 //
-// This module only DECIDES. It is wired into nothing in this PR: the setting,
-// the dispatcher check, the owner lookups and the sender taken from the token
-// come in PR 3b.
+// This module only DECIDES. The setting, the dispatcher check and the owner
+// lookups are in access-enforcement.ts (PR 3b).
 //
 // The callers (columns):
 //   S  Balázs's logged-in session
@@ -24,7 +23,8 @@
 //
 // A grant is `yes`, `no` or `own`: the caller's own record only. Where the
 // owner of a request is (a path parameter, a query parameter, a body field, a
-// record looked up by id) is declared per group; PR 3b resolves it.
+// record looked up by id) is declared per group; access-enforcement.ts
+// resolves it.
 
 import { ROUTE_RULES, type RouteClass, type RouteRule } from './route-rules.js'
 
@@ -36,14 +36,19 @@ export type OwnerSource =
   | { from: 'param'; name: string }
   | { from: 'query'; name: string }
   | { from: 'body'; name: string; defaultsToMain?: boolean }
-  | { from: 'lookup'; record: 'kanban-card' | 'schedule' | 'message' }
+  | { from: 'lookup'; record: LookupRecord }
+
+/**
+ * A record looked up by the id in the path: its owner. A card's assignee, a
+ * schedule's agent, a message's recipient, a memory's writer; a message's
+ * participants (either may read it).
+ */
+export type LookupRecord = 'kanban-card' | 'schedule' | 'message-participants' | 'message-recipient' | 'memory'
 
 export interface Access {
   grants: Record<Column, Grant>
   /** Where the owner of a request is, for an `own` grant. */
   owner?: OwnerSource
-  /** `own` also allows a record in the shared namespace (memories). */
-  sharedAllowed?: boolean
   /** The group that set this, or the class default. */
   group: string
   why: string
@@ -105,7 +110,7 @@ const GROUPS: Group[] = [
     name: 'message-state',
     match: is('PUT', '/api/messages/:id'),
     grants: g('yes', 'yes', 'own', 'yes', 'yes'),
-    owner: { from: 'lookup', record: 'message' },
+    owner: { from: 'lookup', record: 'message-recipient' },
     why: 'closing a message can inject text into a pane: an agent only its own messages (the recipient)',
   },
   {
@@ -119,8 +124,8 @@ const GROUPS: Group[] = [
     name: 'message-read-one',
     match: is('GET', '/api/messages/:id'),
     grants: g('yes', 'yes', 'own', 'yes', 'yes'),
-    owner: { from: 'lookup', record: 'message' },
-    why: 'an agent reads its own messages (plan 3)',
+    owner: { from: 'lookup', record: 'message-participants' },
+    why: 'an agent reads its own messages, sent or received (plan 3)',
   },
   {
     name: 'schedule-create',
@@ -182,12 +187,18 @@ const GROUPS: Group[] = [
     why: 'deletes the shared tool log: the session and the main agent',
   },
   {
+    name: 'memory-change',
+    match: (r) => r.module === 'memories' && writes(r) && r.path === '/api/memories/:id',
+    grants: g('yes', 'yes', 'own', 'yes', 'yes'),
+    owner: { from: 'lookup', record: 'memory' },
+    why: 'an agent changes or deletes only its own memories; an update that would move one to another writer is not its own',
+  },
+  {
     name: 'memory-write',
     match: (r) => r.module === 'memories' && writes(r),
     grants: g('yes', 'yes', 'own', 'yes', 'yes'),
     owner: { from: 'body', name: 'agent_id', defaultsToMain: true },
-    sharedAllowed: true,
-    why: 'an agent writes its own namespace and `shared` (plan 3); a missing agent_id is the main agent\'s, so it is not "own"',
+    why: 'an agent writes its own namespace (plan 3). `shared` is a category: the record still names its writer, so that must be the caller. A missing agent_id is the main agent\'s, so it is not "own"',
   },
   {
     name: 'daily-log-write',
@@ -241,10 +252,10 @@ export interface Decision {
  * The decision for one request. `rule` is the route rule it answers to
  * (route-match.ts), null when none does: then only the session passes
  * (default-deny for every token). `owner` is the request's owner, resolved
- * from the group's OwnerSource (PR 3b); `ownerIsShared` when the record is
- * in the shared namespace.
+ * from the group's OwnerSource (access-enforcement.ts): one name, or the
+ * names any of which is the caller's own (a message's two parties).
  */
-export function decide(rule: RouteRule | null, caller: Caller, owner?: string | null, ownerIsShared = false): Decision {
+export function decide(rule: RouteRule | null, caller: Caller, owner?: string | readonly string[] | null): Decision {
   if (caller.column === 'F') {
     const wire = rule !== null && accessOf(rule).group === 'federation-wire'
     return { allowed: wire, reason: wire ? 'federation wire endpoint' : 'a federation peer only reaches the wire endpoints' }
@@ -258,10 +269,35 @@ export function decide(rule: RouteRule | null, caller: Caller, owner?: string | 
   const grant = access.grants[caller.column]
   if (grant === 'yes') return { allowed: true, reason: access.group }
   if (grant === 'no') return { allowed: false, reason: `${access.group}: ${access.why}` }
-  if (access.sharedAllowed && ownerIsShared) return { allowed: true, reason: `${access.group}: shared` }
-  if (owner && owner === caller.name) return { allowed: true, reason: `${access.group}: own` }
-  return { allowed: false, reason: `${access.group}: not its own (owner ${owner ?? 'unknown'})` }
+  const owners = owner == null ? [] : typeof owner === 'string' ? [owner] : owner
+  if (owners.includes(caller.name)) return { allowed: true, reason: `${access.group}: own` }
+  return { allowed: false, reason: `${access.group}: not its own (owner ${owners.join(', ') || 'unknown'})` }
 }
+
+/**
+ * What must be settled before the setting leaves `naplo` (barracuda, #22
+ * review). At the top of the list, not among its 300 rows.
+ */
+const BEFORE_ENFORCING = [
+  '## Döntendő a bekapcsolás előtt',
+  '',
+  'A beállítás (`ACCESS_MODE`) alapból `naplo`: semmit nem tilt, csak naplózza, mit tiltana. A `kikenyszerit`',
+  'vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:',
+  '',
+  '1. **A telefon hangja (D).** A voice modul minden írása adminisztráció, tehát a `POST /api/voice/stt`, a',
+  '   `/api/voice/tts` és a `/api/voice/modality/set` csak S. Ha a telefonos felület ezeket hívja, a hangja a',
+  '   kikényszerítéskor elnémul. Mérés: a `request_actors` naplóban `device:` szereplő a voice sorokon.',
+  '2. **A jóváhagyás (A).** A `PATCH /api/approvals/:id` csak S. Ma az Acrobot zárja le a jóváhagyásokat Balázs',
+  '   szöveges válasza után. A kikényszerítés ezért a szerver által ellenőrzött Discord-kód (PR 4) előtt nem',
+  '   kapcsolhat be, különben a jóváhagyási lánc megáll.',
+  '3. **A régi token (L) kritikus útjai.** Amit ma a közös token kritikus úton hív, az a kikényszerítéskor',
+  '   eltörik (például a `POST /api/schedules`). A kapcsoló csak akkor fordul, ha az',
+  '   `npx tsx scripts/access-preflight.ts` listája üres (kilépési kód 0): ez a naplóból sorolja fel, mit',
+  '   tiltott volna. Ez eljárás, nem zár: a beállítást a kód nem tagadja meg.',
+  '4. **Az önbevallott szereplők.** Az üzenet feladója, a jóváhagyás eldöntője, az átadó rekord `agent` mezője',
+  '   és a tokenmérési esemény `actor` mezője ma a kérés törzséből jön. Ezeket a szervernek a tokenből kell',
+  '   kitöltenie (a következő PR).',
+]
 
 /** The readable list (docs/access-matrix.md), from the rules and their access. */
 export function renderAccessMatrix(rules: readonly RouteRule[] = ROUTE_RULES): string {
@@ -279,6 +315,8 @@ export function renderAccessMatrix(rules: readonly RouteRule[] = ROUTE_RULES): s
     '',
     '**A D oszlop külön döntés** (acrobot, 2026-10-12, 28623): a D mindent olvas és a szokásos írásokat',
     'megkapja, de adminisztratív és jóváhagyó műveletet nem. Balázs a telepítéskor dönthet másképp.',
+    '',
+    ...BEFORE_ENFORCING,
     '',
     '| Metódus | Útvonal | Osztály | S | A | G | L | D | Csoport | Tulajdonos |',
     '|---|---|---|---|---|---|---|---|---|---|',
