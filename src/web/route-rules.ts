@@ -338,4 +338,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', path: '/api/daily-log', module: 'daily-log', class: 'ERZEKENY' },
   { method: 'GET', path: '/api/daily-log', module: 'daily-log', class: 'OLVASO' },
   { method: 'GET', path: '/api/daily-log/dates', module: 'daily-log', class: 'OLVASO' },
+  // after the inventory: structured task handoff (#16, 2026-10-12)
+  { method: 'POST', path: '/api/tasks/:id/handoffs', module: 'task-handoffs', class: 'ERZEKENY', note: 'append-only handoff record, shared state' },
+  { method: 'GET', path: '/api/tasks/:id/handoffs/latest', module: 'task-handoffs', class: 'OLVASO', note: '?verify=1 calls GitHub with the fleet token server-side; the token is never returned' },
 ]
