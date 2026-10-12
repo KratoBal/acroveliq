@@ -240,10 +240,20 @@ describe('fleet-gate: what passes', () => {
         setUp(MATCH, `${forced}\n`, 0o644, 'Match User fleet\n    AuthorizedKeysFile .ssh/authorized_keys\n'), // an included Match wins
         setUp(MATCH, `${forced}\n`, 0o644, 'AuthorizedKeysFile .ssh/authorized_keys\n'), // an included global setting
         setUp(`Match Group sftp\n    ChrootDirectory /srv\n${MATCH}`, `${forced}\n`), // an unrelated Match is fine
+        setUp(`Match Group docker\n    AuthorizedKeysFile .ssh/authorized_keys\n${MATCH}`, `${forced}\n`), // fleet is in docker
+        setUp(`Match Address 172.17.0.2\n    AuthorizedKeysCommand /usr/bin/kulcs\n${MATCH}`, `${forced}\n`), // by address
+        setUp(`AuthorizedKeysFile .ssh/authorized_keys\n${MATCH}`, `${forced}\n`), // a global one: stricter than needed, the safe way
+        setUp('Match User fleet\n', `${forced}\n`), // our block without its key file
+        setUp(MATCH.replace('/etc/ssh/authorized_keys/%u', '.ssh/authorized_keys'), `${forced}\n`), // our block, the old path
+        setUp(`${MATCH}#AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2\n`, `${forced}\n`), // a comment is fine
+        setUp('Match User fleet\nMatch Group docker\n    AuthorizedKeysFile /etc/ssh/authorized_keys/%u\n', `${forced}\n`), // our path, but in another block
+        setUp(`${MATCH}    ForceCommand /bin/true\n`, `${forced}\n`), // a ForceCommand, even in our block
+        setUp(`ForceCommand /bin/true\n${MATCH}`, `${forced}\n`), // a global ForceCommand
+        setUp(MATCH, `${forced}\n`, 0o644, 'ForceCommand /bin/true\n'), // an included ForceCommand, no Match around it
       ].map(([code]) => code),
       'GATE-SSHD-MATCH',
-    ).toEqual([0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0])
-    expect(setUp(MATCH, `${forced}\n`)[1], 'GATE-SSHD-MATCH output').toBe(`match=1 others=0 dropins=0 keyfile=${OWNER}:644 keys=1 forced=1`)
+    ).toEqual([0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1])
+    expect(setUp(MATCH, `${forced}\n`)[1], 'GATE-SSHD-MATCH output').toBe(`match=1 others=0 keyopts=1 ours=1 forcecmds=0 dropins=0 keyfile=${OWNER}:644 keys=1 forced=1`)
   })
 
   it('GATE-RESTORE-PROBE: on the stage host a throwaway container takes the dump, answers the fixed count and is removed', () => {
