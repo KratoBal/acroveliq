@@ -61,6 +61,9 @@ SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 CANDIDATE = re.compile(r"[A-Za-z0-9_\-.+/=:@~]{8,}")
 DELIMITERS = "=:@/"
 MIN_SECRET = 8
+# A run longer than this (a minified bundle line, a data: URI) is only split at
+# delimiter boundaries, not windowed per length: millions of hashes otherwise
+WINDOW_LIMIT = 4096
 
 # (label, pattern[, replacement]); without a replacement the match becomes [LABEL]
 SECRET_PATTERNS: list[tuple] = [
@@ -90,6 +93,10 @@ PERSONAL_PATTERNS: list[tuple] = [
 ]
 
 
+class HashListUnreadable(Exception):
+    """The hash list exists but cannot be read: the known-value layer is OFF."""
+
+
 def load_hashes(path: Path = HASH_LIST) -> dict[int | None, set[str]]:
     """The hash list: `<sha256> <length>` per line. The length lets a secret
     be found anywhere inside a run, also glued to other text
@@ -98,8 +105,12 @@ def load_hashes(path: Path = HASH_LIST) -> dict[int | None, set[str]]:
     buckets: dict[int | None, set[str]] = {}
     try:
         text = path.read_text()
-    except OSError:
-        return buckets
+    except FileNotFoundError:
+        return buckets  # no list yet: nothing to match, and nothing is hidden
+    except OSError as error:
+        # readable or not is not the same as empty (barracuda, #17): an agent
+        # that cannot read the list must be told its first layer is off
+        raise HashListUnreadable(str(error)) from error
     for line in text.splitlines():
         parts = line.split()
         if not parts or parts[0].startswith("#"):
@@ -136,15 +147,16 @@ class Masker:
             token = match.group(0)
             found: list[tuple[int, int]] = []
             # a known length: every window of that length, anywhere in the run
-            for length, digests in self.sized.items():
+            for length, digests in (self.sized.items() if len(token) <= WINDOW_LIMIT else ()):
                 for a in range(0, len(token) - length + 1):
                     if sha(token[a : a + length]) in digests:
                         found.append((a, a + length))
-            # no length known: stretches between delimiter boundaries
-            if self.unsized:
+            # no length known, or a run too long to window: delimiter boundaries
+            boundary = self.unsized | (set().union(*self.sized.values()) if len(token) > WINDOW_LIMIT and self.sized else set())
+            if boundary:
                 starts = [0] + [i + 1 for i, c in enumerate(token) if c in DELIMITERS]
                 ends = [i for i, c in enumerate(token) if c in DELIMITERS] + [len(token)]
-                found += [(a, b) for a in starts for b in ends if b - a >= MIN_SECRET and sha(token[a:b]) in self.unsized]
+                found += [(a, b) for a in starts for b in ends if b - a >= MIN_SECRET and sha(token[a:b]) in boundary]
             spans = sorted(found, key=lambda span: span[0] - span[1])  # the longest first
             taken: list[tuple[int, int]] = []
             for a, b in spans:
@@ -385,7 +397,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     stamp = now.strftime("%Y%m%dT%H%M%S") + f"{now.microsecond // 1000:03d}Z"
     log_path = directory / f"{stamp}-{kind}.log"
 
-    masker = Masker(load_hashes())
+    try:
+        hashes, hash_warning = load_hashes(), ""
+    except HashListUnreadable as error:
+        hashes, hash_warning = {}, f"a lenyomat-lista nem olvasható ({error}), csak a minták szűrtek"
+    masker = Masker(hashes)
     started = time.monotonic()
     lines: list[str] = []
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
@@ -398,7 +414,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     header = [
         f"# futtat: {' '.join(masker.line(part) for part in command)}",
         f"# fajta={kind} kilepes={code} ido={duration:.1f}s sorok={len(lines)} cserek={masker.count}",
-    ]
+    ] + ([f"# figyelem: {hash_warning}"] if hash_warning else [])
     log_path.write_text("\n".join(header + lines) + "\n")
     grouped = protect_file(log_path, gid)
 
@@ -412,6 +428,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "sorok": len(lines),
         "kihagyott_sorok": max(0, len(lines) - shown),
         "cserek": masker.count,
+        "figyelmeztetes": hash_warning or None,
         "kivonat": body,
     }
     summary_path = log_path.with_suffix(".summary.json")
@@ -423,6 +440,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     for line in body:
         print(line)
     print(f"napló: {log_path} ({summary['kihagyott_sorok']} sor kihagyva; cserék: {masker.count})")
+    if hash_warning:
+        print(f"figyelem: {hash_warning}")
     if gid is None:
         print(f"figyelem: nincs {group_name(args.projekt)} csoport, a napló csak a tulajdonosé (0600)")
     elif not grouped:
@@ -451,7 +470,7 @@ def cmd_keres(args: argparse.Namespace) -> int:
     lines = read_lines(args.naplo)
     # the two header lines repeat the command: a search for a word of the
     # command would always "find" it there; line numbers stay the same
-    body_start = sum(1 for line in lines[:2] if line.startswith("# futtat:") or line.startswith("# fajta="))
+    body_start = sum(1 for line in lines[:3] if line.startswith(("# futtat:", "# fajta=", "# figyelem:")))
     hits = [i for i, line in enumerate(lines) if i >= body_start and pattern.search(line)]
     shown: set[int] = set()
     for i in hits[: args.max]:
@@ -470,7 +489,11 @@ def cmd_lenyomat(args: argparse.Namespace) -> int:
     if short:
         print(f"FAIL: {len(short)} érték 8 karakternél rövidebb, ezt a kimenetben nem lehet biztonságosan keresni", file=sys.stderr)
         return 2
-    known = load_hashes()
+    try:
+        known = load_hashes()
+    except HashListUnreadable as error:
+        print(f"FAIL: a lenyomat-lista nem olvasható: {error}", file=sys.stderr)
+        return 1
     new = [v for v in values if sha(v) not in known.get(len(v), set()) | known.get(None, set())]
     HASH_LIST.parent.mkdir(parents=True, exist_ok=True)
     with HASH_LIST.open("a") as handle:

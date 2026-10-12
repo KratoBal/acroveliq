@@ -11,7 +11,7 @@
 //   - an old log survives retention, or the summary is deleted with it.
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir, userInfo } from 'node:os'
 
@@ -124,6 +124,28 @@ describe('futtat: masking', () => {
       `echo 'TELEGRAM_KEY=YWJjZGVmZ2hpams=='`,
     ].join('; '))
     expect(r.text.split('\n').slice(2, 4), 'FUTTAT-HASH-SPANS').toEqual(['POST /bot[TITOK]/sendMessage', 'TELEGRAM_KEY=[TITOK]'])
+  })
+
+  it('FUTTAT-HASHLIST-UNREADABLE: a hash list that exists but cannot be read is said aloud, and the patterns still run', () => {
+    if (userInfo().uid === 0) return // root reads a 000 file
+    writeFileSync(env.FUTTAT_SECRET_HASHES!, 'abc 12\n')
+    chmodSync(env.FUTTAT_SECRET_HASHES!, 0o000)
+    const r = run(`echo 'kulcs ghp_abcdefghijklmnopqrstuvwxyz0123456789'; exit 5`)
+    chmodSync(env.FUTTAT_SECRET_HASHES!, 0o600)
+    expect([
+      r.code,
+      r.out.includes('a lenyomat-lista nem olvasható'),
+      r.text.split('\n')[2]!.startsWith('# figyelem: a lenyomat-lista nem olvasható'),
+      r.summary.figyelmeztetes?.includes('csak a minták szűrtek'),
+      r.text.includes('kulcs [TITOK]'),
+    ], 'FUTTAT-HASHLIST-UNREADABLE').toEqual([5, true, true, true, true])
+  })
+
+  it('FUTTAT-LONG-RUN: a run over 4096 characters is not windowed, a secret at its delimiters is still found', () => {
+    execFileSync('python3', [SCRIPT, 'lenyomat-hozzaad'], { env, input: 'hosszu-futam-titka-77\n' })
+    const filler = 'a'.repeat(5000)
+    const r = run(`echo '${filler}/hosszu-futam-titka-77/${filler}'`)
+    expect(r.text.split('\n')[2], 'FUTTAT-LONG-RUN').toBe(`${filler}/[TITOK]/${filler}`)
   })
 
   it('refuses a secret value too short to search for, and stores only its hash', () => {
