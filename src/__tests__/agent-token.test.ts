@@ -96,7 +96,9 @@ describe('the bash resolver matches the user name literally', () => {
     // user "a.b" take the agent whose runAsUser is "axb"
     const root = tree({ runAsUser: 'axb' })
     const r = spawnSync('bash', ['-c', `. "${REPO}/scripts/lib/dashboard-token.sh"; dashboard_token_agent "$1" "$2"`, '_', root, 'a.b'], { encoding: 'utf8' })
-    expect(r.stdout.trim()).toBe('')
+    // not axb's agent; the temp tree is the caller's, so the owner branch may
+    // still name the main agent, which is a different, legitimate answer
+    expect(r.stdout.trim()).not.toBe('scout')
     const exact = spawnSync('bash', ['-c', `. "${REPO}/scripts/lib/dashboard-token.sh"; dashboard_token_agent "$1" "$2"`, '_', root, 'axb'], { encoding: 'utf8' })
     expect(exact.stdout.trim()).toBe('scout')
   })
