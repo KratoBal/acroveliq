@@ -1,10 +1,13 @@
 // The scheduled-task fields that run something as the dashboard's own user
 // (command, preCheck) or in another agent's session (targetSession) are
-// written through the API only from Balázs's session, in every access mode
-// (acrobot 28679). Run for real: the schedules route behind an HTTP server,
-// its task directory under a temporary HOME. WHAT TURNS THIS RED:
-//   - the shared token, an agent token or a device sets one of them (403
-//     expected) or changes task-config.json while trying;
+// written through the API only from Balázs's session, under the access
+// setting (field-gate.ts): logged in `naplo`, refused where it enforces. Run
+// for real: the schedules route behind an HTTP server, its task directory
+// under a temporary HOME, an in-memory database. WHAT TURNS THIS RED:
+//   - enforced, the shared token, an agent token or a device sets one of them
+//     (403 expected) or changes task-config.json while trying;
+//   - in `naplo` the write is refused, or goes on without a would-deny row;
+//   - in `legacy-szukitett` the shared token passes, or a device is refused;
 //   - a non-session caller makes a task a command task, on create or update;
 //   - the session cannot set them, or the agents lose `task` and `heartbeat`;
 //   - re-saving a task with its current values (the dashboard form) is refused.
@@ -26,6 +29,8 @@ import { createServer, type Server } from 'node:http'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
+import { initDatabase, getDb } from '../db.js'
+import type { AccessMode } from '../web/access-enforcement.js'
 import { tryHandleSchedules } from '../web/routes/schedules.js'
 import { SCHEDULED_TASKS_DIR, writeScheduledTask } from '../web/scheduled-tasks-io.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -39,11 +44,13 @@ const S: Auth = { kind: 'session', user: 'balazs', actor: 'session:balazs', proj
 let server: Server
 let port = 0
 let auth: Auth = L
+let mode: AccessMode = 'kikenyszerit'
 
 beforeAll(async () => {
+  initDatabase(':memory:')
   server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://x')
-    void tryHandleSchedules({ req, res, path: url.pathname, method: req.method ?? 'GET', url, auth }).then((handled) => {
+    void tryHandleSchedules({ req, res, path: url.pathname, method: req.method ?? 'GET', url, auth, accessMode: mode }).then((handled) => {
       if (!handled) { res.writeHead(404); res.end() }
     })
   })
@@ -61,15 +68,40 @@ const config = (name: string) => {
   return existsSync(file) ? readFileSync(file, 'utf-8') : null
 }
 
-async function call(as: Auth, method: string, path: string, body: unknown): Promise<number> {
+async function call(as: Auth, method: string, path: string, body: unknown, inMode: AccessMode = 'kikenyszerit'): Promise<number> {
   auth = as
+  mode = inMode
   const res = await fetch(`http://127.0.0.1:${port}${path}`, { method, body: JSON.stringify(body) })
   await res.text()
   return res.status
 }
 
 describe('scheduled task: session-only fields', () => {
-  it('SCHEDULE-SESSION-ONLY: no token or device sets command, preCheck, targetSession or a command type; the config stays byte for byte', async () => {
+  it('SCHEDULE-SESSION-ONLY-NAPLO: in naplo the write goes on, as today, and leaves a would-deny row with the fields, not their values', async () => {
+    writeScheduledTask('naplos', { prompt: 'p', schedule: '0 8 * * *', agent: 'murena', type: 'task' })
+    getDb().prepare('DELETE FROM access_decisions').run()
+    const status = await call(L, 'PUT', '/api/schedules/naplos', { type: 'command', command: 'echo titkos-parancs' }, 'naplo')
+    const written = JSON.parse(config('naplos')!) as { command?: string; type?: string }
+    const rows = getDb().prepare('SELECT actor, method, path, outcome, mode, reason FROM access_decisions').all() as Array<Record<string, string>>
+    expect(
+      [status, written.command, written.type, rows.length, rows[0]?.actor, rows[0]?.path, rows[0]?.outcome, rows[0]?.reason.includes('command, type'), JSON.stringify(rows).includes('titkos-parancs')],
+      'SCHEDULE-SESSION-ONLY-NAPLO',
+    ).toEqual([200, 'echo titkos-parancs', 'command', 1, 'legacy', '/api/schedules/:name', 'would-deny', true, false])
+  })
+
+  it('SCHEDULE-SESSION-ONLY-LEGACY-NARROWED: legacy-szukitett refuses the shared token and only logs a device', async () => {
+    writeScheduledTask('szukitett', { prompt: 'p', schedule: '0 8 * * *', agent: 'murena', type: 'task' })
+    getDb().prepare('DELETE FROM access_decisions').run()
+    const legacy = await call(L, 'PUT', '/api/schedules/szukitett', { command: 'id' }, 'legacy-szukitett')
+    const afterLegacy = JSON.parse(config('szukitett')!) as { command?: string }
+    const device = await call(D, 'PUT', '/api/schedules/szukitett', { preCheck: '/tmp/x.sh' }, 'legacy-szukitett')
+    const outcomes = getDb().prepare('SELECT actor, outcome FROM access_decisions ORDER BY actor').all()
+    expect([legacy, afterLegacy.command, device, outcomes], 'SCHEDULE-SESSION-ONLY-LEGACY-NARROWED').toEqual([
+      403, undefined, 200, [{ actor: 'device:telefon', outcome: 'would-deny' }, { actor: 'legacy', outcome: 'denied' }],
+    ])
+  })
+
+  it('SCHEDULE-SESSION-ONLY: enforced, no token or device sets command, preCheck, targetSession or a command type; the config stays byte for byte', async () => {
     expect(SCHEDULED_TASKS_DIR.startsWith(home), 'the task directory is the temporary one').toBe(true)
     writeScheduledTask('meglevo', { prompt: 'p', schedule: '0 8 * * *', agent: 'murena', type: 'task' })
     const before = config('meglevo')

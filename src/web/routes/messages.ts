@@ -17,7 +17,7 @@ import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
-import { LEGACY_ACTOR, claimActor } from '../actor-claims.js'
+import { LEGACY_ACTOR, claimActor, isServerSetSender } from '../actor-claims.js'
 import type { RouteContext } from './types.js'
 
 // Should closing a message produce a reverse "[Eredmény]" notification to its sender?
@@ -60,7 +60,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // `legacy-ismeretlen`, marked unverified (actor-claims.ts).
     const sender = claimActor(ctx.auth, ctx.accessMode ?? 'naplo', claimedFrom, 'messages.from')
     const from = sender.value ?? ''
-    const legacySender = from === LEGACY_ACTOR && !sender.verified
+    // the server wrote it (shared token or device in an enforcing position): no agent to look up
+    const legacySender = isServerSetSender(sender)
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
       return true
@@ -176,7 +177,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // itself -- capped short so it stays a label, not a second content field.
     const note = origin_note?.trim() || ''
     const trimmedOriginNote = legacySender
-      ? `nem ellenőrzött feladó: a régi közös token${note ? `; ${note}` : ''}`.slice(0, 120)
+      ? `nem ellenőrzött feladó: ${from === LEGACY_ACTOR ? 'a régi közös token' : 'eszköz'}${note ? `; ${note}` : ''}`.slice(0, 120)
       : note.slice(0, 120) || null
     const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')

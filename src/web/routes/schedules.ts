@@ -15,10 +15,11 @@ import { listAgentNames } from '../agent-config.js'
 import { readFileOr } from '../agent-config.js'
 import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
-  listScheduledTasks, writeScheduledTask,
+  listScheduledTasks, readScheduledTask, writeScheduledTask,
 } from '../scheduled-tasks-io.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
 import { authorOf } from '../actor-claims.js'
+import { fieldGate } from '../field-gate.js'
 import type { RouteContext } from './types.js'
 
 // Resolve a URL-supplied schedule name to an on-disk dir, blocking path
@@ -39,8 +40,10 @@ function resolveScheduleDir(rawName: string): { name: string; dir: string } | nu
 // Fields that make a task run something as the dashboard's own user (a
 // command task's shell command, a pre-check script) or inside another agent's
 // session (targetSession). Through the API only Balázs's session writes them,
-// in every access mode: this is a privilege escalation, not an access filter,
-// so it does not wait for the setting (acrobot 28679). `type` is closed only
+// under the access setting like every P0-1 rule (Balázs, 2026-10-12 10:58 UTC:
+// nothing is restricted yet): in `naplo` the write goes on and a `would-deny`
+// row is logged; where the setting enforces for the caller, it is a 403
+// (field-gate.ts). `type` is closed only
 // for `command`: the agents create `task` and `heartbeat` tasks through the
 // API today. A value equal to the task's current one is not a change: the
 // dashboard form sends `type` (and a set targetSession) on every save. On
@@ -61,7 +64,9 @@ export function sessionOnlyFieldsSet(ctx: RouteContext, data: unknown, current: 
 function rejectSessionOnly(ctx: RouteContext, data: unknown, name: string, current?: Record<string, unknown>): boolean {
   const set = sessionOnlyFieldsSet(ctx, data, current)
   if (!set.length) return false
-  logger.warn({ name, fields: set, actor: ctx.auth?.actor ?? ctx.auth?.kind }, 'scheduled task: session-only fields refused')
+  const refused = fieldGate(ctx, `schedule-session-fields: ${set.join(', ')} only from the session`)
+  logger.warn({ name, fields: set, actor: ctx.auth?.actor ?? ctx.auth?.kind, refused }, 'scheduled task: session-only fields set by a non-session caller')
+  if (!refused) return false
   json(ctx.res, { error: `only the dashboard session may set ${set.join(', ')} (type only as task or heartbeat)` }, 403)
   return true
 }
@@ -225,10 +230,12 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       json(res, { error: 'Invalid cron expression' }, 400)
       return true
     }
-    // a new prompt is the caller's: the runner frames it by its author (plan 2.3).
-    // The author is never taken from the body.
+    // a CHANGED prompt is the caller's: the runner frames it by its author
+    // (plan 2.3). The same prompt sent again is no change: the dashboard form
+    // sends it on every save (barracuda, #27). The author is never taken from the body.
     const { author: _ignored, ...fields } = data as typeof data & { author?: unknown }
-    writeScheduledTask(name, data.prompt !== undefined ? { ...fields, author: authorOf(ctx.auth) } : fields)
+    const promptChanged = data.prompt !== undefined && data.prompt.trim() !== (readScheduledTask(name)?.prompt ?? '').trim()
+    writeScheduledTask(name, promptChanged ? { ...fields, author: authorOf(ctx.auth) } : fields)
     logger.info({ name }, 'Scheduled task updated')
     json(res, { ok: true })
     return true

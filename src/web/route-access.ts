@@ -297,8 +297,14 @@ const BEFORE_ENFORCING = [
   '4. **Az önbevallott szereplők.** Az üzenet feladóját, a jóváhagyás kérőjét és eldöntőjét, az átadó rekord',
   '   `agent` mezőjét, a tokenmérési esemény `actor` mezőjét és az ütemezett feladat szerzőjét a szerver a',
   '   tokenből tölti ki (`src/web/actor-claims.ts`). A régi közös token senkit nem nevez meg: `naplo` állásban',
-  '   az ő mezője önbevallott marad, a másik két állásban `legacy-ismeretlen`, nem ellenőrzött jelöléssel. A',
-  '   bekapcsolás előtt tehát minden ágensnek saját tokennel kell hívnia, különben a feladója ismeretlen lesz.',
+  '   az ő mezője önbevallott marad, a másik két állásban `legacy-ismeretlen`, nem ellenőrzött jelöléssel. Egy',
+  '   eszköz `kikenyszerit` állásban `device:<név>` néven ír, nem bármelyik ágens nevében. A bekapcsolás előtt',
+  '   tehát minden ágensnek saját tokennel kell hívnia, különben a feladója ismeretlen lesz.',
+  '5. **Az ütemezett feladatok.** A `command`, `preCheck` és `targetSession` mezőt (és a `command` típust) API-n',
+  '   csak a munkamenet írhatja: `naplo` állásban ez csak `would-deny` sor, kikényszerítve 403. Az ágens vagy a',
+  '   közös token által írt feladat a kikényszerítő állásban társ-kerettel fut, nem operátor-kerettel; `naplo`',
+  '   állásban marad az operátor-keret, és a futtató naplózza, mi lenne. A váltás után tehát az Acrobot API-n',
+  '   létrehozott feladatai is kérésként érkeznek.',
 ]
 
 /** The readable list (docs/access-matrix.md), from the rules and their access. */

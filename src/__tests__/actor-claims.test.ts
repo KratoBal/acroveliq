@@ -95,7 +95,7 @@ async function call(as: Auth, method: string, path: string, body: unknown, inMod
 }
 
 describe('actor claims: the rule', () => {
-  it('CLAIM-RULE: an agent token names the caller; the shared token keeps its claim only in naplo; the session and a device keep theirs', () => {
+  it('CLAIM-RULE: an agent token names the caller; the shared token and a device keep their claim only where the setting does not enforce for them; the session keeps its', () => {
     const other: Auth = { kind: 'token', actor: 'acrobot', project: 'masik' }
     expect(
       [
@@ -106,7 +106,9 @@ describe('actor claims: the rule', () => {
         claimActor(L, 'legacy-szukitett', 'nautilus', 'f'),
         claimActor(L, 'kikenyszerit', 'nautilus', 'f'),
         claimActor(S, 'kikenyszerit', 'balazs', 'f'),
-        claimActor(D, 'kikenyszerit', 'balazs', 'f'),
+        claimActor(D, 'naplo', 'acrobot', 'f'),
+        claimActor(D, 'legacy-szukitett', 'acrobot', 'f'),
+        claimActor(D, 'kikenyszerit', 'acrobot', 'f'),
         [G, S, D, L, undefined].map(authorOf),
       ],
       'CLAIM-RULE',
@@ -118,7 +120,9 @@ describe('actor claims: the rule', () => {
       { value: LEGACY_ACTOR, verified: false },
       { value: LEGACY_ACTOR, verified: false },
       { value: 'balazs', verified: true },
-      { value: 'balazs', verified: false },
+      { value: 'acrobot', verified: false },
+      { value: 'acrobot', verified: false },
+      { value: 'device:telefon', verified: false }, // a stolen phone key does not write as an agent
       ['murena', 'session:balazs', 'device:telefon', LEGACY_ACTOR, LEGACY_ACTOR],
     ])
   })
@@ -130,6 +134,8 @@ describe('actor claims: through the handlers', () => {
     const missing = await call(G, 'POST', '/api/messages', { to: 'nautilus', content: 'x' })
     const legacyNaplo = await call(L, 'POST', '/api/messages', { from: 'nautilus', to: 'murena', content: 'x' })
     const legacyEnforced = await call(L, 'POST', '/api/messages', { from: 'nautilus', to: 'murena', content: 'x', origin_note: 'kartya 7' }, 'kikenyszerit')
+    const deviceNaplo = await call(D, 'POST', '/api/messages', { from: 'acrobot', to: 'murena', content: 'x' })
+    const deviceEnforced = await call(D, 'POST', '/api/messages', { from: 'acrobot', to: 'murena', content: 'x' }, 'kikenyszerit')
     const stored = (r: { body: Record<string, unknown> }) => getAgentMessage(Number(r.body.id))
     expect(
       [
@@ -139,9 +145,12 @@ describe('actor claims: through the handlers', () => {
         stored(legacyNaplo)?.origin_note,
         stored(legacyEnforced)?.from_agent,
         stored(legacyEnforced)?.origin_note,
+        stored(deviceNaplo)?.from_agent,
+        stored(deviceEnforced)?.from_agent,
+        stored(deviceEnforced)?.origin_note,
       ],
       'CLAIM-MESSAGE',
-    ).toEqual(['murena', 'murena', 'nautilus', null, LEGACY_ACTOR, 'nem ellenőrzött feladó: a régi közös token; kartya 7'])
+    ).toEqual(['murena', 'murena', 'nautilus', null, LEGACY_ACTOR, 'nem ellenőrzött feladó: a régi közös token; kartya 7', 'acrobot', 'device:telefon', 'nem ellenőrzött feladó: eszköz'])
   })
 
   it('CLAIM-APPROVAL: the decider and the requester are the credential\'s; an agent cannot approve its own request by naming someone else', async () => {
@@ -179,34 +188,44 @@ describe('actor claims: through the handlers', () => {
     ).toEqual([201, 'murena', 201, 'murena', 201, 'murena'])
   })
 
-  it('CLAIM-SCHEDULE-AUTHOR: a task\'s author is the credential\'s, never the body\'s; a new prompt takes the new writer', async () => {
+  it('CLAIM-SCHEDULE-AUTHOR: a task\'s author is the credential\'s, never the body\'s; a changed prompt takes the new writer, the same prompt sent again does not', async () => {
     const created = await call(G, 'POST', '/api/schedules', { name: 'murena-uj', prompt: 'p', schedule: '0 8 * * *', agent: 'murena', author: 'session:balazs' })
     const afterCreate = readScheduledTask('murena-uj')?.author
     await call(G, 'PUT', '/api/schedules/murena-uj', { schedule: '0 9 * * *', author: 'session:balazs' })
     const afterReschedule = readScheduledTask('murena-uj')?.author
     await call(S, 'PUT', '/api/schedules/murena-uj', { prompt: 'q' })
     const afterSession = readScheduledTask('murena-uj')?.author
+    // the dashboard form re-saves the same prompt from the phone: no new author
+    await call(D, 'PUT', '/api/schedules/murena-uj', { prompt: ' q ', schedule: '0 7 * * *' })
+    const afterResave = readScheduledTask('murena-uj')?.author
     await call(L, 'PUT', '/api/schedules/murena-uj', { prompt: 'r' })
     const afterLegacy = readScheduledTask('murena-uj')?.author
     const raw = JSON.parse(readFileSync(join(SCHEDULED_TASKS_DIR, 'murena-uj', 'task-config.json'), 'utf-8')) as Record<string, unknown>
-    expect([created.status, afterCreate, afterReschedule, afterSession, afterLegacy, raw.author], 'CLAIM-SCHEDULE-AUTHOR').toEqual([
-      200, 'murena', 'murena', 'session:balazs', LEGACY_ACTOR, LEGACY_ACTOR,
+    expect([created.status, afterCreate, afterReschedule, afterSession, afterResave, afterLegacy, raw.author], 'CLAIM-SCHEDULE-AUTHOR').toEqual([
+      200, 'murena', 'murena', 'session:balazs', 'session:balazs', LEGACY_ACTOR, LEGACY_ACTOR,
     ])
   })
 
-  it('CLAIM-SCHEDULE-FRAME: the operator frame only for a task the operator wrote; an agent\'s task is a peer\'s request, named', () => {
-    const frame = (author?: string) => scheduledTaskPrompt({ name: 'f', author }, '[Utemezett feladat: f]', 'csinald meg')
+  it('CLAIM-SCHEDULE-FRAME: enforced, the operator frame only for a task the operator wrote, others are a peer\'s request, named; in naplo nothing changes; legacy-szukitett frames only the shared token\'s', () => {
+    const frame = (author?: string, mode: AccessMode = 'kikenyszerit') =>
+      scheduledTaskPrompt({ name: 'f', author }, '[Utemezett feladat: f]', 'csinald meg', mode)
     const disk = frame(undefined)
     const session = frame('session:balazs')
     const agent = frame('murena')
     const legacy = frame(LEGACY_ACTOR)
     const odd = frame('device:te"le fon')
+    const naplo = [frame('murena', 'naplo'), frame(LEGACY_ACTOR, 'naplo'), frame('device:telefon', 'naplo')]
+    const narrowed = [frame(LEGACY_ACTOR, 'legacy-szukitett'), frame('murena', 'legacy-szukitett')]
     const operator = (p: string) => p.startsWith(SCHEDULED_TASK_PREAMBLE) && p.includes('<scheduled-task source="scheduled-task:f">')
     const peer = (p: string, who: string) =>
       p.startsWith(TRUSTED_PEER_PREAMBLE) && !p.includes(SCHEDULED_TASK_PREAMBLE) && p.includes(`<trusted-peer source="agent:${who}">`) && p.includes(`@${who}`)
     expect(
-      [operator(disk), operator(session), peer(agent, 'murena'), peer(legacy, LEGACY_ACTOR), peer(odd, 'device:telefon'), operator(agent)],
+      [
+        operator(disk), operator(session), peer(agent, 'murena'), peer(legacy, LEGACY_ACTOR), peer(odd, 'device:telefon'), operator(agent),
+        naplo.map(operator),
+        [peer(narrowed[0]!, LEGACY_ACTOR), operator(narrowed[1]!)],
+      ],
       'CLAIM-SCHEDULE-FRAME',
-    ).toEqual([true, true, true, true, true, false])
+    ).toEqual([true, true, true, true, true, false, [true, true, true], [true, true]])
   })
 })
