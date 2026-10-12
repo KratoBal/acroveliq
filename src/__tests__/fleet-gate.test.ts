@@ -141,16 +141,16 @@ describe('fleet-gate: what passes', () => {
   it('GATE-PSQL-RO: SQL on stdin, the read-only default set, the format from a fixed list', () => {
     const p = world(PROD)
     const s = world(STAGE)
-    const plain = p.run(`psql-ro ${OS_DB} acropora acropora`, 'select 1;')
+    const plain = p.run(`psql-ro ${OS_DB} acropora`, 'select 1;')
     const sentSql = readFileSync(p.sql, 'utf-8')
-    const spaced = p.run(`psql-ro ${OS_DB} acropora acropora tuples-spaced-pipe`, 'select 1;')
+    const spaced = p.run(`psql-ro ${OS_DB} acropora tuples-spaced-pipe`, 'select 1;')
     const call = (r: { calls: string[] }) => r.calls.find((c) => c.startsWith('docker [exec]'))
-    expect([plain.code, plain.out.trim(), sentSql, call(plain), call(spaced), s.run('psql-ro coolify-db coolify coolify tuples', 'select 1;').code], 'GATE-PSQL-RO').toEqual([
+    expect([plain.code, plain.out.trim(), sentSql, call(plain), call(spaced), s.run('psql-ro coolify-db coolify tuples', 'select 1;').code], 'GATE-PSQL-RO').toEqual([
       0,
       'sor',
       'select 1;\n',
-      `docker [exec] [-i] [-e] [PGOPTIONS=-c default_transaction_read_only=on] [${OS_DB}-163020] [psql] [-X] [-q] [-v] [ON_ERROR_STOP=1] [-U] [acropora] [-d] [acropora]`,
-      `docker [exec] [-i] [-e] [PGOPTIONS=-c default_transaction_read_only=on] [${OS_DB}-163020] [psql] [-X] [-q] [-v] [ON_ERROR_STOP=1] [-U] [acropora] [-d] [acropora] [-tA] [-F] [ | ]`,
+      `docker [exec] [-i] [-e] [PGOPTIONS=-c default_transaction_read_only=on] [${OS_DB}-163020] [psql] [-X] [-q] [-v] [ON_ERROR_STOP=1] [-U] [fleet_ro] [-d] [acropora]`,
+      `docker [exec] [-i] [-e] [PGOPTIONS=-c default_transaction_read_only=on] [${OS_DB}-163020] [psql] [-X] [-q] [-v] [ON_ERROR_STOP=1] [-U] [fleet_ro] [-d] [acropora] [-tA] [-F] [ | ]`,
       2, // the Coolify database is not a psql-ro target: writing it is root on the host
     ])
   })
@@ -292,11 +292,13 @@ describe('fleet-gate: what does not pass', () => {
       [p, 'ps -a'],
       [p, 'system-df -v'],
       [p, 'df /etc'],
-      [p, `psql-ro ${OS_DB} postgres postgres`, 'select 1;'],
-      [p, 'psql-ro idegen-kontener acropora acropora', 'select 1;'],
-      [p, `psql-ro ${OS_DB} acropora acropora html`, 'select 1;'],
-      [p, `psql-ro ${OS_DB} acropora acropora`, '\\! id'],
-      [p, `psql-ro ${OS_DB} acropora acropora`, 'select 1 \\g /tmp/x'],
+      [p, `psql-ro ${OS_DB} acropora acropora`, 'select 1;'], // the caller names no user any more: the role is the gate's
+      [p, `psql-ro ${OS_DB} postgres`, 'select 1;'], // another database
+      [p, 'psql-ro idegen-kontener acropora', 'select 1;'],
+      [p, `psql-ro ${OS_DB} acropora html`, 'select 1;'],
+      [p, `psql-ro ${OS_DB} acropora tuples extra`, 'select 1;'], // a word too many
+      [p, `psql-ro ${OS_DB} acropora`, '\\! id'],
+      [p, `psql-ro ${OS_DB} acropora`, 'select 1 \\g /tmp/x'],
       [p, `pg-dump ${OS_DB} acropora postgres`],
       [p, `pg-dump ${AI_DB} acropora_ai acropora_ai`], // the AI database is the other host's
       [p, 'image-prune-2h'], // stage only
@@ -312,7 +314,7 @@ describe('fleet-gate: what does not pass', () => {
       [s, `backup-put dump acropora ${today()} abc`, 'x'], // not 64 long
       [s, `backup-sum dump acropora ${today()}`], // stage hands out only the AI dump
       [p, 'env-names x'],
-      [s, 'psql-ro coolify-db coolify coolify', 'select 1;'],
+      [s, 'psql-ro coolify-db coolify', 'select 1;'],
       [p, 'x'.repeat(201)],
     ]
     const wrong: string[] = []
@@ -367,7 +369,7 @@ describe('fleet-gate: the callers', () => {
     // [the caller, the host, the command it sends, text the caller must hold for it]
     const sent: Array<[string, string, string, string]> = [
       ['scripts/eles-verziok.sh', PROD, 'ps', '  ps 2>&1'],
-      ['scripts/jev/build_known.py', PROD, `psql-ro ${OS_DB} acropora acropora tuples-pipe`, '"psql-ro", CONTAINER, "acropora", "acropora", "tuples-pipe"'],
+      ['scripts/jev/build_known.py', PROD, `psql-ro ${OS_DB} acropora tuples-pipe`, '"psql-ro", CONTAINER, "acropora", "tuples-pipe"'],
       ['scripts/kirakat-telepites.sh', STAGE, 'coolify-deployments 6sbolw7oedo5sdffhpswdoyt', 'coolify-deployments "$UUID_APP"'],
       ['scripts/kirakat-telepites.sh', STAGE, 'coolify-deploy-log 6sbolw7oedo5sdffhpswdoyt', 'coolify-deploy-log "$2"'],
       ['scripts/lemez-allapot.sh', PROD, 'df', 'prod df'],
@@ -377,11 +379,11 @@ describe('fleet-gate: the callers', () => {
       ['scripts/lemez-allapot.sh', STAGE, 'builder-prune', 'builder-prune'],
       ['scripts/precheck/stage-gyorsitotar.sh', STAGE, 'df -P', 'gate df -P'],
       ['scripts/precheck/stage-gyorsitotar.sh', STAGE, 'system-df --format', 'gate system-df --format'],
-      ['scripts/szamla-dupla-ellenorzo.sh', PROD, `psql-ro ${OS_DB} acropora acropora tuples-spaced-pipe`, `psql-ro ${OS_DB} acropora acropora tuples-spaced-pipe`],
+      ['scripts/szamla-dupla-ellenorzo.sh', PROD, `psql-ro ${OS_DB} acropora tuples-spaced-pipe`, `psql-ro ${OS_DB} acropora tuples-spaced-pipe`],
       ['scripts/ai-db-nas-mentes.sh', STAGE, `pg-dump ${AI_DB} acropora_ai acropora_ai`, 'pg-dump "$AI_CONTAINER" "$AI_DB_NAME" "$AI_DB_USER"'],
       ['scripts/ai-db-nas-mentes.sh', STAGE, `pg-restore-list ${AI_DB}`, 'pg-restore-list "$AI_CONTAINER"'],
       ['scripts/visszaallitasi-proba.sh', STAGE, 'restore-probe', 'sssh restore-probe'],
-      ['scripts/visszaallitasi-proba.sh', STAGE, `psql-ro ${AI_DB} acropora_ai acropora_ai tuples`, 'sssh psql-ro "$AI_LIVE" acropora_ai acropora_ai tuples'],
+      ['scripts/visszaallitasi-proba.sh', STAGE, `psql-ro ${AI_DB} acropora_ai tuples`, 'sssh psql-ro "$AI_LIVE" acropora_ai tuples'],
     ]
     const worlds: Record<string, ReturnType<typeof world>> = { [PROD]: world(PROD), [STAGE]: world(STAGE) }
     const wrong: string[] = []

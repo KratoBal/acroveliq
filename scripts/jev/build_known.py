@@ -53,7 +53,7 @@ union all select 'PERSON', "signerName" from "WorksheetVersionSignature"
 def fetch():
     # fleet-gate (B8): read-only psql, SQL on stdin, unaligned tuples with "|"
     cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-i", KEY, HOST,
-           "psql-ro", CONTAINER, "acropora", "acropora", "tuples-pipe"]
+           "psql-ro", CONTAINER, "acropora", "tuples-pipe"]
     r = subprocess.run(cmd, input=SQL.encode(), capture_output=True, timeout=120)
     if r.returncode != 0:
         # stderr can quote the query, never row data; still print only the first line

@@ -62,7 +62,9 @@ host_config() {
   case "$HOST" in
     acropora-prod-01)
       OPS="ps system-df df uptime reboot-required apt-check builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-sum backup-put backup-prune"
-      PSQL_TARGETS="iwm34jaqp9xmwb72qkrqkwhy:acropora:acropora"
+      # psql-ro connects as fleet_ro, a read-only role (pg_read_all_data, no
+      # superuser): docs/fleet-gate.md, "A csak olvasó szerep"
+      PSQL_TARGETS="iwm34jaqp9xmwb72qkrqkwhy:acropora:fleet_ro"
       DUMP_TARGETS="iwm34jaqp9xmwb72qkrqkwhy:acropora:acropora xdfswedgxuehokvymhjotpfs:medusa:postgres"
       RESTORE_LIST_KEYS="iwm34jaqp9xmwb72qkrqkwhy xdfswedgxuehokvymhjotpfs"
       DOCSTORE_KEY="t9gxx94ecwekwruxngps5i6v"
@@ -76,7 +78,7 @@ host_config() {
       # NOT coolify-db: who writes the Coolify database decides what Coolify
       # deploys, with which mounts; that is root on the host (barracuda, #28).
       # Its two reads are named operations with the SQL built here.
-      PSQL_TARGETS="cpnjvtte02yakzs9vb0jffky:acropora_ai:acropora_ai"
+      PSQL_TARGETS="cpnjvtte02yakzs9vb0jffky:acropora_ai:fleet_ro"
       DUMP_TARGETS="cpnjvtte02yakzs9vb0jffky:acropora_ai:acropora_ai"
       RESTORE_LIST_KEYS="cpnjvtte02yakzs9vb0jffky"
       BACKUP_GET="dump:acropora_ai"
@@ -176,11 +178,19 @@ case "$OP" in
     exec "$DOCKER" image prune -a -f --filter until=2h
     ;;
   psql-ro)
-    # psql-ro <container> <db> <user> [plain|tuples|tuples-pipe|tuples-spaced-pipe], SQL on stdin
-    [ "$NARGS" -eq 3 ] || [ "$NARGS" -eq 4 ] || deny "'psql-ro': <konténer> <adatbázis> <felhasználó> [formátum]"
-    in_targets "${W[1]}:${W[2]}:${W[3]}" "$PSQL_TARGETS" || deny "'psql-ro': ez a konténer, adatbázis és felhasználó nincs a listán"
+    # psql-ro <key> <db> [plain|tuples|tuples-pipe|tuples-spaced-pipe], SQL on stdin.
+    # The database user is NOT the caller's: it is the read-only role the host
+    # table names for this key and database (Balázs, 12:23 UTC: the read-only
+    # default alone is not enough; a superuser session could turn it off, and
+    # COPY ... TO PROGRAM would be a shell in the container).
+    [ "$NARGS" -eq 2 ] || [ "$NARGS" -eq 3 ] || deny "'psql-ro': <kulcs> <adatbázis> [formátum]"
+    ROLE=""
+    for t in $PSQL_TARGETS; do
+      case "$t" in "${W[1]}:${W[2]}:"*) ROLE="${t##*:}" ;; esac
+    done
+    [ -n "$ROLE" ] || deny "'psql-ro': ez a konténer és adatbázis nincs a listán"
     FLAGS=()
-    case "${W[4]:-plain}" in
+    case "${W[3]:-plain}" in
       plain) ;;
       tuples) FLAGS=(-tA) ;;
       tuples-pipe) FLAGS=(-tA -F '|') ;;
@@ -192,9 +202,9 @@ case "$OP" in
     # a backslash starts a psql meta-command (\! runs a shell in the container)
     case "$SQL" in *\\*) deny "'psql-ro': backslash az SQL-ben (psql meta-parancs)" ;; esac
     C="$(resolve "${W[1]}")" || exit 2
-    allow psql-ro "${W[1]}" "${W[2]}" "${W[3]}"
+    allow psql-ro "${W[1]}" "${W[2]}" "$ROLE"
     printf '%s\n' "$SQL" | exec "$DOCKER" exec -i -e 'PGOPTIONS=-c default_transaction_read_only=on' "$C" \
-      psql -X -q -v ON_ERROR_STOP=1 -U "${W[3]}" -d "${W[2]}" "${FLAGS[@]}"
+      psql -X -q -v ON_ERROR_STOP=1 -U "$ROLE" -d "${W[2]}" "${FLAGS[@]}"
     ;;
   pg-dump)
     args 3
