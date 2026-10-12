@@ -21,7 +21,16 @@ export interface RouteContext {
    *  'session' kind; `peer` mirrors fedPeer for the 'federation' kind;
    *  `device` is the key name for the 'device' kind. Lets routes distinguish
    *  a human session from a token/fleet caller or an enrolled device. */
-  auth?: { kind: 'token' | 'session' | 'federation' | 'device'; user?: string; peer?: string; device?: string; deviceId?: number }
+  auth?: {
+    kind: 'token' | 'session' | 'federation' | 'device'
+    user?: string
+    peer?: string
+    device?: string
+    deviceId?: number
+    /** Who is calling (acrovelIQ P0-1): an agent's name, `legacy` for the shared token. Not used for decisions yet. */
+    actor?: string
+    project?: string
+  }
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<boolean>

@@ -7,6 +7,8 @@ import { runLsof } from './lsof.js'
 import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID } from './config.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
+import { actorOf, recordRequestActor } from './web/auth-principals.js'
+import { getDb } from './db.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
 import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-origin.js'
@@ -158,11 +160,14 @@ export function startWebServer(port = 3420): http.Server {
       return
     }
     const fedPeerForCtx: string | null = auth.kind === 'federation' ? auth.peer : null
+    // the caller, recorded per request (acrovelIQ P0-1, step 1): measured, never enforced here
+    const caller = actorOf(auth)
+    recordRequestActor(getDb(), auth, method, path, Math.floor(Date.now() / 1000))
     const ctxAuth =
-      auth.kind === 'token' ? { kind: 'token' as const }
-      : auth.kind === 'device' ? { kind: 'device' as const, device: auth.device, deviceId: auth.deviceId }
-      : auth.kind === 'session' ? { kind: 'session' as const, user: auth.user }
-      : auth.kind === 'federation' ? { kind: 'federation' as const, peer: auth.peer }
+      auth.kind === 'token' ? { kind: 'token' as const, ...caller }
+      : auth.kind === 'device' ? { kind: 'device' as const, device: auth.device, deviceId: auth.deviceId, ...caller }
+      : auth.kind === 'session' ? { kind: 'session' as const, user: auth.user, ...caller }
+      : auth.kind === 'federation' ? { kind: 'federation' as const, peer: auth.peer, ...caller }
       : undefined
 
     // The mobile-login QR needs a URL the phone can actually reach. When the
