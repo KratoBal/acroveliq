@@ -8,7 +8,9 @@
 // user exists.
 //
 // Precedence (first match wins):
-//   1. Authorization: Bearer <dashboard token>   -> { kind: 'token' }
+//   1. Authorization: Bearer <dashboard token>   -> { kind: 'token' }  (the shared token: actor `legacy`)
+//   1b. Authorization: Bearer <principal token>  -> { kind: 'token', principal }  (an agent's own token,
+//                                                   acrovelIQ P0-1; the same kind, so nothing is forbidden yet)
 //   2. Authorization: Bearer <device key>        -> { kind: 'device', device, deviceId }
 //   3. SSE pane-stream ?token=<dashboard token>   -> { kind: 'token' }  (path-scoped)
 //   4. SSE pane-stream ?token=<device key>        -> { kind: 'device' } (path-scoped)
@@ -25,9 +27,11 @@ import { checkBearerToken } from './dashboard-auth.js'
 import { identifyFederationCaller } from './federation/config.js'
 import { resolveSession } from './auth-sessions.js'
 import { resolveDeviceKey } from './auth-device-keys.js'
+import { resolvePrincipalToken, type Principal } from './auth-principals.js'
+import { getDb } from '../db.js'
 
 export type AuthResult =
-  | { kind: 'token' }
+  | { kind: 'token'; principal?: Principal }
   | { kind: 'device'; device: string; deviceId: number }
   | { kind: 'federation'; peer: string }
   | { kind: 'session'; user: string }
@@ -89,6 +93,10 @@ export function resolveAuth(
   //    rows the whole step never resolves -- fresh installs unaffected).
   const bearerMatch = /^Bearer\s+(.+)$/.exec(req.headers.authorization ?? '')
   if (bearerMatch) {
+    // 1b. an agent's own token: recognised by its prefix, so every other bearer
+    //     skips this lookup. Same kind as the shared token: forbids nothing.
+    const principal = resolvePrincipalToken(getDb(), bearerMatch[1]!.trim(), Math.floor(Date.now() / 1000))
+    if (principal) return { kind: 'token', principal }
     const dk = resolveDeviceKey(bearerMatch[1]!.trim())
     if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id }
   }
