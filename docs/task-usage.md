@@ -49,6 +49,16 @@ hívása az első `fix_started` után javítás, előtte munka. Ha egy korábbi 
 ugyanaz a briefje, a munka és a javítás ismételt munka. A kísérlet változatai (közös
 szülő) szándékosan ugyanazt a briefet kapják: a szülő és a testvér nem teszi ismételtté.
 
+## Az események írásának két szokása
+
+- Az `assigned` szereplője a **kiadó** (acrobot), ne a munkás. A munkás nevén álló
+  `assigned` admin-ablakot nyitna nála a sorban álló feladatain, és amíg egy másikon
+  dolgozik, az munka-átfedés: a feladata érvénytelen lenne.
+- A kísérlet szülője az **eredeti feladat** legyen. Ha a szülő egy külön „próba”
+  feladat, és az eredeti ugyanazzal a briefjel korábban rögzítve van, mindhárom
+  változat „ismételt munka” lesz (egyformán, tehát az összevetést nem torzítja, csak
+  a címkét).
+
 ## Használat
 
 ```bash
