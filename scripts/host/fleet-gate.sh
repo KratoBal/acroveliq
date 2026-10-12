@@ -29,6 +29,7 @@ UPTIME=/usr/bin/uptime
 APT_CHECK=/usr/lib/update-notifier/apt-check
 REBOOT_FILE=/var/run/reboot-required
 SSHD_CONFIG=/etc/ssh/sshd_config
+SSHD_CONFIG_D=/etc/ssh/sshd_config.d
 KEYFILE=/etc/ssh/authorized_keys/fleet
 KEYFILE_EXPECT="root:root:644"
 # the fleet user's home from the account database, not from the environment
@@ -173,10 +174,24 @@ case "$OP" in
     # the root-owned key file, that file's owner and mode, and the forced
     # command on its key line. A package update replacing sshd_config would take
     # the Match block and the gate with it, silently (barracuda, #30). EVERY key
-    # line must be forced: a second, plain line would be a way around. Reads
-    # only; both files are world-readable. Exit 1 when anything is off.
+    # line must be forced: a second, plain line would be a way around. And sshd
+    # takes the FIRST value of a keyword: a Match block in sshd_config.d (the
+    # Include stands at the top of the main file) or an earlier Match covering
+    # fleet or all would win over ours at the end (barracuda, #31). Reads only;
+    # all these files are world-readable. Exit 1 when anything is off. The full
+    # proof stays `sshd -T -C user=fleet,...` at install time.
     args 0; allow sshd-match
-    match=$(grep -c '^Match User fleet' "$SSHD_CONFIG" 2>/dev/null || true)
+    match=$(grep -cE '^Match[[:space:]]+User[[:space:]]+fleet[[:space:]]*$' "$SSHD_CONFIG" 2>/dev/null || true)
+    # another Match line in the main file that names fleet or all
+    others=$(grep -iE '^[[:space:]]*Match[[:space:]]' "$SSHD_CONFIG" 2>/dev/null \
+      | grep -vE '^Match[[:space:]]+User[[:space:]]+fleet[[:space:]]*$' \
+      | grep -ciE '[[:space:],!*](fleet|all)([[:space:],]|$)' || true)
+    # any Match or authorized-keys setting in the included files
+    dropins=0
+    if [ -d "$SSHD_CONFIG_D" ]; then
+      dropins=$(find "$SSHD_CONFIG_D" -maxdepth 1 -type f -name '*.conf' -exec cat {} + 2>/dev/null \
+        | grep -ciE '^[[:space:]]*(Match|AuthorizedKeysFile|AuthorizedKeysCommand)[[:space:]]' || true)
+    fi
     if [ -f "$KEYFILE" ]; then
       keyfile="$(stat -c '%U:%G:%a' "$KEYFILE")"
       forced=$(grep -c '^restrict,from="[^"]*",command="/usr/local/sbin/fleet-gate" ' "$KEYFILE" || true)
@@ -186,8 +201,9 @@ case "$OP" in
       forced=0
       keys=0
     fi
-    echo "match=${match:-0} keyfile=$keyfile keys=${keys:-0} forced=${forced:-0}"
-    [ "${match:-0}" = 1 ] && [ "$keyfile" = "$KEYFILE_EXPECT" ] && [ "${keys:-0}" -ge 1 ] && [ "${forced:-0}" = "${keys:-0}" ] || exit 1
+    echo "match=${match:-0} others=${others:-0} dropins=${dropins:-0} keyfile=$keyfile keys=${keys:-0} forced=${forced:-0}"
+    [ "${match:-0}" = 1 ] && [ "${others:-0}" = 0 ] && [ "${dropins:-0}" = 0 ] \
+      && [ "$keyfile" = "$KEYFILE_EXPECT" ] && [ "${keys:-0}" -ge 1 ] && [ "${forced:-0}" = "${keys:-0}" ] || exit 1
     exit 0
     ;;
   apt-check)

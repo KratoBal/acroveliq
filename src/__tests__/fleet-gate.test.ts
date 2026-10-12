@@ -78,6 +78,7 @@ esac`,
       `REBOOT_FILE=${join(dir, 'reboot-required')}`,
       `BACKUP_ROOT=${join(dir, 'backups')}`,
       `SSHD_CONFIG=${join(dir, 'sshd_config')}`,
+      `SSHD_CONFIG_D=${join(dir, 'sshd_config.d')}`,
       `KEYFILE=${join(dir, 'fleet.keys')}`,
       // the test cannot own a file as root: the expected owner is the test's own
       `KEYFILE_EXPECT="${OWNER}:644"`,
@@ -206,11 +207,16 @@ describe('fleet-gate: what passes', () => {
     const w = world(PROD)
     const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKitalaltKulcsAnyag fleet'
     const forced = `restrict,from="172.17.0.2",command="/usr/local/sbin/fleet-gate" ${KEY}`
-    const setUp = (config: string | null, keys: string | null, mode = 0o644) => {
+    const setUp = (config: string | null, keys: string | null, mode = 0o644, dropin: string | null = null) => {
       const cfg = join(w.dir, 'sshd_config')
       const kf = join(w.dir, 'fleet.keys')
+      const dir = join(w.dir, 'sshd_config.d')
       rmSync(cfg, { force: true })
       rmSync(kf, { force: true })
+      rmSync(dir, { recursive: true, force: true })
+      mkdirSync(dir)
+      writeFileSync(join(dir, '50-cloud-init.conf'), 'PasswordAuthentication no\n')
+      if (dropin !== null) writeFileSync(join(dir, '60-masik.conf'), dropin)
       if (config !== null) writeFileSync(cfg, config)
       if (keys !== null) {
         writeFileSync(kf, keys)
@@ -229,10 +235,15 @@ describe('fleet-gate: what passes', () => {
         setUp(MATCH, `${forced}\n${KEY}\n`), // a second, plain key line
         setUp(MATCH, `command="/usr/local/sbin/fleet-gate" ${KEY}\n`), // forced, but without restrict and from=
         setUp(`${MATCH}${MATCH}`, `${forced}\n`), // twice
+        setUp(MATCH.replace('Match User fleet', 'Match User fleetadmin'), `${forced}\n`), // another user, not a prefix match
+        setUp(`Match all\n    AuthorizedKeysFile .ssh/authorized_keys\n${MATCH}`, `${forced}\n`), // an earlier Match all wins
+        setUp(MATCH, `${forced}\n`, 0o644, 'Match User fleet\n    AuthorizedKeysFile .ssh/authorized_keys\n'), // an included Match wins
+        setUp(MATCH, `${forced}\n`, 0o644, 'AuthorizedKeysFile .ssh/authorized_keys\n'), // an included global setting
+        setUp(`Match Group sftp\n    ChrootDirectory /srv\n${MATCH}`, `${forced}\n`), // an unrelated Match is fine
       ].map(([code]) => code),
       'GATE-SSHD-MATCH',
-    ).toEqual([0, 1, 1, 1, 1, 1, 1])
-    expect(setUp(MATCH, `${forced}\n`)[1], 'GATE-SSHD-MATCH output').toBe(`match=1 keyfile=${OWNER}:644 keys=1 forced=1`)
+    ).toEqual([0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0])
+    expect(setUp(MATCH, `${forced}\n`)[1], 'GATE-SSHD-MATCH output').toBe(`match=1 others=0 dropins=0 keyfile=${OWNER}:644 keys=1 forced=1`)
   })
 
   it('GATE-RESTORE-PROBE: on the stage host a throwaway container takes the dump, answers the fixed count and is removed', () => {

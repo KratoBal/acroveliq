@@ -20,7 +20,7 @@ akkor az éles, ha a próba-sor (lent) minden sora zöld rajta.
 | `system-df`, `system-df --format` | `docker system df` (a táblázat, vagy `Type\|Size\|Reclaimable`) | mindkettő |
 | `df`, `df -P` | `df -h` (vagy `-P`) `/ /var/lib/docker` | mindkettő |
 | `uptime`, `reboot-required`, `apt-check` | olvasás (`apt-check --human-readable`) | mindkettő |
-| `sshd-match` | áll-e még a kapu: a `Match User fleet` blokk az `sshd_config`-ban, a kulcsfájl `root:root 0644`, és MINDEN kulcssora kényszerített (`restrict,from=...,command=...`); kiírja, és 1-gyel lép ki, ha bármelyik nem stimmel | mindkettő |
+| `sshd-match` | áll-e még a kapu: pontosan egy `Match User fleet` blokk az `sshd_config`-ban; nincs előtte másik, `fleet`-et vagy `all`-t érintő `Match`; az `sshd_config.d` alatt nincs `Match` és kulcs-beállítás (az ott álló, mert az Include a fájl elején van, megelőzné a miénket); a kulcsfájl `root:root 0644`, és MINDEN kulcssora kényszerített (`restrict,from=...,command=...`). Kiírja, és 1-gyel lép ki, ha bármelyik nem stimmel | mindkettő |
 | `builder-prune` | `docker builder prune -f` | mindkettő |
 | `image-prune-2h` | `docker image prune -a -f --filter until=2h` | csak stage |
 | `psql-ro <kulcs> <adatbázis> [plain\|tuples\|tuples-pipe\|tuples-spaced-pipe]` | psql a csak olvasó `fleet_ro` szereppel (a kapu listájából, nem a hívótól), az SQL a stdin-en; backslash az SQL-ben tilos | éles: OS; stage: AI |
@@ -163,7 +163,7 @@ frissítés-átnézés a kapun át hívja (barracuda, #30):
 
 ```bash
 cd /home/marveen/marveen && ssh -i /home/marveen/.ssh/id_ed25519_acropora_monitor fleet@162.55.216.28 sshd-match; echo $?
-                                             # match=1 keyfile=root:root:644 keys=1 forced=1, kilépés: 0
+                                             # match=1 others=0 dropins=0 keyfile=root:root:644 keys=1 forced=1, kilépés: 0
 ```
 
 Amíg a `Match` blokk hiányzik, ez a hívás a régi, kényszer nélküli kulccsal megy át, tehát a
