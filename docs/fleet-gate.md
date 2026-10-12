@@ -32,7 +32,8 @@ akkor az éles, ha a próba-sor (lent) minden sora zöld rajta.
 | `backup-db <kulcs> <adatbázis> <felhasználó>` | `~/backups/<adatbázis>/<mai dátum>.dump`, utána `pg_restore --list` szám | mindkettő |
 | `backup-docstore` | `~/backups/dokumentumok/<mai dátum>.tar.gz`, a fájlszám egyezésével | éles |
 | `backup-get dump <adatbázis> <dátum>`, `backup-get docstore <dátum>` | egy meglévő mentés a stdout-ra | ahol a mentés készül |
-| `backup-put dump <adatbázis> <dátum>`, `backup-put docstore <dátum>` | a stdin a `~/backups/tavoli/` alá: csak a mai vagy a tegnapi dátum, legfeljebb 2 GB, és csak ha a lemezen a korlát kétszerese szabad; meglévőt soha nem ír felül | a másik gép |
+| `backup-sum dump <adatbázis> <dátum>`, `backup-sum docstore <dátum>` | ugyanannak a mentésnek a sha256-ja és mérete | ahol a mentés készül |
+| `backup-put dump <adatbázis> <dátum> <sha256>`, `backup-put docstore <dátum> <sha256>` | a stdin előbb ideiglenes fájlba, és csak akkor lesz a `~/backups/tavoli/` alatti végleges másolat, ha a sha256-ja a forrásé; eltérésnél törli és hibával lép ki. Csak a mai vagy a tegnapi dátum, legfeljebb 2 GB, és csak ha a lemezen a korlát kétszerese szabad; meglévőt soha nem ír felül | a másik gép |
 | `backup-prune` | a dumpok 14, a dokumentum-csomagok 7 nap után törlődnek | mindkettő |
 
 A konténert a kapu a neve **elejéből** oldja fel (a Coolify az alkalmazás uuid-jával kezdi), a
@@ -137,7 +138,7 @@ elutasítást kap). A megfeleltetés:
 |---|---|
 | `docker exec <c> pg_dump ... > ~/backups/<db>/<dátum>.dump` és a `pg_restore --list` ellenőrzés | `backup-db <kulcs> <db> <user>` |
 | `docker exec $c tar ... \| gzip -1 > ~/backups/dokumentumok/...` és a `find ... \| wc -l` ellenőrzés | `backup-docstore` |
-| a kereszt-másolás | `ssh <forrás> backup-get dump <db> <dátum> \| ssh <cél> backup-put dump <db> <dátum>` (a dokumentumoknál `docstore <dátum>`) |
+| a kereszt-másolás | `h=$(ssh <forrás> backup-sum dump <db> <dátum> \| cut -d' ' -f1)`, utána `ssh <forrás> backup-get dump <db> <dátum> \| ssh <cél> backup-put dump <db> <dátum> "$h"` (a dokumentumoknál `docstore <dátum>`). Egy félúton elhalt másolat így nem lesz végleges, és az ismételt futás a jót még aznap fel tudja tenni |
 | `find ~/backups -name '*.dump' -mtime +14 -delete` | `backup-prune` (a dokumentum-csomagokat 7 nap után) |
 | `apt-check --human-readable \| head -4`, `reboot-required` | `apt-check`, `reboot-required` (a `head` a konténerben) |
 | `docker ps --filter name=proxy ...`, `docker ps --format "{{.Image}}" \| sort -u` | `ps`, a szűrés a konténerben |
@@ -164,7 +165,9 @@ elutasítást kap). A megfeleltetés:
 - **A `psql-ro` a DB-konténeren belül marad**, nem jut a gépre: a legrosszabb eset az adatbázis és
   a konténere. **Ezért nincs a listán a Coolify adatbázisa** (barracuda, #28): aki abba írhat, az
   dönti el, mit és milyen csatolással telepít a Coolify, vagyis root a gépen. A két olvasása
-  ezért rögzített SQL-lel, név szerint megy.
+  ezért rögzített SQL-lel, név szerint megy. A `coolify-deploy-log` egy telepítés TELJES naplóját
+  adja, és egy build-napló kiírhat környezeti változót vagy build-argumentumot: ez olvasási
+  kitettség, a kirakat telepítésének követéséhez kell.
 - **A `fleet` a docker csoportban marad.** Ha valaha új belépési út nyílik a `fleet`
   felhasználóhoz (jelszó, második kulcs), az megkerüli a kaput: a fenti ellenőrzést érdemes
   időnként újrafuttatni.

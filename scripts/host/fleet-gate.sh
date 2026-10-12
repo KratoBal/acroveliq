@@ -61,7 +61,7 @@ BACKUP_PUT=""  # what this host may store from the other one
 host_config() {
   case "$HOST" in
     acropora-prod-01)
-      OPS="ps system-df df uptime reboot-required apt-check builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-put backup-prune"
+      OPS="ps system-df df uptime reboot-required apt-check builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-sum backup-put backup-prune"
       PSQL_TARGETS="iwm34jaqp9xmwb72qkrqkwhy:acropora:acropora"
       DUMP_TARGETS="iwm34jaqp9xmwb72qkrqkwhy:acropora:acropora xdfswedgxuehokvymhjotpfs:medusa:postgres"
       RESTORE_LIST_KEYS="iwm34jaqp9xmwb72qkrqkwhy xdfswedgxuehokvymhjotpfs"
@@ -72,7 +72,7 @@ host_config() {
       BACKUP_PUT="dump:acropora_ai"
       ;;
     acropora-ai-stage-01)
-      OPS="ps system-df df uptime reboot-required apt-check builder-prune image-prune-2h psql-ro pg-dump pg-restore-list restore-probe backup-db backup-get backup-put backup-prune coolify-deployments coolify-deploy-log"
+      OPS="ps system-df df uptime reboot-required apt-check builder-prune image-prune-2h psql-ro pg-dump pg-restore-list restore-probe backup-db backup-get backup-sum backup-put backup-prune coolify-deployments coolify-deploy-log"
       # NOT coolify-db: who writes the Coolify database decides what Coolify
       # deploys, with which mounts; that is root on the host (barracuda, #28).
       # Its two reads are named operations with the SQL built here.
@@ -308,21 +308,31 @@ case "$OP" in
     echo "dokumentumok $(stat -c %s "$file") $packed $stored"
     [ "$packed" -eq "$stored" ] || exit 1
     ;;
-  backup-get|backup-put)
+  backup-get|backup-sum|backup-put)
     # backup-get dump <db> <date> | backup-get docstore <date>: the file to stdout
-    # backup-put (same arguments): stdin to tavoli/..., the other host's copy
-    case "$NARGS:${W[1]:-}" in
+    # backup-sum (same arguments): "<sha256> <bytes>" of that file
+    # backup-put dump <db> <date> <sha256> | backup-put docstore <date> <sha256>:
+    #   stdin to tavoli/..., the other host's copy, kept only if its sha256 is
+    #   the source's: a get that died halfway must not become the day's copy
+    #   (barracuda, #28)
+    extra=0; [ "$OP" = backup-put ] && extra=1
+    case "$((NARGS - extra)):${W[1]:-}" in
       3:dump) what="dump:${W[2]}"; date="${W[3]}"; rel="${W[2]}/${W[3]}.dump" ;;
       2:docstore) what="docstore"; date="${W[2]}"; rel="dokumentumok/${W[2]}.tar.gz" ;;
-      *) deny "'$OP': dump <adatbázis> <dátum> vagy docstore <dátum>" ;;
+      *) deny "'$OP': dump <adatbázis> <dátum> vagy docstore <dátum>$([ "$extra" = 1 ] && echo ' <sha256>')" ;;
     esac
     case "$date" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) deny "'$OP': a dátum ÉÉÉÉ-HH-NN alakú" ;; esac
-    if [ "$OP" = backup-get ]; then
-      in_targets "$what" "$BACKUP_GET" || deny "'backup-get': ez a mentés ezen a gépen nem olvasható"
-      [ -f "$BACKUP_ROOT/$rel" ] || deny "'backup-get': nincs ilyen mentés"
-      allow backup-get "$what" "$date"
-      exec cat "$BACKUP_ROOT/$rel"
+    if [ "$OP" != backup-put ]; then
+      in_targets "$what" "$BACKUP_GET" || deny "'$OP': ez a mentés ezen a gépen nem olvasható"
+      [ -f "$BACKUP_ROOT/$rel" ] || deny "'$OP': nincs ilyen mentés"
+      allow "$OP" "$what" "$date"
+      [ "$OP" = backup-get ] && exec cat "$BACKUP_ROOT/$rel"
+      echo "$(sha256sum < "$BACKUP_ROOT/$rel" | cut -d' ' -f1) $(stat -c %s "$BACKUP_ROOT/$rel")"
+      exit 0
     fi
+    want="${W[$NARGS]}"
+    case "$want" in *[!0-9a-f]*|"") deny "'backup-put': a várt sha256 64 kisbetűs hexa jel" ;; esac
+    [ "${#want}" -eq 64 ] || deny "'backup-put': a várt sha256 64 kisbetűs hexa jel"
     in_targets "$what" "$BACKUP_PUT" || deny "'backup-put': ez a mentés ezen a gépen nem fogadható"
     # only today's or yesterday's copy: a stolen key cannot fill the disk with
     # dated files the retention would keep (barracuda, #28)
@@ -336,7 +346,10 @@ case "$OP" in
     [ ! -e "$file" ] || deny "'backup-put': ez a távoli mentés már létezik"
     mkdir -p "$(dirname "$file")" || exit 1
     part="$(mktemp "$file.part.XXXXXX")" || exit 1
-    head -c "$BACKUP_MAX_BYTES" > "$part" && mv -n "$part" "$file" && [ ! -e "$part" ] || { rm -f "$part"; echo "fleet-gate: a távoli mentés nem íródott ki" >&2; exit 1; }
+    head -c "$BACKUP_MAX_BYTES" > "$part" || { rm -f "$part"; echo "fleet-gate: a távoli mentés nem íródott ki" >&2; exit 1; }
+    got="$(sha256sum < "$part" | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || { rm -f "$part"; echo "fleet-gate: a kapott másolat sha256-ja nem a forrásé (csonka vagy sérült), eldobva" >&2; exit 1; }
+    mv -n "$part" "$file" && [ ! -e "$part" ] || { rm -f "$part"; echo "fleet-gate: a távoli mentés nem íródott ki" >&2; exit 1; }
     echo "$what $(stat -c %s "$file")"
     ;;
   backup-prune)

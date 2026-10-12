@@ -19,6 +19,7 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { createHash } from 'node:crypto'
 
 const GATE = join(process.cwd(), 'scripts', 'host', 'fleet-gate.sh')
 const root = mkdtempSync(join(tmpdir(), 'fleet-gate-'))
@@ -81,7 +82,8 @@ esac`,
   const run = (command: string | undefined, input = '') => {
     const r = spawnSync('bash', [GATE, '--test-env', env], {
       env: command === undefined ? { PATH: process.env.PATH } : { PATH: process.env.PATH, SSH_ORIGINAL_COMMAND: command },
-      input,
+      // the output is read as latin1, so binary input goes back byte for byte
+      input: Buffer.from(input, 'latin1'),
     })
     const calls = existsSync(log) ? readFileSync(log, 'utf-8').trim().split('\n').filter(Boolean) : []
     writeFileSync(log, '')
@@ -89,6 +91,9 @@ esac`,
   }
   return { dir, run, sql, backups: join(dir, 'backups') }
 }
+
+const sha = (text: string) => createHash('sha256').update(Buffer.from(text, 'latin1')).digest('hex')
+const ZEROS = '0'.repeat(64)
 
 const today = () => {
   const r = spawnSync('date', ['+%F'], { encoding: 'utf-8' })
@@ -208,23 +213,39 @@ describe('fleet-gate: what passes', () => {
     const db = p.run(`backup-db ${OS_DB} acropora acropora`)
     const docs = p.run('backup-docstore')
     const got = p.run(`backup-get dump acropora ${day}`)
-    const put = s.run(`backup-put dump acropora ${day}`, got.out)
-    const again = s.run(`backup-put dump acropora ${day}`, 'MASIK')
+    const sum = p.run(`backup-sum dump acropora ${day}`)
+    const [hash, bytes] = sum.out.trim().split(' ')
+    const put = s.run(`backup-put dump acropora ${day} ${hash}`, got.out)
+    const again = s.run(`backup-put dump acropora ${day} ${sha('MASIK')}`, 'MASIK')
     const stored = readFileSync(join(s.backups, 'tavoli', 'acropora', `${day}.dump`), 'utf-8')
     const docsGot = p.run(`backup-get docstore ${day}`)
-    const docsPut = s.run(`backup-put docstore ${day}`, docsGot.out)
-    const old = s.run('backup-put dump acropora 2026-01-01', 'x') // only today or yesterday
+    const docsPut = s.run(`backup-put docstore ${day} ${sha(docsGot.out)}`, docsGot.out)
+    const old = s.run(`backup-put dump acropora 2026-01-01 ${sha('x')}`, 'x') // only today or yesterday
     const leftovers = spawnSync('find', [s.backups, '-name', '*.part*'], { encoding: 'utf-8' }).stdout.trim()
     expect(
-      [db.code, db.out.trim(), docs.code, docs.out.trim().split(' ').slice(2), got.out, put.code, again.code, stored, docsPut.code, old.code, leftovers],
+      [db.code, db.out.trim(), docs.code, docs.out.trim().split(' ').slice(2), got.out, [hash, bytes], put.code, again.code, stored, docsPut.code, old.code, leftovers],
       'GATE-BACKUP',
-    ).toEqual([0, 'acropora 8 3', 0, ['2', '2'], 'DUMPDATA', 0, 2, 'DUMPDATA', 0, 2, ''])
+    ).toEqual([0, 'acropora 8 3', 0, ['2', '2'], 'DUMPDATA', [sha('DUMPDATA'), '8'], 0, 2, 'DUMPDATA', 0, 2, ''])
+  })
+
+  it('GATE-BACKUP-INTACT: a copy whose sha256 is not the source\'s (cut off halfway, or another file) is thrown away, and the right one can still come', () => {
+    const s = world(STAGE)
+    const day = today()
+    const full = 'TELJES-MENTES-TARTALMA'
+    const cut = s.run(`backup-put dump acropora ${day} ${sha(full)}`, full.slice(0, 7)) // the get died halfway
+    const target = join(s.backups, 'tavoli', 'acropora', `${day}.dump`)
+    const afterCut = existsSync(target)
+    const right = s.run(`backup-put dump acropora ${day} ${sha(full)}`, full)
+    const leftovers = spawnSync('find', [s.backups, '-name', '*.part*'], { encoding: 'utf-8' }).stdout.trim()
+    expect([cut.code, cut.err.includes('csonka'), afterCut, right.code, readFileSync(target, 'utf-8'), leftovers], 'GATE-BACKUP-INTACT').toEqual([
+      1, true, false, 0, full, '',
+    ])
   })
 
   it('GATE-BACKUP-SPACE: a put is refused when the disk would keep less than twice the size limit free', () => {
     const s = world(STAGE)
     writeFileSync(join(s.dir, 'test.env'), readFileSync(join(s.dir, 'test.env'), 'utf-8') + 'BACKUP_MAX_BYTES=$((1024 * 1024 * 1024 * 1024 * 1024))\n')
-    expect(s.run(`backup-put dump acropora ${today()}`, 'x').code, 'GATE-BACKUP-SPACE').toBe(2)
+    expect(s.run(`backup-put dump acropora ${today()} ${sha('x')}`, 'x').code, 'GATE-BACKUP-SPACE').toBe(2)
   })
 
   it('GATE-BACKUP-PRUNE: dumps older than 14 days and document archives older than 7 go, the rest stays', () => {
@@ -284,8 +305,12 @@ describe('fleet-gate: what does not pass', () => {
       [s, 'docstore-tar'],
       [p, 'backup-get dump acropora ../../etc/passwd'],
       [p, 'backup-get dump nincs 2026-10-12'],
-      [p, 'backup-put dump acropora 2026-10-12', 'x'], // prod receives only the AI dump
-      [p, 'backup-put dump acropora_ai nem-datum', 'x'], // the name is the date, and only a date
+      [p, `backup-put dump acropora 2026-10-12 ${ZEROS}`, 'x'], // prod receives only the AI dump
+      [p, `backup-put dump acropora_ai nem-datum ${ZEROS}`, 'x'], // the name is the date, and only a date
+      [s, `backup-put dump acropora ${today()}`, 'x'], // no expected sha256
+      [s, `backup-put dump acropora ${today()} ${'A'.repeat(64)}`, 'x'], // not lower-case hex
+      [s, `backup-put dump acropora ${today()} abc`, 'x'], // not 64 long
+      [s, `backup-sum dump acropora ${today()}`], // stage hands out only the AI dump
       [p, 'env-names x'],
       [s, 'psql-ro coolify-db coolify coolify', 'select 1;'],
       [p, 'x'.repeat(201)],
