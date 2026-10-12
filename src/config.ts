@@ -114,6 +114,25 @@ export const DEFAULT_AGENT_MODEL =
   cfg('DEFAULT_AGENT_MODEL') || DISTRIBUTION_DEFAULT_AGENT_MODEL
 
 export const TELEGRAM_BOT_TOKEN = env['TELEGRAM_BOT_TOKEN'] ?? ''
+
+// The approval decided on the server from a Discord reply (acrovelIQ P0-1,
+// PR 4). Off unless the channel, the allowed Discord users and the decider are
+// all set; each is a setting so the owner's choices are configuration, not code.
+export const APPROVAL_DISCORD_CHANNEL_ID = (cfg('APPROVAL_DISCORD_CHANNEL_ID') ?? '').trim()
+/** Comma-separated Discord user ids whose reply decides. */
+export const APPROVAL_DISCORD_USER_IDS = (cfg('APPROVAL_DISCORD_USER_IDS') ?? '')
+  .split(',').map((s) => s.trim()).filter(Boolean)
+/** The session user the decision is recorded as (the owner, S in the access matrix). */
+export const APPROVAL_DISCORD_DECIDER = (cfg('APPROVAL_DISCORD_DECIDER') ?? '').trim()
+export const APPROVAL_DISCORD_YES = (cfg('APPROVAL_DISCORD_YES') ?? 'igen').trim().toLowerCase()
+export const APPROVAL_DISCORD_NO = (cfg('APPROVAL_DISCORD_NO') ?? 'nem').trim().toLowerCase()
+/**
+ * A reply decides only as a Discord reply to the request's own message (on by
+ * default, barracuda #33): the owner answers what he read, and a code shown
+ * elsewhere cannot be used. `off` accepts the code alone.
+ */
+export const APPROVAL_DISCORD_REQUIRE_REPLY = (cfg('APPROVAL_DISCORD_REQUIRE_REPLY') ?? 'on').trim().toLowerCase() !== 'off'
+export const APPROVAL_DISCORD_POLL_SECONDS = Math.max(5, Number(cfg('APPROVAL_DISCORD_POLL_SECONDS') ?? '20') || 20)
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
 
 export const SLACK_BOT_TOKEN = env['SLACK_BOT_TOKEN'] ?? ''

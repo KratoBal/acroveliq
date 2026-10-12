@@ -7,6 +7,7 @@ import { runLsof } from './lsof.js'
 import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, ACCESS_MODE_SETTING } from './config.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
+import { discordTransportFromEnv, startApprovalDiscordPoller } from './web/approval-discord.js'
 import { actorOf, recordRequestActor } from './web/auth-principals.js'
 import { accessGate, parseAccessMode, scheduleAgentFrom } from './web/access-enforcement.js'
 import { SCHEDULED_TASKS_DIR } from './web/scheduled-tasks-io.js'
@@ -453,6 +454,12 @@ export function startWebServer(port = 3420): http.Server {
   // token estimates stay fresh without requiring a manual dashboard visit.
   // Sweep timed-out pending approvals every minute
   const approvalTimeoutInterval = startApprovalTimeoutSweeper()
+  // acrovelIQ P0-1 PR 4: the owner's Discord reply decides on the server; off
+  // unless APPROVAL_DISCORD_* are all set (and there is a bot token)
+  const approvalDiscordTransport = discordTransportFromEnv()
+  const approvalDiscordInterval = approvalDiscordTransport
+    ? startApprovalDiscordPoller(approvalDiscordTransport)
+    : null
 
   // Hourly sweep of expired browser-login sessions (7d idle / 30d absolute).
   // Runs regardless of WEB_ONLY -- it is a cheap indexed delete on the shared DB
@@ -616,6 +623,7 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(modelFallbackInterval)
     clearInterval(contextGuardInterval)
     clearInterval(approvalTimeoutInterval)
+    if (approvalDiscordInterval) clearInterval(approvalDiscordInterval)
     clearInterval(authSessionSweepInterval)
     clearInterval(updateCheckerInterval)
     if (federationPollerInterval) clearInterval(federationPollerInterval)
