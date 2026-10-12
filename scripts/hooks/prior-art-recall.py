@@ -47,8 +47,22 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# the calling user's own dashboard token if handed out, else the shared one,
+# loudly (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py). Defensive:
+# a hook run from elsewhere falls back to the shared path instead of failing.
+def _dashboard_token_file(root):
+    try:
+        import sys as _sys
+        _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
+        if _lib not in _sys.path:
+            _sys.path.insert(0, _lib)
+        from dashboard_token import token_file
+        return token_file(root)
+    except Exception:
+        return os.path.join(root, "store", ".dashboard-token")
+
 INSTALL_DIR = os.environ.get("CLAUDE_PROJECT_DIR", "/home/marveen/marveen")
-TOKEN_FILE = os.path.join(INSTALL_DIR, "store", ".dashboard-token")
+TOKEN_FILE = _dashboard_token_file(INSTALL_DIR)
 ENV_FILE = os.path.join(INSTALL_DIR, ".env")
 
 MIN_PROMPT_LEN = 25      # below this there is nothing to key on

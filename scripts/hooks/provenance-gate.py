@@ -53,6 +53,20 @@ import json
 import unicodedata
 from datetime import datetime
 
+# the calling user's own dashboard token if handed out, else the shared one,
+# loudly (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py). Defensive:
+# a hook run from elsewhere falls back to the shared path instead of failing.
+def _dashboard_token_file(root):
+    try:
+        import sys as _sys
+        _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
+        if _lib not in _sys.path:
+            _sys.path.insert(0, _lib)
+        from dashboard_token import token_file
+        return token_file(root)
+    except Exception:
+        return os.path.join(root, "store", ".dashboard-token")
+
 # --- provenance envelopes -------------------------------------------------
 # Substring markers, matched against the RAW prompt. Presence of any one means
 # the input arrived through a delivery path that stamped its origin, so the
@@ -291,7 +305,7 @@ def directive(labels):
     # deployments and the agent id, port and install path all differ.
     lead, lead_resolved = _lead_agent()
     port = _env_setting("WEB_PORT", "3420")
-    token = os.path.join(_install_dir(), "store", ".dashboard-token")
+    token = _dashboard_token_file(_install_dir())
     helper = os.path.join(_install_dir(), "scripts", "agent-msg.sh")
     if lead_resolved:
         step3 = (

@@ -10,7 +10,14 @@ set -euo pipefail
 
 BASE="${1:-upstream/main}"
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-TOKEN_FILE="$INSTALL_DIR/store/.dashboard-token"
+# the calling user's own token if handed out, else the shared one, loudly (P0-1, plan 5.2)
+if [ -r "$INSTALL_DIR/scripts/lib/dashboard-token.sh" ]; then
+  . "$INSTALL_DIR/scripts/lib/dashboard-token.sh"
+  TOKEN_FILE="$(dashboard_token_file "$INSTALL_DIR")"
+else
+  echo "dashboard-token: scripts/lib/dashboard-token.sh missing, using the shared token" >&2
+  TOKEN_FILE="$INSTALL_DIR/store/.dashboard-token"
+fi
 
 if [ ! -f "$TOKEN_FILE" ]; then
   echo "[pre-pr-review] Dashboard token not found, skipping cross-review." >&2
