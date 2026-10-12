@@ -145,7 +145,16 @@ export async function resolveOwner(
   switch (source.record) {
     case 'kanban-card': {
       const row = deps.db.prepare('SELECT assignee FROM kanban_cards WHERE id = ?').get(id) as { assignee: string | null } | undefined
-      return row?.assignee ?? null
+      const assignee = row?.assignee ?? null
+      if (!assignee || req.method !== 'PUT') return assignee
+      // assigning is the main agent's job (acrobot 28671): on its own card an
+      // agent may hand it only to the main agent, the escalation the kanban
+      // dispatch prompt itself asks for (routes/kanban.ts); any other assignee,
+      // or none, is not its own
+      const body = await parsedBody(req)
+      if (!body || typeof body !== 'object' || !('assignee' in body)) return assignee
+      const next = (body as Record<string, unknown>).assignee
+      return next === assignee || next === deps.mainAgent ? assignee : null
     }
     case 'message-participants':
     case 'message-recipient': {

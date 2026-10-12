@@ -8,6 +8,7 @@ import {
   type TaskEventKind,
 } from '../../task-usage.js'
 import { json, readBody } from '../http-helpers.js'
+import { claimActor } from '../actor-claims.js'
 import type { RouteContext } from './types.js'
 
 // Per-task token measurement (acrovelIQ token brief, item 1). See
@@ -100,7 +101,8 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
 
   if (match[2] === 'events') {
     const kind = text(b.kind)
-    const actor = text(b.actor)
+    // who did it is the token's owner, not the body's: #18's measure counts these events (barracuda, #22)
+    const actor = claimActor(ctx.auth, ctx.accessMode ?? 'naplo', b.actor, 'task-events.actor').value
     const at = eventTime(b.at, now)
     const missing = [
       ...(kind && (TASK_EVENT_KINDS as readonly string[]).includes(kind) ? [] : [`kind (${TASK_EVENT_KINDS.join('|')})`]),
@@ -120,7 +122,7 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  const agent = text(b.agent)
+  const agent = claimActor(ctx.auth, ctx.accessMode ?? 'naplo', b.agent, 'task-sessions.agent').value
   const sessionId = text(b.session_id)
   if (!agent || !sessionId) {
     json(res, { error: 'agent and session_id required' }, 400)

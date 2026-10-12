@@ -212,7 +212,7 @@ const GROUPS: Group[] = [
     match: (r) => r.module === 'kanban' && /^\/api\/kanban\/:id(\/(move|archive|unarchive|labels|labels\/:labelId|breakdown|breakdown\/accept))?$/.test(r.path) && writes(r),
     grants: g('yes', 'yes', 'own', 'yes', 'yes'),
     owner: { from: 'lookup', record: 'kanban-card', param: 'id' },
-    why: 'an agent changes the cards assigned to it (plan 3); creating a card and commenting stay open',
+    why: 'an agent changes the cards assigned to it (plan 3); it hands one on only to the main agent, the escalation the dispatch asks for (assigning is the main agent\'s job, acrobot 28671); creating a card and commenting stay open',
   },
   {
     name: 'administration',
@@ -294,9 +294,11 @@ const BEFORE_ENFORCING = [
   '   eltörik (például a `POST /api/schedules`). A kapcsoló csak akkor fordul, ha az',
   '   `npx tsx scripts/access-preflight.ts` listája üres (kilépési kód 0): ez a naplóból sorolja fel, mit',
   '   tiltott volna. Ez eljárás, nem zár: a beállítást a kód nem tagadja meg.',
-  '4. **Az önbevallott szereplők.** Az üzenet feladója, a jóváhagyás eldöntője, az átadó rekord `agent` mezője',
-  '   és a tokenmérési esemény `actor` mezője ma a kérés törzséből jön. Ezeket a szervernek a tokenből kell',
-  '   kitöltenie (a következő PR).',
+  '4. **Az önbevallott szereplők.** Az üzenet feladóját, a jóváhagyás kérőjét és eldöntőjét, az átadó rekord',
+  '   `agent` mezőjét, a tokenmérési esemény `actor` mezőjét és az ütemezett feladat szerzőjét a szerver a',
+  '   tokenből tölti ki (`src/web/actor-claims.ts`). A régi közös token senkit nem nevez meg: `naplo` állásban',
+  '   az ő mezője önbevallott marad, a másik két állásban `legacy-ismeretlen`, nem ellenőrzött jelöléssel. A',
+  '   bekapcsolás előtt tehát minden ágensnek saját tokennel kell hívnia, különben a feladója ismeretlen lesz.',
 ]
 
 /** The readable list (docs/access-matrix.md), from the rules and their access. */

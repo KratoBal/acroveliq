@@ -18,6 +18,7 @@ import {
   listScheduledTasks, writeScheduledTask,
 } from '../scheduled-tasks-io.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
+import { authorOf } from '../actor-claims.js'
 import type { RouteContext } from './types.js'
 
 // Resolve a URL-supplied schedule name to an on-disk dir, blocking path
@@ -184,6 +185,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       skipIfBusy: data.skipIfBusy === true,
       forceSend: data.forceSend === true,
       targetSession: data.targetSession || undefined,
+      author: authorOf(ctx.auth),
     })
     logger.info({ name, schedule: data.schedule }, 'Scheduled task created')
     json(res, { ok: true, name })
@@ -223,7 +225,10 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       json(res, { error: 'Invalid cron expression' }, 400)
       return true
     }
-    writeScheduledTask(name, data)
+    // a new prompt is the caller's: the runner frames it by its author (plan 2.3).
+    // The author is never taken from the body.
+    const { author: _ignored, ...fields } = data as typeof data & { author?: unknown }
+    writeScheduledTask(name, data.prompt !== undefined ? { ...fields, author: authorOf(ctx.auth) } : fields)
     logger.info({ name }, 'Scheduled task updated')
     json(res, { ok: true })
     return true

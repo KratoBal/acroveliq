@@ -171,6 +171,11 @@ describe('access enforcement: through the gate', () => {
       // cards and memories: own only; moving a memory to another writer is not own
       [G, 'POST', '/api/kanban/c-murena/move', { status: 'done' }, 200],
       [G, 'POST', '/api/kanban/c-nautilus/move', { status: 'done' }, 403],
+      [G, 'PUT', '/api/kanban/c-murena', { title: 'uj cim' }, 200],
+      [G, 'PUT', '/api/kanban/c-murena', { assignee: 'acrobot' }, 200], // the escalation to the main agent
+      [G, 'PUT', '/api/kanban/c-murena', { assignee: 'nautilus' }, 403], // handing it to another agent
+      [G, 'PUT', '/api/kanban/c-murena', { assignee: null }, 403], // dropping it
+      [A, 'PUT', '/api/kanban/c-murena', { assignee: 'nautilus' }, 200], // the main agent assigns
       [G, 'DELETE', '/api/kanban/c-murena/labels/c-nautilus', undefined, 200], // two parameters: the card is :id
       [G, 'DELETE', '/api/kanban/c-nautilus/labels/c-murena', undefined, 403],
       [G, 'POST', '/api/memories', { agent_id: 'murena', content: 'x' }, 200],

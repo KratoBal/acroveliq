@@ -31,6 +31,8 @@ export interface RouteContext {
     actor?: string
     project?: string
   }
+  /** The access check's position (acrovelIQ P0-1): what a self-declared actor field becomes for the shared token (actor-claims.ts). Absent is `naplo`. */
+  accessMode?: import('../access-enforcement.js').AccessMode
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<boolean>
