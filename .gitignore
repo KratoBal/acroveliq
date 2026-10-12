@@ -159,6 +159,7 @@ docs/*
 !docs/kulon-uid-0-1-fazis-eredmeny.md
 !docs/kulon-uid-2-fazis-proba.md
 !docs/kovetetlen-scriptek-atvilagitas-2026-08-18.md
+!docs/futtat.md
 !docs/task-handoff.md
 !docs/task-usage.md
 
@@ -171,3 +172,8 @@ scripts/sudoers-is-paired
 # made by hand before an edit, never source -- delete the file itself; this
 # only stops the NEXT one from being stageable.
 *.bak-[0-9]*
+
+# futtat (scripts/futtat.py): the full command logs AND their summaries. Runtime
+# data, masked but still project data: `*.log` alone would leave the
+# .summary.json files stageable.
+logs/
