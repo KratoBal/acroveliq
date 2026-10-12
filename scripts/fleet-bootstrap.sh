@@ -312,7 +312,7 @@ if (( DRY )); then
 else
   if test -f "$BLANKET"; then fail "$BLANKET exists"; fi
   allowed="$(sudo -n -l -U "$ROUTER_USER" 2>/dev/null)" || fail "cannot list sudo rules for $ROUTER_USER (run this as root)"
-  if printf '%s\n' "$allowed" | grep -Eq '\(ALL( ?: ?ALL)?\) +(NOPASSWD: *)?ALL *$'; then
+  if printf '%s\n' "$allowed" | grep -Eq '\((ALL|root)( ?: ?(ALL|root))?\) +(NOPASSWD: *)?ALL *$'; then
     fail "an unrestricted sudo rule is still granted to $ROUTER_USER"
   fi
   echo "ok: $ROUTER_USER has no unrestricted sudo rule"
