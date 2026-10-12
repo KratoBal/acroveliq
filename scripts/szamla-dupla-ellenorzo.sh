@@ -7,8 +7,9 @@ select 'KIMENO', "documentNumber", count(*), string_agg(source::text, '+' order 
   from "ExternalBillingDocument" where not cancelled group by "documentNumber" having count(*) > 1;
 Q
 )
+# fleet-gate (B8): read-only psql, SQL on stdin
 out=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -i /home/marveen/.ssh/id_ed25519_acropora_monitor fleet@162.55.216.28 \
-  "docker exec -i iwm34jaqp9xmwb72qkrqkwhy psql -U acropora -d acropora -tA -F ' | '" <<<"$SQL" 2>&1) || { echo "NEM MERHETO: $out"; exit 2; }
+  psql-ro iwm34jaqp9xmwb72qkrqkwhy acropora acropora tuples-spaced-pipe <<<"$SQL" 2>&1) || { echo "NEM MERHETO: $out"; exit 2; }
 echo "--- szamla-dupla-ellenorzo ($(date '+%F %T %z')), eles acropora DB ---"
 if [ -z "$out" ]; then echo "KIMENO: nincs dupla."; else echo "$out"; fi
 # A bejovo oldalon a ket forras (IncomingBillingDocument, NavIncomingInvoice) KULON tablaban van, es 85/85 atfedes

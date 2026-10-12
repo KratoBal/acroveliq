@@ -48,7 +48,7 @@ done
 
 KIMENET="$(timeout 45 ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
   -i "$KEY" "$HOST" \
-  'docker ps --format "{{.Names}}|{{.Image}}|{{.Status}}"' 2>&1)" || {
+  ps 2>&1)" || {  # fleet-gate: docker ps --format "{{.Names}}|{{.Image}}|{{.Status}}"
     echo "FAIL: a gep nem erheto el ($HOST)"
     echo "$KIMENET" | head -3
     exit 1

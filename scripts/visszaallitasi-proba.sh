@@ -48,10 +48,8 @@ age_ok() {  # $1 label, $2 file name with YYYY-MM-DD_HH-MM-SS
   echo "   kor: $h ora"
   [ "$e" -gt 0 ] && [ "$h" -le "$MAX_AGE_H" ] || fail "$1" "a legujabb mentes $h oras (hatar $MAX_AGE_H): a mentes leallhatott"
 }
-# The throwaway container goes away on ANY exit, interruption included.
-C=""
-cleanup() { [ -n "$C" ] && { sssh "docker rm -f $C >/dev/null" || echo "FIGYELEM: a proba-kontener ($C) nem torlodott"; }; }
-trap cleanup EXIT
+# The throwaway container is the fleet-gate's (B8): its restore-probe starts it,
+# sweeps earlier leftovers and removes it on any exit, on the stage host.
 
 if [ "$WHAT" = all ] || [ "$WHAT" = fleet ]; then
   echo "== flotta"
@@ -89,20 +87,15 @@ if [ "$WHAT" = all ] || [ "$WHAT" = ai ]; then
   F=$(nas_ls Acropora_Backup/acropora-ai | /bin/grep -o 'acropora-ai-[0-9_-]*\.dump' | sort | tail -1)
   if [ -z "$F" ]; then fail ai "nincs fajl a NAS-on"; else
     age_ok ai "$F"
-    # sweep leftovers of an interrupted earlier run
-    sssh 'docker ps -a --format "{{.Names}}" | grep "^restore-proba-ai-" | xargs -r docker rm -f >/dev/null' || true
     rm -f "$WORK/ai.dump"; nas_get "Acropora_Backup/acropora-ai/$F" "$WORK/ai.dump"
-    C="restore-proba-ai-$(date +%s)"
-    sssh "docker run -d --name $C -e POSTGRES_PASSWORD=proba -e POSTGRES_USER=acropora_ai -e POSTGRES_DB=acropora_ai postgres:16-alpine >/dev/null"
-    for i in $(seq 1 30); do sssh "docker exec $C pg_isready -U acropora_ai -q" && break; sleep 2; done
-    if ! T=600 sssh "docker exec -i $C pg_restore --no-owner --no-privileges -U acropora_ai -d acropora_ai" < "$WORK/ai.dump" 2> "$WORK/ai-restore.err"; then
-      fail ai "pg_restore hibaval tert vissza: $(head -c 300 "$WORK/ai-restore.err")"
-    fi
     # EXACT counts, not pg_stat n_live_tup: the statistics are estimates, and on 2026-10-07 the
-    # live database reported 6 messages where count(*) gave hundreds (never analyzed).
+    # live database reported 6 messages where count(*) gave hundreds (never analyzed). The
+    # restore-probe runs this same query on the restored copy (the query is fixed in the gate).
     Q="select 'conversations='||(select count(*) from conversations)||' messages='||(select count(*) from messages)||' answer_ratings='||(select count(*) from answer_ratings)"
-    GOT=$(sssh "docker exec $C psql -U acropora_ai -d acropora_ai -Atc \"$Q\"")
-    LIVE=$(sssh "docker exec $AI_LIVE psql -U acropora_ai -d acropora_ai -Atc \"$Q\"")
+    if ! GOT=$(T=900 sssh restore-probe < "$WORK/ai.dump" 2> "$WORK/ai-restore.err"); then
+      fail ai "a visszatoltes hibaval tert vissza: $(head -c 300 "$WORK/ai-restore.err")"
+    fi
+    LIVE=$(printf '%s;\n' "$Q" | sssh psql-ro "$AI_LIVE" acropora_ai acropora_ai tuples)
     echo "   $F"; echo "   visszatoltve: $GOT"; echo "   elo:          $LIVE"
     # Every count must be a positive number and not above the live one; an empty or schema-only
     # restore prints "conversations=0 ..." which is not an empty string (barracuda's review).
@@ -114,7 +107,6 @@ bad = [k for k in ("conversations", "messages", "answer_ratings") if not g.get(k
 if not l or bad or int(g.get("messages", "0") or 0) == 0 or int(g.get("conversations", "0") or 0) == 0:  # answer_ratings may legitimately be 0
     print("FAIL[ai]: visszatoltve=%s elo=%s gyanus=%s" % (g, l, bad)); sys.exit(1)
 PY
-    sssh "docker rm -f $C >/dev/null" || echo "FIGYELEM: a proba-kontener ($C) nem torlodott"; C=""
     rm -f "$WORK/ai.dump"
   fi
 fi

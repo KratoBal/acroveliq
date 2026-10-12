@@ -49,7 +49,8 @@ SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 -i "$AI_SSH_KEY" "$AI_HOST")
 mkdir -p "$WORK"
 
 echo "== 1/5  Dump az AI adatbazisrol ($AI_CONTAINER, $AI_DB_NAME)"
-if ! timeout 600 "${SSH[@]}" "docker exec $AI_CONTAINER pg_dump -Fc -U $AI_DB_USER -d $AI_DB_NAME" > "$WORK/$NAME"; then
+# fleet-gate (B8): pg-dump and pg-restore-list, the container named by its key
+if ! timeout 600 "${SSH[@]}" pg-dump "$AI_CONTAINER" "$AI_DB_NAME" "$AI_DB_USER" > "$WORK/$NAME"; then
   echo "FAIL: a pg_dump nem futott le (a kontener neve valtozhatott: docker ps a gepen)." >&2
   rm -f "$WORK/$NAME"; exit 1
 fi
@@ -58,8 +59,8 @@ LOCAL=$(stat -c %s "$WORK/$NAME" 2>/dev/null || echo 0)
 echo "   $NAME: $LOCAL bajt"
 
 echo "== 2/5  Visszaolvasas (pg_restore -l ugyanarra a fajlra)"
-ENTRIES=$(timeout 120 "${SSH[@]}" "docker exec -i $AI_CONTAINER pg_restore -l" < "$WORK/$NAME" 2>/dev/null | /bin/grep -c -E '^[0-9]+;')
-TABLES=$(timeout 120 "${SSH[@]}" "docker exec -i $AI_CONTAINER pg_restore -l" < "$WORK/$NAME" 2>/dev/null | /bin/grep -c ' TABLE DATA ')
+ENTRIES=$(timeout 120 "${SSH[@]}" pg-restore-list "$AI_CONTAINER" < "$WORK/$NAME" 2>/dev/null | /bin/grep -c -E '^[0-9]+;')
+TABLES=$(timeout 120 "${SSH[@]}" pg-restore-list "$AI_CONTAINER" < "$WORK/$NAME" 2>/dev/null | /bin/grep -c ' TABLE DATA ')
 if [ "${ENTRIES:-0}" -eq 0 ]; then
   echo "FAIL: a dump nem olvashato vissza (0 bejegyzes)." >&2; exit 1
 fi

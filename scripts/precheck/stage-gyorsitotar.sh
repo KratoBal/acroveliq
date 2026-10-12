@@ -10,7 +10,10 @@
 # TWO disks since 2026-10-06: /var/lib/docker (and containerd) are bind mounts
 # from the 100 GB volume, so "df /" alone no longer sees what Docker fills.
 # The fuller of the two decides.
-m=$(timeout 8 ssh -o BatchMode=yes -o ConnectTimeout=5 -i /home/marveen/.ssh/id_ed25519_acropora_monitor fleet@100.88.199.87 "df -P / /var/lib/docker | tail -n +2; docker system df --format '{{.Type}}|{{.Size}}|{{.Reclaimable}}'") || exit 1
+# fleet-gate (B8): two operations, 4 s each, under the runner's 10 s
+gate() { timeout 4 ssh -o BatchMode=yes -o ConnectTimeout=3 -i /home/marveen/.ssh/id_ed25519_acropora_monitor fleet@100.88.199.87 "$@"; }
+# (df's header line has no "%", so the parser below skips it)
+m=$(gate df -P && gate system-df --format) || exit 1
 printf '%s\n' "$m" | python3 -c '
 import re, sys
 lines = sys.stdin.read().splitlines()

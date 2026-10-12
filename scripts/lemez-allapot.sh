@@ -73,8 +73,9 @@ else
   # masodszorra hibatlanul lefutott. Egy ideiglenes fajl tunt el a szamolas kozben,
   # vagyis VERSENY volt, nem serules. Ezert egy sikertelen futas onmagaban nem
   # jelent romlast: ujra kell probalni, mielott barmit allitanank rola.
-  PROD_OUT="$(timeout 300 ssh -i "$STAGE_KEY" -o BatchMode=yes -o ConnectTimeout=15 \
-    fleet@162.55.216.28 'df -h / /var/lib/docker; echo "---DOCKER---"; docker system df || docker system df' 2>&1)"
+  # fleet-gate (B8): one operation per call, the same output as before
+  prod() { timeout 300 ssh -i "$STAGE_KEY" -o BatchMode=yes -o ConnectTimeout=15 fleet@162.55.216.28 "$@"; }
+  PROD_OUT="$( { prod df && echo "---DOCKER---" && { prod system-df || prod system-df; }; } 2>&1)"
   PROD_RC=$?
   echo "$PROD_OUT" | /bin/sed 's/^/     /'
   # A KILEPESI KOD ES A TARTALOM KET KULON KERDES. Csak akkor mondjuk azt, hogy
@@ -95,8 +96,8 @@ echo "===== STAGE / AI GEP ($STAGE_HOST) ====="
 if [[ ! -r "$STAGE_KEY" ]]; then
   echo "  NEM OLVASHATO a kulcs: $STAGE_KEY"
 else
-  STAGE_OUT="$(timeout 40 ssh -i "$STAGE_KEY" -o BatchMode=yes -o ConnectTimeout=15 \
-    "$STAGE_HOST" 'df -h / /var/lib/docker; echo "---DOCKER---"; docker system df' 2>&1)"
+  stage() { timeout 40 ssh -i "$STAGE_KEY" -o BatchMode=yes -o ConnectTimeout=15 "$STAGE_HOST" "$@"; }
+  STAGE_OUT="$( { stage df && echo "---DOCKER---" && stage system-df; } 2>&1)"
   RC=$?
   if (( RC != 0 )); then
     echo "  NEM ERHETO EL (kilepesi kod $RC). A kimenet:"
@@ -111,7 +112,7 @@ fi
 echo
 echo "=========================================================================="
 echo " HA A BUILD CACHE NOTT MEG (csak a stage gepen merheto):"
-echo "   ssh -i $STAGE_KEY $STAGE_HOST docker builder prune -f"
+echo "   ssh -i $STAGE_KEY $STAGE_HOST builder-prune"
 echo " Ez CSAK a nem hasznalt fordito-gyorsitotarat viszi el."
 echo
 echo " A KEPEKHEZ (docker image prune -a) ENGEDELY NELKUL NE NYULJ. Az indok"

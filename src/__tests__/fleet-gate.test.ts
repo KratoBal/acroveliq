@@ -11,7 +11,9 @@
 //   - a refused command reaches docker at all, or leaves no log line;
 //   - env-get shows a variable other than its two, or a value of another;
 //   - backup-put overwrites, or writes outside tavoli/; backup-get reads
-//     outside the listed backups.
+//     outside the listed backups;
+//   - a caller script (the ones the fleet runs over the key) still sends a raw
+//     docker or df command, or sends one the gate would refuse on its host.
 import { describe, it, expect, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -272,5 +274,60 @@ describe('fleet-gate: what does not pass', () => {
   it('GATE-UNKNOWN-HOST: on a host the gate does not know, nothing passes', () => {
     const w = world('valami-mas-gep')
     expect([w.run('ps').code, w.run('uptime').code], 'GATE-UNKNOWN-HOST').toEqual([2, 2])
+  })
+})
+
+describe('fleet-gate: the callers', () => {
+  const callers = [
+    'scripts/eles-verziok.sh',
+    'scripts/jev/build_known.py',
+    'scripts/kirakat-telepites.sh',
+    'scripts/lemez-allapot.sh',
+    'scripts/precheck/stage-gyorsitotar.sh',
+    'scripts/szamla-dupla-ellenorzo.sh',
+    'scripts/ai-db-nas-mentes.sh',
+    'scripts/visszaallitasi-proba.sh',
+  ]
+  const text = (file: string) => readFileSync(join(process.cwd(), file), 'utf-8')
+
+  it('GATE-CALLERS-NO-RAW: no caller sends docker or df itself any more (comments aside)', () => {
+    const raw = callers.flatMap((file) =>
+      text(file)
+        .split('\n')
+        .map((line, i) => [i + 1, line.split(' #')[0]!] as const)
+        .filter(([, code]) => !/^\s*#/.test(code) && !/^\s*echo /.test(code) && /docker (exec|ps|system|run|builder|image)|["'](df) -/.test(code))
+        .map(([n, code]) => `${file}:${n}: ${code.trim()}`),
+    )
+    expect(raw, 'GATE-CALLERS-NO-RAW').toEqual([])
+  })
+
+  it('GATE-CALLERS-PASS: every command a caller sends passes the gate on the host it goes to', () => {
+    // [the caller, the host, the command it sends, text the caller must hold for it]
+    const sent: Array<[string, string, string, string]> = [
+      ['scripts/eles-verziok.sh', PROD, 'ps', '  ps 2>&1'],
+      ['scripts/jev/build_known.py', PROD, `psql-ro ${OS_DB} acropora acropora tuples-pipe`, '"psql-ro", CONTAINER, "acropora", "acropora", "tuples-pipe"'],
+      ['scripts/kirakat-telepites.sh', STAGE, 'psql-ro coolify-db coolify coolify tuples-pipe', 'psql-ro coolify-db coolify coolify tuples-pipe'],
+      ['scripts/kirakat-telepites.sh', STAGE, 'psql-ro coolify-db coolify coolify tuples', 'psql-ro coolify-db coolify coolify tuples \\'],
+      ['scripts/lemez-allapot.sh', PROD, 'df', 'prod df'],
+      ['scripts/lemez-allapot.sh', PROD, 'system-df', 'prod system-df'],
+      ['scripts/lemez-allapot.sh', STAGE, 'df', 'stage df'],
+      ['scripts/lemez-allapot.sh', STAGE, 'system-df', 'stage system-df'],
+      ['scripts/lemez-allapot.sh', STAGE, 'builder-prune', 'builder-prune'],
+      ['scripts/precheck/stage-gyorsitotar.sh', STAGE, 'df -P', 'gate df -P'],
+      ['scripts/precheck/stage-gyorsitotar.sh', STAGE, 'system-df --format', 'gate system-df --format'],
+      ['scripts/szamla-dupla-ellenorzo.sh', PROD, `psql-ro ${OS_DB} acropora acropora tuples-spaced-pipe`, `psql-ro ${OS_DB} acropora acropora tuples-spaced-pipe`],
+      ['scripts/ai-db-nas-mentes.sh', STAGE, `pg-dump ${AI_DB} acropora_ai acropora_ai`, 'pg-dump "$AI_CONTAINER" "$AI_DB_NAME" "$AI_DB_USER"'],
+      ['scripts/ai-db-nas-mentes.sh', STAGE, `pg-restore-list ${AI_DB}`, 'pg-restore-list "$AI_CONTAINER"'],
+      ['scripts/visszaallitasi-proba.sh', STAGE, 'restore-probe', 'sssh restore-probe'],
+      ['scripts/visszaallitasi-proba.sh', STAGE, `psql-ro ${AI_DB} acropora_ai acropora_ai tuples`, 'sssh psql-ro "$AI_LIVE" acropora_ai acropora_ai tuples'],
+    ]
+    const worlds: Record<string, ReturnType<typeof world>> = { [PROD]: world(PROD), [STAGE]: world(STAGE) }
+    const wrong: string[] = []
+    for (const [file, host, command, held] of sent) {
+      if (!text(file).includes(held)) wrong.push(`${file}: does not hold ${held}`)
+      const r = worlds[host]!.run(command, 'select 1;')
+      if (r.code !== 0) wrong.push(`${file} on ${host}: ${command} -> ${r.code} ${r.err.trim()}`)
+    }
+    expect(wrong, 'GATE-CALLERS-PASS').toEqual([])
   })
 })
