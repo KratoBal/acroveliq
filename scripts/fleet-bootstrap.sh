@@ -37,8 +37,14 @@ done
 
 # Repo root derived from this script's location, so the checks work whatever the
 # caller's cwd is (the boot hook runs from run-dashboard.sh, not from a shell).
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
+# THE PROJECT ROOT IS EXPLICIT, NOT DERIVED FROM THIS FILE'S LOCATION (Balazs, 2026-10-12).
+# The reviewed copy runs as root from /usr/local/sbin, so "my directory/.." would point at
+# /usr/local. FLEET_ROOT overrides the default; either way it is checked before use.
+ROOT="${FLEET_ROOT:-/home/marveen/marveen}"
+if [[ ! -d "$ROOT/scripts" || ! -d "$ROOT/store" ]]; then
+  echo "FAIL: project root $ROOT has no scripts/ or store/ (set FLEET_ROOT)" >&2; exit 2
+fi
+AS_ROOT=0; (( EUID == 0 )) && AS_ROOT=1
 
 FLEET_GID=1001
 # uid:agent -- the uids are not cosmetic, the files on the bind mount carry them.
@@ -129,7 +135,7 @@ step "2c. the futtat log tree and the secret-hash list (logs-acropora, 2770 / 06
 # Created HERE, not by the first run: a directory the first run creates carries that user's
 # umask and group, and an agent under another uid then cannot open a task folder under it
 # (barracuda, marveen #17 review). setgid (2770) keeps every new task folder in the group.
-LOGROOT=/home/marveen/marveen/logs
+LOGROOT="$ROOT/logs"
 if id -nG "$ROUTER_USER" | tr ' ' '\n' | grep -qx logs-acropora; then echo "ok: $ROUTER_USER in logs-acropora"
 else run sudo -n usermod -aG logs-acropora "$ROUTER_USER" || fail "could not add $ROUTER_USER to logs-acropora"; echo "added: $ROUTER_USER -> logs-acropora"; fi
 for d in "$LOGROOT" "$LOGROOT/acropora"; do
@@ -141,7 +147,7 @@ for d in "$LOGROOT" "$LOGROOT/acropora"; do
     echo "set: $d (logs-acropora 2770)"
   fi
 done
-HASHES=/home/marveen/marveen/store/secret-hashes.txt
+HASHES="$ROOT/store/secret-hashes.txt"
 if [[ -f "$HASHES" ]]; then
   if [[ "$(stat -c '%G %a' "$HASHES")" == "logs-acropora 640" ]]; then echo "ok: $HASHES"
   else run sudo -n chgrp logs-acropora "$HASHES"; run sudo -n chmod 0640 "$HASHES"; echo "set: $HASHES (logs-acropora 0640)"; fi
@@ -169,12 +175,16 @@ step "4. the narrow sudo rule (tmux only, one line per agent)"
 # opening `sudo cat` came back empty, every rule was re-queued as if missing, and
 # visudo could not validate the result. Nothing was installed, but the script
 # exited FAIL on a perfectly healthy container.
-if ! test -f "$BLANKET"; then
-  echo "ok: nothing to rebuild, and nothing can be written from here any more"
-  echo "    (the blanket line is gone). Step 7 checks the rules by capability."
+# AS ROOT (the reviewed copy in the image, Balazs 2026-10-12) the narrow rules are built
+# from scratch every time, independent of the blanket line, validated, and installed only
+# if they differ. Without root and without the blanket line nothing can be written: then
+# this step only reports, and step 7 checks the rules by capability.
+if (( ! AS_ROOT )) && ! test -f "$BLANKET"; then
+  echo "ok: not root and no blanket line: nothing can be written from here"
+  echo "    (run the reviewed root copy to rebuild). Step 7 checks the rules by capability."
 else
 tmp="$(mktemp)"
-sudo -n cat "$SUDOERS" > "$tmp" 2>/dev/null || true
+if (( ! AS_ROOT )); then sudo -n cat "$SUDOERS" > "$tmp" 2>/dev/null || true; fi
 changed=0
 for pair in $AGENTS; do
   agent="${pair##*:}"; user="agent-$agent"
@@ -216,6 +226,7 @@ for pair in $AGENTS; do
     echo "queued: is-paired rule for $user"
   fi
 done
+if (( AS_ROOT )) && test -f "$SUDOERS" && cmp -s "$tmp" "$SUDOERS"; then changed=0; echo "ok: $SUDOERS is exactly the generated content"; fi
 if (( changed )); then
   if (( DRY )); then
     echo "DRY: install $SUDOERS with the queued rules"
@@ -342,9 +353,11 @@ for pair in $AGENTS; do
   # form stopped working anyway (grep as root is no longer permitted), which is
   # how the gap surfaced. `sudo -l -u <user> <cmd>` asks the policy itself and
   # runs nothing.
-  sudo -n -l -u "$user" /usr/bin/tmux >/dev/null 2>&1 \
+  sudo -n -l -U "$ROUTER_USER" -u "$user" /usr/bin/tmux >/dev/null 2>&1 \
     || { echo "MISSING: $user cannot be reached with tmux" >&2; rc=1; }
-  if sudo -n -l -u "$user" /usr/bin/cat >/dev/null 2>&1; then
+  # -U: the question is what the ROUTER may do. Asked as root without -U, root may run
+  # anything as anyone, and this line reported TOO WIDE on a healthy container (2026-10-12).
+  if sudo -n -l -U "$ROUTER_USER" -u "$user" /usr/bin/cat >/dev/null 2>&1; then
     echo "TOO WIDE: $user also allows /usr/bin/cat, the rule is not tmux-only" >&2; rc=1
   fi
 done
