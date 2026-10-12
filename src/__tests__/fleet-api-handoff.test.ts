@@ -19,6 +19,7 @@ const script = join(root, 'scripts', 'fleet-api.sh')
 let server: Server
 let port = 0
 let received: unknown = null
+let receivedPath = ''
 /** What the fake dashboard answers next: [status, body]. */
 let answer: [number, unknown] = [200, {}]
 
@@ -31,6 +32,7 @@ beforeAll(async () => {
     let raw = ''
     req.on('data', (chunk) => { raw += chunk })
     req.on('end', () => {
+      receivedPath = req.url ?? ''
       received = raw ? JSON.parse(raw) : null
       res.writeHead(answer[0], { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(answer[1]))
@@ -89,5 +91,13 @@ describe('fleet-api.sh handoff-write', () => {
       written.code,
       received,
     ], 'HANDOFF-CLI-WRITE').toEqual([1, true, true, 0, { agent: 'murena', record: tricky }])
+  })
+})
+
+describe('fleet-api.sh, the task id in the URL (barracuda, #16)', () => {
+  it('HANDOFF-CLI-ENCODE: a space or a ? in the task id does not break the path', async () => {
+    answer = [200, stored({ ok: true, mismatches: [] })]
+    await run(['handoff-read', 'feladat 7?x'])
+    expect(receivedPath, 'HANDOFF-CLI-ENCODE').toBe('/api/tasks/feladat%207%3Fx/handoffs/latest?verify=1')
   })
 })

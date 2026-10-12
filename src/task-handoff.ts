@@ -78,6 +78,11 @@ export function ensureTaskHandoffSchema(db: Database.Database): void {
 
 const isText = (value: unknown): value is string => typeof value === 'string' && value.trim() !== ''
 
+// owner/name; no `..` anywhere and neither part a lone `.`, because the URL
+// would resolve either into another API path
+const REPO_PATTERN = /^(?!\.\/)(?!.*\.\.)(?!.*\/\.$)[\w.-]+\/[\w.-]+$/
+const BRANCH_PATTERN = /^(?!.*\.\.)[\w.\/-]+$/
+
 /**
  * Validates a record. Every required field must be PRESENT; a list may be
  * empty (a task can honestly have no prohibitions), but it has to be said,
@@ -114,9 +119,16 @@ export function validateHandoffRecord(
     if (typeof code !== 'object') missing.push('code')
     else {
       for (const key of ['repo', 'branch', 'head']) if (!isText(code[key])) missing.push(`code.${key}`)
+      // the repo and the branch end up in a GitHub API path called with the
+      // fleet's token (barracuda, #16): `owner/name`, and no `..` in the branch
+      if (isText(code.repo) && !REPO_PATTERN.test(code.repo)) missing.push('code.repo (owner/name)')
+      if (isText(code.branch) && !BRANCH_PATTERN.test(code.branch)) missing.push('code.branch (a branch name, without ..)')
       if (isText(code.head) && !/^[0-9a-f]{7,40}$/i.test(code.head)) missing.push('code.head (a sha, at least 7 hex digits)')
       if (!(code.pr === null || (Number.isInteger(code.pr) && code.pr > 0))) missing.push('code.pr (a number, or null)')
       if (typeof code.merged !== 'boolean') missing.push('code.merged')
+      // a merge is only measurable through its PR: without one, "merged" is a
+      // claim nobody can check (barracuda, #16)
+      else if (code.merged && code.pr === null) missing.push('code.pr (a merged record needs its PR number)')
     }
   }
 
@@ -217,6 +229,11 @@ export async function verifyCodeState(code: HandoffCodeState | null, probe: Code
   if (!code) return { ok: true, mismatches: [], measured }
   const mismatches: string[] = []
 
+  // the validator refuses this pair; the check refuses it too, so an older
+  // or hand-written row cannot pass unmeasured
+  if (code.merged && code.pr === null)
+    mismatches.push('A rekord beolvadtnak írja a munkát, de PR nélkül: a beolvadás nem mérhető.')
+
   if (code.pr !== null) {
     measured.pr = await probe.pullRequest(code.repo, code.pr)
     if (measured.pr === undefined) mismatches.push(`A #${code.pr} PR állapota nem mérhető most; ellenőrzés nélkül nem haladunk tovább.`)
@@ -226,6 +243,14 @@ export async function verifyCodeState(code: HandoffCodeState | null, probe: Code
         measured.pr.merged
           ? `A #${code.pr} PR azóta beolvadt; a rekord még beolvadatlannak írja.`
           : `A #${code.pr} PR nincs beolvasztva, a rekord beolvadtnak írja.`,
+      )
+    // closed without a merge: the work the record builds on was dropped
+    else if (!code.merged && measured.pr.state !== 'open')
+      mismatches.push(`A #${code.pr} PR lezárva, beolvasztás nélkül.`)
+    // merged with another head than recorded: work landed that the record does not know
+    else if (code.merged && !sameSha(code.head, measured.pr.headSha))
+      mismatches.push(
+        `A #${code.pr} PR ${measured.pr.headSha.slice(0, 8)} fejjel olvadt be, a rekord ${code.head.slice(0, 8)} fejjel íródott.`,
       )
   }
 
@@ -256,6 +281,8 @@ export function githubProbe(token: string | null, fetchImpl: typeof fetch = fetc
     try {
       const response = await fetchImpl(`https://api.github.com${path}`, {
         headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+        // a hanging GitHub must not hang the read: a timeout is "not measurable"
+        signal: AbortSignal.timeout(10_000),
       })
       if (response.status === 404) return null
       if (!response.ok) return undefined

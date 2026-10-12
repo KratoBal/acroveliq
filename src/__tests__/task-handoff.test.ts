@@ -47,6 +47,32 @@ describe('validateHandoffRecord', () => {
   })
 })
 
+describe('validateHandoffRecord, the code state (barracuda, #16)', () => {
+  it('HANDOFF-VALIDATE-CODE: a merge without its PR, a repo that is not owner/name, a branch with .. are refused', () => {
+    const code = (patch: Record<string, unknown>) => {
+      const result = validateHandoffRecord({ ...M3_HANDOFF, code: { ...M3_HANDOFF.code, ...patch } })
+      return result.ok ? 'ok' : result.missing
+    }
+    expect([
+      code({}),
+      code({ pr: null }),
+      code({ repo: '../user' }),
+      code({ repo: './user' }),
+      code({ repo: 'KratoBal/.github' }),
+      code({ branch: '../../../user' }),
+      code({ branch: 'feat/x', merged: false, pr: null }),
+    ], 'HANDOFF-VALIDATE-CODE').toEqual([
+      'ok',
+      ['code.pr (a merged record needs its PR number)'],
+      ['code.repo (owner/name)'],
+      ['code.repo (owner/name)'],
+      'ok',
+      ['code.branch (a branch name, without ..)'],
+      'ok',
+    ])
+  })
+})
+
 describe('the task_handoffs table', () => {
   it('HANDOFF-STORE: a read returns the latest record of the task, not an older one or another task\'s', () => {
     const db = new Database(':memory:')
@@ -97,6 +123,10 @@ describe('verifyCodeState', () => {
       await run(OPEN, { head: null, pr: openPr }), // branch gone
       await run({ ...OPEN, merged: true }, { head: null, pr: { ...openPr, merged: true } }), // merged, branch deleted
       await run({ ...OPEN, pr: null }, { head: 'aaaaaaa1ffff' }), // no PR yet
+      // barracuda, #16:
+      await run(OPEN, { head: 'aaaaaaa1ffff', pr: { ...openPr, state: 'closed' } }), // closed without a merge
+      await run({ ...OPEN, merged: true, pr: null }, {}), // "merged" with no PR: nothing to measure
+      await run({ ...OPEN, merged: true }, { head: null, pr: { state: 'closed', merged: true, headSha: 'ccccccc3ffff' } }), // merged with another head
     ], 'HANDOFF-VERIFY').toEqual([
       [true, 0],
       [false, 2],
@@ -105,6 +135,9 @@ describe('verifyCodeState', () => {
       [false, 1],
       [true, 0],
       [true, 0],
+      [false, 1],
+      [false, 1],
+      [false, 1],
     ])
   })
 

@@ -255,6 +255,8 @@ if short:
     # Hianyzo kotelezo mezonel a szerver 400-at ad, es a parancs MINDET kiirja.
     argc_max 3 "$#" "fleet-api.sh handoff-write <task_id> <agens> - < atadas.json"
     TASK="${1:?task id required}"; AGENT="${2:?agent required}"; : "${3:?record required (-)}"
+    # az azonosito URL-be kerul: szokoz vagy ? nem torheti el az utat
+    TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
     RECORD="$(arg "$3")"
     BODY="$(python3 -c '
 import json,sys
@@ -263,7 +265,7 @@ try:
 except ValueError as e:
     sys.exit("FAIL: a rekord nem ervenyes JSON: %s" % e)
 print(json.dumps({"agent": sys.argv[1], "record": record}))' "$AGENT" "$RECORD")" || { echo "$BODY"; exit 1; }
-    RESP="$(curl -s -X POST "${API}/tasks/${TASK}/handoffs" \
+    RESP="$(curl -s -X POST "${API}/tasks/${TASK_URL}/handoffs" \
       -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
       -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
     CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
@@ -287,7 +289,8 @@ for field in body.get("missing",[]):
     # akkor egy mar nem letezo allapotrol szol, arra epiteni nem szabad.
     argc_max 1 "$#" "fleet-api.sh handoff-read <task_id>"
     TASK="${1:?task id required}"
-    RESP="$(curl -s -H "Authorization: Bearer $TOKEN" "${API}/tasks/${TASK}/handoffs/latest?verify=1" -w $'\n%{http_code}' 2>/dev/null || true)"
+    TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
+    RESP="$(curl -s -H "Authorization: Bearer $TOKEN" "${API}/tasks/${TASK_URL}/handoffs/latest?verify=1" -w $'\n%{http_code}' 2>/dev/null || true)"
     CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
     [ "$CODE" = "200" ] || { echo "FAIL http=${CODE:-?} $(printf '%s' "$JSON" | head -c 200)"; exit 1; }
     printf '%s' "$JSON" | python3 -c '
