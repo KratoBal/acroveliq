@@ -49,16 +49,19 @@ AGENTS="1001:korall 1002:polip 1003:barracuda 1004:murena 1005:nautilus 1006:pic
 # simply falls through to "other" and reads nothing. Measured 2026-08-22: after the
 # recreate murena's session came up with an EMPTY CLAUDE_CODE_OAUTH_TOKEN (the
 # launcher cats the token file at start) and every turn died with "Not logged in".
-SEC_GROUPS="1007:sec-dashboard 1008:sec-github 1009:sec-fb 1010:sec-unas 1011:sec-google 1012:sec-expo 1013:sec-vault 1014:sec-claude-oauth"
+SEC_GROUPS="1007:sec-dashboard 1008:sec-github 1009:sec-fb 1010:sec-unas 1011:sec-google 1012:sec-expo 1013:sec-vault 1014:sec-claude-oauth 1015:logs-acropora"
+# logs-acropora (2026-10-12, Balazs jovahagyasaval): a strukturalt parancsfuttato (scripts/futtat.py)
+# teljes naploi (logs/acropora/) es a titok-lenyomat lista (store/secret-hashes.txt). Csak a futtatot
+# hasznalo fejlesztok es a reviewer olvassak; NEM a fleet csoport, mert abban mind a hat agens benne van.
 # agent -> the secret groups Balázs approved for it (2026-08-19 + 2026-08-21).
 # Every agent needs the dashboard token and the OAuth token; the rest is per role.
 SEC_MEMBERS_korall="sec-dashboard sec-claude-oauth"
 SEC_MEMBERS_polip="sec-dashboard sec-claude-oauth sec-unas"
-SEC_MEMBERS_barracuda="sec-dashboard sec-claude-oauth sec-fb sec-unas"
-SEC_MEMBERS_murena="sec-dashboard sec-claude-oauth sec-github sec-expo"
+SEC_MEMBERS_barracuda="sec-dashboard sec-claude-oauth sec-fb sec-unas logs-acropora"
+SEC_MEMBERS_murena="sec-dashboard sec-claude-oauth sec-github sec-expo logs-acropora"
 # nautilus, felvéve 2026-08-24: a lista négy ágenssel készült, ő 08-23-án jött, és
 # a bootstrap ezért egy konténer-újrateremtés után NEM hozta volna vissza a felhasználóját.
-SEC_MEMBERS_nautilus="sec-dashboard sec-claude-oauth sec-github"
+SEC_MEMBERS_nautilus="sec-dashboard sec-claude-oauth sec-github logs-acropora"
 # picasso, felveve 2026-08-30: tervezo agens. Csak a ket alap titok kell neki
 # (dashboard token es OAuth). Se GitHub, se FB, se UNAS, se Google: HTML-t es
 # CSS-t ir a sajat mappajaban, es a sajat munkajarol keszit kepernyokepet.
@@ -121,6 +124,30 @@ for pair in $AGENTS; do
     fi
   done
 done
+
+step "2c. the futtat log tree and the secret-hash list (logs-acropora, 2770 / 0640)"
+# Created HERE, not by the first run: a directory the first run creates carries that user's
+# umask and group, and an agent under another uid then cannot open a task folder under it
+# (barracuda, marveen #17 review). setgid (2770) keeps every new task folder in the group.
+LOGROOT=/home/marveen/marveen/logs
+if id -nG "$ROUTER_USER" | tr ' ' '\n' | grep -qx logs-acropora; then echo "ok: $ROUTER_USER in logs-acropora"
+else run sudo -n usermod -aG logs-acropora "$ROUTER_USER" || fail "could not add $ROUTER_USER to logs-acropora"; echo "added: $ROUTER_USER -> logs-acropora"; fi
+for d in "$LOGROOT" "$LOGROOT/acropora"; do
+  if [[ -d "$d" ]] && [[ "$(stat -c '%G %a' "$d")" == "logs-acropora 2770" ]]; then
+    echo "ok: $d"
+  else
+    run sudo -n install -d -o "$ROUTER_USER" -g logs-acropora -m 2770 "$d" || fail "could not create $d"
+    run sudo -n chgrp logs-acropora "$d"; run sudo -n chmod 2770 "$d"
+    echo "set: $d (logs-acropora 2770)"
+  fi
+done
+HASHES=/home/marveen/marveen/store/secret-hashes.txt
+if [[ -f "$HASHES" ]]; then
+  if [[ "$(stat -c '%G %a' "$HASHES")" == "logs-acropora 640" ]]; then echo "ok: $HASHES"
+  else run sudo -n chgrp logs-acropora "$HASHES"; run sudo -n chmod 0640 "$HASHES"; echo "set: $HASHES (logs-acropora 0640)"; fi
+else
+  echo "note: $HASHES does not exist yet (futtat.sh lenyomat-hozzaad creates it; rerun this step after)"
+fi
 
 step "3. the router is in the fleet group"
 # Needed so the dashboard can write into the agent directories (owner agent-*,
