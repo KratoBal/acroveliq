@@ -40,10 +40,10 @@ function resolveScheduleDir(rawName: string): { name: string; dir: string } | nu
 // Fields that make a task run something as the dashboard's own user (a
 // command task's shell command, a pre-check script) or inside another agent's
 // session (targetSession). Through the API only Balázs's session writes them,
-// under the access setting like every P0-1 rule (Balázs, 2026-10-12 10:58 UTC:
-// nothing is restricted yet): in `naplo` the write goes on and a `would-deny`
-// row is logged; where the setting enforces for the caller, it is a 403
-// (field-gate.ts). `type` is closed only
+// IN EVERY ACCESS MODE, `naplo` included: Balázs closed this apart from the
+// P0-1 setting (2026-10-12 11:18:50 UTC, "lezarhatod"), since it is a running
+// path for shell commands, not an access filter. A refusal is logged like any
+// other (field-gate.ts). `type` is closed only
 // for `command`: the agents create `task` and `heartbeat` tasks through the
 // API today. A value equal to the task's current one is not a change: the
 // dashboard form sends `type` (and a set targetSession) on every save. On
@@ -64,9 +64,8 @@ export function sessionOnlyFieldsSet(ctx: RouteContext, data: unknown, current: 
 function rejectSessionOnly(ctx: RouteContext, data: unknown, name: string, current?: Record<string, unknown>): boolean {
   const set = sessionOnlyFieldsSet(ctx, data, current)
   if (!set.length) return false
-  const refused = fieldGate(ctx, `schedule-session-fields: ${set.join(', ')} only from the session`)
-  logger.warn({ name, fields: set, actor: ctx.auth?.actor ?? ctx.auth?.kind, refused }, 'scheduled task: session-only fields set by a non-session caller')
-  if (!refused) return false
+  fieldGate(ctx, `schedule-session-fields: ${set.join(', ')} only from the session`, { always: true })
+  logger.warn({ name, fields: set, actor: ctx.auth?.actor ?? ctx.auth?.kind }, 'scheduled task: session-only fields refused')
   json(ctx.res, { error: `only the dashboard session may set ${set.join(', ')} (type only as task or heartbeat)` }, 403)
   return true
 }

@@ -35,14 +35,15 @@ export function callerOfContext(auth: RouteContext['auth'], mainAgent: string = 
 /**
  * Logs a field rule the caller broke, and says whether to refuse: true where
  * the setting enforces for this caller (answer 403), false in `naplo` (go on;
- * a `would-deny` row is logged). `rule` names the rule in the log; no value
- * from the request goes there.
+ * a `would-deny` row is logged). `always` refuses in every mode, for a rule
+ * the owner closed apart from the setting. `rule` names the rule in the log;
+ * no value from the request goes there.
  */
-export function fieldGate(ctx: RouteContext, rule: string): boolean {
+export function fieldGate(ctx: RouteContext, rule: string, opts: { always?: boolean } = {}): boolean {
   const caller = callerOfContext(ctx.auth)
   if (!caller || caller.column === 'S') return false
   const mode: AccessMode = ctx.accessMode ?? 'naplo'
-  const enforced = enforces(mode, caller.column)
+  const enforced = opts.always === true || enforces(mode, caller.column)
   recordAccessDenial(
     getDb(),
     { rule: matchRouteRule(ctx.method, ctx.path), caller, decision: { allowed: false, reason: rule }, enforced },

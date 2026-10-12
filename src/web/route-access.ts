@@ -301,15 +301,11 @@ const BEFORE_ENFORCING = [
   '   eszköz `kikenyszerit` állásban `device:<név>` néven ír, nem bármelyik ágens nevében. A bekapcsolás előtt',
   '   tehát minden ágensnek saját tokennel kell hívnia, különben a feladója ismeretlen lesz.',
   '5. **Az ütemezett feladatok.** A `command`, `preCheck` és `targetSession` mezőt (és a `command` típust) API-n',
-  '   csak a munkamenet írhatja: `naplo` állásban ez csak `would-deny` sor, kikényszerítve 403. Az ágens vagy a',
+  '   csak a munkamenet írhatja, MINDEN állásban, `naplo`-ban is (403): ez parancsfuttatási út, nem',
+  '   hozzáférési szűrő, és Balázs a beállítástól függetlenül zárta (2026-10-12 11:18:50 UTC). Az ágens vagy a',
   '   közös token által írt feladat a kikényszerítő állásban társ-kerettel fut, nem operátor-kerettel; `naplo`',
   '   állásban marad az operátor-keret, és a futtató naplózza, mi lenne. A váltás után tehát az Acrobot API-n',
   '   létrehozott feladatai is kérésként érkeznek.',
-  '   **`naplo` állásban ez a kódfuttatási út NYITVA marad:** a közös tokennel egy `command` típusú feladat a',
-  '   vezérlőpult felhasználójaként futtat shell-parancsot (`bash -lc`), a `preCheck` tetszőleges szkriptet. A',
-  '   zárás a beállítást követi (Balázs, 2026-10-12 10:58 UTC: a P0-1 korlátozásai még nem élnek; az Acrobot a',
-  '   „minden módban” zárást 28683-ban visszavonta, az Balázs külön szavára megy). Ha Balázs ezt külön zárja,',
-  '   a `schedules.ts` `rejectSessionOnly` hívásából kell kivenni a mód-függést.',
 ]
 
 /** The readable list (docs/access-matrix.md), from the rules and their access. */
