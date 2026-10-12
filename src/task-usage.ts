@@ -16,13 +16,14 @@
 //      case) belongs to that task, whole;
 //   2. by time window: an agent's call that falls in exactly one task's window
 //      for that agent. A call that falls in the windows of TWO OR MORE tasks
-//      is not guessed: it is assigned to none, and every such task reports it
-//      as an overlap and is marked not valid.
+//      is not guessed: it is assigned to none. A WORK call there makes every
+//      such task not valid; an admin or review call stays unassigned, named
+//      on its own line, and the task stays valid (acrobot 28588).
 //
 // THE WINDOWS come from the events (`task_events`, plus the kanban card's own
 // moves when the task id is a card id):
-//   - work:   from the actor's `started` or `fix_started` to its next
-//             `review_requested`, `done` or `merged`;
+//   - work:   from the actor's `started` or `fix_started` to its own next
+//             `review_requested`, or the task's `done` or `merged` by anyone;
 //   - review: from a `review_requested` to the `verdict` that answers it, for
 //             the verdict's actor;
 //   - admin:  from the actor's `assigned` to the task's `merged` or `done`.
@@ -224,9 +225,13 @@ export function taskWindows(events: readonly TaskEvent[]): TaskWindow[] {
       openAdmin.set(actor, window)
       windows.push(window)
     }
+    // the task's end closes every open window, whoever writes it: acrobot
+    // usually merges, and a worker who wrote no close of its own would keep
+    // its window open into its next task (barracuda, #18)
     if (kind === 'merged' || kind === 'done') {
-      for (const window of openAdmin.values()) window.to = at
+      for (const window of [...openAdmin.values(), ...openWork.values()]) window.to ??= at
       openAdmin.clear()
+      openWork.clear()
     }
   }
   return windows
@@ -271,9 +276,10 @@ export function assignCalls(input: {
   /** `agent|session` -> task id, every registered session. */
   sessions: ReadonlyMap<string, string>
   now: number
-}): { assigned: CallAssignment[]; overlaps: Overlap[] } {
+}): { assigned: CallAssignment[]; overlaps: Overlap[]; unassigned: { call: UsageCall; role: 'admin' | 'review' }[] } {
   const assigned: CallAssignment[] = []
   const overlaps: Overlap[] = []
+  const unassigned: { call: UsageCall; role: 'admin' | 'review' }[] = []
   for (const call of input.calls) {
     const sessionOwner = input.sessions.get(`${call.agent}|${call.session_id}`)
     const hits = input.windows.filter((w) => w.agent === call.agent && inWindow(w, call.timestamp, input.now))
@@ -285,20 +291,30 @@ export function assignCalls(input: {
       continue
     }
     if (own.length === 0) continue
-    const tasks = [...new Set(hits.map((w) => w.task_id))]
-    if (tasks.length > 1) {
-      overlaps.push({ call_id: call.id, agent: call.agent, timestamp: call.timestamp, tasks: tasks.sort() })
-      continue
-    }
     // two windows of the same task (work and review by one agent): review wins
     const role = own.some((w) => w.role === 'review')
       ? 'review'
       : own.some((w) => w.role === 'work')
         ? 'work'
         : 'admin'
+    const tasks = [...new Set(hits.map((w) => w.task_id))]
+    if (tasks.length > 1) {
+      /*
+        INVALID BY CAPACITY KIND, NOT BY TASK (acrobot 28588). A developer works
+        on one task at a time: a work call in two tasks' windows is a real
+        fault, and the task is not valid. Admin and review windows overlap as a
+        matter of course (seven tasks handed out at once, reviews queued); such
+        a call is not shared out and not guessed, it stays UNASSIGNED, and the
+        task names it on its own line.
+      */
+      if (role === 'work' || hits.some((w) => w.role === 'work'))
+        overlaps.push({ call_id: call.id, agent: call.agent, timestamp: call.timestamp, tasks: tasks.sort() })
+      else unassigned.push({ call, role })
+      continue
+    }
     assigned.push({ call, mode: 'window', role })
   }
-  return { assigned, overlaps }
+  return { assigned, overlaps, unassigned }
 }
 
 export interface TokenTotals {
@@ -349,9 +365,14 @@ export function capacityKind(
 
 export interface TaskUsage {
   task: TaskRow
-  /** False when any of the task's calls fell in another task's window too. */
+  /** False when a WORK call fell in another task's window too. */
   valid: boolean
   overlaps: Overlap[]
+  /**
+   * Admin and review calls in overlapping windows: not shared out between
+   * the tasks, and not making the task invalid (acrobot 28588).
+   */
+  unassigned: Record<'admin' | 'review', TokenTotals>
   totals: TokenTotals
   by_capacity: Record<CapacityKind, TokenTotals>
   by_agent: Record<string, TokenTotals>
@@ -392,7 +413,7 @@ export function taskUsage(db: Database.Database, taskId: string, now: number): T
       .all(w.agent, w.from, w.to ?? now + 1) as UsageCall[])
       calls.set(row.id, row)
 
-  const { assigned, overlaps } = assignCalls({
+  const { assigned, overlaps, unassigned } = assignCalls({
     taskId,
     calls: [...calls.values()].sort((a, b) => a.timestamp - b.timestamp || a.id - b.id),
     windows,
@@ -401,10 +422,20 @@ export function taskUsage(db: Database.Database, taskId: string, now: number): T
   })
   const ownEvents = byTask.get(taskId) ?? []
   const firstFixStart = ownEvents.find((e) => e.kind === 'fix_started')?.at ?? null
+  // an experiment's variants share their brief on purpose: neither the parent
+  // nor a sibling makes a variant repeated work (barracuda, #18)
   const repeatedOf = task.brief_ref
     ? ((db
-        .prepare('SELECT id FROM tasks WHERE brief_ref = ? AND created_at < ? ORDER BY created_at LIMIT 1')
-        .get(task.brief_ref, task.created_at) as { id: string } | undefined)?.id ?? null)
+        .prepare(
+          `SELECT id FROM tasks
+           WHERE brief_ref = @brief AND created_at < @created
+             AND id <> coalesce(@parent, '')
+             AND (@parent IS NULL OR parent_task IS NULL OR parent_task <> @parent)
+           ORDER BY created_at LIMIT 1`,
+        )
+        .get({ brief: task.brief_ref, created: task.created_at, parent: task.parent_task }) as
+        | { id: string }
+        | undefined)?.id ?? null)
     : null
 
   const totals = emptyTotals()
@@ -419,10 +450,13 @@ export function taskUsage(db: Database.Database, taskId: string, now: number): T
     add((bySession[a.call.session_id] ??= emptyTotals()), a.call)
     byMode[a.mode]++
   }
+  const unassignedTotals = { admin: emptyTotals(), review: emptyTotals() }
+  for (const u of unassigned) add(unassignedTotals[u.role], u.call)
   return {
     task,
     valid: overlaps.length === 0,
     overlaps,
+    unassigned: unassignedTotals,
     totals,
     by_capacity: byCapacity,
     by_agent: byAgent,

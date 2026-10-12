@@ -65,6 +65,7 @@ const usage = (id: string, variant: string | null, valid: boolean) => ({
   overlaps: valid ? [] : [{ call_id: 9, agent: 'murena', timestamp: 1760252700, tasks: [id, 'masik'] }],
   totals: totals(43, 7_990_000),
   by_capacity: { work: totals(40, 7_000_000), review: empty, fix: totals(3, 990_000), admin: empty, repeat: empty },
+  unassigned: { admin: totals(4, 2_000_000), review: empty },
   by_agent: {}, by_session: {}, by_mode: { session: 0, window: 43 },
   duration_seconds: 900, repeated_of: null,
 })
@@ -77,8 +78,8 @@ describe('fleet-api.sh task-usage', () => {
     answer = [200, usage('m1', null, false)]
     const bad = await run(['task-usage', 'm1'])
     expect([ok.code, okPath, /43 hivas .*cache-olv +7\.99M/.test(ok.out), /fix +3 hivas/.test(ok.out),
-      ok.out.includes('m1-V1 (acropora, V1)'), bad.code, /ERVENYTELEN/.test(bad.out), /ATFEDES: murena .*m1, masik/.test(bad.out)],
-    'FLEET-TASK-USAGE').toEqual([0, '/api/tasks/m1/usage?variants=1', true, true, true, 3, true, true])
+      ok.out.includes('m1-V1 (acropora, V1)'), /admin: nem rendelheto, 4 hivas/.test(ok.out), /review: nem rendelheto/.test(ok.out), bad.code, /ERVENYTELEN/.test(bad.out), /ATFEDES: murena .*m1, masik/.test(bad.out)],
+    'FLEET-TASK-USAGE').toEqual([0, '/api/tasks/m1/usage?variants=1', true, true, true, true, false, 3, true, true])
   })
 
   it('FLEET-TASK-EVENT: the time and the reference go as given, the task id URL-encoded', async () => {

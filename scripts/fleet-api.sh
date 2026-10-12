@@ -367,6 +367,8 @@ for u in rows:
         if v["calls"]: print(line(k,v))
     print("  hozzarendeles: munkamenet %d, idoablak %d; idotartam %s mp" % (u["by_mode"]["session"],u["by_mode"]["window"],u["duration_seconds"]))
     if u["repeated_of"]: print("  ismetelt munka, elozmeny: %s" % u["repeated_of"])
+    for k,v in u["unassigned"].items():
+        if v["calls"]: print("  %s: nem rendelheto, %d hivas az atfedo ablakban (cache-olv %s)" % (k,v["calls"],M(v["cache_read"])))
     for o in u["overlaps"]:
         bad=True
         print("  ATFEDES: %s hivasa (%s) egyszerre ezekhez: %s" % (o["agent"],o["timestamp"],", ".join(o["tasks"])))

@@ -120,6 +120,27 @@ describe('back-to-back windows', () => {
   })
 })
 
+describe('overlapping admin and review windows (acrobot 28588)', () => {
+  it('TASK-USAGE-UNASSIGNED: an admin or review call in two tasks\' windows stays unassigned, and the tasks stay valid', () => {
+    task('p')
+    task('q')
+    event('p', 'assigned', 'acrobot', T('08:00:00'))
+    event('q', 'assigned', 'acrobot', T('08:05:00'))
+    event('p', 'started', 'murena', T('08:10:00'))
+    event('p', 'review_requested', 'murena', T('09:00:00'))
+    event('q', 'started', 'nautilus', T('08:10:00'))
+    event('q', 'review_requested', 'nautilus', T('09:05:00'))
+    event('p', 'verdict', 'barracuda', T('09:40:00'))
+    event('q', 'verdict', 'barracuda', T('09:45:00'))
+    call('acrobot', T('08:30:00')) // both admin windows
+    call('barracuda', T('09:20:00')) // both review windows
+    call('murena', T('08:20:00')) // p's work alone
+    const p = taskUsage(db, 'p', NOW)!
+    expect([p.valid, p.totals.calls, p.unassigned.admin.calls, p.unassigned.review.calls, p.overlaps.length],
+      'TASK-USAGE-UNASSIGNED').toEqual([true, 1, 1, 1, 0])
+  })
+})
+
 describe('a session of its own (V3)', () => {
   it('TASK-USAGE-SESSION: the whole session is the task\'s, a window does not take it, one session one task', () => {
     task('v3')
@@ -188,7 +209,35 @@ describe('the kanban card\'s moves', () => {
   })
 })
 
+describe('the task\'s end by someone else', () => {
+  it('TASK-USAGE-CLOSE: acrobot\'s merge closes murena\'s window, so her next task is not an overlap', () => {
+    task('m1')
+    task('m2')
+    event('m1', 'started', 'murena', T('08:00:00'))
+    event('m1', 'merged', 'acrobot', T('09:00:00'))
+    event('m2', 'started', 'murena', T('09:30:00'))
+    call('murena', T('08:30:00'))
+    call('murena', T('09:45:00'))
+    const m1 = taskUsage(db, 'm1', NOW)!
+    const m2 = taskUsage(db, 'm2', NOW)!
+    expect([m1.valid, m1.totals.calls, m2.valid, m2.totals.calls], 'TASK-USAGE-CLOSE').toEqual([true, 1, true, 1])
+  })
+})
+
 describe('variants', () => {
+  it('TASK-USAGE-VARIANT-BRIEF: three variants of one brief are each work, not repeated work', () => {
+    task('exp', { brief_ref: 'exchange/m1-brief.md' }, 1)
+    for (const [i, v] of ['V1', 'V2', 'V3'].entries()) {
+      task(`exp-${v}`, { parent_task: 'exp', variant: v, brief_ref: 'exchange/m1-brief.md' }, 2 + i)
+      event(`exp-${v}`, 'started', 'murena', T(`0${i + 1}:00:00`))
+      event(`exp-${v}`, 'done', 'murena', T(`0${i + 1}:30:00`))
+      call('murena', T(`0${i + 1}:10:00`))
+    }
+    const r = taskUsageWithVariants(db, 'exp', NOW)!
+    expect(r.variants.map((v) => [v.task.variant, v.by_capacity.work.calls, v.by_capacity.repeat.calls, v.repeated_of]),
+      'TASK-USAGE-VARIANT-BRIEF').toEqual([['V1', 1, 0, null], ['V2', 1, 0, null], ['V3', 1, 0, null]])
+  })
+
   it('TASK-USAGE-VARIANTS: the experiment\'s variants side by side, each by its own session', () => {
     task('m1-proba')
     for (const v of ['V1', 'V2', 'V3']) {

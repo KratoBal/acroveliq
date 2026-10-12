@@ -26,20 +26,28 @@ később javítható, és minden régi feladat újraszámolódik. Ezért a hív�
 
 1. **Munkamenet szerint:** a feladathoz rendelt munkamenet minden hívása a feladaté.
 2. **Időablak szerint:** az ágens hívása, ha pontosan EGY feladat ablakába esik.
-   - munka: a szereplő `started` vagy `fix_started` eseményétől a következő
-     `review_requested`, `done` vagy `merged` eseményéig;
+   - munka: a szereplő `started` vagy `fix_started` eseményétől a saját következő
+     `review_requested` eseményéig, vagy a feladat `done` vagy `merged` eseményéig,
+     akárki írja (a beolvasztást jellemzően acrobot írja);
    - ellenőrzés: egy `review_requested`-től az azt megválaszoló `verdict`-ig, a
      `verdict` szereplőjére;
    - adminisztráció: a szereplő `assigned` eseményétől a feladat `merged` vagy `done`
      eseményéig.
    Az ablak vége kizáró. A le nem zárt ablak a lekérdezés pillanatáig tart.
 3. **Átfedés:** ha egy hívás két feladat ablakába is esik, egyikhez sem rendelődik.
-   Mindkét feladat **érvénytelen**, és a lekérdezés megnevezi az átfedő hívásokat.
-   Nem találgatunk.
+   Nem találgatunk. Az érvénytelenség **kapacitás-fajtánként** jár (acrobot döntése,
+   2026-10-12, 28588):
+   - **munka:** a fejlesztő egyszerre egy feladaton dolgozik, nála az átfedés valódi
+     hiba. A feladat **érvénytelen**, és a lekérdezés megnevezi az átfedő hívásokat.
+   - **adminisztráció és ellenőrzés:** az ablakaik rendszeresen átfednek (egyszerre
+     kiadott feladatok, sorban álló review-k). Az ilyen hívás **osztatlan** marad,
+     egyik feladathoz sem könyvelődik, és a feladat bontása külön sorban mutatja
+     („admin: nem rendelhető, N hívás az átfedő ablakban”). A feladat érvényes marad.
 
 A kapacitás-fajta: az ellenőrzés és az adminisztráció az ablakából jön. A munkás
 hívása az első `fix_started` után javítás, előtte munka. Ha egy korábbi feladatnak
-ugyanaz a briefje, a munka és a javítás ismételt munka.
+ugyanaz a briefje, a munka és a javítás ismételt munka. A kísérlet változatai (közös
+szülő) szándékosan ugyanazt a briefet kapják: a szülő és a testvér nem teszi ismételtté.
 
 ## Használat
 
