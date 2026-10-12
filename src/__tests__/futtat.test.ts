@@ -10,7 +10,8 @@
 //   - a log is readable beyond its owner and the project group;
 //   - an old log survives retention, or the summary is deleted with it;
 //   - a run goes on, or writes a log, without its required hash list; the
-//     switch that lets it go on is taken by any value but "1", or is silent.
+//     switch that lets it go on is taken by any value but "1", or is silent;
+//     an empty list runs without saying so.
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
@@ -39,7 +40,8 @@ beforeEach(() => {
   const dir = mkdtempSync(join(root, 'case-'))
   env = { ...process.env, FUTTAT_LOG_ROOT: join(dir, 'logs'), FUTTAT_SECRET_HASHES: join(dir, 'hashes.txt'), FUTTAT_GROUP: 'nincs-ilyen-csoport' }
   delete env.FUTTAT_LENYOMAT_NEM_KOTELEZO
-  writeFileSync(env.FUTTAT_SECRET_HASHES!, '') // the list is required: an empty one is a list
+  // the list is required; one placeholder hash keeps it from being empty (an empty list is said aloud)
+  writeFileSync(env.FUTTAT_SECRET_HASHES!, `${'0'.repeat(64)} 12\n`)
 })
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
@@ -164,6 +166,21 @@ describe('futtat: masking', () => {
       chmodSync(env.FUTTAT_SECRET_HASHES!, 0o600)
     }
     expect(results, 'FUTTAT-HASHLIST-REQUIRED').toEqual(results.map(() => stopped))
+  })
+
+  it('FUTTAT-HASHLIST-EMPTY: an empty list runs, and says on screen, in the log header and in the summary that only the patterns masked', () => {
+    writeFileSync(env.FUTTAT_SECRET_HASHES!, '# csak megjegyzes\n\n')
+    const empty = run(`echo 'kulcs ${GITHUB_TOKEN}'; exit 4`)
+    writeFileSync(env.FUTTAT_SECRET_HASHES!, `${'0'.repeat(64)} 12\n`)
+    const filled = run(`echo 'kulcs ${GITHUB_TOKEN}'`)
+    expect([
+      empty.code,
+      empty.out.includes('figyelem: a lenyomat-lista üres, csak a minták szűrtek'),
+      empty.text.split('\n')[2],
+      empty.summary.figyelmeztetes,
+      empty.text.includes('kulcs [TITOK]'),
+      filled.out.includes('üres') || filled.text.includes('üres') || filled.summary.figyelmeztetes !== null,
+    ], 'FUTTAT-HASHLIST-EMPTY').toEqual([4, true, '# figyelem: a lenyomat-lista üres, csak a minták szűrtek', 'a lenyomat-lista üres, csak a minták szűrtek', true, false])
   })
 
   it('FUTTAT-HASHLIST-OPTIONAL: with the switch on, the run goes on with the patterns and says so on screen, in the log and in the summary', () => {

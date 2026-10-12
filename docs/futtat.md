@@ -54,7 +54,8 @@ A szűrés sorrendben három lépés:
 
    **A lista kötelező.** Ha hiányzik vagy nem olvasható, a futtató nem fut csökkentett
    védelemmel: nem futtatja a parancsot, nem ír naplót, és `3`-as kóddal, egyértelmű
-   üzenettel áll meg. Egy üres lista lista, azzal fut. Ha egy ágenst most vettek fel a
+   üzenettel áll meg. Egy üres lista lista, azzal fut, de a kimenet, a napló fejléce és az összefoglaló
+   kiírja, hogy üres, és csak a minták szűrtek. Ha egy ágenst most vettek fel a
    `logs-<projekt>` csoportba, a tagság a következő indulásától él, addig a futtató megáll.
    Kikapcsolni csak a `FUTTAT_LENYOMAT_NEM_KOTELEZO=1` környezeti változóval lehet (tesztekhez);
    ilyenkor a kimenet, a napló fejléce és az összefoglaló is kiírja, hogy ki van kapcsolva.
