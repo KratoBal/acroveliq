@@ -250,10 +250,12 @@ describe('fleet-gate: what passes', () => {
         setUp(`${MATCH}    ForceCommand /bin/true\n`, `${forced}\n`), // a ForceCommand, even in our block
         setUp(`ForceCommand /bin/true\n${MATCH}`, `${forced}\n`), // a global ForceCommand
         setUp(MATCH, `${forced}\n`, 0o644, 'ForceCommand /bin/true\n'), // an included ForceCommand, no Match around it
+        setUp(`Include /etc/ssh/sshd_config.d/*.conf\n${MATCH}`, `${forced}\n`), // the usual Include is fine
+        setUp(`Include /etc/ssh/sshd_config.d/*.conf\nInclude /etc/ssh/masik/*.conf\n${MATCH}`, `${forced}\n`), // another one is not
       ].map(([code]) => code),
       'GATE-SSHD-MATCH',
-    ).toEqual([0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1])
-    expect(setUp(MATCH, `${forced}\n`)[1], 'GATE-SSHD-MATCH output').toBe(`match=1 others=0 keyopts=1 ours=1 forcecmds=0 dropins=0 keyfile=${OWNER}:644 keys=1 forced=1`)
+    ).toEqual([0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1])
+    expect(setUp(MATCH, `${forced}\n`)[1], 'GATE-SSHD-MATCH output').toBe(`match=1 others=0 keyopts=1 ours=1 forcecmds=0 includes=0 dropins=0 keyfile=${OWNER}:644 keys=1 forced=1`)
   })
 
   it('GATE-RESTORE-PROBE: on the stage host a throwaway container takes the dump, answers the fixed count and is removed', () => {
