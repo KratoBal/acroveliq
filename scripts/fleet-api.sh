@@ -35,6 +35,10 @@
 #   bash scripts/fleet-api.sh approval-new <agent> <kategoria> <leiras>
 #         (a lejarat a KATEGORIABOL jon, nem adhato meg hivaskor -- lasd a parancsnal)
 #   bash scripts/fleet-api.sh approval-get <id>
+#   bash scripts/fleet-api.sh task-new <task_id> [projekt] [szulo] [valtozat] [brief]
+#   bash scripts/fleet-api.sh task-event <task_id> <fajta> <szereplo> [ido] [hivatkozas]
+#   bash scripts/fleet-api.sh task-session <task_id> <agens> <session_id>
+#   bash scripts/fleet-api.sh task-usage <task_id> [variants]   # 3: atfedo ablak, ervenytelen
 #
 # Any argument may be "-" to read that value from STDIN (for long/multi-line content).
 # Output: the raw API response on success; "FAIL <reason>" + exit 1 otherwise.
@@ -306,6 +310,69 @@ for line in c["mismatches"]:
     print("  - %s" % line)
 print("Merd le, mi tortent azota, es jelezd, mielott barmit folytatsz.")
 sys.exit(3)'
+    exit $?
+    ;;
+  task-new)
+    # FELADATONKENTI TOKENMERES (acrovelIQ token-brief, 1. pont). Egy feladat
+    # (a kanban kartya id-je, vagy egy kiserleti valtozat sajat id-je). A szulo
+    # es a valtozat a kiserlet V1/V2/V3 aganak egymas melle tetelehez kell.
+    argc_max 5 "$#" "fleet-api.sh task-new <task_id> [projekt] [szulo_feladat] [valtozat] [brief_hivatkozas]"
+    TASK="${1:?task id required}"
+    post /tasks "$(json_obj id "$TASK" project "${2:-}" parent_task "${3:-}" variant "${4:-}" brief_ref "${5:-}")"
+    ;;
+  task-event)
+    # Egy esemeny: assigned|started|review_requested|verdict|fix_started|done|merged.
+    # Az ido masodperc vagy ISO (2026-10-12T07:03:00Z); hianyaban MOST. A besorolas
+    # ezekbol vezetodik le, a hivasokra semmi nem irodik.
+    argc_max 5 "$#" "fleet-api.sh task-event <task_id> <fajta> <szereplo> [ido] [hivatkozas]"
+    TASK="${1:?task id required}"; KIND="${2:?kind required}"; ACTOR="${3:?actor required}"
+    TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
+    if [ -n "${4:-}" ]; then
+      post "/tasks/${TASK_URL}/events" "$(json_obj kind "$KIND" actor "$ACTOR" at "$4" ref "${5:-}")"
+    else
+      post "/tasks/${TASK_URL}/events" "$(json_obj kind "$KIND" actor "$ACTOR" ref "${5:-}")"
+    fi
+    ;;
+  task-session)
+    # Egy munkamenet a feladate (a V3 eset): akkor minden hivasa a feladathoz megy.
+    argc_max 3 "$#" "fleet-api.sh task-session <task_id> <agens> <session_id>"
+    TASK="${1:?task id required}"; AGENT="${2:?agent required}"; SESSION="${3:?session id required}"
+    TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
+    post "/tasks/${TASK_URL}/sessions" "$(json_obj agent "$AGENT" session_id "$SESSION")"
+    ;;
+  task-usage)
+    # A feladat bontasa tokenfajtankent es kapacitas-fajtankent; "variants" mellett
+    # a valtozatai is mellette. ATFEDO ABLAKNAL a feladat ERVENYTELEN: a parancs
+    # ezt kiirja, es 3-as koddal lep ki, mert a szamai akkor nem teljesek.
+    argc_max 2 "$#" "fleet-api.sh task-usage <task_id> [variants]"
+    TASK="${1:?task id required}"
+    TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
+    Q=""; [ "${2:-}" = "variants" ] && Q="?variants=1"
+    RESP="$(curl -s -H "Authorization: Bearer $TOKEN" "${API}/tasks/${TASK_URL}/usage${Q}" -w $'\n%{http_code}' 2>/dev/null || true)"
+    CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
+    [ "$CODE" = "200" ] || { echo "FAIL http=${CODE:-?} $(printf '%s' "$JSON" | head -c 200)"; exit 1; }
+    printf '%s' "$JSON" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+rows=[d["task"]]+d["variants"] if "variants" in d else [d]
+M=lambda n: "%.2fM" % (n/1e6)
+def line(name,t):
+    return "  %-10s %5d hivas  in %8s  ki %8s  cache-olv %8s  cache-ir %8s" % (name,t["calls"],M(t["input"]),M(t["output"]),M(t["cache_read"]),M(t["cache_write"]))
+bad=False
+for u in rows:
+    t=u["task"]
+    print("%s (%s%s)%s" % (t["id"], t["project"], ", "+t["variant"] if t.get("variant") else "", "" if u["valid"] else "  ERVENYTELEN"))
+    print(line("osszesen",u["totals"]))
+    for k,v in u["by_capacity"].items():
+        if v["calls"]: print(line(k,v))
+    print("  hozzarendeles: munkamenet %d, idoablak %d; idotartam %s mp" % (u["by_mode"]["session"],u["by_mode"]["window"],u["duration_seconds"]))
+    if u["repeated_of"]: print("  ismetelt munka, elozmeny: %s" % u["repeated_of"])
+    for k,v in u["unassigned"].items():
+        if v["calls"]: print("  %s: nem rendelheto, %d hivas az atfedo ablakban (cache-olv %s)" % (k,v["calls"],M(v["cache_read"])))
+    for o in u["overlaps"]:
+        bad=True
+        print("  ATFEDES: %s hivasa (%s) egyszerre ezekhez: %s" % (o["agent"],o["timestamp"],", ".join(o["tasks"])))
+sys.exit(3 if bad else 0)'
     exit $?
     ;;
   kanban-new)
