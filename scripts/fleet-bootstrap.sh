@@ -265,8 +265,11 @@ if test -f "$BLANKET"; then
   if (( DRY )); then
     echo "DRY: remove $BLANKET (the blanket NOPASSWD:ALL line)"
   else
-    sudo -n rm -f "$BLANKET" && echo "removed: $BLANKET (blanket NOPASSWD:ALL)" \
-      || echo "WARNING: could not remove $BLANKET" >&2
+    # FAIL-CLOSED (Balazs, 2026-10-12): a blanket line that stays is not a warning,
+    # it is the whole fence missing. Stop here, so nothing downstream reports "ok".
+    sudo -n rm -f "$BLANKET" || fail "could not remove $BLANKET (blanket NOPASSWD:ALL): the fence is NOT in place"
+    test -f "$BLANKET" && fail "$BLANKET still exists after removal"
+    echo "removed: $BLANKET (blanket NOPASSWD:ALL)"
   fi
 else
   echo "ok: $BLANKET is already gone"
@@ -298,6 +301,21 @@ elif (( GROUP_GRANTED )); then
   echo "NOTE: run 'supervisorctl restart dashboard' -- it is running without the fleet group"
 else
   echo "ok: nothing to refresh"
+fi
+
+step "6b. no unrestricted sudo left (proof, not assumption)"
+# Checked by CAPABILITY, from root: does any sudoers source still grant the router
+# an unrestricted rule? `sudo -l -U` reads every file in /etc/sudoers.d, so a
+# blanket line that came back under another file name is also caught.
+if (( DRY )); then
+  echo "DRY: sudo -n -l -U $ROUTER_USER | grep unrestricted rule"
+else
+  if test -f "$BLANKET"; then fail "$BLANKET exists"; fi
+  allowed="$(sudo -n -l -U "$ROUTER_USER" 2>/dev/null)" || fail "cannot list sudo rules for $ROUTER_USER (run this as root)"
+  if printf '%s\n' "$allowed" | grep -Eq '\(ALL( ?: ?ALL)?\) +(NOPASSWD: *)?ALL *$'; then
+    fail "an unrestricted sudo rule is still granted to $ROUTER_USER"
+  fi
+  echo "ok: $ROUTER_USER has no unrestricted sudo rule"
 fi
 
 step "7. verify"
