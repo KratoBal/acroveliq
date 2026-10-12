@@ -139,16 +139,35 @@ describe('fleet-gate: what passes', () => {
     const plain = p.run(`psql-ro ${OS_DB} acropora acropora`, 'select 1;')
     const sentSql = readFileSync(p.sql, 'utf-8')
     const spaced = p.run(`psql-ro ${OS_DB} acropora acropora tuples-spaced-pipe`, 'select 1;')
-    const coolify = s.run('psql-ro coolify-db coolify coolify tuples-pipe', 'select 1;')
     const call = (r: { calls: string[] }) => r.calls.find((c) => c.startsWith('docker [exec]'))
-    expect([plain.code, plain.out.trim(), sentSql, call(plain), call(spaced), call(coolify)], 'GATE-PSQL-RO').toEqual([
+    expect([plain.code, plain.out.trim(), sentSql, call(plain), call(spaced), s.run('psql-ro coolify-db coolify coolify tuples', 'select 1;').code], 'GATE-PSQL-RO').toEqual([
       0,
       'sor',
       'select 1;\n',
       `docker [exec] [-i] [-e] [PGOPTIONS=-c default_transaction_read_only=on] [${OS_DB}-163020] [psql] [-X] [-q] [-v] [ON_ERROR_STOP=1] [-U] [acropora] [-d] [acropora]`,
       `docker [exec] [-i] [-e] [PGOPTIONS=-c default_transaction_read_only=on] [${OS_DB}-163020] [psql] [-X] [-q] [-v] [ON_ERROR_STOP=1] [-U] [acropora] [-d] [acropora] [-tA] [-F] [ | ]`,
-      'docker [exec] [-i] [-e] [PGOPTIONS=-c default_transaction_read_only=on] [coolify-db] [psql] [-X] [-q] [-v] [ON_ERROR_STOP=1] [-U] [coolify] [-d] [coolify] [-tA] [-F] [|]',
+      2, // the Coolify database is not a psql-ro target: writing it is root on the host
     ])
+  })
+
+  it('GATE-COOLIFY: the two Coolify reads are named, their SQL is the gate\'s, and the uuid is the only argument', () => {
+    const s = world(STAGE)
+    const uuid = '6sbolw7oedo5sdffhpswdoyt'
+    const list = s.run(`coolify-deployments ${uuid}`)
+    const log = s.run(`coolify-deploy-log ${uuid}`)
+    const call = (r: { calls: string[] }) => r.calls.find((c) => c.startsWith('docker [exec]'))
+    const refused = ['coolify-deployments abc', `coolify-deployments ${uuid.toUpperCase()}`, `coolify-deploy-log ${uuid} x`].map((c) => s.run(c).code)
+    expect(
+      [
+        list.code,
+        call(list)?.includes(`[-e] [PGOPTIONS=-c default_transaction_read_only=on] [coolify-db] [psql]`),
+        call(list)?.includes(`where uuid='${uuid}')`),
+        call(log)?.endsWith(`[select logs from application_deployment_queues where deployment_uuid='${uuid}']`),
+        refused,
+        world(PROD).run(`coolify-deployments ${uuid}`).code,
+      ],
+      'GATE-COOLIFY',
+    ).toEqual([0, true, true, true, [2, 2, 2], 2])
   })
 
   it('GATE-ENV-GET: only the two named variables of the api container, values of nothing else', () => {
@@ -175,9 +194,11 @@ describe('fleet-gate: what passes', () => {
   it('GATE-RESTORE-PROBE: on the stage host a throwaway container takes the dump, answers the fixed count and is removed', () => {
     const r = world(STAGE).run('restore-probe', 'DUMP')
     const steps = r.calls.filter((c) => c.startsWith('docker')).map((c) => c.split(' ').slice(1, 3).join(' '))
-    expect([r.code, r.out.trim(), steps[0], steps.includes('[rm] [-f]'), steps.at(-1)], 'GATE-RESTORE-PROBE').toEqual([
-      0, 'conversations=1 messages=2 answer_ratings=3', '[ps] [-a]', true, '[rm] [-f]',
-    ])
+    const run = r.calls.find((c) => c.startsWith('docker [run]')) ?? ''
+    expect(
+      [r.code, r.out.trim(), steps[0], steps.includes('[rm] [-f]'), steps.at(-1), ['[--network] [none]', '[--memory] [1g]', '[--cpus] [1]', '[--pull] [never]'].map((o) => run.includes(o))],
+      'GATE-RESTORE-PROBE',
+    ).toEqual([0, 'conversations=1 messages=2 answer_ratings=3', '[ps] [-a]', true, '[rm] [-f]', [true, true, true, true]])
   })
 
   it('GATE-BACKUP: backup-db and backup-docstore write and verify; get hands out a listed backup; put stores once, under tavoli/', () => {
@@ -192,10 +213,18 @@ describe('fleet-gate: what passes', () => {
     const stored = readFileSync(join(s.backups, 'tavoli', 'acropora', `${day}.dump`), 'utf-8')
     const docsGot = p.run(`backup-get docstore ${day}`)
     const docsPut = s.run(`backup-put docstore ${day}`, docsGot.out)
+    const old = s.run('backup-put dump acropora 2026-01-01', 'x') // only today or yesterday
+    const leftovers = spawnSync('find', [s.backups, '-name', '*.part*'], { encoding: 'utf-8' }).stdout.trim()
     expect(
-      [db.code, db.out.trim(), docs.code, docs.out.trim().split(' ').slice(2), got.out, put.code, again.code, stored, docsPut.code],
+      [db.code, db.out.trim(), docs.code, docs.out.trim().split(' ').slice(2), got.out, put.code, again.code, stored, docsPut.code, old.code, leftovers],
       'GATE-BACKUP',
-    ).toEqual([0, 'acropora 8 3', 0, ['2', '2'], 'DUMPDATA', 0, 2, 'DUMPDATA', 0])
+    ).toEqual([0, 'acropora 8 3', 0, ['2', '2'], 'DUMPDATA', 0, 2, 'DUMPDATA', 0, 2, ''])
+  })
+
+  it('GATE-BACKUP-SPACE: a put is refused when the disk would keep less than twice the size limit free', () => {
+    const s = world(STAGE)
+    writeFileSync(join(s.dir, 'test.env'), readFileSync(join(s.dir, 'test.env'), 'utf-8') + 'BACKUP_MAX_BYTES=$((1024 * 1024 * 1024 * 1024 * 1024))\n')
+    expect(s.run(`backup-put dump acropora ${today()}`, 'x').code, 'GATE-BACKUP-SPACE').toBe(2)
   })
 
   it('GATE-BACKUP-PRUNE: dumps older than 14 days and document archives older than 7 go, the rest stays', () => {
@@ -258,6 +287,7 @@ describe('fleet-gate: what does not pass', () => {
       [p, 'backup-put dump acropora 2026-10-12', 'x'], // prod receives only the AI dump
       [p, 'backup-put dump acropora_ai nem-datum', 'x'], // the name is the date, and only a date
       [p, 'env-names x'],
+      [s, 'psql-ro coolify-db coolify coolify', 'select 1;'],
       [p, 'x'.repeat(201)],
     ]
     const wrong: string[] = []
@@ -269,6 +299,13 @@ describe('fleet-gate: what does not pass', () => {
         wrong.push(`${String(command).slice(0, 40)}: code ${r.code}, docker ${dockerCalls.length}, logged ${logged}`)
     }
     expect(wrong, 'GATE-DENY').toEqual([])
+  })
+
+  it('GATE-OVERRIDE-TEST-ONLY: a host table function from the environment is ignored without --test-env', () => {
+    const r = spawnSync('bash', [GATE], {
+      env: { PATH: process.env.PATH, SSH_ORIGINAL_COMMAND: 'uptime', 'BASH_FUNC_host_config_override%%': '() { OPS="uptime"; }' },
+    })
+    expect(r.status, 'GATE-OVERRIDE-TEST-ONLY').toBe(2)
   })
 
   it('GATE-UNKNOWN-HOST: on a host the gate does not know, nothing passes', () => {
@@ -306,8 +343,8 @@ describe('fleet-gate: the callers', () => {
     const sent: Array<[string, string, string, string]> = [
       ['scripts/eles-verziok.sh', PROD, 'ps', '  ps 2>&1'],
       ['scripts/jev/build_known.py', PROD, `psql-ro ${OS_DB} acropora acropora tuples-pipe`, '"psql-ro", CONTAINER, "acropora", "acropora", "tuples-pipe"'],
-      ['scripts/kirakat-telepites.sh', STAGE, 'psql-ro coolify-db coolify coolify tuples-pipe', 'psql-ro coolify-db coolify coolify tuples-pipe'],
-      ['scripts/kirakat-telepites.sh', STAGE, 'psql-ro coolify-db coolify coolify tuples', 'psql-ro coolify-db coolify coolify tuples \\'],
+      ['scripts/kirakat-telepites.sh', STAGE, 'coolify-deployments 6sbolw7oedo5sdffhpswdoyt', 'coolify-deployments "$UUID_APP"'],
+      ['scripts/kirakat-telepites.sh', STAGE, 'coolify-deploy-log 6sbolw7oedo5sdffhpswdoyt', 'coolify-deploy-log "$2"'],
       ['scripts/lemez-allapot.sh', PROD, 'df', 'prod df'],
       ['scripts/lemez-allapot.sh', PROD, 'system-df', 'prod system-df'],
       ['scripts/lemez-allapot.sh', STAGE, 'df', 'stage df'],

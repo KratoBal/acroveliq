@@ -56,9 +56,8 @@ api() { /usr/bin/curl -s -H "Authorization: Bearer $(/bin/cat $TOKEN_FILE)" "$@"
 
 case "${1:-allapot}" in
   allapot)
-    # fleet-gate (B8): read-only psql on the Coolify database, SQL on stdin
-    printf '%s\n' "select deployment_uuid, status, case when is_api then 'kezi' else 'webhook' end, created_at, finished_at from application_deployment_queues where application_id = (select id::text from applications where uuid='$UUID_APP') order by created_at desc limit 5;" \
-      | ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$GEP" psql-ro coolify-db coolify coolify tuples-pipe \
+    # fleet-gate (B8): a named read of the Coolify database, the SQL is the gate's
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$GEP" coolify-deployments "$UUID_APP" \
       | python3 -c "
 import sys
 print('%-26s %-10s %-8s %-20s %s' % ('uuid','allapot','inditva','kezdet (UTC)','vege'))
@@ -70,10 +69,8 @@ for sor in sys.stdin:
     ;;
   naplo)
     [ -n "${2:-}" ] || { echo "FAIL: kell egy deployment uuid (lasd: allapot)" >&2; exit 2; }
-    # it goes into the SQL: letters and digits only
-    case "$2" in *[!A-Za-z0-9]*) echo "FAIL: a deployment uuid csak betu es szam lehet" >&2; exit 2 ;; esac
-    printf '%s\n' "select logs from application_deployment_queues where deployment_uuid='$2';" \
-      | ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$GEP" psql-ro coolify-db coolify coolify tuples \
+    # the gate takes a 24-character uuid only, and says so if it is not one
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$GEP" coolify-deploy-log "$2" \
       | python3 -c "
 import sys, json
 nyers = sys.stdin.read().strip()

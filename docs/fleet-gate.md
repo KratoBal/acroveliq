@@ -22,16 +22,17 @@ akkor az éles, ha a próba-sor (lent) minden sora zöld rajta.
 | `uptime`, `reboot-required`, `apt-check` | olvasás (`apt-check --human-readable`) | mindkettő |
 | `builder-prune` | `docker builder prune -f` | mindkettő |
 | `image-prune-2h` | `docker image prune -a -f --filter until=2h` | csak stage |
-| `psql-ro <kulcs> <adatbázis> <felhasználó> [plain\|tuples\|tuples-pipe\|tuples-spaced-pipe]` | psql, az SQL a stdin-en, `default_transaction_read_only=on` alapértékkel; backslash az SQL-ben tilos | éles: OS; stage: AI, coolify-db |
+| `psql-ro <kulcs> <adatbázis> <felhasználó> [plain\|tuples\|tuples-pipe\|tuples-spaced-pipe]` | psql, az SQL a stdin-en, `default_transaction_read_only=on` alapértékkel; backslash az SQL-ben tilos | éles: OS; stage: AI |
+| `coolify-deployments <app uuid>`, `coolify-deploy-log <deployment uuid>` | a Coolify adatbázisának két rögzített olvasása (a kapu építi az SQL-t, a 24 jeles uuid az egyetlen argumentum) | stage |
 | `pg-dump <kulcs> <adatbázis> <felhasználó>` | `pg_dump -Fc` a stdout-ra | éles: OS, Commerce; stage: AI |
 | `pg-restore-list <kulcs>` | `pg_restore -l`, a dump a stdin-en | éles: OS, Commerce; stage: AI |
 | `docstore-tar`, `docstore-count` | a dokumentum-tároló tar-ja, illetve a fájljainak száma | éles |
 | `env-get` | az api konténer `MEDUSA_ADMIN_URL` és `MEDUSA_PROJECTION_SCHEDULE_ENABLED` értéke, semmi más | éles |
-| `restore-probe` | eldobható `postgres:16-alpine`, a dump a stdin-ről, egy rögzített számláló-lekérdezés, utána törlés | stage |
+| `restore-probe` | eldobható `postgres:16-alpine` hálózat nélkül, memória-, CPU- és folyamat-korláttal, a dump a stdin-ről, egy rögzített számláló-lekérdezés, utána törlés; a képet a kapu nem tölti le | stage |
 | `backup-db <kulcs> <adatbázis> <felhasználó>` | `~/backups/<adatbázis>/<mai dátum>.dump`, utána `pg_restore --list` szám | mindkettő |
 | `backup-docstore` | `~/backups/dokumentumok/<mai dátum>.tar.gz`, a fájlszám egyezésével | éles |
 | `backup-get dump <adatbázis> <dátum>`, `backup-get docstore <dátum>` | egy meglévő mentés a stdout-ra | ahol a mentés készül |
-| `backup-put dump <adatbázis> <dátum>`, `backup-put docstore <dátum>` | a stdin a `~/backups/tavoli/` alá, meglévőt soha nem ír felül | a másik gép |
+| `backup-put dump <adatbázis> <dátum>`, `backup-put docstore <dátum>` | a stdin a `~/backups/tavoli/` alá: csak a mai vagy a tegnapi dátum, legfeljebb 2 GB, és csak ha a lemezen a korlát kétszerese szabad; meglévőt soha nem ír felül | a másik gép |
 | `backup-prune` | a dumpok 14, a dokumentum-csomagok 7 nap után törlődnek | mindkettő |
 
 A konténert a kapu a neve **elejéből** oldja fel (a Coolify az alkalmazás uuid-jával kezdi), a
@@ -47,6 +48,8 @@ hostname -s                                  # acropora-ai-stage-01, illetve acr
 wc -l ~fleet/.ssh/authorized_keys            # 1
 grep -c 'command=' ~fleet/.ssh/authorized_keys   # 0 (még nincs kényszer)
 ls -la ~fleet/.ssh                           # csak authorized_keys (az élesen known_hosts is)
+ls -la ~fleet/                               # .bashrc, .profile: kinek a tulajdona (lásd lent)
+getent passwd fleet | cut -d: -f7            # /bin/bash (ezt a telepítés /bin/sh-ra váltja)
 passwd -S fleet                              # a második mező: L (zárolt jelszó)
 sshd -T | grep -Ei '^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin) '
                                              # passwordauthentication no, kbdinteractiveauthentication no
@@ -75,12 +78,23 @@ install -o root -g root -m 0755 /tmp/fleet-gate.sh /usr/local/sbin/fleet-gate
 cp -p ~fleet/.ssh/authorized_keys ~fleet/.ssh/authorized_keys.pre-b8
 sed -i 's#^ssh-ed25519 #command="/usr/local/sbin/fleet-gate",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 #' ~fleet/.ssh/authorized_keys
 grep -c '^command="/usr/local/sbin/fleet-gate"' ~fleet/.ssh/authorized_keys   # 1
-chown root:root ~fleet/.ssh/authorized_keys && chmod 0644 ~fleet/.ssh/authorized_keys
+chown root:root ~fleet/.ssh ~fleet/.ssh/authorized_keys
+chmod 0755 ~fleet/.ssh && chmod 0644 ~fleet/.ssh/authorized_keys
+usermod -s /bin/sh fleet
 ```
 
-Az utolsó sor nem kötelező, de ajánlott: így a `fleet` felhasználó maga sem tudja átírni a
-kulcs-kényszert, ha valaha mégis futtatna valamit. Az sshd elfogad root tulajdonú
-`authorized_keys`-t.
+A teszt gépen ezen felül (a `restore-probe` nem tölt le képet):
+
+```bash
+cd /root && docker pull postgres:16-alpine
+```
+
+**Miért a root-tulajdon és a `/bin/sh`** (barracuda, #28): ha a `fleet` felhasználóként valaha
+mégis futna valami, a saját `authorized_keys`-éből le tudná venni a `command=` kényszert. Root
+tulajdonnal nem tudja; az sshd elfogadja a root tulajdonú `.ssh`-t és `authorized_keys`-t. A
+`bash` pedig Debianon a nem interaktív ssh-parancs előtt is beolvassa a `~/.bashrc`-t, vagyis egy
+írható `.bashrc` a kapu ELŐTT futna. A `/bin/sh` (dash) egy `-c` parancsnál nem olvas indító
+fájlt. A kapu maga `bash` alatt fut, a saját első sora szerint.
 
 A `fleet` **marad a docker csoportban**: a kapu a nevében fut, és neki el kell érnie a Dockert.
 A kulcson át vezető utat a kényszer zárja le.
@@ -142,12 +156,15 @@ elutasítást kap). A megfeleltetés:
 
 - **A `psql-ro` olvasása alapérték, nem zár.** A `PGOPTIONS` beállítja a
   `default_transaction_read_only=on` értéket, így egy sima író utasítás hibát ad. De a
-  felhasználók (`acropora`, `acropora_ai`, `coolify`) valószínűleg superuserek a saját
-  adatbázisukban, és egy session ezt az alapértéket vissza tudja kapcsolni. A valódi zár egy
-  csak olvasó adatbázis-szerep (`GRANT SELECT`), ami külön döntés. A kapu annyit tesz meg,
-  amennyit szövegből lehet: a backslash tiltásával kizárja a psql meta-parancsait (a `\!` shellt
-  adna a konténerben).
-- **A `psql-ro` a konténeren belül fut**, nem a gépen: a legrosszabb eset az adatbázis, nem a gép.
+  felhasználók (`acropora`, `acropora_ai`) valószínűleg superuserek a saját adatbázisukban: egy
+  session ezt vissza tudja kapcsolni, és a `COPY ... TO PROGRAM` superuserként shellt ad a
+  DB-konténerben, a backslash-tilalom ellenére is (ez SQL, nem psql meta-parancs). A valódi zár
+  egy csak olvasó adatbázis-szerep (`GRANT SELECT`), ami külön döntés. A kapu a backslash
+  tiltásával a psql meta-parancsait (`\!`) zárja ki.
+- **A `psql-ro` a DB-konténeren belül marad**, nem jut a gépre: a legrosszabb eset az adatbázis és
+  a konténere. **Ezért nincs a listán a Coolify adatbázisa** (barracuda, #28): aki abba írhat, az
+  dönti el, mit és milyen csatolással telepít a Coolify, vagyis root a gépen. A két olvasása
+  ezért rögzített SQL-lel, név szerint megy.
 - **A `fleet` a docker csoportban marad.** Ha valaha új belépési út nyílik a `fleet`
   felhasználóhoz (jelszó, második kulcs), az megkerüli a kaput: a fenti ellenőrzést érdemes
   időnként újrafuttatni.
@@ -156,8 +173,11 @@ elutasítást kap). A megfeleltetés:
 
 ```bash
 cd /root
-cp -p ~fleet/.ssh/authorized_keys.pre-b8 ~fleet/.ssh/authorized_keys
-chown fleet:fleet ~fleet/.ssh/authorized_keys && chmod 0600 ~fleet/.ssh/authorized_keys
+cp ~fleet/.ssh/authorized_keys.pre-b8 ~fleet/.ssh/authorized_keys
 ```
+
+Ez csak a sor tartalmát állítja vissza (a kényszer nélküli kulcsot); a fájl root tulajdonban
+marad, és az sshd így is elfogadja. A `/bin/sh` login shell is maradhat: a régi működéshez nem
+kell a `bash` (ha mégis: `usermod -s /bin/bash fleet`).
 
 A `/usr/local/sbin/fleet-gate` maradhat: kényszer nélkül senki nem hívja.
