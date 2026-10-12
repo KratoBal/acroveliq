@@ -35,6 +35,11 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
    közös token által írt feladat a kikényszerítő állásban társ-kerettel fut, nem operátor-kerettel; `naplo`
    állásban marad az operátor-keret, és a futtató naplózza, mi lenne. A váltás után tehát az Acrobot API-n
    létrehozott feladatai is kérésként érkeznek.
+   **`naplo` állásban ez a kódfuttatási út NYITVA marad:** a közös tokennel egy `command` típusú feladat a
+   vezérlőpult felhasználójaként futtat shell-parancsot (`bash -lc`), a `preCheck` tetszőleges szkriptet. A
+   zárás a beállítást követi (Balázs, 2026-10-12 10:58 UTC: a P0-1 korlátozásai még nem élnek; az Acrobot a
+   „minden módban” zárást 28683-ban visszavonta, az Balázs külön szavára megy). Ha Balázs ezt külön zárja,
+   a `schedules.ts` `rejectSessionOnly` hívásából kell kivenni a mód-függést.
 
 | Metódus | Útvonal | Osztály | S | A | G | L | D | Csoport | Tulajdonos |
 |---|---|---|---|---|---|---|---|---|---|
