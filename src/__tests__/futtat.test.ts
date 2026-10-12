@@ -212,11 +212,14 @@ describe('futtat: masking', () => {
   })
 
   // acrobot's live run: the list lost the deployment's 0640 on every add
-  it('FUTTAT-HASHLIST-MODE: an existing list keeps its mode; a new one is 0640 with the group, 0600 without it', () => {
+  it('FUTTAT-HASHLIST-MODE: an existing list keeps its group bits and loses only its world bits; a new one is 0640 with the group, 0600 without it', () => {
     writeFileSync(env.FUTTAT_SECRET_HASHES!, '')
     chmodSync(env.FUTTAT_SECRET_HASHES!, 0o640)
     execFileSync('python3', [SCRIPT, 'lenyomat-hozzaad'], { env, input: 'meglevo-lista-titka-11\n' })
     const kept = (statSync(env.FUTTAT_SECRET_HASHES!).mode & 0o777).toString(8)
+    chmodSync(env.FUTTAT_SECRET_HASHES!, 0o664)
+    execFileSync('python3', [SCRIPT, 'lenyomat-hozzaad'], { env, input: 'szukito-proba-titok-2\n' })
+    const narrowed = (statSync(env.FUTTAT_SECRET_HASHES!).mode & 0o777).toString(8)
     rmSync(env.FUTTAT_SECRET_HASHES!)
     execFileSync('python3', [SCRIPT, 'lenyomat-hozzaad'], { env, input: 'uj-lista-titka-csoport-nelkul\n' })
     const alone = (statSync(env.FUTTAT_SECRET_HASHES!).mode & 0o777).toString(8)
@@ -224,7 +227,7 @@ describe('futtat: masking', () => {
     const group = execFileSync('id', ['-gn'], { encoding: 'utf-8' }).trim()
     execFileSync('python3', [SCRIPT, 'lenyomat-hozzaad'], { env: { ...env, FUTTAT_GROUP: group }, input: 'uj-lista-titka-csoporttal\n' })
     const grouped = (statSync(env.FUTTAT_SECRET_HASHES!).mode & 0o777).toString(8)
-    expect([kept, alone, grouped], 'FUTTAT-HASHLIST-MODE').toEqual(['640', '600', '640'])
+    expect([kept, narrowed, alone, grouped], 'FUTTAT-HASHLIST-MODE').toEqual(['640', '660', '600', '640'])
   })
 
   it('refuses a secret value too short to search for, and stores only its hash', () => {

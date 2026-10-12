@@ -548,9 +548,9 @@ def cmd_lenyomat(args: argparse.Namespace) -> int:
     HASH_LIST.parent.mkdir(parents=True, exist_ok=True)
     existed = HASH_LIST.exists()
     # A NEW list is created with its final mode at once (no umask window):
-    # 0640 with the project group, else 0600. An EXISTING list keeps its mode
-    # and group (acrobot, live run 2026-10-12): the deployment sets 0640 with
-    # logs-acropora so the agents can read it, and a chmod here undid that.
+    # 0640 with the project group, else 0600. An EXISTING list keeps its group
+    # and group bits (acrobot, live run 2026-10-12): the deployment sets 0640
+    # with logs-acropora so the agents can read it, and a chmod here undid that.
     gid = None if existed else project_group("acropora")
     fd = os.open(HASH_LIST, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640 if gid is not None else 0o600)
     with os.fdopen(fd, "a") as handle:
@@ -558,6 +558,15 @@ def cmd_lenyomat(args: argparse.Namespace) -> int:
             handle.write(f"{sha(value)} {len(value)}\n")
     if not existed:
         protect_file(HASH_LIST, gid)
+    else:
+        # ... but never stays readable by others (barracuda, acrobot 28644): a
+        # list left at 0644 by hand loses its world bits, group bits untouched
+        mode = HASH_LIST.stat().st_mode & 0o777
+        if mode & 0o007:
+            try:
+                os.chmod(HASH_LIST, mode & ~0o007)
+            except OSError as error:
+                print(f"figyelem: a lenyomat-lista mások számára olvasható ({oct(mode)}), és nem szűkíthető: {error}", file=sys.stderr)
     print(f"{len(new)} új lenyomat ({len(values) - len(new)} már szerepelt)")
     return 0
 

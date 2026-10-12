@@ -48,6 +48,10 @@ A szűrés sorrendben három lépés:
    bash /home/marveen/marveen/scripts/futtat.sh lenyomat-hozzaad < titkok.txt   # soronként egy érték, csak a lenyomat íródik
    ```
 
+   Egy meglévő lista csoportja és csoport-bitjei a hozzáadáskor nem változnak, a világ-bitjei
+   viszont lekerülnek (egy kézzel 0644-re hagyott lista így 0640 lesz). Egy új lista rögtön a
+   végső móddal jön létre: a projekt csoportjával 0640, nélküle 0600.
+
    **A lista kötelező.** Ha hiányzik vagy nem olvasható, a futtató nem fut csökkentett
    védelemmel: nem futtatja a parancsot, nem ír naplót, és `3`-as kóddal, egyértelmű
    üzenettel áll meg. Egy üres lista lista, azzal fut. Ha egy ágenst most vettek fel a
