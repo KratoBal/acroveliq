@@ -11,6 +11,7 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
 import { sendTelegramMessage } from '../telegram.js'
+import { claimActor } from '../actor-claims.js'
 import type { RouteContext } from './types.js'
 
 const AUTONOMY_CONFIG_PATH = join(PROJECT_ROOT, 'store', 'autonomy-config.json')
@@ -170,8 +171,10 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const { agent_id, category, action_description, action_payload, timeout_seconds } = body
-    if (typeof agent_id !== 'string' || !agent_id.trim()) {
+    const { category, action_description, action_payload, timeout_seconds } = body
+    // the requester is the token's owner, not the body's: the self-approval guard keys on it
+    const agent_id = claimActor(ctx.auth, ctx.accessMode ?? 'naplo', body.agent_id, 'approvals.agent_id').value
+    if (!agent_id) {
       json(res, { error: 'agent_id is required' }, 400)
       return true
     }
@@ -246,24 +249,29 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'status must be approved, rejected, or timeout' }, 400)
       return true
     }
-    if (typeof resolved_by !== 'string' || !resolved_by.trim()) {
+    // Who decided is the credential's, not the body's (acrovelIQ P0-1, plan
+    // 2.1): the session's user, an agent token's name. Only the shared token
+    // and a device still declare it, and in an enforcing position neither
+    // reaches this route (the matrix: only the session decides).
+    const decider = ctx.auth?.kind === 'session' && ctx.auth.user
+      ? ctx.auth.user
+      : claimActor(ctx.auth, ctx.accessMode ?? 'naplo', resolved_by, 'approvals.resolved_by').value
+    if (!decider) {
       json(res, { error: 'resolved_by is required' }, 400)
       return true
     }
     const msgId = typeof telegram_message_id === 'number' ? telegram_message_id : null
 
     // Self-approval guard: the requesting agent cannot approve its own request.
-    // This is a best-effort check on the self-declared resolved_by value (all fleet
-    // agents share the same bearer token, so server-side identity is not enforceable).
-    // It catches naive/accidental self-approvals; the real control lives on the
-    // main-agent side (approval-request-handling skill).
+    // With an agent's own token the decider is the token's owner, so this
+    // holds; with the shared token it is still the self-declared value.
     const target = getApproval(idMatch[1])
-    if (target && resolved_by.trim() === target.agent_id) {
+    if (target && decider === target.agent_id) {
       json(res, { error: 'The requesting agent cannot approve its own request' }, 403)
       return true
     }
 
-    const updated = resolveApproval(idMatch[1], status, resolved_by.trim(), msgId)
+    const updated = resolveApproval(idMatch[1], status, decider, msgId)
     if (!updated) {
       // Either not found or already resolved
       const existing = getApproval(idMatch[1])
@@ -276,7 +284,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     }
 
     const approval = getApproval(idMatch[1])
-    logger.info({ id: idMatch[1], status, resolved_by }, 'Approval resolved')
+    logger.info({ id: idMatch[1], status, resolved_by: decider }, 'Approval resolved')
     json(res, approval)
     return true
   }

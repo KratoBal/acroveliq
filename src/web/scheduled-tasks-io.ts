@@ -42,6 +42,12 @@ export interface ScheduledTask {
   targetSession?: string
   // type='command' only: raw shell command run via `bash -lc`, no LLM/tmux.
   command?: string
+  // Who last wrote the task's prompt through the API (acrovelIQ P0-1, plan
+  // 2.3): `session:<user>` for Balázs's session, else an agent's name or
+  // `legacy-ismeretlen`. Absent: written on disk by the operator. The runner
+  // gives the operator frame only to an absent or `session:` author; anything
+  // else runs as a request from a peer, naming it.
+  author?: string
   // type='command' only: command timeout in ms (default 10000).
   timeoutMs?: number
   // type='command' only: consecutive failures before a Telegram alert (default 2).
@@ -104,7 +110,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown } } = {}
+  let config: { author?: string; schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown } } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -122,6 +128,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     forceSend: config.forceSend === true,
     targetSession: config.targetSession || undefined,
     command: config.command,
+    author: typeof config.author === 'string' && config.author ? config.author : undefined,
     timeoutMs: config.timeoutMs,
     failThreshold: config.failThreshold,
     preCheck: config.preCheck,
@@ -168,7 +175,7 @@ export function listScheduledTasks(): ScheduledTask[] {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number },
+  data: { author?: string; description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
@@ -196,6 +203,7 @@ export function writeScheduledTask(
   if (data.forceSend !== undefined) config.forceSend = data.forceSend
   if (data.targetSession !== undefined) config.targetSession = data.targetSession
   if (data.command !== undefined) config.command = data.command
+  if (data.author !== undefined) config.author = data.author
   if (data.timeoutMs !== undefined) config.timeoutMs = data.timeoutMs
   if (data.failThreshold !== undefined) config.failThreshold = data.failThreshold
   if (data.preCheck !== undefined) config.preCheck = data.preCheck

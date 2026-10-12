@@ -24,9 +24,18 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
    eltörik (például a `POST /api/schedules`). A kapcsoló csak akkor fordul, ha az
    `npx tsx scripts/access-preflight.ts` listája üres (kilépési kód 0): ez a naplóból sorolja fel, mit
    tiltott volna. Ez eljárás, nem zár: a beállítást a kód nem tagadja meg.
-4. **Az önbevallott szereplők.** Az üzenet feladója, a jóváhagyás eldöntője, az átadó rekord `agent` mezője
-   és a tokenmérési esemény `actor` mezője ma a kérés törzséből jön. Ezeket a szervernek a tokenből kell
-   kitöltenie (a következő PR).
+4. **Az önbevallott szereplők.** Az üzenet feladóját, a jóváhagyás kérőjét és eldöntőjét, az átadó rekord
+   `agent` mezőjét, a tokenmérési esemény `actor` mezőjét és az ütemezett feladat szerzőjét a szerver a
+   tokenből tölti ki (`src/web/actor-claims.ts`). A régi közös token senkit nem nevez meg: `naplo` állásban
+   az ő mezője önbevallott marad, a másik két állásban `legacy-ismeretlen`, nem ellenőrzött jelöléssel. Egy
+   eszköz `kikenyszerit` állásban `device:<név>` néven ír, nem bármelyik ágens nevében. A bekapcsolás előtt
+   tehát minden ágensnek saját tokennel kell hívnia, különben a feladója ismeretlen lesz.
+5. **Az ütemezett feladatok.** A `command`, `preCheck` és `targetSession` mezőt (és a `command` típust) API-n
+   csak a munkamenet írhatja, MINDEN állásban, `naplo`-ban is (403): ez parancsfuttatási út, nem
+   hozzáférési szűrő, és Balázs a beállítástól függetlenül zárta (2026-10-12 11:18:50 UTC). Az ágens vagy a
+   közös token által írt feladat a kikényszerítő állásban társ-kerettel fut, nem operátor-kerettel; `naplo`
+   állásban marad az operátor-keret, és a futtató naplózza, mi lenne. A váltás után tehát az Acrobot API-n
+   létrehozott feladatai is kérésként érkeznek.
 
 | Metódus | Útvonal | Osztály | S | A | G | L | D | Csoport | Tulajdonos |
 |---|---|---|---|---|---|---|---|---|---|
@@ -364,7 +373,7 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 - **memory-change**: an agent changes or deletes only its own memories; an update that would move one to another writer is not its own
 - **memory-write**: an agent writes its own namespace (plan 3). `shared` is a category: the record still names its writer, so that must be the caller. A missing agent_id is the main agent's, so it is not "own"
 - **daily-log-write**: an agent writes its own daily log (plan 3)
-- **kanban-card-change**: an agent changes the cards assigned to it (plan 3); creating a card and commenting stay open
+- **kanban-card-change**: an agent changes the cards assigned to it (plan 3); it hands one on only to the main agent, the escalation the dispatch asks for (assigning is the main agent's job, acrobot 28671); creating a card and commenting stay open
 - **administration**: profiles, autonomy, settings, updates, migration, vault, security, connectors, federation: only the session (plan 3)
 - **shared-token-handout**: it returns the SHARED dashboard token: any other caller would get every door with it (barracuda, #20)
 - **class:NYILVANOS** (ha egy csoport sem illik): no authentication at all

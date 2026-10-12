@@ -15,9 +15,11 @@ import { listAgentNames } from '../agent-config.js'
 import { readFileOr } from '../agent-config.js'
 import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
-  listScheduledTasks, writeScheduledTask,
+  listScheduledTasks, readScheduledTask, writeScheduledTask,
 } from '../scheduled-tasks-io.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
+import { authorOf } from '../actor-claims.js'
+import { fieldGate } from '../field-gate.js'
 import type { RouteContext } from './types.js'
 
 // Resolve a URL-supplied schedule name to an on-disk dir, blocking path
@@ -33,6 +35,39 @@ function resolveScheduleDir(rawName: string): { name: string; dir: string } | nu
   try {
     return { name, dir: safeJoin(SCHEDULED_TASKS_DIR, name) }
   } catch { return null }
+}
+
+// Fields that make a task run something as the dashboard's own user (a
+// command task's shell command, a pre-check script) or inside another agent's
+// session (targetSession). Through the API only Balázs's session writes them,
+// IN EVERY ACCESS MODE, `naplo` included: Balázs closed this apart from the
+// P0-1 setting (2026-10-12 11:18:50 UTC, "lezarhatod"), since it is a running
+// path for shell commands, not an access filter. A refusal is logged like any
+// other (field-gate.ts). `type` is closed only
+// for `command`: the agents create `task` and `heartbeat` tasks through the
+// API today. A value equal to the task's current one is not a change: the
+// dashboard form sends `type` (and a set targetSession) on every save. On
+// disk the operator still writes anything.
+const SESSION_ONLY_FIELDS = ['command', 'preCheck', 'targetSession'] as const
+const AGENT_TASK_TYPES = new Set(['task', 'heartbeat'])
+
+/** The session-only fields a non-session caller tried to change; empty when none. `current` is the task's config on an update. */
+export function sessionOnlyFieldsSet(ctx: RouteContext, data: unknown, current: Record<string, unknown> = {}): string[] {
+  if (ctx.auth?.kind === 'session' || !data || typeof data !== 'object') return []
+  const record = data as Record<string, unknown>
+  const changes = (field: string) => field in record && record[field] !== current[field]
+  const set: string[] = SESSION_ONLY_FIELDS.filter(changes)
+  if (changes('type') && !(typeof record.type === 'string' && AGENT_TASK_TYPES.has(record.type))) set.push('type')
+  return set
+}
+
+function rejectSessionOnly(ctx: RouteContext, data: unknown, name: string, current?: Record<string, unknown>): boolean {
+  const set = sessionOnlyFieldsSet(ctx, data, current)
+  if (!set.length) return false
+  fieldGate(ctx, `schedule-session-fields: ${set.join(', ')} only from the session`, { always: true })
+  logger.warn({ name, fields: set, actor: ctx.auth?.actor ?? ctx.auth?.kind }, 'scheduled task: session-only fields refused')
+  json(ctx.res, { error: `only the dashboard session may set ${set.join(', ')} (type only as task or heartbeat)` }, 403)
+  return true
 }
 
 export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
@@ -130,6 +165,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     }
     const name = sanitizeScheduleName(data.name || '')
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
+    if (rejectSessionOnly(ctx, data, name)) return true
     if (!data.prompt?.trim()) { json(res, { error: 'Prompt is required' }, 400); return true }
     if (data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
       json(res, {
@@ -153,6 +189,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       skipIfBusy: data.skipIfBusy === true,
       forceSend: data.forceSend === true,
       targetSession: data.targetSession || undefined,
+      author: authorOf(ctx.auth),
     })
     logger.info({ name, schedule: data.schedule }, 'Scheduled task created')
     json(res, { ok: true, name })
@@ -179,6 +216,9 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const data = JSON.parse(body.toString()) as {
       description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string
     }
+    let current: Record<string, unknown> = {}
+    try { current = JSON.parse(readFileOr(join(dir, 'task-config.json'), '{}')) as Record<string, unknown> } catch { /* none */ }
+    if (rejectSessionOnly(ctx, data, name, current)) return true
     if (data.prompt !== undefined && data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
       json(res, {
         error: `Prompt too large (${data.prompt.length} chars, max ${MAX_SCHEDULED_TASK_PROMPT_LEN})`,
@@ -189,7 +229,12 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       json(res, { error: 'Invalid cron expression' }, 400)
       return true
     }
-    writeScheduledTask(name, data)
+    // a CHANGED prompt is the caller's: the runner frames it by its author
+    // (plan 2.3). The same prompt sent again is no change: the dashboard form
+    // sends it on every save (barracuda, #27). The author is never taken from the body.
+    const { author: _ignored, ...fields } = data as typeof data & { author?: unknown }
+    const promptChanged = data.prompt !== undefined && data.prompt.trim() !== (readScheduledTask(name)?.prompt ?? '').trim()
+    writeScheduledTask(name, promptChanged ? { ...fields, author: authorOf(ctx.auth) } : fields)
     logger.info({ name }, 'Scheduled task updated')
     json(res, { ok: true })
     return true

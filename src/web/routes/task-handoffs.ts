@@ -12,6 +12,7 @@ import {
   type CodeStateProbe,
 } from '../../task-handoff.js'
 import { json, readBody } from '../http-helpers.js'
+import { claimActor } from '../actor-claims.js'
 import type { RouteContext } from './types.js'
 
 // Structured task handoff (acrovelIQ token brief, item 3). See
@@ -53,7 +54,9 @@ export async function tryHandleTaskHandoffs(ctx: RouteContext): Promise<boolean>
       json(res, { error: 'invalid JSON' }, 400)
       return true
     }
-    if (typeof body.agent !== 'string' || !body.agent.trim()) {
+    // the writer is the token's owner, not the body's (acrovelIQ P0-1; barracuda, #22)
+    const agent = claimActor(ctx.auth, ctx.accessMode ?? 'naplo', body.agent, 'task-handoffs.agent').value
+    if (!agent) {
       json(res, { error: 'agent required' }, 400)
       return true
     }
@@ -67,7 +70,7 @@ export async function tryHandleTaskHandoffs(ctx: RouteContext): Promise<boolean>
       json(res, { error: `record.task.id (${checked.record.task.id}) is not ${taskId}` }, 400)
       return true
     }
-    const id = insertTaskHandoff(getDb(), body.agent.trim(), checked.record, Math.floor(Date.now() / 1000))
+    const id = insertTaskHandoff(getDb(), agent, checked.record, Math.floor(Date.now() / 1000))
     json(res, { id }, 201)
     return true
   }

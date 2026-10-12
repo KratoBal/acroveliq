@@ -191,7 +191,7 @@ export function startWebServer(port = 3420): http.Server {
     }
 
     try {
-      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth }
+      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth, accessMode: access.mode }
 
       if (await tryHandleSutyerak(routeCtx)) return
       if (await tryHandleAuth(routeCtx)) return

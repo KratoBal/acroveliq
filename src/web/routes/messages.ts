@@ -17,6 +17,7 @@ import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
+import { LEGACY_ACTOR, claimActor, isServerSetSender } from '../actor-claims.js'
 import type { RouteContext } from './types.js'
 
 // Should closing a message produce a reverse "[Eredmény]" notification to its sender?
@@ -51,8 +52,16 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from, to, content, origin_note } = JSON.parse(body.toString()) as
+    const { from: claimedFrom, to, content, origin_note } = JSON.parse(body.toString()) as
       { from: string; to: string; content: string; origin_note?: string }
+    // The sender is the token's owner, not the body's `from` (acrovelIQ P0-1,
+    // plan 2.1). The shared token names no one: in `naplo` its `from` stays
+    // self-declared as before; in an enforcing position it is
+    // `legacy-ismeretlen`, marked unverified (actor-claims.ts).
+    const sender = claimActor(ctx.auth, ctx.accessMode ?? 'naplo', claimedFrom, 'messages.from')
+    const from = sender.value ?? ''
+    // the server wrote it (shared token or device in an enforcing position): no agent to look up
+    const legacySender = isServerSetSender(sender)
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
       return true
@@ -112,7 +121,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // its fail-soft caller logged nothing.
     const isOwnerSender = sanitizeAgentIdent(from) === sanitizeAgentIdent(OWNER_NAME)
     const isSystemSender = SYSTEM_SENDERS.has(sanitizeAgentIdent(from))
-    if (!isOwnerSender && !isSystemSender && !isKnownAgent(sanitizeAgentIdent(from))) {
+    if (!legacySender && !isOwnerSender && !isSystemSender && !isKnownAgent(sanitizeAgentIdent(from))) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST from unregistered agent')
       json(res, { error: `unknown agent '${from.trim()}' -- from must be a registered fleet agent id` }, 403)
       return true
@@ -166,7 +175,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     const normalizedContent = normalizeKanbanRefs(content.trim(), getKanbanSeqByIdPrefix)
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
-    const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
+    const note = origin_note?.trim() || ''
+    const trimmedOriginNote = legacySender
+      ? `nem ellenőrzött feladó: ${from === LEGACY_ACTOR ? 'a régi közös token' : 'eszköz'}${note ? `; ${note}` : ''}`.slice(0, 120)
+      : note.slice(0, 120) || null
     const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
     json(res, msg)
