@@ -6,10 +6,10 @@ install's owner), never a name the caller passes; its token is
 store/tokens/<agent>.token. No readable per-agent token: the shared
 store/.dashboard-token, with one line on stderr, never a stop.
 """
-import getpass
 import glob
 import json
 import os
+import pwd
 import re
 import sys
 
@@ -52,9 +52,12 @@ def token_agent(root, user):
 def token_file(root, user=None):
     """The token file to read."""
     if user is None:
+        # the effective uid's name, the same as `id -un` in the bash resolver;
+        # NOT getpass.getuser(), which reads USER/LOGNAME first, so an inherited
+        # environment would name someone else (barracuda #34)
         try:
-            user = getpass.getuser()
-        except Exception:
+            user = pwd.getpwuid(os.geteuid()).pw_name
+        except KeyError:
             user = ""
     agent = token_agent(root, user)
     if agent:

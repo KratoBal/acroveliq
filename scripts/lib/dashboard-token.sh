@@ -18,9 +18,12 @@ DASHBOARD_TOKEN_AGENT_NAME='^[a-z0-9][a-z0-9_-]{0,63}$'
 dashboard_token_agent() {
   local root="$1" user="$2" cfg name main
   [ -n "$user" ] || return 0
+  # the name as a literal inside the pattern (a dot must not match any character)
+  local user_re
+  user_re="$(printf '%s' "$user" | sed 's/[][\\.^$*+?(){}|/]/\\&/g')"
   for cfg in "$root"/agents/*/agent-config.json; do
     [ -f "$cfg" ] || continue
-    if grep -Eq "\"runAsUser\"[[:space:]]*:[[:space:]]*\"${user}\"" "$cfg" 2>/dev/null; then
+    if grep -Eq "\"runAsUser\"[[:space:]]*:[[:space:]]*\"${user_re}\"" "$cfg" 2>/dev/null; then
       name="$(basename "$(dirname "$cfg")")"
       [[ "$name" =~ $DASHBOARD_TOKEN_AGENT_NAME ]] && printf '%s\n' "$name"
       return 0

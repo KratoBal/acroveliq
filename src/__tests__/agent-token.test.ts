@@ -41,8 +41,8 @@ function viaBash(root: string) {
   const r = spawnSync('bash', ['-c', `. "${REPO}/scripts/lib/dashboard-token.sh"; dashboard_token_file "$1"`, '_', root], { encoding: 'utf8' })
   return { file: r.stdout.trim(), err: r.stderr.trim(), code: r.status }
 }
-function viaPython(root: string) {
-  const r = spawnSync('python3', ['-c', `import sys; sys.path.insert(0, "${REPO}/scripts/lib"); import dashboard_token; print(dashboard_token.token_file(sys.argv[1]))`, root], { encoding: 'utf8' })
+function viaPython(root: string, env: NodeJS.ProcessEnv = process.env) {
+  const r = spawnSync('python3', ['-c', `import sys; sys.path.insert(0, "${REPO}/scripts/lib"); import dashboard_token; print(dashboard_token.token_file(sys.argv[1]))`, root], { encoding: 'utf8', env })
   return { file: r.stdout.trim(), err: r.stderr.trim(), code: r.status }
 }
 
@@ -78,6 +78,27 @@ describe.each([['bash', viaBash], ['python', viaPython]] as const)('the token re
     const root = tree({ runAsUser: 'someone-else', mainAgent: 'boss' })
     writeFileSync(join(root, 'store', 'tokens', 'boss.token'), 'main\n')
     expect(resolve(root).file).toBe(join(root, 'store', 'tokens', 'boss.token'))
+  })
+})
+
+describe('the Python resolver asks the effective uid, not the environment (barracuda #34)', () => {
+  it('TOK-EUID: USER and LOGNAME naming someone else do not change the agent', () => {
+    const root = tree({ runAsUser: ME })
+    writeFileSync(join(root, 'store', 'tokens', 'scout.token'), 'own\n')
+    const r = viaPython(root, { ...process.env, USER: 'marveen', LOGNAME: 'marveen', LNAME: 'marveen', USERNAME: 'marveen' })
+    expect(r.file).toBe(join(root, 'store', 'tokens', 'scout.token'))
+  })
+})
+
+describe('the bash resolver matches the user name literally', () => {
+  it('TOK-LITERAL: a dot in the caller\'s name does not match another character', () => {
+    // the pattern is built from the caller's name; a regex dot in it would let
+    // user "a.b" take the agent whose runAsUser is "axb"
+    const root = tree({ runAsUser: 'axb' })
+    const r = spawnSync('bash', ['-c', `. "${REPO}/scripts/lib/dashboard-token.sh"; dashboard_token_agent "$1" "$2"`, '_', root, 'a.b'], { encoding: 'utf8' })
+    expect(r.stdout.trim()).toBe('')
+    const exact = spawnSync('bash', ['-c', `. "${REPO}/scripts/lib/dashboard-token.sh"; dashboard_token_agent "$1" "$2"`, '_', root, 'axb'], { encoding: 'utf8' })
+    expect(exact.stdout.trim()).toBe('scout')
   })
 })
 
