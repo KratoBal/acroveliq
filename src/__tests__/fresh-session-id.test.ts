@@ -171,22 +171,19 @@ describe('the --help probe', () => {
   })
 
   it('launches that arrive while a probe runs share that one probe', async () => {
-    let calls = 0
-    let answer: (text: string) => void = () => {}
-    setClaudeHelpProbeForTests(() => {
-      calls++
-      return new Promise<string>((r) => { answer = r })
-    })
+    const pending: Array<(text: string) => void> = []
+    const answerAll = (text: string) => pending.splice(0).forEach((r) => r(text))
+    setClaudeHelpProbeForTests(() => new Promise<string>((r) => pending.push(r)))
     const first = claudeSupportsSessionId()
     const second = claudeSupportsSessionId()
-    answer(HELP_WITHOUT)
+    expect(pending.length).toBe(1)
+    answerAll(HELP_WITHOUT)
     expect(await first).toBe(false)
     expect(await second).toBe(false)
-    expect(calls).toBe(1)
     // the failed probe is not cached: the next launch asks again
     const third = claudeSupportsSessionId()
-    answer(HELP_WITHOUT)
+    expect(pending.length).toBe(1)
+    answerAll(HELP_WITHOUT)
     expect(await third).toBe(false)
-    expect(calls).toBe(2)
   })
 })
