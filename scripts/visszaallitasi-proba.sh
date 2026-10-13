@@ -43,6 +43,7 @@ FAILS=0
 mkdir -p "$WORK"
 
 nas_ls() { timeout 120 sftp -o BatchMode=yes -o ConnectTimeout=15 -i "$KEY" "$NAS" <<<"ls -1 $1" 2>/dev/null | /bin/grep -v '^sftp>'; }
+nas_lsl() { timeout 120 sftp -o BatchMode=yes -o ConnectTimeout=15 -i "$KEY" "$NAS" <<<"ls -ln $1" 2>/dev/null | /bin/grep -v '^sftp>'; }
 nas_get() { timeout 900 sftp -o BatchMode=yes -o ConnectTimeout=15 -i "$KEY" "$NAS" <<<"get $1 $2" >/dev/null 2>&1; }
 sssh() { timeout "${T:-300}" ssh -o BatchMode=yes -o ConnectTimeout=10 -i "$STAGE_KEY" "$STAGE" "$@"; }
 fail() { echo "FAIL[$1]: $2"; FAILS=$((FAILS + 1)); }
@@ -122,15 +123,31 @@ HOST_KINDS=""
 case "$WHAT" in all|host) HOST_KINDS="os commerce docstore" ;; os|commerce|docstore) HOST_KINDS="$WHAT" ;; esac
 if [ -n "$HOST_KINDS" ]; then
   echo "== host-oldali proba (eles gep): $HOST_KINDS"
+  # WHO OWNS THE FOLDER decides whether its PASS means anything. Our own account (AcroBot) can
+  # create folders in Acropora_Backup (it owns acrobot-fleet and acropora-ai, made by our
+  # scripts' mkdir; acrobot's listing 2026-10-13 23:37), so it could also pre-create this one and
+  # put a fake PASS there. The folder must be the backup account's and not writable by others.
+  # Mode bits are what sftp shows; a Synology ACL is checked once by hand (step sheet, step 3).
+  OWNER_UID="${PROBA_RESULT_OWNER_UID:-1032}"
+  DIRLINE=$(nas_lsl Acropora_Backup | /bin/grep -E ' Acropora_Backup/acropora-restore-probe$')
+  if [ -n "$DIRLINE" ] && ! printf '%s\n' "$DIRLINE" | awk -v u="$OWNER_UID" '$1 == "drwxr-xr-x" && $3 == u { f = 1 } END { exit !f }'; then
+    for k in $HOST_KINDS; do fail "$k" "az eredmeny-mappa joga vagy tulajdonosa nem a varhato (drwxr-xr-x, uid $OWNER_UID): $(printf '%s' "$DIRLINE" | /bin/tr -s ' ' | cut -d' ' -f1,3,4)"; done
+    HOST_KINDS=""
+  fi
   F=$(nas_ls Acropora_Backup/acropora-restore-probe | /bin/grep -o 'result-[0-9_-]*\.json' | sort | tail -1)
-  if [ -z "$F" ]; then
+  if [ -z "$HOST_KINDS" ]; then
+    :
+  elif [ -z "$F" ]; then
     for k in $HOST_KINDS; do fail "$k" "nincs eredmeny a NAS-on (Acropora_Backup/acropora-restore-probe): a host-oldali proba nem fut"; done
   else
     rm -f "$WORK/host-result.json"; nas_get "Acropora_Backup/acropora-restore-probe/$F" "$WORK/host-result.json"
     echo "   $F"
+    # the installed host script must be the one in this tree: an outdated or edited copy fails
+    WANT=$(sha256sum "$ROOT/scripts/host/acropora-restore-probe.sh" 2>/dev/null | cut -d' ' -f1)
+    [ -n "$WANT" ] || WANT=missing
     for k in $HOST_KINDS; do
       echo "   -- $k"
-      python3 "$ROOT/scripts/visszaallitasi-proba-eredmeny.py" "$WORK/host-result.json" "$k" "${PROBA_RESULT_MAX_AGE_H:-192}" || FAILS=$((FAILS + 1))
+      python3 "$ROOT/scripts/visszaallitasi-proba-eredmeny.py" "$WORK/host-result.json" "$k" "${PROBA_RESULT_MAX_AGE_H:-192}" "$WANT" || FAILS=$((FAILS + 1))
     done
     rm -f "$WORK/host-result.json"
   fi

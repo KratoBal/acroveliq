@@ -67,9 +67,11 @@ meg a többit:
   legfeljebb 36 óra. Letöltés, a méret egyezzen a listázottal. Eldobható konténer
   (`acropora-restore-probe-<fajta>`) az élő konténer SAJÁT képéből (`--pull never`: semmit nem
   tölt le, és a fő verzió biztosan egyezik), `--network none`, `--memory 1g`, `--cpus 1`,
-  `--pids-limit 256`. Készenlét TCP-n (`pg_isready -h 127.0.0.1`), mert az initdb alatt a belépési
-  pont egy ideiglenes, csak socketen figyelő szervert futtat. `pg_restore --no-owner
-  --no-privileges --exit-on-error`. Utána minden közönséges tábla PONTOS sorszáma a visszatöltött
+  `--pids-limit 256`, `--security-opt no-new-privileges`, `--cap-drop ALL`, és vissza csak az, ami
+  a postgres belépési pontjának kell (`CHOWN`, `SETUID`, `SETGID`, `DAC_OVERRIDE`, `FOWNER`). Készenlét TCP-n (`pg_isready -h 127.0.0.1`), mert az initdb alatt a belépési
+  pont egy ideiglenes, csak socketen figyelő szervert futtat. `docker cp` a konténerbe, és `pg_restore --no-owner
+  --no-privileges --exit-on-error` a FÁJLRÓL (stdin-ről a custom formátum csak sorrendben tölthető
+  vissza, és egy sorrendcsere „non-seekable” hamis FAIL-t adna; barracuda, #92). Utána minden közönséges tábla PONTOS sorszáma a visszatöltött
   példányon és az élőn (az élőn `default_transaction_read_only=on`, `statement_timeout` 10 perc,
   `lock_timeout` 10 mp). A konténer és a fájl törlődik.
 * **docstore:** a kötet jelölőfájlja (`.acropora-document-store`) megvan-e (különben a kötet nincs
@@ -96,7 +98,11 @@ nem kell a fájl):
 `result-*.json`, és fajtánként a `scripts/visszaallitasi-proba-eredmeny.py`. FAIL, ha nincs
 eredmény, ha 192 óránál (nyolc nap) régebbi, ha a formátum ismeretlen, ha a státusz nem PASS, vagy
 ha a PASS mellett álló számok mást mondanak (nulla tábla, hiányzó tábla, nem nulla `restore_rc`,
-nulla ellenőrzött dokumentum). Egy PASS-t tehát nem fogad el a szavára.
+nulla ellenőrzött dokumentum). Egy PASS-t tehát nem fogad el a szavára. Ezen felül: a NAS
+eredmény-mappájának tulajdonosa 1032 (acropora-backup) és módja `drwxr-xr-x` legyen, és az
+eredmény `script_sha256` mezője egyezzen a flotta fájában álló `scripts/host/acropora-restore-probe.sh`
+lenyomatával, különben FAIL (egy régi vagy átírt telepítés, vagy egy más által létrehozott mappa
+eredménye nem számít).
 
 ## Kockázat
 
@@ -149,7 +155,20 @@ install -o root -g root -m 0644 acropora-restore-probe.service acropora-restore-
 systemctl daemon-reload
 ```
 
-**2. Az első futás kézzel** (a NAS-on ekkor jön létre az `acropora-restore-probe` könyvtár, 0755-tel):
+**1b. Mielőtt a mappa létrejön** (acrobot méri, az AcroBot fiókkal, csak `ls`): az
+`Acropora_Backup` alatt `acropora-restore-probe` még NE legyen. Ha van, és nem `1032`
+(acropora-backup) a tulajdonosa, állj meg: azt más hozta létre, és az eredménye nem hiteles. Ez azért
+kell, mert az AcroBot fiók tud mappát létrehozni a szülőben (az `acrobot-fleet` és az `acropora-ai`
+az övé, 1033, a mi szkriptjeink `mkdir`-jéből; acrobot listája, 2026-10-13 23:37).
+
+```bash
+cd /home/marveen/marveen && printf 'ls -ln Acropora_Backup\n' | sftp -o BatchMode=yes -i /home/marveen/.ssh/id_ed25519_csupor_backup AcroBot@100.98.191.44 | grep restore-probe   # várt: nincs sor
+```
+
+**2. Az első futás**, a unittal, NEM a szkript közvetlen hívásával: a unit `PrivateTmp`-je
+választja el a munkakönyvtárat a mindenki által írható `/var/tmp`-től. A szkript maga is megáll,
+ha a munkakönyvtár vagy az állapot-könyvtár symlink, de a helyes út a `systemctl start` (a NAS-on
+ekkor jön létre az `acropora-restore-probe` könyvtár, 0755-tel):
 
 ```bash
 cd /root && systemctl start acropora-restore-probe.service; systemctl status acropora-restore-probe.service --no-pager | head -5
@@ -167,12 +186,28 @@ cd /home/marveen/marveen && bash scripts/visszaallitasi-proba.sh host
 ```
 
 Várt: mindhárom fajtára egy `eredmeny:` és egy szám-sor, a végén `KESZ.`. Ez egyben azt is
-bizonyítja, hogy az AcroBot fiók a könyvtárat listázni, a fájlt olvasni tudja. Ha itt `nincs
+bizonyítja, hogy az AcroBot fiók a könyvtárat listázni, a fájlt olvasni tudja, hogy a mappa
+tulajdonosa 1032 és a módja `drwxr-xr-x` (a flotta ezt minden futáskor ellenőrzi), és hogy a
+telepített szkript lenyomata a flotta fájában állóé (az eredmény `script_sha256` mezője; eltérésnél
+„a telepites elavult vagy atirt” FAIL jön).
+
+**3b. Írásproba, egyszer, a 3. után** (acrobot, az AcroBot fiókkal). A módbitek nem bizonyítanak:
+a Synology ACL-je ennél többet is engedhet, és ha az AcroBot írhat a mappába, hamis PASS-t tehet
+oda, amit a flotta olvas.
+
+```bash
+cd /home/marveen/marveen && : > /tmp/irasproba.json && printf 'put /tmp/irasproba.json Acropora_Backup/acropora-restore-probe/irasproba.json\n' | sftp -o BatchMode=yes -i /home/marveen/.ssh/id_ed25519_csupor_backup AcroBot@100.98.191.44; echo "rc=$?"
+```
+
+Várt: `Permission denied` és `rc=1`. Ha a feltöltés SIKERÜL: töröld (`rm
+Acropora_Backup/acropora-restore-probe/irasproba.json` ugyanígy), és állj meg. Ekkor a DSM-ben az
+AcroBot felhasználónak erre a mappára csak olvasási jog kell, írási nem, és a timer csak ezután
+kapcsolható be. Ha itt `nincs
 eredmeny a NAS-on` jön, de a 2. lépés PASS volt, akkor a Synology a könyvtárra a 0755-öt nem
 engedi: a DSM felületén az `acropora-restore-probe` mappára az AcroBot felhasználónak olvasási jog
 kell (csak erre a mappára).
 
-**4. A heti ütemezés bekapcsolása**, csak ha a 2. és a 3. zöld:
+**4. A heti ütemezés bekapcsolása**, csak ha a 2., a 3. és a 3b zöld:
 
 ```bash
 cd /root && systemctl enable --now acropora-restore-probe.timer && systemctl list-timers acropora-restore-probe.timer --no-pager
@@ -198,15 +233,17 @@ argumentummal is hívható, de ezt acrobot döntse el.
 
 ## Ellenőrzés a PR-ben
 
-`bash scripts/__tests__/acropora-restore-probe.test.sh` (a CI-ben is fut): valódi bash, rsync és
+`bash scripts/__tests__/acropora-restore-probe.test.sh` (a CI-ben is fut, 55 állítás): valódi bash, rsync és
 sha256sum, a `docker` egy naplózó csonk, a NAS egy helyi könyvtár. Lefedi a jó világot, a bukott
 visszatöltést, a régi dumpot, az üres és a részleges visszatöltést, a hiányzó táblát, a sérült és a
 hiányzó dokumentumot, a hiányzó jelölőt, a nem futó élő konténert, a fel nem jutott eredményt, a
 zárat, a rossz munkakönyvtárat, és az olvasót. Kalibrálva: a fő őrzők egyenkénti kikapcsolása
 (csak-olvasó `PGOPTIONS`, kezdeti söprés, záró takarítás, korhatár, a dokumentumtár türelmi ideje,
 a feltöltés `-p` kapcsolója, a hiányzó tábla, a feltöltés visszamérése, az olvasó korhatára és
-hiányzó-tábla ága) mindegyik pirosat ad.
+hiányzó-tábla ága, a symlink-ellenőrzés, a képesség-szűkítés, a fájlról való visszatöltés, az
+olvasó lenyomat-ellenőrzése) mindegyik pirosat ad. A számláló SQL a CI-ben valódi Postgresen fut
+(`acropora-restore-probe-sql.test.sh`; a #92 fején, `842cece`, 3/0).
 
-**Amit a teszt NEM bizonyít:** a valódi `pg_restore` és `psql` viselkedését (a `\gexec`-es számlálást,
-az `--exit-on-error` hatását a valódi dumpokon), a Synology daemon jogkezelését, és a futásidőt az
+**Amit a teszt NEM bizonyít:** a valódi `pg_restore` viselkedését (az `--exit-on-error` hatását a
+valódi dumpokon, és hogy a szűkített képességekkel a postgres belépési pontja tényleg feláll), a Synology daemon jogkezelését, és a futásidőt az
 éles gépen. Ezeket a 2. és a 3. lépés méri.

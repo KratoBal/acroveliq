@@ -74,6 +74,11 @@ done
 # rm -rf runs on $WORK: only ever on a directory of this name, never on / or a typo.
 case "$WORK" in /*/acropora-restore-probe) ;; *) echo "FAIL: PROBE_WORK alakja: $WORK" >&2; exit 2 ;; esac
 case "$STATE" in /*) ;; *) echo "FAIL: PROBE_STATE nem abszolut: $STATE" >&2; exit 2 ;; esac
+# /var/tmp is world-writable: under systemd PrivateTmp isolates it, but a run started by hand
+# would follow a planted symlink with root's writes (barracuda, #92). Neither may be a link.
+for d in "$WORK" "$STATE"; do
+  [ ! -L "$d" ] || { echo "FAIL: symlink, nem futok: $d" >&2; exit 2; }
+done
 
 KINDS=("$@")
 [ "${#KINDS[@]}" -gt 0 ] || KINDS=(os commerce docstore)
@@ -102,7 +107,8 @@ cleanup() {
 trap cleanup EXIT
 # A run killed mid-way (reboot, OOM) leaves its container; the next run sweeps it first.
 cleanup
-mkdir -p "$WORK" || exit 1
+# not -p: if anything stands at $WORK after the sweep, someone put it there; stop
+mkdir -m 0700 "$WORK" || { log "FAIL: a munkakonyvtar nem hozhato letre tisztan: $WORK"; exit 1; }
 
 STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 STAMP=$(date +%Y-%m-%d_%H-%M-%S)
@@ -170,8 +176,13 @@ probe_db() {  # <kind> <nas dir> <container key> <db> <user>
     # The dump may run any SQL as superuser while it loads: no network, fixed limits, and the
     # live container's own image, already on the host (--pull never), so the major version
     # matches and nothing is fetched.
+    # Capabilities: only what the postgres entrypoint needs to chown its data directory and
+    # drop to the postgres user (barracuda, #92); gosu switches user by syscall, so
+    # no-new-privileges does not stop it.
     if ! "$DOCKER" run -d --name "$c" --label acropora.restore-probe=1 --network none \
          --memory "$MEMORY" --cpus 1 --pids-limit 256 --pull never \
+         --security-opt no-new-privileges --cap-drop ALL \
+         --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add DAC_OVERRIDE --cap-add FOWNER \
          -e POSTGRES_PASSWORD="probe-$RANDOM$RANDOM" -e POSTGRES_USER="$user" -e POSTGRES_DB="$db" \
          "$image" >/dev/null; then
       reasons+=("a proba-kontener nem indult")
@@ -186,9 +197,16 @@ probe_db() {  # <kind> <nas dir> <container key> <db> <user>
       if [ -z "$ready" ]; then
         reasons+=("a proba-adatbazis nem allt fel")
       else
-        "$DOCKER" exec -i "$c" pg_restore --no-owner --no-privileges --exit-on-error -U "$user" -d "$db" \
-          < "$WORK/$kind.dump" 2>"$WORK/$kind.restore.err"
-        rc=$?
+        # From a FILE in the container, not stdin: on a non-seekable input pg_restore can only
+        # take the archive in order, and an out-of-order entry would fail as "non-seekable"
+        # instead of measuring the backup (barracuda, #92).
+        if ! "$DOCKER" cp "$WORK/$kind.dump" "$c:/tmp/restore.dump" 2>"$WORK/$kind.restore.err"; then
+          rc=125
+        else
+          "$DOCKER" exec "$c" pg_restore --no-owner --no-privileges --exit-on-error -U "$user" -d "$db" \
+            /tmp/restore.dump 2>>"$WORK/$kind.restore.err"
+          rc=$?
+        fi
         errs=$(grep -c 'error' "$WORK/$kind.restore.err")
         if [ "$rc" -ne 0 ]; then
           reasons+=("a pg_restore hibaval tert vissza (rc $rc)")
