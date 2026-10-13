@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { checkAgentRunIdentity, osUserExistsFromPasswd } from '../web/agent-config.js'
+import { checkAgentRunIdentity, osUserExistsFromPasswd, checkAgentRunIdentityWithPasswd, runAsUserForPanel } from '../web/agent-config.js'
 
 // B45 B2-2: the run identity comes from the OS, not from the agent's own
 // agent-config.json (the agent owns that file's directory, so it can always
@@ -53,5 +53,20 @@ describe('osUserExistsFromPasswd', () => {
     expect(exists('agent-murena')).toBe(true)
     expect(exists('agent-mur')).toBe(false)
     expect(exists('')).toBe(false)
+  })
+})
+
+// B45 B2-2 follow-up (barracuda): an unreadable passwd and the panel's tmux calls.
+describe('follow-up: unknown identity and the panel resolver', () => {
+  it('empty /etc/passwd: refused, even with a correct runAsUser', () => {
+    expect(checkAgentRunIdentityWithPasswd('barracuda', cfg({ runAsUser: 'agent-barracuda' }), '').ok).toBe(false)
+    expect(checkAgentRunIdentityWithPasswd('barracuda', cfg({}), '  \n').ok).toBe(false)
+    expect(checkAgentRunIdentityWithPasswd('barracuda', cfg({ runAsUser: 'agent-barracuda' }), passwd).ok).toBe(true)
+  })
+  it('panel: only the agent\'s own user is honoured, anything else is the router\'s server', () => {
+    expect(runAsUserForPanel('barracuda', 'agent-barracuda')).toBe('agent-barracuda')
+    expect(runAsUserForPanel('barracuda', 'agent-murena')).toBeNull()
+    expect(runAsUserForPanel('barracuda', 'root')).toBeNull()
+    expect(runAsUserForPanel('barracuda', null)).toBeNull()
   })
 })
