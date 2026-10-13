@@ -31,6 +31,7 @@
 set -uo pipefail
 
 NEZ=0
+TASK=""
 FRISS_OK=""
 BAZIS_OK=""
 SORREND_OK=""
@@ -39,6 +40,14 @@ KOZOS_OK=""
 while :; do
   case "${1:-}" in
     --nez) NEZ=1; shift ;;
+    # TC-Lite L4: a feladat, amihez a beolvasztas tartozik. A PUT 200-as valasza utan
+    # (es csak ha a merge commit a cel-agon van) `merged` esemeny megy ra, data-val:
+    # {repo, pr, head_sha, merge_sha} -- ebbol meri ujra a done-or (scripts/beolvadt-esemeny.py).
+    --task)
+      shift
+      TASK="${1:?a --task utan feladat-azonosito kell}"
+      [[ "$TASK" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || { echo "FAIL: a --task nem feladat-azonosito: $TASK" >&2; exit 2; }
+      shift ;;
     # A MAR BEOLVADT COMMIT feloldasa. Kulon kapcsolo, es NEM a --elavult-bazis-rendben,
     # mert MAS a baja es MAS a feloldasa: ott a zold futott regi fan, itt a PR olyan
     # commitot hordoz, aminek a TARTALMA mar a main-en all. Az elsot egy indok oldja
@@ -74,7 +83,7 @@ while :; do
     *) break ;;
   esac
 done
-PR="${1:?hasznalat: pr-beolvaszt.sh [--nez] [--friss-fej-rendben \"indok\"] [--elavult-bazis-rendben \"indok\"] [--migracio-sorrend-rendben \"indok\"] [--kozos-fajl-rendben \"indok\"] <PR-szam> [tulajdonos/repo]}"
+PR="${1:?hasznalat: pr-beolvaszt.sh [--nez] [--task <task_id>] [--friss-fej-rendben \"indok\"] [--elavult-bazis-rendben \"indok\"] [--migracio-sorrend-rendben \"indok\"] [--kozos-fajl-rendben \"indok\"] <PR-szam> [tulajdonos/repo]}"
 # A repo masodik argumentumkent adhato meg. Alapertelmezes az Acropora OS, mert a
 # beolvasztasok tulnyomo resze oda megy -- de a commerce repora is kell, es ott a
 # check-runs vegpont 403-at ad ugyanezzel a tokennel (merve 2026-09-04, murena
@@ -88,6 +97,20 @@ PR="${1:?hasznalat: pr-beolvaszt.sh [--nez] [--friss-fej-rendben \"indok\"] [--e
 # olvasztottam volna be, es a kimenet ugyanigy sikert jelentett volna.
 # Ezert a PR_REPO itt is szamit, de a pozicionalis argumentum eros marad.
 REPO="${2:-${PR_REPO:-KratoBal/acropora-os}}"
+
+# A --task HIANYA (TC-Lite L4): ket hetig hangos figyelmeztetes, utana a beolvasztas
+# nelkule nem indul. A hatarido a bevezetes napjatol (2026-10-13) ket het. A --nez
+# alakot nem allitja meg: az csak nez.
+TASK_KOTELEZO_ETTOL=2026-10-27
+if [ -z "$TASK" ]; then
+  if [[ "$(date -u +%F)" < "$TASK_KOTELEZO_ETTOL" ]] || [ "$NEZ" = 1 ]; then
+    echo "FIGYELEM: nincs --task <task_id>: a beolvasztas NEM kerul a feladat idovonalara, es a done-or nem latja." >&2
+    echo "  ${TASK_KOTELEZO_ETTOL}-tol kotelezo. Alak: pr-beolvaszt.sh --task <task_id> <PR-szam> [repo]" >&2
+  else
+    echo "FAIL: ${TASK_KOTELEZO_ETTOL} ota a --task <task_id> kotelezo (a beolvasztas a feladat idovonalara kerul)." >&2
+    exit 2
+  fi
+fi
 TOK="$(cat /home/marveen/marveen/store/.github-token)"
 
 # === A TARTAS-LISTA ===
@@ -105,7 +128,8 @@ TOK="$(cat /home/marveen/marveen/store/.github-token)"
 #   KratoBal/acropora-commerce#158  # az orzo szeletelese vak, murena javitja
 TARTAS=/home/marveen/marveen/exchange/pr-tartas.txt
 
-python3 - "$PR" "$REPO" "$TOK" "$NEZ" "$TARTAS" "$FRISS_OK" "$BAZIS_OK" "$SORREND_OK" "$DUPLA_OK" "$KOZOS_OK" << 'PYEOF'
+ESEMENY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/beolvadt-esemeny.py"
+python3 - "$PR" "$REPO" "$TOK" "$NEZ" "$TARTAS" "$FRISS_OK" "$BAZIS_OK" "$SORREND_OK" "$DUPLA_OK" "$KOZOS_OK" "$TASK" "$ESEMENY" << 'PYEOF'
 import json, os, re as _re, subprocess, sys, time
 pr, repo, tok = sys.argv[1], sys.argv[2], sys.argv[3]
 nez = sys.argv[4] == '1'
@@ -115,6 +139,8 @@ bazis_ok = sys.argv[7] if len(sys.argv) > 7 else ''
 sorrend_ok = sys.argv[8] if len(sys.argv) > 8 else ''
 dupla_ok = sys.argv[9] if len(sys.argv) > 9 else ''
 kozos_ok = sys.argv[10] if len(sys.argv) > 10 else ''
+task = sys.argv[11] if len(sys.argv) > 11 else ''
+esemeny_szkript = sys.argv[12] if len(sys.argv) > 12 else ''
 
 # A TARTAS ELOSZOR, MINDEN API-HIVAS ELOTT: egy tartott PR-t meg megnezni sem kell
 # ahhoz, hogy tudjuk, nem megy be.
@@ -824,12 +850,27 @@ if not kozos_ok:
 else:
     print(f'   kozos fajl feloldva: {kozos_ok}')
 
+def _feladat_esemeny(extra):
+    # TC-Lite L4: a merged esemeny a feladatra, a sajat ellenorzeseivel (beolvadt-esemeny.py)
+    subprocess.run(['python3', '-B', esemeny_szkript, '--task', task, '--repo', repo, '--pr', str(pr),
+                    '--head', sha, '--base', _bazis_ref] + extra)
+
 if nez:
     print('CSAK NEZEM (--nez): minden feltetel teljesul, de NEM olvasztok be.')
+    if task:
+        _feladat_esemeny(['--put-code', '000', '--nez'])
     sys.exit(0)
 
 text, code = api('PUT', f'/pulls/{pr}/merge', {'merge_method': 'squash', 'sha': sha})
 print('HTTP', code, text.strip()[:200])
+if task:
+    import tempfile
+    with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as _tf:
+        _tf.write(text)
+    try:
+        _feladat_esemeny(['--put-code', code, '--put-body-file', _tf.name])
+    finally:
+        os.unlink(_tf.name)
 
 # A BEOLVASZTAS NEM TELEPITES -- ES A REPON BELUL A KET ALKALMAZAS MASKENT MEGY.
 #

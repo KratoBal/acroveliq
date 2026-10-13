@@ -37,7 +37,9 @@ import type { RouteContext } from './types.js'
 //                                         ISO, default now; the key also as an Idempotency-Key header)
 //   POST /api/tasks/<task>/sessions       a session of the task: {agent, session_id}
 //   GET  /api/tasks/<task>/usage          the task's usage; with ?variants=1 its variants beside it
-//   GET  /api/tasks/<task>/timeline       events, handoff records and sessions, in time order
+//   GET  /api/tasks/<task>/timeline       events, handoff records and sessions, in time order;
+//                                         `fields`: the task's title, goal, assignee, reviewer,
+//                                         authorization_ref and verification_profile
 //
 // THE `done` GUARD (TC-Lite L1), by TASK_CORE_MODE: `off` is the behaviour
 // before L1; `naplo` (the default) accepts every `done` and marks the one it
@@ -161,7 +163,11 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `no task ${taskId}` }, 404)
       return true
     }
-    json(res, { task: taskId, items: taskTimeline(getDb(), taskId) })
+    // the fields too: the hand-out (fleet-api.sh kiadas, L5) checks them before it acts
+    const fields = getDb()
+      .prepare('SELECT title, goal, assignee, reviewer, authorization_ref, verification_profile FROM tasks WHERE id = ?')
+      .get(taskId)
+    json(res, { task: taskId, fields, items: taskTimeline(getDb(), taskId) })
     return true
   }
 

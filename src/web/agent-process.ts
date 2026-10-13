@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, mkdirSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { OLLAMA_URL } from '../config.js'
 import { makeLazyBinResolver } from '../platform.js'
 import { logger } from '../logger.js'
@@ -1206,8 +1206,10 @@ function startRemoteAgentProcess(
   name: string,
   host: string,
   workdir: string,
-  opts: { fresh?: boolean },
+  opts: LaunchOpts,
 ): { ok: boolean; error?: string } {
+  // the remote launch command has no session-id slot: say so, do not drop it
+  if (opts.sessionId !== undefined) return { ok: false, error: 'sessionId is not supported for remote agents' }
   const state = agentRunState(name)
   if (state === 'running') return { ok: false, error: 'Agent is already running' }
   if (state === 'unreachable') {
@@ -1258,9 +1260,104 @@ function startRemoteAgentProcess(
   }
 }
 
-export async function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+// TC-Lite L2: a fresh launch can carry the session id the server chose, so the
+// task it belongs to is known before the first call (the task's usage is then
+// counted by session, not guessed from the time window).
+export const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+export interface LaunchOpts {
+  fresh?: boolean
+  /** a lowercase UUID; only with `fresh` (a resumed session keeps its own id) */
+  sessionId?: string
+}
+
+/**
+ * What stands at the `--continue` position of the launch command. Pure. With
+ * no sessionId this is exactly the old expression (a regression test holds it
+ * to that for every combination).
+ */
+export function launchSessionFlag(o: { hasPriorSession: boolean; fresh?: boolean; hasChannel: boolean; sessionId?: string }): string {
+  if (o.sessionId) return `--session-id ${o.sessionId} `
+  return (o.hasPriorSession && !o.fresh && !o.hasChannel) ? '--continue ' : ''
+}
+
+// The CLI's own help decides whether `--session-id` exists. Cached per binary,
+// and only a positive answer: a probe that timed out once must not switch the
+// feature off until the next dashboard restart. The probe is asynchronous: a
+// synchronous one held the dashboard's event loop for up to its 15 s timeout on
+// the first id launch and after every failed probe (barracuda, #56 review).
+// Launches that arrive while a probe runs wait for that same probe.
+let sessionIdSupported: string | null = null
+let probeInFlight: { bin: string; answer: Promise<boolean> } | null = null
+const defaultClaudeHelpProbe = (bin: string): Promise<string> =>
+  new Promise((resolve, reject) => {
+    execFile(bin, ['--help'], { encoding: 'utf-8', timeout: 15_000 }, (err, stdout) => {
+      if (err) reject(err)
+      else resolve(stdout)
+    })
+  })
+let claudeHelpProbe: (bin: string) => Promise<string> = defaultClaudeHelpProbe
+let claudeBinForProbe: () => string = () => claudeBin()
+
+/** `probe: null` restores the real (execFile) probe; the binary stays the test one. */
+export function setClaudeHelpProbeForTests(probe: ((bin: string) => string | Promise<string>) | null, bin = 'claude-test-bin'): void {
+  claudeHelpProbe = probe ? async (b) => probe(b) : defaultClaudeHelpProbe
+  claudeBinForProbe = () => bin
+  sessionIdSupported = null
+  probeInFlight = null
+}
+
+export async function claudeSupportsSessionId(): Promise<boolean> {
+  let bin: string
+  try {
+    bin = claudeBinForProbe()
+  } catch {
+    // no claude on PATH: nothing to launch with an id either
+    return false
+  }
+  if (sessionIdSupported === bin) return true
+  if (probeInFlight?.bin !== bin) {
+    const answer = (async () => {
+      try {
+        if (/^\s*--session-id\b/m.test(await claudeHelpProbe(bin))) {
+          sessionIdSupported = bin
+          return true
+        }
+      } catch {
+        // not cached: the next launch asks again
+      }
+      return false
+    })()
+    const entry = { bin, answer }
+    probeInFlight = entry
+    void answer.finally(() => {
+      if (probeInFlight === entry) probeInFlight = null
+    })
+  }
+  return probeInFlight!.answer
+}
+
+/**
+ * Why a launch with a session id must not go ahead, or null. Checked before
+ * anything is stopped, provisioned or sent to tmux: a session id the CLI
+ * rejects would kill the agent inside tmux, where nobody sees it.
+ */
+export async function sessionIdLaunchError(name: string, opts: LaunchOpts): Promise<string | null> {
+  if (opts.sessionId === undefined) return null
+  if (typeof opts.sessionId !== 'string' || !SESSION_ID_RE.test(opts.sessionId)) return 'sessionId must be a lowercase UUID'
+  if (!opts.fresh) return 'sessionId needs fresh: a resumed (--continue) session keeps its own id'
+  const remote = readAgentRemoteConfig(name)
+  if (remote.host && remote.workdir) return 'sessionId is not supported for remote agents'
+  if (!(await claudeSupportsSessionId())) return 'this claude CLI has no --session-id flag; refusing instead of starting an agent that would exit silently'
+  return null
+}
+
+export async function startAgentProcess(name: string, opts: LaunchOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
+
+  const sessionIdError = await sessionIdLaunchError(name, opts)
+  if (sessionIdError) return { ok: false, error: sessionIdError }
 
   // B45 B2-2: refuse BEFORE any provisioning or the remote branch when the run
   // identity in the agent's own config does not match its OS user (see
@@ -1613,7 +1710,8 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // agents are ALWAYS launched fresh: the lost conversation context is the
     // price of a reachable bot (file/db memory persists either way). Channel-
     // less agents keep --continue to preserve their accumulated context.
-    const continueFlag = (hasPriorSession && !opts.fresh && !hasChannel) ? '--continue ' : ''
+    // TC-Lite L2: a session id, when given, takes this position (fresh only, checked above)
+    const continueFlag = launchSessionFlag({ hasPriorSession, fresh: opts.fresh, hasChannel, sessionId: opts.sessionId })
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : agentProvider === 'teams' ? 'TEAMS_STATE_DIR' : 'TELEGRAM_STATE_DIR'
     const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
     // Slack plugin is third-party; its "not on approved allowlist" check is
@@ -1758,7 +1856,10 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
   }
 }
 
-export async function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+export async function restartAgentProcess(name: string, opts: LaunchOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+  // before the stop: a refused session id must not leave the agent stopped
+  const sessionIdError = await sessionIdLaunchError(name, opts)
+  if (sessionIdError) return { ok: false, error: sessionIdError }
   if (isAgentRunning(name)) {
     const stopResult = await stopAgentProcess(name)
     if (!stopResult.ok) return { ok: false, error: stopResult.error || 'Failed to stop running agent before restart' }
