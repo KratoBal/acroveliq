@@ -4,6 +4,12 @@
 // Run by the install's operator (chown needs it). The agent's OS user is its
 // `runAsUser`; the main agent's is the install's owner. The token is written to
 // store/tokens/<agent>.token only, never printed.
+//
+//   npx tsx scripts/issue-agent-token.ts <agent> [--expires-days N] --apply --stdout
+// The pipe way (the P0-1 step sheet, L2): run as the install's owner, the row
+// is written and the token goes to stdout, which must be a pipe into root's
+// base-system step that places the file; nothing goes to a terminal. Every
+// message then goes to stderr, so the pipe carries the token alone.
 import { execFileSync } from 'node:child_process'
 import { statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -11,15 +17,16 @@ import { join } from 'node:path'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../src/config.js'
 import { getDb, initDatabase } from '../src/db.js'
 import { readAgentRunAsUser } from '../src/web/agent-config.js'
-import { issueAgentToken } from '../src/web/agent-token-issue.js'
+import { issueAgentToken, issueAgentTokenToPipe, writeToPipe } from '../src/web/agent-token-issue.js'
 
 const args = process.argv.slice(2)
 const agent = args.find((a) => !a.startsWith('--'))
 const apply = args.includes('--apply')
+const toStdout = args.includes('--stdout')
 const daysAt = args.indexOf('--expires-days')
 const expiresInDays = daysAt >= 0 ? Number(args[daysAt + 1]) : undefined
 if (!agent || (expiresInDays !== undefined && !(expiresInDays > 0))) {
-  console.error('usage: issue-agent-token.ts <agent> [--expires-days N] [--apply]')
+  console.error('usage: issue-agent-token.ts <agent> [--expires-days N] [--apply] [--stdout]')
   process.exit(2)
 }
 
@@ -40,16 +47,38 @@ function ownerOf(name: string): { uid: number; gid: number; user: string } {
 
 const owner = ownerOf(agent)
 initDatabase()
-const result = issueAgentToken(getDb(), {
-  root: PROJECT_ROOT,
-  agent,
-  owner: { uid: owner.uid, gid: owner.gid },
-  expiresInDays,
-  now: Math.floor(Date.now() / 1000),
-  apply,
-})
-console.log(
-  result.status === 'issued'
-    ? `issued: ${result.agent} -> ${result.path} (0400, ${owner.user}), principal_tokens id ${result.id}`
-    : `dry run: would issue ${result.agent} -> ${result.path} (0400, ${owner.user}); add --apply`,
-)
+if (toStdout) {
+  let piped
+  try {
+    piped = await issueAgentTokenToPipe(getDb(), {
+      root: PROJECT_ROOT,
+      agent,
+      expiresInDays,
+      now: Math.floor(Date.now() / 1000),
+      apply,
+      out: { isTty: process.stdout.isTTY === true, write: (text) => writeToPipe(process.stdout, text) },
+    })
+  } catch (error) {
+    console.error(`not issued: ${error instanceof Error ? error.message : String(error)} (a row written before the failure is revoked)`)
+    process.exit(1)
+  }
+  console.error(
+    piped.status === 'issued'
+      ? `issued to the pipe: ${piped.agent}, principal_tokens id ${piped.id}; root places it at ${piped.path} (0400, ${owner.user})`
+      : `dry run: would issue ${piped.agent} to the pipe, for ${piped.path} (0400, ${owner.user}); add --apply`,
+  )
+} else {
+  const result = issueAgentToken(getDb(), {
+    root: PROJECT_ROOT,
+    agent,
+    owner: { uid: owner.uid, gid: owner.gid },
+    expiresInDays,
+    now: Math.floor(Date.now() / 1000),
+    apply,
+  })
+  console.log(
+    result.status === 'issued'
+      ? `issued: ${result.agent} -> ${result.path} (0400, ${owner.user}), principal_tokens id ${result.id}`
+      : `dry run: would issue ${result.agent} -> ${result.path} (0400, ${owner.user}); add --apply`,
+  )
+}

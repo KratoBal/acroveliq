@@ -7,6 +7,16 @@
 // revoked and a half-made file removed: no token exists that no file holds.
 // The token is never returned or printed.
 //
+// The other way (`issueAgentTokenToPipe`, barracuda's review of the P0-1 step
+// sheet): the install's owner writes the row and hands the token to a pipe;
+// root only places the file with base-system commands. Root then runs no
+// repository code, which the install's owner can rewrite. The token is written
+// to the pipe only, never to a terminal. A write the pipe refuses (its reader
+// gone: EPIPE) revokes the row. What this side cannot see is a reader that
+// took the token and failed afterwards (behind `docker compose exec` the
+// write succeeds into docker's buffer whatever root's side does): there the
+// step sheet's revoke step is the guard (L2), not this code.
+//
 // Dry run unless `apply`: it says what it would do and touches nothing.
 import { chownSync, closeSync, existsSync, mkdirSync, openSync, unlinkSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
@@ -94,6 +104,71 @@ export function issueAgentToken(
   return { ...result, status: 'issued', id: minted.id }
 }
 
+/**
+ * Writes `text` to a stream and settles when the stream took it or refused
+ * it. Node reports a write into a pipe whose reader is gone (EPIPE) as an
+ * 'error' EVENT, not a throw, and an unhandled one ends the process (measured
+ * on process.stdout, 2026-10-13: the CLI said "issued", then died, and the row
+ * stayed live). The listener stays attached, so a late error cannot crash the
+ * process either.
+ */
+export function writeToPipe(stream: NodeJS.WritableStream, text: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const fail = (error: Error) => {
+      if (settled) return
+      settled = true
+      reject(error)
+    }
+    stream.on('error', fail)
+    stream.write(text, (error?: Error | null) => {
+      if (error) return fail(error)
+      if (settled) return
+      settled = true
+      resolve()
+    })
+  })
+}
+
+/**
+ * Mints the agent's token and writes it to `out.write` instead of a file
+ * (the step sheet's root step places the file). Refused when `out.isTty`: a
+ * token on a screen is a token in a scrollback. Refused, as in the file way,
+ * when the agent's file already exists. If the write fails (it throws or its
+ * promise rejects: `writeToPipe` turns a refused pipe into a rejection), the
+ * row is revoked. A reader that took the token and failed later is not
+ * visible here (see the header).
+ */
+export async function issueAgentTokenToPipe(
+  db: Database.Database,
+  opts: {
+    root: string
+    agent: string
+    expiresInDays?: number
+    now: number
+    apply: boolean
+    out: { isTty: boolean; write(text: string): void | Promise<void> }
+    fs?: Pick<TokenFileOps, 'exists'>
+  },
+): Promise<Omit<IssueResult, 'owner'>> {
+  const fs = opts.fs ?? realTokenFileOps
+  if (!AGENT_NAME.test(opts.agent)) throw new Error(`invalid agent name: ${opts.agent}`)
+  if (opts.out.isTty) throw new Error('the token goes to a pipe only, and the output is a terminal: nothing issued')
+  const path = agentTokenPath(opts.root, opts.agent)
+  if (fs.exists(path))
+    throw new Error(`${path} already exists: revoke the old token and remove the file first, nothing issued`)
+  const result = { status: 'dry-run' as IssueResult['status'], agent: opts.agent, path }
+  if (!opts.apply) return result
+  const minted = createPrincipalToken(db, opts.agent, { expiresInDays: opts.expiresInDays, now: opts.now })
+  try {
+    await opts.out.write(`${minted.token}\n`)
+  } catch (error) {
+    revokePrincipalToken(db, minted.id, opts.now)
+    throw error
+  }
+  return { ...result, status: 'issued', id: minted.id }
+}
+
 export interface RevokeResult {
   status: 'dry-run' | 'revoked'
   agent: string
@@ -115,7 +190,16 @@ export interface RevokeResult {
  */
 export function revokeAgentToken(
   db: Database.Database,
-  opts: { root: string; agent: string; project?: string; now: number; apply: boolean; fs?: TokenFileOps },
+  opts: {
+    root: string
+    agent: string
+    project?: string
+    now: number
+    apply: boolean
+    /** revoke the rows only; the file is root's to remove (the pipe way) */
+    dbOnly?: boolean
+    fs?: TokenFileOps
+  },
 ): RevokeResult {
   const fs = opts.fs ?? realTokenFileOps
   if (!AGENT_NAME.test(opts.agent)) throw new Error(`invalid agent name: ${opts.agent}`)
@@ -130,6 +214,6 @@ export function revokeAgentToken(
   const result: RevokeResult = { status: 'dry-run', agent: opts.agent, ids, path, file }
   if (!opts.apply) return result
   for (const id of ids) revokePrincipalToken(db, id, opts.now)
-  if (file) fs.unlink(path)
+  if (file && !opts.dbOnly) fs.unlink(path)
   return { ...result, status: 'revoked' }
 }
