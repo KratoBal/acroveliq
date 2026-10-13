@@ -12,7 +12,7 @@
 // of an outside system answers 502 with a fixed text, not its message.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 
-import { Refusal, type DeployExecutor } from './executor.js'
+import { RateLimited, Refusal, type DeployExecutor } from './executor.js'
 
 export const MAX_BODY_BYTES = 8 * 1024
 
@@ -67,6 +67,7 @@ export function createExecutorServer(executor: DeployExecutor, log: (f: Record<s
         }
         return done(404, { error: 'not found' })
       } catch (err) {
+        if (err instanceof RateLimited) return done(429, { error: err.reason }, err.reason)
         if (err instanceof Refusal) return done(403, { error: err.reason }, err.reason)
         if (err instanceof BadRequest) return done(400, { error: err.message })
         return done(502, { error: 'an outside system failed; nothing was deployed by this call unless its R shows used' }, err instanceof Error ? err.message : 'unknown')

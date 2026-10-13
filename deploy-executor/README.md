@@ -30,6 +30,17 @@ A refusal is `403 {"error": <reason>}` and leaves the R unused. Anything after
 the R is marked used spends it (also a failed Coolify call): a new request and a
 new approval are needed.
 
+Limits, checked before any outside call: 6 requests and 12 executions a minute
+(refused calls count too), at most 10 open, unexpired Rs; over them the answer is
+`429`.
+
+After a restart: an R that was spent while its Coolify call was in flight
+(`calling`) is matched against Coolify's own deployment list. Exactly one
+commit-pinned rollback of its sha, recorded after the R was spent and held by no
+other R, becomes its deployment (`queued`, then followed); anything else is
+`interrupted` (spent, result unknown, look at Coolify). A `queued` R is followed
+again.
+
 ## Install on a host (the owner, as root; nothing here is run by the fleet)
 
 ```
