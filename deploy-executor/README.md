@@ -35,6 +35,7 @@ new approval are needed.
 ```
 /opt/vegrehajto/                 root:root 755
   compose.yaml                   copy of deploy-executor/compose.yaml, root 644
+  .env                           root 644, one line: VEGREHAJTO_NODE_IMAGE=node:22-bookworm-slim@sha256:<digest>
   config.json                    from config.example.json, root 644 (no secret in it)
   src/                           git clone of KratoBal/marveen at the reviewed commit, root-owned
   titkok/                        root:root 700
@@ -51,7 +52,7 @@ version honours a `mode`/`uid` on file secrets was not measured; the file
 ownership above works either way.
 
 ```
-cd /opt/vegrehajto && docker compose build --pull && docker compose up -d
+cd /opt/vegrehajto && docker compose build && docker compose up -d
 docker network connect vegrehajto-hivas <the fleet container's name>
 ```
 
@@ -59,7 +60,18 @@ The `network connect` takes effect at once; to keep it across a re-creation of
 the fleet container, the network goes into the fleet's compose file as an
 external network (that change waits for the next planned re-creation).
 
-Pin the base image: `docker compose build --build-arg NODE_IMAGE=node:22-bookworm-slim@sha256:<digest>`.
+The base image is pinned by digest: compose refuses to start the build
+without `VEGREHAJTO_NODE_IMAGE`, and the Dockerfile refuses a value without
+`@sha256:<64 hex>`. The compiler comes from `deploy-executor/build/package-lock.json`
+with `npm ci` (integrity hashes, the same versions as the repo's lockfile). To get a digest:
+`docker buildx imagetools inspect node:22-bookworm-slim` (the `Digest:` line).
+
+**Reaching the Coolify APIs.** After B20 (the production Coolify reachable on the
+tailnet only) the `ki` network must reach `coolify.acropora.hu` over the tailnet;
+measure it at install: `docker compose exec vegrehajto node -e "fetch('<coolifyApiUrl>/version').then(r=>console.log(r.status))"`
+(401 without a token is the expected answer: reachable). The `ki` network allows
+any outbound traffic today; narrowing it to Discord, GitHub and the two Coolify
+hosts is a later step.
 
 ## Checks after install (from three-changes 1; each must hold, or the executor stays down)
 

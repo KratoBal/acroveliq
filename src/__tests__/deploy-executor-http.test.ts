@@ -132,6 +132,7 @@ describe('what goes into the image', () => {
     const df = readFileSync(join(__dirname, '..', '..', 'deploy-executor', 'Dockerfile'), 'utf8')
     const copies = [...df.matchAll(/^COPY (?!--from)(\S+)/gm)].map((m) => m[1])
     expect(copies).toEqual([
+      'deploy-executor/build/package.json',
       'tsconfig.json',
       'deploy-executor/tsconfig.build.json',
       'src/deploy-executor',
@@ -139,6 +140,21 @@ describe('what goes into the image', () => {
       'deploy-executor/package.json',
     ])
     expect(df).toMatch(/^USER 10001:10001$/m)
+    // the compiler from the lockfile, never a bare npm install; the base image only by digest
+    expect(df).toMatch(/^RUN npm ci --ignore-scripts/m)
+    expect(df).not.toMatch(/npm install/)
+    expect(df).toMatch(/^ARG NODE_IMAGE$/m)
+    expect(df).toMatch(/\*@sha256:\?{64}\)/)
+    const lock = JSON.parse(readFileSync(join(__dirname, '..', '..', 'deploy-executor', 'build', 'package-lock.json'), 'utf8')) as {
+      packages: Record<string, { version?: string; integrity?: string }>
+    }
+    const rootLock = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package-lock.json'), 'utf8')) as typeof lock
+    for (const [k, v] of Object.entries(lock.packages)) {
+      if (!k) continue
+      expect(v.integrity).toMatch(/^sha512-/)
+      // the same package, the same bytes as the dashboard's own build
+      expect([v.version, v.integrity]).toEqual([rootLock.packages[k]?.version, rootLock.packages[k]?.integrity])
+    }
     const build = JSON.parse(readFileSync(join(__dirname, '..', '..', 'deploy-executor', 'tsconfig.build.json'), 'utf8')) as { include: string[] }
     expect(build.include).toEqual(['../src/deploy-executor/*.ts', '../src/web/approval-discord-core.ts'])
   })
@@ -146,7 +162,7 @@ describe('what goes into the image', () => {
   it('the compose file keeps the container closed', () => {
     const c = readFileSync(join(__dirname, '..', '..', 'deploy-executor', 'compose.yaml'), 'utf8')
     const code = c.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n')
-    for (const must of [/^\s+read_only: true$/m, /^\s+cap_drop:\n\s+- ALL$/m, /no-new-privileges:true/, /^\s+user: "10001:10001"$/m, /^\s+internal: true$/m, /^\s+context: \/opt\/vegrehajto\/src$/m]) {
+    for (const must of [/NODE_IMAGE: \$\{VEGREHAJTO_NODE_IMAGE:\?/, /^\s+read_only: true$/m, /^\s+cap_drop:\n\s+- ALL$/m, /no-new-privileges:true/, /^\s+user: "10001:10001"$/m, /^\s+internal: true$/m, /^\s+context: \/opt\/vegrehajto\/src$/m]) {
       expect(code).toMatch(must)
     }
     for (const never of [/docker\.sock/, /\/opt\/marveen-docker/, /^\s+ports:/m, /privileged: true/, /pid: host/, /network_mode/, /\/home\/marveen/]) {
