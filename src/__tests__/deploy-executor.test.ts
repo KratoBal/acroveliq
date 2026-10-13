@@ -494,6 +494,28 @@ describe('one-time use and the commit actually deployed', () => {
     expect(cool.rollbacks).toHaveLength(1)
   })
 
+  it('a stop between spending the R and the Coolify answer reads back as interrupted, not as nothing (barracuda #48)', async () => {
+    const { rec, msg } = await approvedRequest()
+    cool.rollback = async () => new Promise<never>(() => {})
+    void ex.execute({ r: rec.r, requestMessageId: msg.id })
+    await new Promise((res) => setTimeout(res, 50))
+    expect(ex.status(rec.r)).toMatchObject({ status: 'used', outcome: 'calling' })
+    makeExecutor()
+    expect(ex.recover()).toEqual({ interrupted: [rec.r], following: [] })
+    expect(ex.status(rec.r)).toMatchObject({ status: 'used', outcome: 'interrupted' })
+    await refusedWith(ex.execute({ r: rec.r, requestMessageId: msg.id }), 'already used')
+  })
+
+  it('a deployment queued before a restart is followed again after it', async () => {
+    const { rec, msg } = await approvedRequest()
+    const out = await ex.execute({ r: rec.r, requestMessageId: msg.id })
+    makeExecutor()
+    expect(ex.recover()).toEqual({ interrupted: [], following: [rec.r] })
+    cool.deployments.get(out.deploymentUuid!)!.status = 'finished'
+    await Promise.all(ex.following)
+    expect(ex.status(rec.r)!.outcome).toBe('finished_verified')
+  })
+
   it('a commit merged after the approval does not change what is deployed', async () => {
     const { rec, msg } = await approvedRequest()
     gh.main.push(`${'9'.repeat(8)}${'b'.repeat(32)}`)

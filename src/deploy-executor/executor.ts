@@ -106,6 +106,30 @@ export class DeployExecutor {
     return this.serial(() => this.doExecute(input))
   }
 
+  /**
+   * After a restart (barracuda, #48 review): an R left 'calling' is spent
+   * with no known result, and says so; a 'queued' one is followed again,
+   * since the follow-up of the previous process died with it.
+   */
+  recover(): { interrupted: string[]; following: string[] } {
+    const { store } = this.deps
+    const interrupted: string[] = []
+    const following: string[] = []
+    for (const id of store.ids()) {
+      const rec = store.get(id)!
+      if (rec.outcome === 'calling') {
+        rec.outcome = 'interrupted'
+        store.put(rec)
+        store.audit('interrupted', { r: id })
+        interrupted.push(id)
+      } else if (rec.outcome === 'queued' && rec.deploymentUuid) {
+        this.startFollow(id)
+        following.push(id)
+      }
+    }
+    return { interrupted, following }
+  }
+
   status(r: unknown): PublicRecord | null {
     if (typeof r !== 'string') return null
     const rec = this.deps.store.get(r)
@@ -182,6 +206,7 @@ export class DeployExecutor {
 
     // spend the R FIRST, durably; then the one outside call that deploys
     rec.status = 'used'
+    rec.outcome = 'calling'
     rec.usedAt = Math.floor(this.now() / 1000)
     rec.approval = { requestMessageId, decisionMessageId: verdict.decisionMessageId, deciderId: verdict.deciderId, code: verdict.code }
     store.put(rec)
@@ -203,12 +228,16 @@ export class DeployExecutor {
     rec.outcome = 'queued'
     store.put(rec)
     store.audit('queued', { r, deploymentUuid, sha: rec.sha })
+    this.startFollow(rec.id)
+    return publicView(rec)
+  }
+
+  private startFollow(r: string): void {
     // a follow-up that throws (a full disk, say) must not take the process down
-    const follow = this.follow(rec.id)
-      .catch((err: unknown) => console.error(JSON.stringify({ event: 'follow_failed', r: rec.id, error: err instanceof Error ? err.message : 'unknown' })))
+    const follow = this.follow(r)
+      .catch((err: unknown) => console.error(JSON.stringify({ event: 'follow_failed', r, error: err instanceof Error ? err.message : 'unknown' })))
       .finally(() => this.following.delete(follow))
     this.following.add(follow)
-    return publicView(rec)
   }
 
   /** Every message after the request until the R's expiry, or null if it does not fit. */

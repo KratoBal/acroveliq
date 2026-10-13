@@ -27,6 +27,8 @@ function main(): void {
     github: githubRest(readSecretFile(config.github.tokenFile)),
     coolify: coolifyRest(hosts),
   })
+  const recovered = executor.recover()
+  process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), event: 'recovered', ...recovered })}\n`)
   const port = Number(process.env['VEGREHAJTO_PORT'] ?? '8787')
   createExecutorServer(executor).listen(port, '0.0.0.0', () => {
     process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), event: 'listening', port, apps: config.apps.length })}\n`)

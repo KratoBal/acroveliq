@@ -20,6 +20,10 @@ export type Relation =
 export type RequestStatus = 'open' | 'used'
 
 export type DeploymentOutcome =
+  /** the R is spent and the Coolify call is in flight */
+  | 'calling'
+  /** the executor stopped while 'calling': whether Coolify queued anything is not known */
+  | 'interrupted'
   | 'queued'
   | 'not_queued'
   | 'finished_verified'
@@ -75,6 +79,10 @@ export class RequestStore {
     } else {
       this.data = { version: 1, requests: {} }
     }
+  }
+
+  ids(): string[] {
+    return Object.keys(this.data.requests)
   }
 
   has(id: string): boolean {

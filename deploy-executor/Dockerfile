@@ -3,15 +3,20 @@
 # root-owned clone at a reviewed commit (/opt/vegrehajto/src): never from the
 # fleet's tree. The image holds the code; nothing is bind-mounted over it.
 #
-# Pin NODE_IMAGE to a digest when installing (README). The runtime needs full
-# ICU: the executor compares Hungarian dates letter for letter and refuses to
-# start if it renders them differently (assertHungarianDates).
-ARG NODE_IMAGE=node:22-bookworm-slim
+# NODE_IMAGE has no default: compose passes it from VEGREHAJTO_NODE_IMAGE, and
+# the build stops unless it is pinned to a digest (barracuda, #49 review 1). The
+# runtime needs full ICU: the executor compares Hungarian dates letter for
+# letter and refuses to start if it renders them differently.
+ARG NODE_IMAGE
 
 FROM ${NODE_IMAGE} AS build
+ARG NODE_IMAGE
+RUN case "$NODE_IMAGE" in *@sha256:????????????????????????????????????????????????????????????????) ;; *) echo "NODE_IMAGE must be pinned: <image>@sha256:<64 hex>" >&2; exit 1 ;; esac
 WORKDIR /build
-# only the compiler, at the versions of the repo's package-lock.json
-RUN npm install --no-save --ignore-scripts --no-audit --no-fund typescript@5.9.3 @types/node@22.19.12
+# only the compiler, from a lockfile with integrity hashes (barracuda, #49 review 2):
+# a swapped package on the registry fails npm ci with EINTEGRITY
+COPY deploy-executor/build/package.json deploy-executor/build/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY tsconfig.json ./tsconfig.json
 COPY deploy-executor/tsconfig.build.json ./deploy-executor/tsconfig.build.json
 # the executor and the ONE dashboard file it shares (#33's pure Discord half)
