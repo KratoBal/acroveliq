@@ -188,7 +188,14 @@ describe('access enforcement: through the gate', () => {
       [G, 'GET', '/api/agents/murena/conversation', undefined, 200],
       [D, 'GET', '/api/agents/murena/conversation', undefined, 200],
       [D, 'POST', '/api/settings', {}, 403],
-      [A, 'GET', '/api/voice/directive', undefined, 403],
+      // an agent's own voice directive: the owner is the agent query parameter
+      [A, 'GET', '/api/voice/directive?agent=acrobot', undefined, 200],
+      [A, 'GET', '/api/voice/directive?agent=murena', undefined, 403],
+      [G, 'GET', '/api/voice/directive?agent=murena', undefined, 200],
+      [G, 'GET', '/api/voice/directive?agent=nautilus', undefined, 403],
+      [G, 'GET', '/api/voice/directive', undefined, 403], // no owner named
+      [L, 'GET', '/api/voice/directive?agent=murena', undefined, 403],
+      [D, 'GET', '/api/voice/directive?agent=murena', undefined, 403],
       // outside the API: not checked
       [L, 'GET', '/index.html', undefined, 200],
       [L, 'GET', '/kepek/logo.png', undefined, 200], // no rule, but not the API
