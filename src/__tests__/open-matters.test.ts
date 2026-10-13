@@ -40,6 +40,7 @@ describe('who a task waits on', () => {
     expect(waitsOn({ ...base, last_kind: 'verdict', last_ref: 'APPROVE #1' })).toBe('beolvaszto')
     expect(waitsOn({ ...base, last_kind: 'started', last_ref: null })).toBe('murena')
     expect(waitsOn({ ...base, last_kind: 'verdict', last_ref: 'hmm' })).toBe('?')
+    expect(waitsOn({ ...base, last_kind: 'blocked', last_ref: null })).toMatch(/^murena .*\?$/)
   })
 })
 
@@ -86,6 +87,24 @@ describe('the four sources', () => {
   })
 })
 
+describe('an omitted question names its place in THAT task\'s handoff (barracuda, #72)', () => {
+  it('the index is per task, not the global one', () => {
+    const rec = (id: string, qs: string[]) => {
+      const r = validateHandoffRecord({ task: { id, goal: 'g', brief: 'b' }, status: 'in_progress', decisions: [], prohibitions: [],
+        code: null, files: [], next_step: 'x', open_questions: qs })
+      if (!r.ok) throw new Error(r.missing.join(','))
+      return r.record
+    }
+    task('a-feladat'); ev('a-feladat', 'started', null, NOW - 200)
+    task('b-feladat'); ev('b-feladat', 'started', null, NOW - 100)
+    insertTaskHandoff(db, 'murena', rec('a-feladat', ['a0 '.repeat(40), 'a1 '.repeat(40)]), NOW - 50)
+    insertTaskHandoff(db, 'murena', rec('b-feladat', ['b0 '.repeat(40), 'b1 '.repeat(40)]), NOW - 50)
+    const out = buildOpenMatters(db, { now: NOW, budgetChars: 1100 })
+    expect(out.omitted.questions.length).toBeGreaterThan(0)
+    for (const q of out.omitted.questions) expect(q).toMatch(/^(a|b)-feladat#[01]$/)
+  })
+})
+
 describe('the budget loses nothing (Balazs, 18:45:34 UTC)', () => {
   it('every item is either in the text or among the omitted ids, and the text keeps the budget', () => {
     for (let i = 0; i < 40; i++) { task(`feladat-${i}`, { title: 'hosszu cim '.repeat(6) }); ev(`feladat-${i}`, 'started') }
@@ -109,5 +128,12 @@ describe('the budget loses nothing (Balazs, 18:45:34 UTC)', () => {
     // the omitted ids are in the TEXT too, not only in the JSON beside it
     for (const id of out.omitted.cards) expect(out.text).toContain(id)
     for (const id of out.omitted.tasks) expect(out.text).toContain(id)
+  })
+
+  it('long task ids (up to 100 characters): the reserve is taken from the real ids, the text keeps the budget', () => {
+    for (let i = 0; i < 30; i++) { const id = `${'hosszu-azonosito-'.repeat(5)}${i}`.slice(0, 100); task(id); ev(id, 'started') }
+    const out = buildOpenMatters(db, { now: NOW, budgetChars: 6000 })
+    expect(out.omitted.tasks.length).toBeGreaterThan(0)
+    expect(out.text.length).toBeLessThanOrEqual(6000)
   })
 })

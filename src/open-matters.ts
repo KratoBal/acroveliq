@@ -78,23 +78,23 @@ export function waitsOn(t: Pick<ListedTask, 'last_kind' | 'last_ref' | 'assignee
       if (/^\s*APPROVE\b/i.test(t.last_ref ?? '')) return 'beolvaszto'
       if (/^\s*CHANGES\b/i.test(t.last_ref ?? '')) return t.assignee ?? '? (nincs felelos)'
       return '?'
-    case 'blocked': return '? (blokkolt: lasd a kerdeseit)'
+    case 'blocked': return `${t.assignee ?? '?'} (blokkolt: lasd a kerdeseit, ha van atadas)?`
     default: return t.assignee ?? '? (nincs felelos)'
   }
 }
 
-interface Question { task: string; handoff: number; from: string; what: string }
+interface Question { task: string; handoff: number; index: number; from: string; what: string }
 
 function questionsOf(db: Database.Database, taskId: string): Question[] {
   if (!tableExists(db, 'task_handoffs')) return []
   const h = latestTaskHandoff(db, taskId)
   if (!h || !Array.isArray(h.record.open_questions)) return []
-  return (h.record.open_questions as unknown[]).flatMap((q): Question[] => {
-    if (typeof q === 'string' && q.trim()) return [{ task: taskId, handoff: h.id, from: '?', what: q }]
+  return (h.record.open_questions as unknown[]).flatMap((q, index): Question[] => {
+    if (typeof q === 'string' && q.trim()) return [{ task: taskId, handoff: h.id, index, from: '?', what: q }]
     if (q && typeof q === 'object') {
       const o = q as Record<string, unknown>
       if (typeof o.what === 'string' && o.what.trim())
-        return [{ task: taskId, handoff: h.id, from: typeof o.from === 'string' && o.from.trim() ? o.from : '?', what: o.what }]
+        return [{ task: taskId, handoff: h.id, index, from: typeof o.from === 'string' && o.from.trim() ? o.from : '?', what: o.what }]
     }
     return []
   })
@@ -131,7 +131,12 @@ export function buildOpenMatters(db: Database.Database, opts: OpenMattersOptions
   const lines: string[] = []
   let used = 0
   // the omitted section is reserved up front: it must fit whatever happens above it
-  const reserve = 600 + 10 * (tasks.length + questions.length + decisions.length + cards.length)
+  // from the real id lengths: a task id may be up to 100 characters (barracuda, #72)
+  const reserve = 600 +
+    tasks.reduce((n, t) => n + t.id.length + 1, 0) +
+    questions.reduce((n, q) => n + q.task.length + 8, 0) +
+    decisions.reduce((n, d) => n + String(d.id).length + 1, 0) +
+    cards.length * 9
   const room = (line: string): boolean => used + line.length + 1 <= Math.max(budget - reserve, 0)
   const put = (line: string): void => { lines.push(line); used += line.length + 1 }
   const omitted: OpenMatters['omitted'] = { tasks: [], questions: [], decisions: [], cards: [] }
@@ -148,10 +153,11 @@ export function buildOpenMatters(db: Database.Database, opts: OpenMattersOptions
 
   put('')
   put(`## Kerdesek, amikre varunk (${questions.length})`)
-  questions.forEach((q, i) => {
+  for (const q of questions) {
     const line = `- [${q.task}, atadas ${q.handoff}] ${q.from}: ${oneLine(q.what, 160)}`
-    if (room(line)) put(line); else omitted.questions.push(`${q.task}#${i}`)
-  })
+    // the index is the question's place in THAT task's latest handoff, the one handoff-read brings
+    if (room(line)) put(line); else omitted.questions.push(`${q.task}#${q.index}`)
+  }
 
   put('')
   put(`## Dontesre varo emlekek (${decisions.length}, kulcsszo: ${DECISION_TAG})`)

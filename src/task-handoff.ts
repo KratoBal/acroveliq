@@ -19,7 +19,7 @@ export interface HandoffDecision {
   who: string
   /** Message id, comment id or PR comment: where the decision is recorded. */
   where: string
-  /** The decider's words, verbatim; mandatory for Balazs's decisions in a coordination handoff. */
+  /** The decider's words, verbatim; mandatory for every decision in a coordination handoff. */
   quote?: string
 }
 
@@ -127,9 +127,16 @@ const BRANCH_PATTERN = /^(?!.*\.\.)[\w.\/-]+$/
  */
 export function validateHandoffRecord(
   input: unknown,
+  opts: { coordinationTask?: boolean } = {},
 ): { ok: true; record: HandoffRecord } | { ok: false; missing: string[] } {
   const missing: string[] = []
   const raw = (input && typeof input === 'object' ? input : {}) as Record<string, any>
+  // The four fields are bound to the TASK, not to the writer: a handoff on a task whose
+  // type is `coordination` is held to them whether or not the record says so, so a
+  // forgotten `kind` is refused instead of passing as a development handoff
+  // (barracuda, review of #72; acrobot, msg 29886).
+  if (opts.coordinationTask && raw.kind !== 'coordination')
+    missing.push(`kind (this is a coordination task: the record must say kind: 'coordination' and carry its four fields)`)
 
   const task = raw.task && typeof raw.task === 'object' ? raw.task : null
   if (!task) missing.push('task')
@@ -170,8 +177,8 @@ export function validateHandoffRecord(
 
   if (!Array.isArray(raw.files) || raw.files.some((file: unknown) => !isText(file))) missing.push('files')
 
-  const coordination = raw.kind === 'coordination'
-  if ('kind' in raw && !coordination) missing.push("kind (only 'coordination', or leave it out)")
+  const coordination = raw.kind === 'coordination' || !!opts.coordinationTask
+  if ('kind' in raw && raw.kind !== 'coordination') missing.push("kind (only 'coordination', or leave it out)")
   if (!coordination) {
     if (!isText(raw.next_step)) missing.push('next_step')
     if (!Array.isArray(raw.open_questions) || raw.open_questions.some((q: unknown) => !isText(q)))
@@ -187,11 +194,13 @@ export function validateHandoffRecord(
       else if (st.summary.trim().split(/\s+/).length < 4) missing.push('state.summary (a sentence, not a word)')
     }
     // 2. the decisions: `where` must be a message id (or a comment or PR number) that
-    // can be looked up, and a decision of Balazs's carries his words verbatim
+    // can be looked up, and each decision carries the decider's words verbatim
     if (Array.isArray(raw.decisions))
       raw.decisions.forEach((d: any, i: number) => {
         if (d && isText(d.where) && !/\d{3,}/.test(d.where)) missing.push(`decisions[${i}].where (a message id)`)
-        if (d && isText(d.who) && /bal[aá]zs/i.test(d.who) && !isText(d.quote)) missing.push(`decisions[${i}].quote (Balazs's words, verbatim)`)
+        // every decision, not only one whose `who` spells Balazs: a decision written as
+        // "the owner" or "gazda" would otherwise pass without his words (barracuda, #72)
+        if (d && !isText(d.quote)) missing.push(`decisions[${i}].quote (the decider's words, verbatim)`)
       })
     // 3. the next steps, in order, each with whose step it is; none only when done
     if (!Array.isArray(raw.next_steps)) missing.push('next_steps')
