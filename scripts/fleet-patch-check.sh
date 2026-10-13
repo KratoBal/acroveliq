@@ -36,6 +36,7 @@ MODE="${1:-}"
 MARKERS='
 file|templates/profiles/researcher-reader.json||
 file|templates/profiles/designer.json||
+file|templates/profiles/reviewer.json||
 file|scripts/local-now.sh||
 file|scripts/agent-msg.sh||
 file|scripts/fleet-api.sh||
@@ -44,6 +45,7 @@ contains|src/web/agent-config.ts|runAsUser|1
 contains|src/web/routes/agent-terminal.ts|tmuxInvocationFor|1
 contains|templates/profiles/researcher-reader.json|"permissionMode": "strict"|1
 contains|templates/profiles/designer.json|"permissionMode": "strict"|1
+contains|templates/profiles/reviewer.json|"permissionMode": "strict"|1
 contains|scripts/agent-msg.sh|argumentum erkezett|1
 '
 # INSTALL-LOCAL MARKERS. store/fleet-patch-markers.local claimed in its OWN HEADER that
