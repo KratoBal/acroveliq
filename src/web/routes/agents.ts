@@ -111,7 +111,7 @@ import { addDesiredAgent, removeDesiredAgent } from '../agent-desired-state.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
 import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
-import { detectPaneState, detectPermissionMode } from '../../pane-state.js'
+import { detectBlockingPrompt, detectPaneState, detectPermissionMode } from '../../pane-state.js'
 import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
@@ -742,7 +742,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const modeOf = (running: boolean, pane: string | null): string | null =>
       running && pane !== null ? detectPermissionMode(pane) : null
 
-    const entries: Array<{ name: string; isMain: boolean; running: boolean; state: string; mode: string | null; tail: string[] }> = []
+    // A parked dialog (a permission prompt above all) reads as 'unknown' in
+    // `state`; `prompt` names it, so the AcrovelIQ view can show a measured
+    // "waiting on a permission prompt" instead of guessing (acroveliq-vp-v1).
+    const promptOf = (running: boolean, pane: string | null): 'permission' | 'menu' | null =>
+      running && pane !== null ? detectBlockingPrompt(pane) : null
+
+    const entries: Array<{ name: string; isMain: boolean; running: boolean; state: string; mode: string | null; prompt: 'permission' | 'menu' | null; tail: string[] }> = []
 
     // Main agent runs in the --channels session, not agent-<name>.
     {
@@ -754,6 +760,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         running,
         state: label(running, mainPane),
         mode: modeOf(running, mainPane),
+        prompt: promptOf(running, mainPane),
         tail: tailOf(mainPane),
       })
     }
@@ -771,7 +778,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           : capturePane(agentSessionName(name))
       }
       const state = runState === 'unreachable' ? 'unreachable' : label(running, pane)
-      entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), tail: tailOf(pane) })
+      entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), prompt: promptOf(running, pane), tail: tailOf(pane) })
     }
 
     jsonMaybeGzip(req, res, entries)

@@ -4,6 +4,7 @@ import {
   detectPermissionMode,
   detectsThinkingBlockError,
   detectsBlockingMenu,
+  detectBlockingPrompt,
   detectsPastePlaceholder,
   isReadyForPrompt,
   shouldRetrySubmit,
@@ -2178,5 +2179,42 @@ describe('parkedPasteSignature (stuck [Pasted text #N] recovery)', () => {
     ].join('\n')
     expect(stuckInputSignature(auraShape)).toBeNull()
     expect(parkedPasteSignature(auraShape)).not.toBeNull()
+  })
+})
+
+describe('detectBlockingPrompt (AcrovelIQ: a measured "waiting on a permission prompt")', () => {
+  // The tool-permission dialog of the current build: question, numbered
+  // choices, and the "Esc to cancel" footer the fleet counts on
+  // (scripts/agent-pane.sh, measured on live panes 2026-08-22).
+  const PERMISSION = [
+    ' Bash command',
+    '',
+    '   find /home/marveen/marveen/agents -name CLAUDE.md',
+    '   Find the agent instruction files',
+    '',
+    ' Do you want to proceed?',
+    ' ❯ 1. Yes',
+    "   2. Yes, and don't ask again for find commands in /home/marveen/marveen/agents",
+    '   3. No',
+    '',
+    ' Esc to cancel · Tab to amend',
+  ].join('\n')
+  // A long command block pushed the question off the visible pane; the footer stays.
+  const PERMISSION_SCROLLED = [
+    '   git commit -m "a very long inline message"',
+    '   that fills the visible pane',
+    ' ❯ 1. Yes',
+    '   2. No',
+    '',
+    ' Esc to cancel · Tab to amend',
+  ].join('\n')
+  const MCP_MENU = ['   Manage MCP servers', '   ❯ claude.ai Canva · ✔ connected', '   ↑/↓ to navigate · Enter to confirm · Esc to cancel'].join('\n')
+  // An idle agent whose last reply QUOTES the question: the live idle footer says it is not parked.
+  const IDLE_QUOTING = ['⏺ The prompt read "Do you want to proceed?" and I answered it.', '', IDLE_BYPASS].join('\n')
+
+  it('names the permission dialog, a parked menu, and nothing for an idle or busy pane', () => {
+    expect(
+      [PERMISSION, PERMISSION_SCROLLED, MCP_MENU, IDLE_QUOTING, IDLE_STRICT, BUSY_FULL_FOOTER, ''].map(detectBlockingPrompt),
+    ).toEqual(['permission', 'menu', 'menu', null, null, null, null])
   })
 })

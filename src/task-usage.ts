@@ -803,6 +803,41 @@ export function assigneeTasks(db: Database.Database, agent: string): AssigneeTas
 export const busyTasks = (db: Database.Database, agent: string): AssigneeTask[] =>
   assigneeTasks(db, agent).filter((t) => t.busy)
 
+export interface ListedTask extends AssigneeTask {
+  project: string
+  goal: string | null
+  assignee: string | null
+  reviewer: string | null
+  verification_profile: string | null
+  kanban_card_id: string | null
+  created_at: number
+  updated_at: number | null
+  last_actor: string | null
+  last_ref: string | null
+  events: number
+}
+
+/**
+ * Every task, with its last event: the read-only list of the AcrovelIQ page
+ * (acroveliq-vp-v1). Newest activity first; a task with no event yet sorts by
+ * its creation. `busy` means the same as in assigneeTasks.
+ */
+export function allTasks(db: Database.Database): ListedTask[] {
+  const rows = db
+    .prepare(
+      `SELECT t.id, t.project, t.title, t.goal, t.assignee, t.reviewer, t.verification_profile, t.kanban_card_id,
+              t.created_at, t.updated_at,
+              e.kind AS last_kind, e.at AS last_at, e.actor AS last_actor, e.ref AS last_ref,
+              (SELECT count(*) FROM task_events c WHERE c.task_id = t.id) AS events
+       FROM tasks t
+       LEFT JOIN task_events e ON e.id = (
+         SELECT id FROM task_events x WHERE x.task_id = t.id ORDER BY at DESC, id DESC LIMIT 1)
+       ORDER BY coalesce(e.at, t.created_at) DESC, t.id`,
+    )
+    .all() as Omit<ListedTask, 'busy'>[]
+  return rows.map((r) => ({ ...r, busy: r.last_kind !== null && BUSY_KINDS.has(r.last_kind) }))
+}
+
 export type TimelineItem =
   | { at: number; source: 'event'; id: number; kind: string; actor: string; ref: string | null; data: Record<string, unknown> | null }
   | { at: number; source: 'handoff'; id: number; agent: string; status: string; next_step: string | null }

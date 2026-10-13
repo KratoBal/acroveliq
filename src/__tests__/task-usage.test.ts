@@ -21,13 +21,17 @@
 //   - L1: a task's verification profile can be replaced (code_app -> docs) and
 //     its `done` then skips the re-measure (barracuda, #46);
 //   - L1: the timeline is out of order, or an agent stays busy after it asked
-//     for review.
+//     for review;
+//   - the AcrovelIQ list (acroveliq-vp-v1): a task is missing, its last event is
+//     not the latest one (same second: the higher id), it is out of newest-first
+//     order, or a misspelt filter answers with the whole list.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 
 import {
   addTaskEvent,
   addTaskSession,
+  allTasks,
   assigneeTasks,
   doneGuard,
   ensureTaskUsageSchema,
@@ -571,6 +575,42 @@ describe('TC-Lite L1: the timeline and busy', () => {
     expect([atStart, afterReview, busy()], 'TCL-BUSY').toEqual([['a', 'b'], ['b'], ['a', 'b']])
   })
 
+  it('TASK-LIST: every task with its latest event, newest activity first; an event-less task by its creation', () => {
+    upsertTask(db, { id: 'regi', type: null, parent_task: null, variant: null, brief_ref: null, assignee: 'murena', title: 'Régi' }, 1)
+    upsertTask(db, { id: 'uj', type: null, parent_task: null, variant: null, brief_ref: null, assignee: 'nautilus', reviewer: 'barracuda' }, 2)
+    upsertTask(db, { id: 'ures', type: null, parent_task: null, variant: null, brief_ref: null }, 25)
+    event('regi', 'started', 'murena', 10)
+    event('regi', 'review_requested', 'murena', 20)
+    event('uj', 'started', 'nautilus', 30)
+    // same second as the start: the later row is the last event
+    event('uj', 'blocked', 'nautilus', 30)
+    const list = allTasks(db).map((t) => [t.id, t.last_kind, t.last_actor, t.busy, t.events, t.assignee])
+    expect(list, 'TASK-LIST').toEqual([
+      ['uj', 'blocked', 'nautilus', false, 2, 'nautilus'],
+      ['ures', null, null, false, 0, null],
+      ['regi', 'review_requested', 'murena', false, 2, 'murena'],
+    ])
+  })
+
+  it('TASK-LIST-ROUTE: the bare GET is the list; a misspelt filter or busy without assignee is 400, never the list', async () => {
+    initDatabase(':memory:')
+    const id = 'lista-' + Date.now()
+    const call = async (path: string, method: string, body?: unknown) => {
+      const { ctx, out } = fakeCtx(path, method, body)
+      await tryHandleTaskUsage(ctx)
+      return out
+    }
+    await call('/api/tasks', 'POST', { id, assignee: 'murena', title: 'Lista' })
+    await call(`/api/tasks/${id}/events`, 'POST', { kind: 'started', actor: 'murena' })
+    const list = await call('/api/tasks', 'GET')
+    const typo = await call('/api/tasks?agent=murena', 'GET')
+    const busyOnly = await call('/api/tasks?busy=1', 'GET')
+    const emptyAssignee = await call('/api/tasks?assignee=', 'GET')
+    const row = list.body.find((t: { id: string }) => t.id === id)
+    expect([list.status, row && [row.title, row.last_kind, row.busy], typo.status, typo.body.unknown, busyOnly.status, emptyAssignee.status],
+      'TASK-LIST-ROUTE').toEqual([200, ['Lista', 'started', true], 400, ['agent'], 400, 400])
+  })
+
   it('the two reads on the route: ?assignee&busy=1 and the timeline; an unknown task is 404', async () => {
     initDatabase(':memory:')
     const id = 'tl-' + Date.now()
@@ -584,7 +624,7 @@ describe('TC-Lite L1: the timeline and busy', () => {
     const busy = await call(`/api/tasks?assignee=polip-${id}&busy=1`, 'GET')
     const timeline = await call(`/api/tasks/${id}/timeline`, 'GET')
     const unknown = await call('/api/tasks/nincs-ilyen/timeline', 'GET')
-    const noAssignee = await call('/api/tasks', 'GET')
+    const noAssignee = await call('/api/tasks?busy=1', 'GET')
     const badProfile = await call('/api/tasks', 'POST', { id, verification_profile: 'kod' })
     const acceptance = getDb().prepare('SELECT acceptance FROM tasks WHERE id = ?').get(id) as { acceptance: string }
     expect([busy.status, busy.body.map((t: { id: string }) => t.id), timeline.status, timeline.body.items.length, unknown.status,

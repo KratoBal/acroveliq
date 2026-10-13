@@ -383,6 +383,8 @@ function switchPage(pageId) {
   if (pageId === 'bgTasks') loadBgTasksPage()
   if (pageId === 'vault') loadVaultPage()
   if (pageId === 'approvals') loadApprovalsPage()
+  // the AcrovelIQ section sits at the end of this file: a deep link routed at boot runs before its consts exist
+  if (pageId === 'acroveliq') setTimeout(loadAcroveliq, 0)
   if (pageId === 'settings') loadSettings()
   if (pageId === 'updates') loadUpdates()
   // 'team' page is merged into 'agents' -- redirect for any lingering deep-links
@@ -16905,3 +16907,437 @@ async function openResearchDoc(agent, name) {
   window._initGanttViewSwitcher = initGanttViewSwitcher
   window.renderGantt = renderGantt
 })()
+
+// ============================================================
+// === AcrovelIQ (read-only view, task acroveliq-vp-v1) ===
+// ============================================================
+// The accepted Figma (5CDsCHorFoJkC5HLBrz31O) rendered from the fleet's own
+// data: the Task Core list and timelines, the agent list, the live pane state
+// and the message backlog. READ ONLY by decision: every request below is a
+// GET, there is no control that hands out, restarts or approves anything.
+// Where a source has no data the view says so; nothing is made up.
+
+const AQ_STALE_SECONDS = 10 * 60 // a pending message / an idle agent's open task older than this is a stall
+const AQ_RECENT_SECONDS = 7 * 24 * 3600 // "recently finished"
+
+const AQ_KIND = {
+  assigned: 'Kiosztva', started: 'Munka elkezdve', review_requested: 'Review kérve', verdict: 'Review ítélet',
+  fix_started: 'Javítás elkezdve', done: 'Kész', merged: 'Beolvasztva', blocked: 'Blokkolva',
+  cancelled: 'Megszakítva', failed: 'Sikertelen', partial: 'Részben kész',
+}
+// filter group of a task by its LAST event
+const AQ_GROUP = {
+  assigned: 'active', started: 'active', fix_started: 'active',
+  review_requested: 'review', verdict: 'review', merged: 'review',
+  blocked: 'blocked', failed: 'blocked',
+  done: 'closed', cancelled: 'closed', partial: 'closed',
+}
+const AQ_GROUP_LABEL = { all: 'Mind', active: 'Folyamatban', review: 'Ellenőrzés', blocked: 'Blokkolt', closed: 'Lezárt', none: 'Nincs esemény' }
+const AQ_GROUP_TONE = { active: 'orange', review: 'blue', blocked: 'red', closed: 'green', none: 'grey' }
+
+const aqState = { view: 'overview', filter: 'all', detail: null, data: null, loading: false }
+
+const aqEsc = (v) => escapeHtml(v === null || v === undefined ? '' : String(v))
+
+function aqTime(sec) {
+  if (!sec) return '—'
+  return new Date(sec * 1000).toLocaleString('hu-HU', {
+    timeZone: 'Europe/Budapest', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  })
+}
+
+function aqAgo(sec) {
+  if (!sec) return '—'
+  const s = Math.max(0, Math.floor(Date.now() / 1000) - sec)
+  if (s < 60) return 'most'
+  if (s < 3600) return Math.floor(s / 60) + ' perce'
+  if (s < 86400) return Math.floor(s / 3600) + ' órája'
+  return Math.floor(s / 86400) + ' napja'
+}
+
+function aqDuration(s) {
+  if (s < 3600) return Math.max(1, Math.round(s / 60)) + ' perc'
+  if (s < 86400) return Math.round(s / 3600) + ' óra'
+  return Math.round(s / 86400) + ' nap'
+}
+
+const aqGroupOf = (t) => (t.last_kind ? AQ_GROUP[t.last_kind] || 'none' : 'none')
+const aqPill = (text, tone) => `<span class="aq-pill aq-pill-${tone}">${aqEsc(text)}</span>`
+const aqStatusPill = (t) => aqPill(t.last_kind ? AQ_KIND[t.last_kind] || t.last_kind : 'Nincs esemény', AQ_GROUP_TONE[aqGroupOf(t)])
+
+function aqInitials(name) {
+  return String(name || '?').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 2).toUpperCase() || '?'
+}
+
+// "tc-proba-1" -> "TP": the first letters of the id's first two segments
+function aqTaskTag(id) {
+  const parts = String(id).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+  return ((parts[0] || '?')[0] + ((parts[1] || parts[0] || '')[0] || '')).toUpperCase()
+}
+
+function aqAvatar(name, isMain) {
+  const tones = ['blue', 'purple', 'teal', 'slate']
+  let h = 0
+  for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0
+  const tone = isMain ? 'orange' : tones[h % tones.length]
+  return `<span class="aq-avatar aq-avatar-${tone}">${aqEsc(aqInitials(name))}</span>`
+}
+
+async function aqGet(url) {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return { ok: false, error: 'HTTP ' + res.status }
+    return { ok: true, value: await res.json() }
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) }
+  }
+}
+
+// The agent's state from the measured sources only. `prompt` is the parked
+// dialog the server read off the pane (src/pane-state.ts detectBlockingPrompt).
+function aqAgentState(act) {
+  if (!act) return { key: 'nodata', label: 'Nincs adat', tone: 'grey' }
+  if (act.state === 'unreachable') return { key: 'unreachable', label: 'Nem elérhető', tone: 'grey' }
+  if (!act.running) return { key: 'stopped', label: 'Nem fut', tone: 'grey' }
+  if (act.prompt === 'permission') return { key: 'permission', label: 'Engedélykérésen áll', tone: 'red' }
+  if (act.prompt === 'menu') return { key: 'menu', label: 'Párbeszédablakon áll', tone: 'red' }
+  if (act.state === 'working') return { key: 'working', label: 'Dolgozik', tone: 'orange' }
+  if (act.state === 'idle') return { key: 'idle', label: 'Tétlen', tone: 'blue' }
+  if (act.state === 'error') return { key: 'error', label: 'Hiba a panelen', tone: 'red' }
+  return { key: 'unknown', label: 'Nem ismert', tone: 'grey' }
+}
+
+async function aqLoadData() {
+  const [tasks, agents, activity, backlog] = await Promise.all([
+    aqGet('/api/tasks'), aqGet('/api/agents'), aqGet('/api/agents/activity'), aqGet('/api/messages/backlog'),
+  ])
+  const taskList = tasks.ok && Array.isArray(tasks.value) ? tasks.value : []
+  const actList = activity.ok && Array.isArray(activity.value) ? activity.value : []
+  const agentList = agents.ok && Array.isArray(agents.value) ? agents.value : []
+  const backlogList = backlog.ok && Array.isArray(backlog.value) ? backlog.value : []
+  // the activity list carries the main agent too; /api/agents adds the description
+  const names = [...new Set([...actList.map((a) => a.name), ...agentList.map((a) => a.name)])]
+  const byName = (list, n) => list.find((a) => a.name === n) || null
+  const team = names.map((name) => {
+    const act = byName(actList, name)
+    const info = byName(agentList, name)
+    const own = taskList.filter((t) => t.assignee === name)
+    return {
+      name,
+      displayName: (info && info.displayName) || name,
+      description: (info && info.description) || '',
+      isMain: !!(act && act.isMain),
+      state: activity.ok ? aqAgentState(act) : { key: 'nodata', label: 'Nincs adat', tone: 'grey' },
+      tasks: own,
+      busy: own.filter((t) => t.busy),
+      reviews: taskList.filter((t) => t.reviewer === name),
+      backlog: byName(backlogList.map((b) => ({ name: b.agent, ...b })), name),
+    }
+  })
+  return { tasks: taskList, team, errors: { tasks, agents, activity, backlog }, backlog: backlogList, at: Date.now() }
+}
+
+// Only the measurable technical kinds (brief, item 4): a parked dialog, an old
+// pending message, an idle agent with an open task.
+function aqStalls(data) {
+  const now = Math.floor(Date.now() / 1000)
+  const out = []
+  for (const a of data.team) {
+    if (a.state.key === 'permission' || a.state.key === 'menu')
+      out.push({ agent: a.name, kind: a.state.label, why: a.state.key === 'permission'
+        ? 'A panelen egy eszköz-engedélykérés áll; amíg ott áll, üzenetet sem kap.'
+        : 'A panelen egy párbeszédablak áll (engedélykérés, aminek a kérdése kigördült, vagy egy menü).' })
+    if (a.backlog && a.backlog.pending > 0 && a.backlog.oldestAgeSeconds >= AQ_STALE_SECONDS)
+      out.push({ agent: a.name, kind: 'Kézbesítetlen üzenet', why: `${a.backlog.pending} üzenet vár rá, a legrégebbi ${aqDuration(a.backlog.oldestAgeSeconds)} óta.` })
+    if (a.state.key === 'idle')
+      for (const t of a.busy)
+        if (t.last_at && now - t.last_at >= AQ_STALE_SECONDS)
+          out.push({ agent: a.name, kind: 'Tétlen, nyitott feladattal', task: t.id,
+            why: `A ${t.id} utolsó eseménye (${AQ_KIND[t.last_kind] || t.last_kind}) ${aqDuration(now - t.last_at)} régi, az ágens tétlen.` })
+  }
+  return out
+}
+
+function aqSourceNote(data) {
+  const missing = Object.entries(data.errors).filter(([, r]) => !r.ok)
+  if (!missing.length) return ''
+  const names = { tasks: 'feladatlista', agents: 'ágenslista', activity: 'panel-állapot', backlog: 'üzenetsor' }
+  return `<div class="aq-note aq-note-warn">Nem elérhető adatforrás: ${missing.map(([k, r]) => aqEsc(names[k] + ' (' + r.error + ')')).join(', ')}. Az ebből számolt értékek hiányoznak, nem nullák.</div>`
+}
+
+function aqStat(label, value, sub, tone) {
+  return `<div class="aq-card aq-stat"><div class="aq-stat-label">${aqEsc(label)}</div><div class="aq-stat-value">${aqEsc(value)}</div>${sub ? aqPill(sub, tone || 'grey') : ''}</div>`
+}
+
+function aqTaskRow(t) {
+  const who = [t.assignee, t.reviewer ? 'review: ' + t.reviewer : null].filter(Boolean).join(' · ')
+  return `<button type="button" class="aq-row" data-aq-task="${aqEsc(t.id)}">
+    <span class="aq-row-tag">${aqEsc(aqTaskTag(t.id))}</span>
+    <span class="aq-row-main"><span class="aq-row-title">${aqEsc(t.title || t.id)}</span>
+      <span class="aq-row-sub">${aqEsc(t.id)}${t.last_at ? ' · ' + aqEsc(aqAgo(t.last_at)) : ''}</span>
+      <span class="aq-row-who">${aqEsc(who || 'nincs felelős')}</span></span>
+    ${aqStatusPill(t)}</button>`
+}
+
+function aqAgentRow(a) {
+  const cur = a.busy[0]
+  return `<button type="button" class="aq-row" data-aq-agent="${aqEsc(a.name)}">
+    ${aqAvatar(a.name, a.isMain)}
+    <span class="aq-row-main"><span class="aq-row-title">${aqEsc(a.displayName)}</span>
+      <span class="aq-row-sub">${aqEsc(cur ? cur.title || cur.id : 'nincs nyitott Task Core-feladata')}</span></span>
+    ${aqPill(a.state.label, a.state.tone)}</button>`
+}
+
+function aqStallList(stalls) {
+  if (!stalls.length) return '<p class="aq-empty">Most nincs mérhető technikai elakadás.</p>'
+  return stalls.map((s) => `<div class="aq-stall">
+    <div class="aq-stall-head">${aqPill(s.kind, 'red')} <button type="button" class="aq-link" data-aq-agent="${aqEsc(s.agent)}">${aqEsc(s.agent)}</button>
+      ${s.task ? `<button type="button" class="aq-link" data-aq-task="${aqEsc(s.task)}">${aqEsc(s.task)}</button>` : ''}</div>
+    <div class="aq-stall-why">${aqEsc(s.why)}</div></div>`).join('')
+}
+
+function aqRenderOverview(data) {
+  const now = Math.floor(Date.now() / 1000)
+  const active = data.tasks.filter((t) => t.busy)
+  const recent = data.tasks.filter((t) => t.last_kind === 'done' && t.last_at && now - t.last_at <= AQ_RECENT_SECONDS)
+  const working = data.team.filter((a) => a.state.key === 'working')
+  const stalls = aqStalls(data)
+  const actOk = data.errors.activity.ok
+  return `
+    <div class="aq-stats">
+      ${aqStat('Aktív feladat', data.errors.tasks.ok ? active.length : '—', 'Task Core, utolsó esemény szerint', 'orange')}
+      ${aqStat('Dolgozó ágens', actOk ? `${working.length} / ${data.team.length}` : '—', 'élő panel-állapot', 'blue')}
+      ${aqStat('Elkészült (7 nap)', data.errors.tasks.ok ? recent.length : '—', 'utolsó esemény: kész', 'green')}
+      ${aqStat('Mérhető elakadás', actOk ? stalls.length : '—', stalls.length ? 'beavatkozást igényel' : 'nincs', stalls.length ? 'red' : 'grey')}
+    </div>
+    <div class="aq-grid">
+      <section class="aq-card"><h2>Aktív munkák</h2><p class="aq-muted">A Task Core nyitott feladatai</p>
+        ${active.length ? active.map(aqTaskRow).join('') : '<p class="aq-empty">Nincs nyitott Task Core-feladat.</p>'}</section>
+      <section class="aq-card"><h2>Mérhető elakadások</h2><p class="aq-muted">Engedélykérés, kézbesítetlen üzenet, tétlen ágens nyitott feladattal</p>
+        ${actOk ? aqStallList(stalls) : '<p class="aq-empty">A panel-állapot nem elérhető, ezért az elakadás nem mérhető.</p>'}</section>
+      <section class="aq-card"><h2>Ágensek</h2><p class="aq-muted">Élő állapot a panelről</p>
+        ${data.team.length ? data.team.map(aqAgentRow).join('') : '<p class="aq-empty">Nincs ágens-adat.</p>'}</section>
+      <section class="aq-card"><h2>Mostanában elkészült</h2><p class="aq-muted">Az utolsó 7 nap, utolsó esemény: kész</p>
+        ${recent.length ? recent.map(aqTaskRow).join('') : '<p class="aq-empty">Az utolsó 7 napban nem zárult le feladat.</p>'}</section>
+    </div>`
+}
+
+function aqRenderAgents(data) {
+  if (!data.team.length) return '<p class="aq-empty">Nincs ágens-adat.</p>'
+  const counts = {}
+  for (const a of data.team) counts[a.state.key] = (counts[a.state.key] || 0) + 1
+  return `
+    <div class="aq-stats">
+      ${aqStat('Ágens', data.team.length, 'a flottában', 'grey')}
+      ${aqStat('Dolgozik', counts.working || 0, 'élő panel', 'orange')}
+      ${aqStat('Tétlen', counts.idle || 0, 'élő panel', 'blue')}
+      ${aqStat('Áll vagy nem elérhető', (counts.permission || 0) + (counts.menu || 0) + (counts.stopped || 0) + (counts.unreachable || 0), 'engedélykérés, menü, leállva', 'red')}
+    </div>
+    <div class="aq-team">${data.team.map((a) => {
+      const cur = a.busy[0]
+      return `<button type="button" class="aq-card aq-agent" data-aq-agent="${aqEsc(a.name)}">
+        <div class="aq-agent-head">${aqAvatar(a.name, a.isMain)}<div><div class="aq-agent-name">${aqEsc(a.displayName)}</div>
+          ${aqPill(a.isMain ? 'fő ágens' : a.name, 'grey')}</div>${aqPill(a.state.label, a.state.tone)}</div>
+        <p class="aq-agent-desc">${aqEsc(a.description || 'Nincs leírás.')}</p>
+        <div class="aq-agent-work"><span class="aq-label">Kapcsolódó munka</span>
+          <span class="aq-agent-task">${aqEsc(cur ? cur.title || cur.id : 'nincs nyitott Task Core-feladata')}</span></div>
+      </button>`
+    }).join('')}</div>
+    <section class="aq-card aq-legend"><h2>Mit jelent az állapot?</h2><div class="aq-legend-grid">
+      <div>${aqPill('Dolgozik', 'orange')}<p>A panelen fut egy kör.</p></div>
+      <div>${aqPill('Tétlen', 'blue')}<p>A panel a beviteli soron áll.</p></div>
+      <div>${aqPill('Engedélykérésen áll', 'red')}<p>Eszköz-engedélyre vár; amíg áll, üzenetet sem kap.</p></div>
+      <div>${aqPill('Nem fut / nem elérhető', 'grey')}<p>Nincs munkamenet, vagy a távoli gép nem válaszol.</p></div>
+    </div></section>`
+}
+
+function aqRenderAgentDetail(data, name) {
+  const a = data.team.find((x) => x.name === name)
+  if (!a) return `<p class="aq-empty">Nincs ilyen ágens: ${aqEsc(name)}</p>`
+  const last = [...a.tasks].sort((x, y) => (y.last_at || 0) - (x.last_at || 0))[0]
+  return `
+    <button type="button" class="aq-back" data-aq-back>← Ágensek</button>
+    <div class="aq-profile">${aqAvatar(a.name, a.isMain)}<div><h2>${aqEsc(a.displayName)}</h2>
+      <p class="aq-muted">${aqEsc(a.isMain ? 'fő ágens · ' + a.name : a.name)}</p></div>${aqPill(a.state.label, a.state.tone)}</div>
+    <div class="aq-stats">
+      ${aqStat('Aktuális munka', a.busy.length ? a.busy[0].title || a.busy[0].id : '—', a.busy.length > 1 ? `+${a.busy.length - 1} nyitott` : null, 'orange')}
+      ${aqStat('Felelős', a.tasks.length, 'Task Core-feladatban', 'grey')}
+      ${aqStat('Reviewer', a.reviews.length, 'Task Core-feladatban', 'grey')}
+      ${aqStat('Utolsó feladat-esemény', last && last.last_at ? aqAgo(last.last_at) : '—', last ? last.id : null, 'grey')}
+    </div>
+    ${a.backlog && a.backlog.pending ? `<div class="aq-note aq-note-warn">${a.backlog.pending} kézbesítetlen üzenet vár rá, a legrégebbi ${aqDuration(a.backlog.oldestAgeSeconds)} óta.</div>` : ''}
+    <section class="aq-card"><h2>Leírás</h2><p>${aqEsc(a.description || 'Nincs leírás.')}</p></section>
+    <section class="aq-card"><h2>Kapcsolódó feladatok</h2><p class="aq-muted">Ahol felelős vagy reviewer</p>
+      ${[...a.tasks, ...a.reviews.filter((r) => !a.tasks.includes(r))].map(aqTaskRow).join('') || '<p class="aq-empty">Nincs hozzá kötött Task Core-feladat.</p>'}</section>`
+}
+
+function aqRenderTasks(data) {
+  if (!data.errors.tasks.ok) return '<p class="aq-empty">A feladatlista nem elérhető.</p>'
+  const groups = {}
+  for (const t of data.tasks) groups[aqGroupOf(t)] = (groups[aqGroupOf(t)] || 0) + 1
+  const shown = aqState.filter === 'all' ? data.tasks : data.tasks.filter((t) => aqGroupOf(t) === aqState.filter)
+  const filters = ['all', 'active', 'review', 'blocked', 'closed', ...(groups.none ? ['none'] : [])]
+  return `
+    <div class="aq-stats">
+      ${aqStat('Folyamatban', groups.active || 0, null)}
+      ${aqStat('Ellenőrzésben', groups.review || 0, null)}
+      ${aqStat('Blokkolt', groups.blocked || 0, null)}
+      ${aqStat('Lezárt', groups.closed || 0, null)}
+    </div>
+    <section class="aq-card"><h2>Feladatok</h2>
+      <div class="aq-filters">${filters.map((f) => `<button type="button" class="aq-filter${aqState.filter === f ? ' active' : ''}" data-aq-filter="${f}">${aqEsc(AQ_GROUP_LABEL[f])}${f === 'all' ? '' : ' · ' + (groups[f] || 0)}</button>`).join('')}</div>
+      ${shown.length ? shown.map(aqTaskRow).join('') : '<p class="aq-empty">Ebben a csoportban nincs feladat.</p>'}
+      <p class="aq-muted">A csoport a feladat UTOLSÓ eseményéből jön (Task Core).</p></section>`
+}
+
+function aqTimelineItem(i, n) {
+  let title, sub, extra = ''
+  if (i.source === 'event') {
+    title = AQ_KIND[i.kind] || i.kind
+    sub = i.actor + (i.ref ? ' · ' + i.ref : '')
+    if (i.data && Object.keys(i.data).length) extra = JSON.stringify(i.data)
+  } else if (i.source === 'handoff') {
+    title = 'Átadó rekord #' + i.id
+    sub = i.agent + ' · ' + i.status
+    extra = i.next_step ? 'Következő lépés: ' + i.next_step : ''
+  } else if (i.source === 'session') {
+    title = 'Munkamenet regisztrálva'
+    sub = i.agent + ' · ' + String(i.session_id).slice(0, 8)
+  } else if (i.source === 'message') {
+    title = 'Üzenet #' + i.id
+    sub = i.from + ' → ' + i.to + ' · ' + (i.status === 'delivered' ? 'kézbesítve' : i.status)
+  } else {
+    title = i.source
+    sub = ''
+    extra = JSON.stringify(i)
+  }
+  const tone = i.source === 'event' ? AQ_GROUP_TONE[AQ_GROUP[i.kind] || 'none'] : 'grey'
+  return `<li class="aq-tl-item"><span class="aq-tl-num aq-tl-${tone}">${String(n).padStart(2, '0')}</span>
+    <div><div class="aq-tl-title">${aqEsc(title)}</div><div class="aq-tl-sub">${aqEsc(aqTime(i.at))} · ${aqEsc(sub)}</div>
+    ${extra ? `<div class="aq-tl-extra">${aqEsc(extra)}</div>` : ''}</div></li>`
+}
+
+// PR and review from the `review_requested`, `verdict`, `merged` and `done` events.
+function aqEvidence(items) {
+  const ev = items.filter((i) => i.source === 'event')
+  const pick = (k) => ev.filter((e) => e.kind === k)
+  const rows = []
+  const reviews = pick('review_requested')
+  rows.push(['Review kérve', reviews.length ? reviews.map((e) => aqTime(e.at) + (e.ref ? ' · ' + e.ref : '')).join('; ') : null])
+  const verdicts = pick('verdict')
+  rows.push(['Review ítélet', verdicts.length ? verdicts.map((e) => (e.ref || '(nincs ref)') + ' · ' + e.actor).join('; ') : null])
+  const merged = pick('merged')
+  rows.push(['Beolvasztás', merged.length ? merged.map((e) => {
+    const d = e.data || {}
+    return (d.repo && d.pr ? d.repo + '#' + d.pr : e.ref || '') + (d.merge_sha ? ' · ' + String(d.merge_sha).slice(0, 8) : '')
+  }).join('; ') : null])
+  const done = pick('done')
+  rows.push(['Kész', done.length ? done.map((e) => e.actor + (e.ref ? ' · ' + e.ref : '') + (e.data && e.data.would_reject ? ' (a kapu elutasította volna: ' + (e.data.would_reject_reason || '') + ')' : '')).join('; ') : null])
+  return rows.map(([label, val]) => `<div class="aq-ev"><div class="aq-ev-label">${aqEsc(label)}</div>${val ? `<div class="aq-ev-val">${aqEsc(val)}</div>` : aqPill('nincs esemény', 'grey')}</div>`).join('')
+}
+
+function aqStallReason(data, task, items) {
+  const reasons = []
+  const lastEv = [...items].reverse().find((i) => i.source === 'event')
+  if (lastEv && (lastEv.kind === 'blocked' || lastEv.kind === 'failed'))
+    reasons.push(`${AQ_KIND[lastEv.kind]}: ${lastEv.ref || 'ok nélkül'}${lastEv.data ? ' ' + JSON.stringify(lastEv.data) : ''}`)
+  const owner = data.team.find((a) => a.name === task.assignee)
+  if (owner && task.busy) {
+    for (const s of aqStalls({ ...data, team: [owner] })) if (!s.task || s.task === task.id) reasons.push(s.kind + ': ' + s.why)
+  }
+  return reasons
+}
+
+async function aqRenderTaskDetail(data, id) {
+  const task = data.tasks.find((t) => t.id === id)
+  const tl = await aqGet('/api/tasks/' + encodeURIComponent(id) + '/timeline')
+  if (!task || !tl.ok) return `<button type="button" class="aq-back" data-aq-back>← Feladatok</button><p class="aq-empty">A feladat nem tölthető be: ${aqEsc(id)} ${aqEsc(tl.ok ? '' : tl.error)}</p>`
+  const f = tl.value.fields || {}
+  const items = Array.isArray(tl.value.items) ? tl.value.items : []
+  const reasons = aqStallReason(data, task, items)
+  return `
+    <button type="button" class="aq-back" data-aq-back>← Feladatok</button>
+    <section class="aq-card"><h2>${aqEsc(f.title || task.id)}</h2>
+      <p class="aq-muted">${aqEsc(f.goal || 'Nincs megadott cél.')}</p>
+      <div class="aq-pills">${aqStatusPill(task)} ${aqPill('Felelős: ' + (f.assignee || '—'), 'grey')} ${aqPill('Reviewer: ' + (f.reviewer || '—'), 'grey')}
+        ${f.verification_profile ? aqPill('Profil: ' + f.verification_profile, 'grey') : ''} ${aqPill(task.id, 'grey')}</div></section>
+    <div class="aq-grid aq-grid-detail">
+      <section class="aq-card"><h2>Feladat-idővonal</h2><p class="aq-muted">Események, átadó rekordok, munkamenetek és üzenetek, időrendben</p>
+        ${items.length ? `<ol class="aq-tl">${items.map((i, n) => aqTimelineItem(i, n + 1)).join('')}</ol>` : '<p class="aq-empty">Még nincs rögzített tétel.</p>'}</section>
+      <div>
+        <section class="aq-card"><h2>PR és review</h2><p class="aq-muted">A Task Core eseményeiből</p>${aqEvidence(items)}</section>
+        <section class="aq-card"><h2>Elakadás</h2>
+          ${reasons.length ? reasons.map((r) => `<div class="aq-stall-why">${aqEsc(r)}</div>`).join('') : '<p class="aq-empty">Nincs mérhető elakadás.</p>'}</section>
+      </div>
+    </div>`
+}
+
+function aqRenderStalls(data) {
+  if (!data.errors.activity.ok) return '<p class="aq-empty">A panel-állapot nem elérhető, ezért az elakadás nem mérhető.</p>'
+  return `<section class="aq-card"><h2>Mérhető technikai elakadások</h2>
+    <p class="aq-muted">Engedélykérésen vagy párbeszédablakon álló panel; ${aqDuration(AQ_STALE_SECONDS)}nél régebben kézbesítetlen üzenet; tétlen ágens, akinek nyitott feladatán ${aqDuration(AQ_STALE_SECONDS)}e nem történt esemény.</p>
+    ${aqStallList(aqStalls(data))}
+    <p class="aq-muted">A „másik ágensre vár” és az „automatikusan újrapróbálható” elakadásnak még nincs adatforrása, ezért nem szerepel.</p></section>`
+}
+
+function aqRenderDecisions() {
+  return `<section class="aq-card aq-decisions"><h2>Döntéseim</h2>
+    <p class="aq-empty">Ehhez még nincs adatforrás. Amíg nincs, itt nem jelenik meg tétel: kitalált döntést nem mutatunk.</p></section>`
+}
+
+async function aqRender() {
+  const body = document.getElementById('aqBody')
+  if (!body || !aqState.data) return
+  document.querySelectorAll('#aqTabs .aq-tab').forEach((b) => b.classList.toggle('active', b.dataset.aqView === aqState.view))
+  const d = aqState.data
+  let html
+  if (aqState.detail && aqState.detail.type === 'task') html = await aqRenderTaskDetail(d, aqState.detail.id)
+  else if (aqState.detail && aqState.detail.type === 'agent') html = aqRenderAgentDetail(d, aqState.detail.id)
+  else if (aqState.view === 'agents') html = aqRenderAgents(d)
+  else if (aqState.view === 'tasks') html = aqRenderTasks(d)
+  else if (aqState.view === 'stalls') html = aqRenderStalls(d)
+  else if (aqState.view === 'decisions') html = aqRenderDecisions()
+  else html = aqRenderOverview(d)
+  body.innerHTML = aqSourceNote(d) + html
+  const stamp = document.getElementById('aqStamp')
+  if (stamp) stamp.textContent = 'frissítve ' + new Date(d.at).toLocaleTimeString('hu-HU', { timeZone: 'Europe/Budapest' })
+}
+
+async function loadAcroveliq() {
+  aqWire()
+  if (aqState.loading) return
+  aqState.loading = true
+  try {
+    aqState.data = await aqLoadData()
+    await aqRender()
+  } finally {
+    aqState.loading = false
+  }
+}
+
+let aqWired = false
+function aqWire() {
+  if (aqWired) return
+  aqWired = true
+  document.getElementById('aqRefresh')?.addEventListener('click', () => loadAcroveliq())
+  document.getElementById('aqTabs')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-aq-view]')
+    if (!btn) return
+    aqState.view = btn.dataset.aqView
+    aqState.detail = null
+    aqRender()
+  })
+  document.getElementById('aqBody')?.addEventListener('click', (e) => {
+    const task = e.target.closest('[data-aq-task]')
+    const agent = e.target.closest('[data-aq-agent]')
+    const filter = e.target.closest('[data-aq-filter]')
+    const back = e.target.closest('[data-aq-back]')
+    if (task) { aqState.detail = { type: 'task', id: task.dataset.aqTask }; aqState.view = 'tasks' }
+    else if (agent) { aqState.detail = { type: 'agent', id: agent.dataset.aqAgent }; aqState.view = 'agents' }
+    else if (filter) aqState.filter = filter.dataset.aqFilter
+    else if (back) aqState.detail = null
+    else return
+    aqRender()
+    document.getElementById('aqRoot')?.scrollIntoView({ block: 'start' })
+  })
+}
