@@ -1822,15 +1822,16 @@ export async function startAgentProcess(name: string, opts: LaunchOpts = {}): Pr
     // values like `claude-opus-4-8[1m]` (1M-context suffix) from being glob-expanded AND makes a `'`
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
     // ANTHROPIC_MODEL env sites above.
-    const umaskPrefix = agentUmaskPrefix(agentTmuxTarget(name).runAsUser)
-    const gitEnv = agentGitEnv(agentTmuxTarget(name).runAsUser, dir)
+    // the CHECKED identity, not a second read of the config (see RunIdentity)
+    const umaskPrefix = agentUmaskPrefix(identity.runAsUser)
+    const gitEnv = agentGitEnv(identity.runAsUser, dir)
     const cmd = `${umaskPrefix}${gitEnv}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
     // reported ok, no session existed under the agent's user, and the first
     // capture-pane failed against the router's empty tmux server.
-    const startTarget = agentTmuxTarget(name)
+    const startTarget: TmuxTarget = { host: readAgentRemoteHost(name), runAsUser: identity.runAsUser }
     runTmux(startTarget, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')

@@ -395,11 +395,18 @@ export function agentOsUserName(name: string): string {
   return `agent-${name}`
 }
 
+// The checked identity: on ok, the user the agent RUNS AS (its own OS user, or null =
+// the router's user). The start uses this value and does not read the config again:
+// between the check and the launch the whole provisioning runs, and the config is in
+// the agent's own, agent-writable tree (barracuda, review of #57). Re-reading it there
+// would let a changed config pick the launch user after the check.
+export type RunIdentity = { ok: true; runAsUser: string | null } | { ok: false; error: string }
+
 export function checkAgentRunIdentity(
   name: string,
   rawConfigJson: string,
   osUserExists: (user: string) => boolean,
-): { ok: true } | { ok: false; error: string } {
+): RunIdentity {
   const expected = agentOsUserName(name)
   const own = osUserExists(expected)
   let raw: unknown = undefined
@@ -416,12 +423,12 @@ export function checkAgentRunIdentity(
     if (typeof remote === 'string' && remote.trim()) {
       return { ok: false, error: `run identity refused: agent ${name} has its own OS user, a remoteHost would run it outside that uid` }
     }
-    return { ok: true }
+    return { ok: true, runAsUser: expected }
   }
   if (raw !== undefined && raw !== null && raw !== '') {
     return { ok: false, error: `run identity refused: no OS user ${expected}, but agent-config.json sets runAsUser ${JSON.stringify(raw)}` }
   }
-  return { ok: true }
+  return { ok: true, runAsUser: null }
 }
 
 export function osUserExistsFromPasswd(passwd: string): (user: string) => boolean {
@@ -448,7 +455,7 @@ export function readAgentConfigGroupGid(name: string): number | null {
   return gidFromGroupFile(readFileOr('/etc/group', ''), agentConfigGroupName(name))
 }
 
-export function readAgentRunIdentity(name: string): { ok: true } | { ok: false; error: string } {
+export function readAgentRunIdentity(name: string): RunIdentity {
   const configPath = join(agentDir(name), 'agent-config.json')
   // B45 B2-2 follow-up (barracuda): an unreadable or empty /etc/passwd made every
   // OS user look absent, so an agent WITH its own user and no runAsUser in its
@@ -460,7 +467,7 @@ export function checkAgentRunIdentityWithPasswd(
   name: string,
   rawConfigJson: string,
   passwd: string,
-): { ok: true } | { ok: false; error: string } {
+): RunIdentity {
   if (!passwd.trim()) return { ok: false, error: 'run identity refused: /etc/passwd is unreadable or empty' }
   return checkAgentRunIdentity(name, rawConfigJson, osUserExistsFromPasswd(passwd))
 }
