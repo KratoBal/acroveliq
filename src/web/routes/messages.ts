@@ -6,6 +6,7 @@ import {
   closeOtelSpan,
   getPendingBacklogByAgent,
   COMPLETION_REPORT_PREFIX,
+  MESSAGE_TASK_ID,
   type AgentMessage,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -52,8 +53,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from: claimedFrom, to, content, origin_note } = JSON.parse(body.toString()) as
-      { from: string; to: string; content: string; origin_note?: string }
+    const { from: claimedFrom, to, content, origin_note, task_id } = JSON.parse(body.toString()) as
+      { from: string; to: string; content: string; origin_note?: string; task_id?: unknown }
     // The sender is the token's owner, not the body's `from` (acrovelIQ P0-1,
     // plan 2.1). The shared token names no one: in `naplo` its `from` stays
     // self-declared as before; in an enforcing position it is
@@ -64,6 +65,11 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     const legacySender = isServerSetSender(sender)
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
+      return true
+    }
+    // TC-Lite L3: an optional task link, a task id or nothing; never free text
+    if (task_id != null && (typeof task_id !== 'string' || !MESSAGE_TASK_ID.test(task_id))) {
+      json(res, { error: `task_id must match ${MESSAGE_TASK_ID} (a task id, not free text)` }, 400)
       return true
     }
     // Security: the channel-coordinator id grants channel-inbound delivery
@@ -179,8 +185,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     const trimmedOriginNote = legacySender
       ? `nem ellenőrzött feladó: ${from === LEGACY_ACTOR ? 'a régi közös token' : 'eszköz'}${note ? `; ${note}` : ''}`.slice(0, 120)
       : note.slice(0, 120) || null
-    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
-    logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
+    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, (task_id as string | null | undefined) ?? null)
+    logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note, taskId: msg.task_id }, 'Agent message created')
     json(res, msg)
     return true
   }
