@@ -17,7 +17,8 @@ fails=0
 check() {  # name, expected rc, actual rc
   if [ "$2" = "$3" ]; then echo "  [PASS] $1"; else echo "  [FAIL] $1 (rc $3, want $2)"; fails=$((fails + 1)); fi
 }
-run() { REVIEW_CSOMAG_DIR="$1" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" os "$2" >/dev/null 2>&1; echo $?; }
+git init -q "$T/repo"
+run() { REVIEW_CSOMAG_REPO="$T/repo" REVIEW_CSOMAG_DIR="$1" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" os "$2" >/dev/null 2>&1; echo $?; }
 
 check 'no zone -> refuse' 1 "$(run "$T/nincs" 101)"
 mkdir -m 3775 "$T/zona"
@@ -32,6 +33,12 @@ check 'symlink folder -> refuse' 1 "$(run "$T/zona" 103)"
 check 'a file in place of the folder -> refuse' 1 "$(run "$T/zona" 104)"
 ln -s "$T/zona" "$T/zona-link"
 check 'zone itself a symlink -> refuse' 1 "$(run "$T/zona-link" 105)"
+
+echo 'B45 B1 follow-up: the clone and the umask'
+check 'not a writable git clone -> refuse' 1 "$(REVIEW_CSOMAG_REPO="$T/nincs" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" os 106 >/dev/null 2>&1; echo $?)"
+check '... and no packet folder left behind' 1 "$([ -e "$T/zona/pr-106" ] && echo 0 || echo 1)"
+out="$(umask 002; REVIEW_CSOMAG_REPO="$T/repo" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" os 107 2>&1)"
+check 'caller with umask 002: the script runs with 0022' 'umask=0022' "${out##* }"
 
 echo
 [ "$fails" = 0 ] && { echo 'all pass'; exit 0; }
