@@ -25,7 +25,7 @@ import {
   detectsFeedbackOptOutPrompt,
   type FirstRunGateKind,
 } from '../pane-state.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentRunIdentity, readAgentMemoryIsolation, resolveRunAsUser, readAgentConfigGroupGid, agentConfigGroupName } from './agent-config.js'
+import { AGENTS_BASE_DIR, agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentRunIdentity, readAgentMemoryIsolation, resolveRunAsUser, readAgentConfigGroupGid, agentConfigGroupName } from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
@@ -161,6 +161,64 @@ export const FLEET_OAUTH_TOKEN_PATH = join(STORE_DIR, '.claude-oauth-token')
 // 2026-10-13: the router owns 0 entries in the six agent homes.
 export function agentUmaskPrefix(runAsUser: string | null | undefined): string {
   return runAsUser ? 'umask 022 && ' : ''
+}
+
+// B45 follow-up (2026-10-13): `git` inside a per-user agent's tree stopped with
+// "detected dubious ownership" in two shapes, and both are fixed here without a
+// wildcard safe.directory (Balazs: `safe.directory=*` is not allowed).
+//
+// 1. The agent's own directory is not a repository, so git walked up and found
+//    the router's repo at PROJECT_ROOT (owned by the router user; agents/ is
+//    gitignored there). The honest answer for korall, polip and barracuda is
+//    "not a git repository", not a view of the router's repo, so discovery is
+//    capped at agents/ with GIT_CEILING_DIRECTORIES. A repo IN the agent's tree
+//    (nautilus' own .git, murena's clones) is still found: the ceiling only stops
+//    git from walking up INTO agents/.
+// 2. A read clone the router keeps in the agent's tree (barracuda's
+//    commerce-olvaso) is owned by the router user. The agent trusts exactly that
+//    path, through the protected command scope (GIT_CONFIG_COUNT), never a
+//    pattern. Only a DIRECT child of the agent's own directory qualifies, only
+//    when both the directory and its .git are real directories (not symlinks)
+//    owned by the router's uid. The trust goes one way: the agent trusts a repo
+//    the router writes, and the router already controls the agent; a repo owned
+//    by another agent is never trusted, so a planted hook or core.fsmonitor in a
+//    peer's clone still cannot run as this agent.
+//    The condition is ownership, the same as git's own model; what actually keeps
+//    the trusted .git/config and .git/hooks safe is the ACL (today: writable by the
+//    router and that agent only, barracuda measured it on the live tree). An ACL
+//    that later gives the fleet group write there makes this trust unsafe without
+//    any change here. The list is built at start: a clone made later is untrusted
+//    until the next start.
+export function agentGitEnv(
+  runAsUser: string | null | undefined,
+  ownDir: string,
+  agentsBaseDir: string = AGENTS_BASE_DIR,
+  routerUid: number | undefined = process.getuid?.(),
+): string {
+  if (!runAsUser) return ''
+  let out = `export GIT_CEILING_DIRECTORIES=${shSingleQuote(agentsBaseDir)} && `
+  const trusted = routerUid === undefined ? [] : routerOwnedClones(ownDir, routerUid)
+  if (trusted.length === 0) return out
+  out += `export GIT_CONFIG_COUNT=${trusted.length}`
+  trusted.forEach((p, i) => {
+    out += ` GIT_CONFIG_KEY_${i}=safe.directory GIT_CONFIG_VALUE_${i}=${shSingleQuote(p)}`
+  })
+  return out + ' && '
+}
+
+function routerOwnedClones(ownDir: string, routerUid: number): string[] {
+  let entries: string[]
+  try { entries = readdirSync(ownDir) } catch { return [] }
+  const out: string[] = []
+  for (const e of entries.sort()) {
+    const p = join(ownDir, e)
+    try {
+      const d = lstatSync(p)
+      const g = lstatSync(join(p, '.git'))
+      if (d.isDirectory() && g.isDirectory() && d.uid === routerUid && g.uid === routerUid) out.push(p)
+    } catch { /* no .git here */ }
+  }
+  return out
 }
 
 export function hasFleetOauthToken(): boolean {
@@ -1765,7 +1823,8 @@ export async function startAgentProcess(name: string, opts: LaunchOpts = {}): Pr
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
     // ANTHROPIC_MODEL env sites above.
     const umaskPrefix = agentUmaskPrefix(agentTmuxTarget(name).runAsUser)
-    const cmd = `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
+    const gitEnv = agentGitEnv(agentTmuxTarget(name).runAsUser, dir)
+    const cmd = `${umaskPrefix}${gitEnv}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
