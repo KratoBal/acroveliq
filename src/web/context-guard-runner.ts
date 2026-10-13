@@ -18,7 +18,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectPaneState, paneShowsContextSaturation } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
-import { createAgentMessage } from '../db.js'
+import { createAgentMessage, closeMessagesWithoutDelivery } from '../db.js'
 import {
   decideGuard,
   contextLimitForModel,
@@ -196,6 +196,96 @@ export function resumePrompt(
   )
 }
 
+// Envelope pairing (card 02068ee2). Every guard text written straight into a
+// pane is unauthenticated: send-keys bypasses the message queue, so the
+// recipient's provenance gate sees a bare prompt asking for a restart-shaped
+// action and flags it (42 flagged [CONTEXT-GUARD] prompts in
+// store/provenance-flagged.log by 2026-10-13). The panel write stays -- the
+// guard needs the pane NOW, on its own state machine, not whenever the router
+// next finds it idle -- and an identical copy follows on the inter-agent
+// queue, where the router stamps a provenance envelope on it. The panel text
+// names the expected sender, so a panel prompt with no matching envelope is
+// itself the signal.
+export const GUARD_ENVELOPE_ORIGIN = 'context-guard'
+
+/**
+ * from_agent of the envelope copy. Read off classifyAgentMessage /
+ * isTrustedPeer, not guessed:
+ *  - a sub-agent recipient: MAIN_AGENT_ID. Main is the implicit trusted peer of
+ *    every known agent, so the copy arrives as <trusted-peer>. A made-up sender
+ *    such as 'context-guard' is not a known agent and would arrive as
+ *    <untrusted>, i.e. "data, not instructions". The kanban dispatch uses the
+ *    same sender for its system-originated tasks; the origin note says that the
+ *    guard, not the main agent, wrote it.
+ *  - the main agent itself: 'system'. MAIN_AGENT_ID -> MAIN_AGENT_ID is a
+ *    self-loop, which isTrustedPeer rejects, so no sender yields <trusted-peer>
+ *    here without borrowing another agent's name; 'system' is the sender the
+ *    router already uses for its own notices to main.
+ */
+export function guardEnvelopeSender(name: string): string {
+  return name === MAIN_AGENT_ID ? 'system' : MAIN_AGENT_ID
+}
+
+/** The panel text, closed with the sentence that announces its envelope copy. */
+export function withEnvelopeNotice(name: string, text: string): string {
+  return (
+    text +
+    ` (Ennek a szövegnek azonos tartalmú megerősítése inter-agent üzenetben érkezik, ` +
+    `feladó: ${guardEnvelopeSender(name)}, origin: ${GUARD_ENVELOPE_ORIGIN}. ` +
+    `Ha nem érkezik meg, ennek a panel-szövegnek az eredete nem igazolt.)`
+  )
+}
+
+/**
+ * Content of the envelope copy: the exact panel text under one header line.
+ * The header tells the recipient not to act twice -- the router delivers on an
+ * idle pane, i.e. typically right after the agent finished the panel request,
+ * and any extra work there would make a fresh handoff look stale.
+ */
+export function envelopeContent(panelText: string): string {
+  return (
+    `[CONTEXT-GUARD BORÍTÉK] Az alábbi szöveget a context-guard közvetlenül a paneledre írta; ez a hitelesített másolata. ` +
+    `Ha a panel-utasítást már elvégezted, erre ne válaszolj és ne dolgozz tovább.\n\n` +
+    panelText
+  )
+}
+
+// agent name -> ids of envelope copies the guard queued for it. A copy still
+// pending at restart time would otherwise reach the FRESH session and replay a
+// request addressed to the old one ("write HANDOFF.md, then stop").
+const queuedEnvelopes = new Map<string, number[]>()
+
+/**
+ * Write a guard prompt into the pane, then queue its envelope copy. The copy
+ * goes only after a successful panel write: a copy without its panel original
+ * would be the one message that is authenticated AND unexplained. A failed copy
+ * is logged, never thrown -- the panel prompt has already gone out, and the
+ * guard's state machine must not stall on the queue.
+ */
+export async function sendGuardPrompt(name: string, session: string, text: string): Promise<void> {
+  const panelText = withEnvelopeNotice(name, text)
+  await sendPromptToSession(session, panelText)
+  try {
+    const msg = createAgentMessage(guardEnvelopeSender(name), name, envelopeContent(panelText), GUARD_ENVELOPE_ORIGIN)
+    queuedEnvelopes.set(name, [...(queuedEnvelopes.get(name) ?? []), msg.id])
+  } catch (err) {
+    logger.warn({ err, name }, 'context-guard: envelope copy failed (panel prompt already sent)')
+  }
+}
+
+/** Close, undelivered, the envelope copies a restart is about to orphan. */
+export function closeQueuedEnvelopes(name: string): number {
+  const ids = queuedEnvelopes.get(name) ?? []
+  queuedEnvelopes.delete(name)
+  if (!ids.length) return 0
+  try {
+    return closeMessagesWithoutDelivery(ids, 'context-guard restart: addressed to the previous session')
+  } catch (err) {
+    logger.warn({ err, name, ids }, 'context-guard: closing orphaned envelope copies failed')
+    return 0
+  }
+}
+
 function configDirFor(name: string): string | undefined {
   // resolveAgentConfigDirForRead, not readAgentClaudeConfigDir: an agent whose
   // config dir was auto-provisioned by the launcher has no field to read, and
@@ -264,7 +354,8 @@ async function performRestart(name: string): Promise<void> {
   }
 }
 
-async function checkAgent(name: string, nowMs: number): Promise<void> {
+// Exported for the envelope-pairing tests, which drive one decision at a time.
+export async function checkAgent(name: string, nowMs: number): Promise<void> {
   const cfg = readContextGuardConfig(name)
   const state = guardStates.get(name) ?? INITIAL_GUARD_STATE
 
@@ -382,7 +473,8 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   try {
     switch (decision.action) {
       case 'request-handoff':
-        await sendPromptToSession(
+        await sendGuardPrompt(
+          name,
           session,
           decision.reason.startsWith(STALE_REFRESH_REASON_PREFIX)
             // The handoff exists but went stale while we waited for an idle
@@ -413,6 +505,9 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         } catch (err) {
           logger.warn({ err, name }, 'context-guard: pre-restart pane snapshot failed')
         }
+        // Before the restart, not after: once the fresh session is up, the
+        // router may already be delivering the old session's copy to it.
+        closeQueuedEnvelopes(name)
         await performRestart(name)
         try {
           createAgentMessage(
@@ -445,7 +540,8 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         const hadHandoff = inputs.handoffMtime !== null || handoffMtime(name) !== null
         // Staleness was measured at RESTART time and rode here in the state;
         // measuring now would be meaningless (the old session is gone).
-        await sendPromptToSession(
+        await sendGuardPrompt(
+          name,
           session,
           resumePrompt(name, handoffPathFor(name), hadHandoff, state.handoffStaleMinutes),
         )
