@@ -188,8 +188,16 @@ cd /home/marveen/marveen && bash scripts/visszaallitasi-proba.sh host
 Várt: mindhárom fajtára egy `eredmeny:` és egy szám-sor, a végén `KESZ.`. Ez egyben azt is
 bizonyítja, hogy az AcroBot fiók a könyvtárat listázni, a fájlt olvasni tudja, hogy a mappa
 tulajdonosa 1032 és a módja `drwxr-xr-x` (a flotta ezt minden futáskor ellenőrzi), és hogy a
-telepített szkript lenyomata a flotta fájában állóé (az eredmény `script_sha256` mezője; eltérésnél
-„a telepites elavult vagy atirt” FAIL jön).
+telepített szkript lenyomata a flotta fájában állóé. Ha a mappa `ls -ln` sora nem található
+(más alak vagy elhasalt listázás), az is FAIL, nem kihagyás: ezért ezen a ponton egyszer kézzel is
+nézd meg, hogy a sor tényleg megjelenik:
+
+```bash
+cd /home/marveen/marveen && printf 'ls -ln Acropora_Backup\n' | sftp -o BatchMode=yes -i /home/marveen/.ssh/id_ed25519_csupor_backup AcroBot@100.98.191.44 | grep -E ' Acropora_Backup/acropora-restore-probe$'   # várt: egy sor, drwxr-xr-x, 1032
+```
+
+A lenyomatot az eredmény `script_sha256` mezője hordozza; eltérésnél „a telepites elavult vagy
+atirt” FAIL jön.
 
 **3b. Írásproba, egyszer, a 3. után** (acrobot, az AcroBot fiókkal). A módbitek nem bizonyítanak:
 a Synology ACL-je ennél többet is engedhet, és ha az AcroBot írhat a mappába, hamis PASS-t tehet

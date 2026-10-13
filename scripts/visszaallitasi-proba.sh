@@ -130,11 +130,17 @@ if [ -n "$HOST_KINDS" ]; then
   # Mode bits are what sftp shows; a Synology ACL is checked once by hand (step sheet, step 3).
   OWNER_UID="${PROBA_RESULT_OWNER_UID:-1032}"
   DIRLINE=$(nas_lsl Acropora_Backup | /bin/grep -E ' Acropora_Backup/acropora-restore-probe$')
-  if [ -n "$DIRLINE" ] && ! printf '%s\n' "$DIRLINE" | awk -v u="$OWNER_UID" '$1 == "drwxr-xr-x" && $3 == u { f = 1 } END { exit !f }'; then
+  F=$(nas_ls Acropora_Backup/acropora-restore-probe | /bin/grep -o 'result-[0-9_-]*\.json' | sort | tail -1)
+  # Fail closed: a result whose folder could not be measured (the listing failed, or printed
+  # another shape than this grep expects) is not trusted (barracuda, #93). The shape with the
+  # "Acropora_Backup/" prefix is acrobot's real listing of 2026-10-13 23:37.
+  if [ -n "$F" ] && [ -z "$DIRLINE" ]; then
+    for k in $HOST_KINDS; do fail "$k" "van eredmeny, de az eredmeny-mappa tulajdonosa nem merheto (az ls -ln sora hianyzik)"; done
+    HOST_KINDS=""
+  elif [ -n "$DIRLINE" ] && ! printf '%s\n' "$DIRLINE" | awk -v u="$OWNER_UID" '$1 == "drwxr-xr-x" && $3 == u { f = 1 } END { exit !f }'; then
     for k in $HOST_KINDS; do fail "$k" "az eredmeny-mappa joga vagy tulajdonosa nem a varhato (drwxr-xr-x, uid $OWNER_UID): $(printf '%s' "$DIRLINE" | /bin/tr -s ' ' | cut -d' ' -f1,3,4)"; done
     HOST_KINDS=""
   fi
-  F=$(nas_ls Acropora_Backup/acropora-restore-probe | /bin/grep -o 'result-[0-9_-]*\.json' | sort | tail -1)
   if [ -z "$HOST_KINDS" ]; then
     :
   elif [ -z "$F" ]; then

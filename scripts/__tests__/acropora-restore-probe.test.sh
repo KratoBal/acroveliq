@@ -220,6 +220,37 @@ check "olvaso: csonka JSON elutasitva" '! python3 "$READER" "$R" os > /dev/null'
 printf '[1]' > "$R"
 check "olvaso: nem objektum elutasitva" '! python3 "$READER" "$R" os > /dev/null'
 
+# ---- 8. the fleet side: scripts/visszaallitasi-proba.sh host, with a fake sftp ----------------
+# The folder lines are the REAL sftp shape, copied from acrobot's listing of 2026-10-13 23:37
+# (exchange/biztonsag/baseline/b8-zaro/nas-ls-2026-10-13.txt): the name carries the
+# "Acropora_Backup/" prefix.
+F8=$(mktemp -d "$ROOT/fleet-XXXX"); mkdir -p "$F8/root/scripts/host" "$F8/bin" "$F8/nas"
+cp "$READER" "$F8/root/scripts/"; cp "$PROBE" "$F8/root/scripts/host/"
+sed "s#^ROOT=/home/marveen/marveen#ROOT=$F8/root#; s#^KEY=.*#KEY=/dev/null#" scripts/visszaallitasi-proba.sh > "$F8/root/scripts/v.sh"
+cp "$UP" "$F8/nas/"
+printf '%s\n' '#!/bin/bash' 'read -r cmd a b c' \
+  'case "$cmd $a" in' \
+  "  \"ls -ln\") cat \"$F8/dirline\" ;;" \
+  "  \"ls -1\")  ls -1 \"$F8/nas\" ;;" \
+  "  get*)     cp \"$F8/nas/\$(basename \"\$a\")\" \"\$b\" ;;" \
+  'esac' > "$F8/bin/sftp"
+chmod +x "$F8/bin/sftp"
+fleet() { printf '%s\n' 'drwxrwxrwx    ? 1033     100          7194 Oct 13 18:54 Acropora_Backup/acrobot-fleet' "$@" > "$F8/dirline"
+  PATH="$F8/bin:$PATH" bash "$F8/root/scripts/v.sh" host > "$F8/out" 2>&1; FRC=$?; }
+GOOD='drwxr-xr-x    ? 1032     100          1008 Oct 14 04:40 Acropora_Backup/acropora-restore-probe'
+fleet "$GOOD"
+check "flotta: jo mappa, jo lenyomat -> KESZ" '[ "$FRC" -eq 0 ] && grep -q "^KESZ" "$F8/out"'
+fleet
+check "flotta: van eredmeny, de a mappa sora hianyzik -> FAIL, nem kihagyas" '[ "$FRC" -eq 1 ] && grep -q "nem merheto" "$F8/out"'
+fleet 'drwxr-xr-x    ? 1033     100          1008 Oct 14 04:40 Acropora_Backup/acropora-restore-probe'
+check "flotta: AcroBot tulajdonu mappa -> FAIL" '[ "$FRC" -eq 1 ] && grep -q "1033 100" "$F8/out"'
+fleet 'drwxrwxr-x    ? 1032     100          1008 Oct 14 04:40 Acropora_Backup/acropora-restore-probe'
+check "flotta: csoport-irhato mappa -> FAIL" '[ "$FRC" -eq 1 ]'
+echo '# atirt' >> "$F8/root/scripts/host/acropora-restore-probe.sh"; fleet "$GOOD"
+check "flotta: a fa host-szkriptje mas -> FAIL" '[ "$FRC" -eq 1 ] && grep -q "elavult vagy atirt" "$F8/out"'
+rm "$F8/nas/"*.json; fleet
+check "flotta: nincs eredmeny -> FAIL a valodi okkal" '[ "$FRC" -eq 1 ] && grep -q "nem fut" "$F8/out"'
+
 echo "# pass $PASS"
 echo "# fail $FAIL"
 [ "$FAIL" -eq 0 ]
