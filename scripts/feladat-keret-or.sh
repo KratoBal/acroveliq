@@ -27,7 +27,7 @@ TOKEN="$(cat "$ROOT/store/.dashboard-token")"
 DB="$ROOT/store/claudeclaw.db"
 
 while true; do
-  curl -s -m 300 -X POST -H "Authorization: Bearer $TOKEN" http://localhost:3420/api/token-usage/collect >/dev/null
+  curl -s -m 300 -X POST -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") http://localhost:3420/api/token-usage/collect >/dev/null
   read -r CALLS CR CLOSED < <(python3 - "$DB" "$TASK" "$ROOT" <<'PY'
 import sqlite3, sys, subprocess, re
 db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)

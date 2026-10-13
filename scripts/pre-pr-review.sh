@@ -33,7 +33,7 @@ API="http://localhost:${WEB_PORT}/api/vault"
 get_secret() {
   local id="$1"
   local val
-  val="$(curl -sf -H "Authorization: Bearer $DASHBOARD_TOKEN" "$API/$id" 2>/dev/null)" || true
+  val="$(curl -sf -H @<(printf 'Authorization: Bearer %s\n' "$DASHBOARD_TOKEN") "$API/$id" 2>/dev/null)" || true
   echo "$val" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('value',''))" 2>/dev/null || true
 }
 
