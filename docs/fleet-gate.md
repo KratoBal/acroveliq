@@ -86,21 +86,53 @@ konténerben a saját superuserével:
 ```bash
 cd /root
 C=$(docker ps --format '{{.Names}}' | grep '^iwm34jaqp9xmwb72qkrqkwhy' | head -1)   # a stage-en: ^cpnjvtte02yakzs9vb0jffky
-docker exec "$C" psql -U acropora -d acropora -Atc 'show server_version'           # 14 vagy újabb kell (pg_read_all_data)
+docker exec "$C" psql -U acropora -d acropora -Atc 'show server_version'           # 15 alatt lásd a következő sort
 # 15 ALATT a public sémán a CREATE joga mindenkié: a fleet_ro a read-only alapérték kikapcsolása
 # után táblát vagy függvényt hozhatna létre (barracuda, #30). Ilyenkor előbb ez az egy sor:
 #   docker exec "$C" psql -U acropora -d acropora -c 'REVOKE CREATE ON SCHEMA public FROM PUBLIC;'
 # Az alkalmazás saját felhasználóját nem érinti (tulajdonos vagy superuser). 15-től ez az alapállapot.
-docker exec -i "$C" psql -U acropora -d acropora -v ON_ERROR_STOP=1 <<'SQL'
-CREATE ROLE fleet_ro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
-GRANT pg_read_all_data TO fleet_ro;
-ALTER ROLE fleet_ro SET default_transaction_read_only = on;
+# SZŰK, táblánkénti és oszloponkénti jog (Balázs, 2026-10-13 13:04:44 UTC): a pg_read_all_data
+# NEM használható. ELŐTTE (csak olvas): se PUBLIC által futtatható SECURITY DEFINER függvény, se
+# PUBLIC által olvasható tábla vagy nézet ne legyen, mert azokon át a szerep a listán kívül olvasna,
+# és ezt a lenti column_privileges-számlálás nem látja (barracuda, a lépéslap v8). Várt: nincs sor;
+# ha van: állj meg.
+docker exec -i "$C" psql -U acropora -d acropora -At <<'SQL'
+select 'secdef', n.nspname || '.' || p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where p.prosecdef and n.nspname not in ('pg_catalog', 'information_schema') and has_function_privilege('public', p.oid, 'execute');
+select 'public-tabla', n.nspname || '.' || c.relname from pg_class c
+ join pg_namespace n on n.oid = c.relnamespace
+ where n.nspname not in ('pg_catalog', 'information_schema') and c.relkind in ('r','v','m','f','p')
+   and (has_table_privilege('public', c.oid, 'select') or has_any_column_privilege('public', c.oid, 'select'));
 SQL
+# Egy tranzakcióban (-1): egy elírt név az egészet visszagördíti.
+docker exec -i "$C" psql -U acropora -d acropora -v ON_ERROR_STOP=1 -1 <<'SQL'
+CREATE ROLE fleet_ro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+ALTER ROLE fleet_ro SET default_transaction_read_only = on;
+ALTER ROLE fleet_ro SET statement_timeout = '60s';
+ALTER ROLE fleet_ro SET idle_in_transaction_session_timeout = '60s';
+GRANT USAGE ON SCHEMA public TO fleet_ro;
+GRANT SELECT ("documentNumber", source, cancelled) ON "ExternalBillingDocument" TO fleet_ro;
+GRANT SELECT ("firstName", "lastName", "displayName", nickname, email) ON "User" TO fleet_ro;
+GRANT SELECT ("displayName", "companyName", email) ON "Customer" TO fleet_ro;
+GRANT SELECT (name, line1, line2) ON "CustomerAddress" TO fleet_ro;
+GRANT SELECT (name, "contactPersonName", email, "contactPersonEmail") ON "Supplier" TO fleet_ro;
+GRANT SELECT ("contactPersonName", "organizationalUnitName") ON "Contract" TO fleet_ro;
+GRANT SELECT ("signerName") ON "WorksheetVersionSignature" TO fleet_ro;
+GRANT SELECT (exposure, resolution, status, "latencyMs", "respondedModel", "errorCode", "createdAt") ON "DecisionRun" TO fleet_ro;
+GRANT SELECT (migration_name, started_at, finished_at, rolled_back_at, applied_steps_count) ON _prisma_migrations TO fleet_ro;
+SQL
+# a stage-en (acropora_ai, superuser acropora_ai) a GRANT sorok helyett csak a három számlálásé:
+#   GRANT SELECT (id) ON conversations, messages, answer_ratings TO fleet_ro;
 docker exec -i "$C" psql -U fleet_ro -d acropora -At <<'SQL'
 select current_user, pg_has_role(current_user, 'pg_execute_server_program', 'member');
 SQL
                                              # fleet_ro|f
+docker exec "$C" psql -U acropora -d acropora -Atc "select count(*) from information_schema.column_privileges where grantee = 'fleet_ro'"
+                                             # éles 33, stage 3
 ```
+
+Ki mit olvas ezzel, és mi nem fér bele: a B8 lépéslap (változat 9) 1.4 szakasza. Ha egy flotta-hívó
+`permission denied`-et kap, az nem biztonsági hiba, hanem a lista szűk: a bővítés döntés, nem javítás.
 
 A szerepnek **nincs jelszava, és nem is kap**: a kapu `docker exec`-kel, a konténeren BELÜL, a
 helyi socketen csatlakozik, és a hivatalos Postgres-kép a helyi socketet engedi. Ha a fenti
@@ -318,13 +350,17 @@ elutasítást kap). A megfeleltetés:
 
 ## Korlátok, amiket tudni kell
 
-- **A `psql-ro` a `fleet_ro` szereppel csatlakozik** (Balázs, 12:23 UTC): `pg_read_all_data`, se
-  superuser, se `pg_execute_server_program`. Írni nem tud, és a `COPY ... TO PROGRAM` sem ad neki
+- **A `psql-ro` a `fleet_ro` szereppel csatlakozik** (Balázs, 12:23 UTC): táblánkénti és
+  oszloponkénti `SELECT` (Balázs, 2026-10-13 13:04:44 UTC), se superuser, se `pg_execute_server_program`. Írni nem tud, és a `COPY ... TO PROGRAM` sem ad neki
   shellt. A szerepet a kapu listája adja, a hívó nem választhat másikat. A `PGOPTIONS` és a
   backslash-tilalom (a psql `\!` meta-parancsa) ezen felül marad.
-- **Amit a szerep NEM zár: az olvasást.** A `pg_read_all_data` minden táblát lát, a
-  jelszó-hasheket és a tárolt titkokat is. Ez olvasási kitettség, a flotta mai lekérdezéseihez
-  kell; ha egyszer szűkebb kell, a szerep `GRANT SELECT` listára cserélhető.
+- **Amit a szerep NEM zár: a mentési utat.** A `fleet_ro` csak a flotta lekérdezéseinek oszlopait
+  látja (a jelszó-hasheket, a tárolt titkokat és a listán kívüli táblákat nem, AMÍG nincs `PUBLIC`
+  által olvasható tábla vagy nézet és futtatható `SECURITY DEFINER` függvény: ezt a telepítés előtti
+  ellenőrzés méri, és egy későbbi migráció újra behozhatja), de a `pg-dump` és a
+  `backup-get` a teljes adatbázist adja a flottának. A szűkítés tehát a kézi és a véletlen olvasás
+  ellen véd, egy kompromittált munkamenet ellen nem; a titkosított mentés külön feladat. A lista
+  személyes adatot is tartalmaz (a JEV névszűrőjéhez), de csak azt, ami ahhoz kell.
 - **A `psql-ro` a DB-konténeren belül marad**, nem jut a gépre: a legrosszabb eset az adatbázis és
   a konténere. **Ezért nincs a listán a Coolify adatbázisa** (barracuda, #28): aki abba írhat, az
   dönti el, mit és milyen csatolással telepít a Coolify, vagyis root a gépen. A két olvasása
@@ -345,6 +381,8 @@ cp -p /etc/ssh/sshd_config.pre-b8 /etc/ssh/sshd_config && sshd -t && systemctl r
 Ezzel az sshd újra a `~fleet/.ssh/authorized_keys`-t olvassa, amiben a kulcs kényszer nélkül
 áll (a telepítés nem nyúlt hozzá). A `/etc/ssh/authorized_keys/fleet` maradhat, azt az sshd ilyenkor
 nem olvassa. A `/bin/sh` login shell is maradhat (ha mégis: `usermod -s /bin/bash fleet`). A
-`fleet_ro` szerep is maradhat; ha el kell vinni: `DROP ROLE fleet_ro;` a konténerben.
+`fleet_ro` szerep is maradhat; ha el kell vinni, a konténerben, egy tranzakcióban:
+`REVOKE ALL ON ALL TABLES IN SCHEMA public FROM fleet_ro; REVOKE USAGE ON SCHEMA public FROM fleet_ro; DROP ROLE fleet_ro;`
+(oszlopjog mellett a puszta `DROP ROLE` elbukik).
 
 A `/usr/local/sbin/fleet-gate` maradhat: kényszer nélkül senki nem hívja.
