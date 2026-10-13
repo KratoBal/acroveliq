@@ -57,7 +57,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { enforces, parseAccessMode, type AccessMode } from './access-enforcement.js'
 import { LEGACY_ACTOR } from './actor-claims.js'
 import { runCommandTask } from './command-task.js'
-import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
+import { decideQuotaAction, quotaInputProblem, type QuotaWorkClass } from '../quota-gate.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
 import { paneShowsContextSaturation, detectsFirstRunGate, detectPaneState, type PaneState } from '../pane-state.js'
 import { withSessionSendLock } from './session-send-lock.js'
@@ -542,6 +542,34 @@ export function resolveBoundChannel(agentName: string): BoundChannel {
     }
     return { provider, chatId: chosen }
   } catch { return { provider, chatId: null } }
+}
+
+// The gate fails open on a missing or stale snapshot, which on its own is
+// indistinguishable from "no pressure": until 2026-10-13 it ran blind for
+// weeks because the file it read was never written, and nothing said so.
+// Report the blind state when it starts and when it ends -- not every
+// 60-second tick, or the warning drowns in its own repetition.
+let lastQuotaInputProblem: string | null | undefined
+
+/** Exported for the wiring test. Returns what it logged, or null. */
+export function reportQuotaInput(problem: string | null): 'blind' | 'recovered' | null {
+  // Compare the kind, not the text: 'stale-snapshot:21m' and ':22m' are one state.
+  const kind = (p: string | null | undefined) => (p == null ? p : p.split(':')[0])
+  if (kind(problem) === kind(lastQuotaInputProblem)) return null
+  const was = lastQuotaInputProblem
+  lastQuotaInputProblem = problem
+  if (problem) {
+    logger.warn(
+      { reason: problem },
+      'Quota gate is BLIND: no fresh quota input, background tasks run without a quota check',
+    )
+    return 'blind'
+  }
+  if (was !== undefined) {
+    logger.info({ was }, 'Quota gate has fresh quota input again')
+    return 'recovered'
+  }
+  return null
 }
 
 // What a scheduled task costs the shared quota pool, for the gate in
@@ -1501,6 +1529,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // fleet draws on ONE subscription quota pool, so the gate below asks the
     // same snapshot about all of them.
     const quotaSnapshot = readQuotaSnapshot()
+    reportQuotaInput(quotaInputProblem(quotaSnapshot, now))
 
     for (const task of tasks) {
       if (!task.enabled) continue
