@@ -147,6 +147,7 @@ import type { RouteContext } from './types.js'
 import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
 import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
+import { acroveliqActivityView, acroveliqAgentsView } from '../acroveliq-host.js'
 
 const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord', 'googlechat', 'teams'])
 
@@ -697,7 +698,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   }
 
   if (path === '/api/agents' && method === 'GET') {
-    jsonMaybeGzip(req, res, listAgentSummaries())
+    const summaries = listAgentSummaries()
+    jsonMaybeGzip(req, res, ctx.surface === 'acroveliq' ? acroveliqAgentsView(summaries) : summaries)
     return true
   }
 
@@ -781,7 +783,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), prompt: promptOf(running, pane), tail: tailOf(pane) })
     }
 
-    jsonMaybeGzip(req, res, entries)
+    jsonMaybeGzip(req, res, ctx.surface === 'acroveliq' ? acroveliqActivityView(entries) : entries)
     return true
   }
 

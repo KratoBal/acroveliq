@@ -11,11 +11,15 @@
 // stays (this list runs IN the server, in front of the auth gate and the access
 // matrix, which still run on every request it lets through).
 //
-// Which host a request is on: the Host header, every X-Forwarded-Host hop and
-// every `host=` of a Forwarded header. If ANY of them is the AcrovelIQ host,
-// the filter applies -- a client can add a header, so a header can only ever
-// turn the filter ON, never off. A proxy that drops the public host from all
-// three would bypass it; the proxy setup is a separate step (not this task).
+// Two ways a request is on the AcrovelIQ surface, and the first one is the
+// protection:
+//   1. it arrived on ACROVELIQ_PORT, the listener the public proxy points at:
+//      there the list applies to EVERY request, whatever the headers say, so a
+//      proxy that rewrites or drops the host header cannot open the dashboard
+//      (barracuda, #70 review: header-only detection fails open);
+//   2. on any port, its Host header, an X-Forwarded-Host hop or a Forwarded
+//      `host=` names ACROVELIQ_HOST. A client can add a header, so a header can
+//      only ever turn the filter ON, never off. This is the second layer.
 
 /** Lowercased host without port and trailing dot; '' for an empty or unparsable value. */
 export function normalizeHost(raw: string | undefined | null): string {
@@ -29,6 +33,20 @@ export function normalizeHost(raw: string | undefined | null): string {
   const colon = h.indexOf(':')
   if (colon >= 0) h = h.slice(0, colon)
   return h.replace(/\.+$/, '')
+}
+
+/**
+ * The AcrovelIQ listener port: null when unset (no second listener). A value
+ * that is not a port, or is the dashboard's own port, is a problem and no
+ * listener: the proxy then reaches nothing, which fails closed.
+ */
+export function parseAcroveliqPort(setting: string | undefined, dashboardPort: number): { port: number | null; problem?: string } {
+  const raw = (setting ?? '').trim()
+  if (!raw) return { port: null }
+  const n = /^[0-9]{1,5}$/.test(raw) ? Number(raw) : NaN
+  if (!Number.isInteger(n) || n < 1 || n > 65535) return { port: null, problem: `ACROVELIQ_PORT is not a port: ${JSON.stringify(raw)}; no AcrovelIQ listener` }
+  if (n === dashboardPort) return { port: null, problem: `ACROVELIQ_PORT is the dashboard port (${n}); no AcrovelIQ listener` }
+  return { port: n }
 }
 
 /** The configured AcrovelIQ host, normalized; '' means the filter is off. */
@@ -107,4 +125,29 @@ function pathMatches(pattern: string, path: string): boolean {
  */
 export function acroveliqAllows(method: string, path: string): boolean {
   return ACROVELIQ_ROUTES.some((r) => (method === 'OPTIONS' || r.method === method) && pathMatches(r.path, path))
+}
+
+// What the two agent reads give out on the AcrovelIQ surface: the fields the
+// page reads, picked (not the rest deleted), so a field added to the dashboard
+// shape later does not reach the public domain. Not there: the pane tail, the
+// permission mode, the remote ssh target and workdir, the security profile, the
+// auth mode, the plan, the channel bot names (barracuda, #70 review).
+export const ACROVELIQ_AGENT_FIELDS = ['name', 'displayName', 'description'] as const
+export const ACROVELIQ_ACTIVITY_FIELDS = ['name', 'isMain', 'running', 'state', 'prompt'] as const
+
+function pick(row: object, fields: readonly string[]): Record<string, unknown> {
+  const src = row as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const f of fields) if (f in src) out[f] = src[f]
+  return out
+}
+
+/** /api/agents rows as the AcrovelIQ surface serves them. */
+export function acroveliqAgentsView(rows: readonly object[]): Record<string, unknown>[] {
+  return rows.map((r) => pick(r, ACROVELIQ_AGENT_FIELDS))
+}
+
+/** /api/agents/activity rows as the AcrovelIQ surface serves them. */
+export function acroveliqActivityView(rows: readonly object[]): Record<string, unknown>[] {
+  return rows.map((r) => pick(r, ACROVELIQ_ACTIVITY_FIELDS))
 }
