@@ -110,7 +110,7 @@ PY
   local OUT CODE RESP
   OUT="$(/usr/bin/curl -s -w '\n%{http_code}' -X PATCH \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $(/bin/cat "$TOKEN_FILE")" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$(/bin/cat "$TOKEN_FILE")") \
     --data-binary @"$TMP" \
     "$HOST$ENDPOINT/$ID" 2>&1)"
 
@@ -263,7 +263,7 @@ BUILD_RC=$?
 export TARTALOM_FORRAS="${BODY_FILE:-stdin}"
 OUT="$(/usr/bin/curl -s -w '\n%{http_code}' -X POST \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(/bin/cat "$TOKEN_FILE")" \
+  -H @<(printf 'Authorization: Bearer %s\n' "$(/bin/cat "$TOKEN_FILE")") \
   --data-binary @"$TMP" \
   "$HOST$ENDPOINT" 2>&1)"
 

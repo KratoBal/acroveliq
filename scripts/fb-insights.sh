@@ -64,7 +64,7 @@ get() {
   # so nothing (least of all the token) is ever built into a shell-visible URL.
   local path="$1" qs="${2:-}"
   local url="https://graph.facebook.com/$API_VER/$path"
-  local -a args=(-sS -G --max-time 30 -w '\n%{http_code}' -H "Authorization: Bearer $TOKEN")
+  local -a args=(-sS -G --max-time 30 -w '\n%{http_code}')
   local pair
   if [ -n "$qs" ]; then
     local IFS='&'
@@ -73,7 +73,7 @@ get() {
     done
   fi
   local body code
-  body="$(curl "${args[@]}" "$url" 2>&1)" || die "halozati hiba a Graph API fele"
+  body="$(curl "${args[@]}" -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "$url" 2>&1)" || die "halozati hiba a Graph API fele"
   code="$(tail -n1 <<< "$body")"
   body="$(sed '$d' <<< "$body")"
   if [ "$code" != "200" ]; then
@@ -111,7 +111,7 @@ get_user() {
   local utok; utok="$(tr -d ' \t\r\n' < "$USER_TOKEN_FILE")"
   [ -n "$utok" ] || die "a user token fajl ures: $USER_TOKEN_FILE"
   local url="https://graph.facebook.com/$API_VER/$path"
-  local -a args=(-sS -G --max-time 30 -w '\n%{http_code}' -H "Authorization: Bearer $utok")
+  local -a args=(-sS -G --max-time 30 -w '\n%{http_code}')
   local pair
   if [ -n "$qs" ]; then
     local IFS='&'
@@ -120,7 +120,7 @@ get_user() {
     done
   fi
   local body code
-  body="$(curl "${args[@]}" "$url" 2>&1)" || die "halozati hiba a Graph API fele"
+  body="$(curl "${args[@]}" -H @<(printf 'Authorization: Bearer %s\n' "$utok") "$url" 2>&1)" || die "halozati hiba a Graph API fele"
   code="$(tail -n1 <<< "$body")"
   body="$(sed '$d' <<< "$body")"
   # Scrub BOTH tokens: the page token via scrub(), the user token here.
@@ -182,8 +182,8 @@ if not d.get("data"): print("(a token egyetlen oldalt sem lat)")
     long="$(curl -sS -G --max-time 30 "https://graph.facebook.com/$API_VER/oauth/access_token" \
       --data-urlencode "grant_type=fb_exchange_token" \
       --data-urlencode "client_id=$app_id" \
-      --data-urlencode "client_secret=$SECRET" \
-      --data-urlencode "fb_exchange_token=$TOKEN" \
+      --data-urlencode "client_secret@"<(printf '%s' "$SECRET") \
+      --data-urlencode "fb_exchange_token@"<(printf '%s' "$TOKEN") \
       | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("access_token",""))')"
     [ -n "$long" ] || die "a hosszu eletu tokenre valtas nem sikerult (rossz app secret, vagy mar lejart a rovid token?)"
     umask 077
@@ -191,7 +191,7 @@ if not d.get("data"): print("(a token egyetlen oldalt sem lat)")
     chmod 600 "$USER_TOKEN_FILE"
     # Harvest the page tokens with the LONG-LIVED token, and merge into the vault rather
     # than replacing it -- a later grant may cover a different subset of pages.
-    curl -sS -G --max-time 30 -H "Authorization: Bearer $long" \
+    curl -sS -G --max-time 30 -H @<(printf 'Authorization: Bearer %s\n' "$long") \
       --data-urlencode "fields=id,name,access_token" --data-urlencode "limit=100" \
       "https://graph.facebook.com/$API_VER/me/accounts" \
       | VAULT="$VAULT_FILE" python3 -c '
