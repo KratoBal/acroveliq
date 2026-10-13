@@ -555,6 +555,11 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN trace_id TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN span_id TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN parent_span_id TEXT') } catch { /* exists */ }
+  // TC-Lite L3: the task a message belongs to, when the sender names one
+  // (POST /api/messages task_id, agent-msg.sh --task). Inert: no router or
+  // envelope reads it; the task timeline does.
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN task_id TEXT') } catch { /* exists */ }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_agent_messages_task ON agent_messages(task_id) WHERE task_id IS NOT NULL')
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
   //
@@ -2250,7 +2255,16 @@ export interface AgentMessage {
   trace_id: string | null
   span_id: string | null
   parent_span_id: string | null
+  // TC-Lite L3: the task the sender linked this message to, or null
+  task_id: string | null
 }
+
+/**
+ * A task id a message may carry (TC-Lite L3): the same shape the command
+ * runner accepts for its task log directories (scripts/futtat.py SAFE_NAME),
+ * so a message and a run of one task are named alike. Not free text.
+ */
+export const MESSAGE_TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/
 
 export function createAgentMessage(
   from: string,
@@ -2258,11 +2272,12 @@ export function createAgentMessage(
   content: string,
   originNote?: string | null,
   traceCtx?: { trace_id: string; span_id: string; parent_span_id: string | null } | null,
+  taskId?: string | null,
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, taskId ?? null)
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',
@@ -2271,6 +2286,7 @@ export function createAgentMessage(
     trace_id: traceCtx?.trace_id ?? null,
     span_id: traceCtx?.span_id ?? null,
     parent_span_id: traceCtx?.parent_span_id ?? null,
+    task_id: taskId ?? null,
   }
 }
 

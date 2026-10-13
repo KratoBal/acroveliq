@@ -807,16 +807,24 @@ export type TimelineItem =
   | { at: number; source: 'event'; id: number; kind: string; actor: string; ref: string | null; data: Record<string, unknown> | null }
   | { at: number; source: 'handoff'; id: number; agent: string; status: string; next_step: string | null }
   | { at: number; source: 'session'; agent: string; session_id: string }
+  | { at: number; source: 'message'; id: number; from: string; to: string; status: string }
 
-const SOURCE_ORDER = { session: 0, event: 1, handoff: 2 } as const
+const SOURCE_ORDER = { session: 0, event: 1, handoff: 2, message: 3 } as const
+
+/** agent_messages has task_id since TC-Lite L3; an older database has no such column. */
+const messagesHaveTaskId = (db: Database.Database) =>
+  tableExists(db, 'agent_messages') &&
+  (db.prepare('PRAGMA table_info(agent_messages)').all() as { name: string }[]).some((c) => c.name === 'task_id')
 
 const tableExists = (db: Database.Database, name: string) =>
   Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name))
 
 /**
  * Everything recorded about a task, in time order: its events, its handoff
- * records and its registered sessions. Same second: a session first (it is
- * registered before its work), then the event, then the handoff written after.
+ * records, its registered sessions and the messages linked to it (TC-Lite L3:
+ * ids, sender, recipient and state; the text stays in the message itself).
+ * Same second: a session first (it is registered before its work), then the
+ * event, then the handoff written after, then a message about it.
  */
 export function taskTimeline(db: Database.Database, taskId: string): TimelineItem[] {
   const items: TimelineItem[] = loadTaskEvents(db, taskId).map((e) => ({
@@ -839,6 +847,11 @@ export function taskTimeline(db: Database.Database, taskId: string): TimelineIte
     .prepare('SELECT agent, session_id, created_at FROM task_sessions WHERE task_id = ?')
     .all(taskId) as { agent: string; session_id: string; created_at: number }[])
     items.push({ at: s.created_at, source: 'session', agent: s.agent, session_id: s.session_id })
+  if (messagesHaveTaskId(db))
+    for (const m of db
+      .prepare('SELECT id, from_agent, to_agent, status, created_at FROM agent_messages WHERE task_id = ?')
+      .all(taskId) as { id: number; from_agent: string; to_agent: string; status: string; created_at: number }[])
+      items.push({ at: m.created_at, source: 'message', id: m.id, from: m.from_agent, to: m.to_agent, status: m.status })
   return items.sort(
     (a, b) =>
       a.at - b.at ||
