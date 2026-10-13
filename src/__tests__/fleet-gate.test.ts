@@ -269,7 +269,7 @@ describe('fleet-gate: what passes', () => {
       [r.code, r.out.trim(), steps[0], steps.includes('[rm] [-f]'), steps.at(-1), ['[--network] [none]', '[--memory] [1g]', '[--cpus] [1]', '[--pull] [never]'].map((o) => run.includes(o))],
       'GATE-RESTORE-PROBE',
     ).toEqual([0, 'conversations=1 messages=2 answer_ratings=3', '[ps] [-a]', true, '[rm] [-f]', [true, true, true, true]])
-  })
+  }, 15_000) // one 2-second wait while the TCP probe is not ready yet
 
   it('GATE-RESTORE-PROBE-TCP: the restore waits for postgres over TCP, not for the initdb socket server', () => {
     const r = world(STAGE).run('restore-probe', 'DUMP')

@@ -305,9 +305,11 @@ case "$OP" in
     # image must already be on the host (barracuda, #28)
     "$DOCKER" run -d --name "$C" --network none --memory 1g --cpus 1 --pids-limit 256 --pull never -e POSTGRES_PASSWORD=proba -e POSTGRES_USER=acropora_ai -e POSTGRES_DB=acropora_ai postgres:16-alpine >/dev/null \
       || { echo "fleet-gate: a próba-konténer nem indult" >&2; exit 1; }
+    # ask over TCP: the image's initdb runs a temporary server on the socket
+    # only, which answers ready and then stops before the real one starts
     ready=""
     for _ in $(seq 1 30); do
-      if "$DOCKER" exec "$C" pg_isready -U acropora_ai -q; then ready=1; break; fi
+      if "$DOCKER" exec "$C" pg_isready -h 127.0.0.1 -U acropora_ai -q; then ready=1; break; fi
       sleep 2
     done
     [ -n "$ready" ] || { echo "fleet-gate: a próba-adatbázis nem állt fel" >&2; exit 1; }
