@@ -689,3 +689,18 @@ describe('the coord window', () => {
     expect(taskUsage(db, 'k3', NOW)!.by_capacity.coord.calls).toBe(1)
   })
 })
+
+describe('a live task_events table without the coord kinds', () => {
+  it('TASK-EVENTS-REBUILD-COORD: is rebuilt in place, rows kept, and then takes coord_open', () => {
+    const d = new Database(':memory:')
+    const old = ['assigned', 'started', 'review_requested', 'verdict', 'fix_started', 'done', 'merged', 'blocked', 'cancelled', 'failed', 'partial']
+    d.exec(`CREATE TABLE task_events (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN (${old.map((k) => `'${k}'`).join(',')})), actor TEXT NOT NULL, at INTEGER NOT NULL,
+      ref TEXT, created_at INTEGER NOT NULL, data TEXT, idem_key TEXT)`)
+    d.prepare("INSERT INTO task_events (task_id, kind, actor, at, created_at) VALUES ('t', 'started', 'murena', 1, 1)").run()
+    expect(() => d.prepare("INSERT INTO task_events (task_id, kind, actor, at, created_at) VALUES ('t', 'coord_open', 'acrobot', 2, 2)").run()).toThrow()
+    ensureTaskUsageSchema(d)
+    d.prepare("INSERT INTO task_events (task_id, kind, actor, at, created_at) VALUES ('t', 'coord_open', 'acrobot', 2, 2)").run()
+    expect((d.prepare('SELECT kind FROM task_events ORDER BY id').all() as { kind: string }[]).map((r) => r.kind), 'TASK-EVENTS-REBUILD-COORD').toEqual(['started', 'coord_open'])
+  })
+})
