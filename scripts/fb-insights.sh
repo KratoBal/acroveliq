@@ -57,12 +57,17 @@ TOKEN="$(tr -d ' \t\r\n' < "$TOKEN_FILE")"
 [ -n "$TOKEN" ] || die "a token fajl ures: $TOKEN_FILE"
 
 # Scrub the token out of anything we print, belt and braces.
-scrub() { sed "s|$TOKEN|<TOKEN>|g"; }
+# No secret on any command line: /proc shows every process's argv to every agent
+# (#85, #87), so sed gets its script from a file descriptor, not from argv.
+scrub() { sed -f <(printf 's|%s|<TOKEN>|g\n' "$TOKEN"); }
 
 get() {
-  # get <path> [querystring]   -- querystring is "a=1&b=2"; each pair is url-encoded here,
-  # so nothing (least of all the token) is ever built into a shell-visible URL.
-  local path="$1" qs="${2:-}"
+  # get <path> [querystring] [token_param]   -- querystring is "a=1&b=2"; each pair is
+  # url-encoded here, so nothing (least of all the token) is ever built into a
+  # shell-visible URL. token_param names a query parameter that carries the page
+  # token (debug_token's input_token): curl reads its value from a file descriptor,
+  # so the token is not in curl's argv either (#87).
+  local path="$1" qs="${2:-}" token_param="${3:-}"
   local url="https://graph.facebook.com/$API_VER/$path"
   local -a args=(-sS -G --max-time 30 -w '\n%{http_code}')
   local pair
@@ -73,7 +78,12 @@ get() {
     done
   fi
   local body code
-  body="$(curl "${args[@]}" -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "$url" 2>&1)" || die "halozati hiba a Graph API fele"
+  if [ -n "$token_param" ]; then
+    body="$(curl "${args[@]}" --data-urlencode "$token_param@"<(printf '%s' "$TOKEN") \
+      -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "$url" 2>&1)" || die "halozati hiba a Graph API fele"
+  else
+    body="$(curl "${args[@]}" -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "$url" 2>&1)" || die "halozati hiba a Graph API fele"
+  fi
   code="$(tail -n1 <<< "$body")"
   body="$(sed '$d' <<< "$body")"
   if [ "$code" != "200" ]; then
@@ -125,10 +135,10 @@ get_user() {
   body="$(sed '$d' <<< "$body")"
   # Scrub BOTH tokens: the page token via scrub(), the user token here.
   if [ "$code" != "200" ]; then
-    echo "$body" | scrub | sed "s|$utok|<USER_TOKEN>|g" >&2
+    echo "$body" | scrub | sed -f <(printf 's|%s|<USER_TOKEN>|g\n' "$utok") >&2
     die "Graph API HTTP $code"
   fi
-  echo "$body" | scrub | sed "s|$utok|<USER_TOKEN>|g"
+  echo "$body" | scrub | sed -f <(printf 's|%s|<USER_TOKEN>|g\n' "$utok")
 }
 
 page_id() {
@@ -142,7 +152,7 @@ case "$cmd" in
   check)
     # debug_token needs an app-or-user token as the inspector; the token inspects itself,
     # which Graph allows and which is enough to read type / expiry / scopes.
-    get "debug_token" "input_token=$TOKEN"
+    get "debug_token" "" input_token
     ;;
 
   pages)
@@ -176,7 +186,7 @@ if not d.get("data"): print("(a token egyetlen oldalt sem lat)")
     [ -f "$SECRET_FILE" ] || die "nincs app secret: $SECRET_FILE hianyzik (App Dashboard > App settings > Basic > App secret)"
     SECRET="$(tr -d ' \t\r\n' < "$SECRET_FILE")"
     [ -n "$SECRET" ] || die "az app secret fajl ures: $SECRET_FILE"
-    app_id="$(get "debug_token" "input_token=$TOKEN" \
+    app_id="$(get "debug_token" "" input_token \
       | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",{}).get("app_id",""))')"
     [ -n "$app_id" ] || die "nem sikerult kiolvasni az app_id-t a tokenbol"
     long="$(curl -sS -G --max-time 30 "https://graph.facebook.com/$API_VER/oauth/access_token" \

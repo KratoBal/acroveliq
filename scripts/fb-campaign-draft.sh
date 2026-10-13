@@ -85,7 +85,7 @@ die() { echo "FAIL $*" >&2; exit 1; }
 [ -f "$USER_TOKEN_FILE" ] || die "nincs user token: $USER_TOKEN_FILE"
 TOKEN="$(tr -d ' \t\r\n' < "$USER_TOKEN_FILE")"
 [ -n "$TOKEN" ] || die "a user token fajl ures: $USER_TOKEN_FILE"
-scrub() { sed "s|$TOKEN|<TOKEN>|g"; }
+scrub() { sed -f <(printf 's|%s|<TOKEN>|g\n' "$TOKEN"); }  # the token stays off sed's argv (#87)
 
 [ -f "$ACCOUNT_FILE" ] || die "nincs hirdetesi fiok azonosito: $ACCOUNT_FILE (egy sor, pl. act_123)"
 ACCOUNT="$(tr -d ' \t\r\n' < "$ACCOUNT_FILE")"
