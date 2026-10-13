@@ -5,6 +5,7 @@ import { STORE_DIR } from '../../config.js'
 import { getDb } from '../../db.js'
 import {
   githubProbe,
+  handoffRequiredFields,
   insertTaskHandoff,
   latestTaskHandoff,
   validateHandoffRecord,
@@ -62,9 +63,11 @@ export async function tryHandleTaskHandoffs(ctx: RouteContext): Promise<boolean>
     }
     // a coordination task holds its handoff to the four fields, whatever the record says
     const taskType = (getDb().prepare('SELECT type FROM tasks WHERE id = ?').get(taskId) as { type: string | null } | undefined)?.type
-    const checked = validateHandoffRecord(body.record, { coordinationTask: taskType === 'coordination' })
+    const coordinationTask = taskType === 'coordination'
+    const checked = validateHandoffRecord(body.record, { coordinationTask })
     if (!checked.ok) {
-      json(res, { error: 'missing required fields', missing: checked.missing }, 400)
+      const asCoordination = coordinationTask || (body.record as { kind?: unknown } | null)?.kind === 'coordination'
+      json(res, { error: 'missing required fields', missing: checked.missing, required: handoffRequiredFields(asCoordination) }, 400)
       return true
     }
     // the path names the task: a record for another task is a mistake, not a write

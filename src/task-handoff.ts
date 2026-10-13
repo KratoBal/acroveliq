@@ -39,6 +39,13 @@ export interface HandoffCodeState {
   pr: number | null
   /** Whether the PR had merged when the record was written. */
   merged: boolean
+  /**
+   * Where the merged change RUNS, when that is not the main branch: the commit on a live
+   * branch that carries it (a cherry-pick onto tc-release). `head` stays the PR's head;
+   * this names the live commit. The check measures that it is on the branch and that its
+   * change equals the PR's merge commit (acrobot, koord-proba #57, msg 29913).
+   */
+  deployed?: { branch: string; head: string }
 }
 
 /**
@@ -172,6 +179,15 @@ export function validateHandoffRecord(
       // a merge is only measurable through its PR: without one, "merged" is a
       // claim nobody can check (barracuda, #16)
       else if (code.merged && code.pr === null) missing.push('code.pr (a merged record needs its PR number)')
+      if ('deployed' in code && code.deployed !== undefined && code.deployed !== null) {
+        const d = code.deployed
+        if (typeof d !== 'object') missing.push('code.deployed ({branch, head})')
+        else {
+          if (!isText(d.branch) || !BRANCH_PATTERN.test(d.branch)) missing.push('code.deployed.branch (a branch name, without ..)')
+          if (!isText(d.head) || !/^[0-9a-f]{7,40}$/i.test(d.head)) missing.push('code.deployed.head (a sha, at least 7 hex digits)')
+          if (code.merged !== true) missing.push('code.deployed (only for a merged record: the live commit of a merged change)')
+        }
+      }
     }
   }
 
@@ -239,6 +255,26 @@ export function validateHandoffRecord(
   }
 }
 
+/**
+ * Every required field of a record, named up front, so a writer fixes the whole record in
+ * one round instead of meeting the next missing field after each try (the first write of
+ * the koord-proba fresh session failed on task, status and code.branch; acrobot, msg 29913).
+ */
+export function handoffRequiredFields(coordination: boolean): string[] {
+  const common = [
+    'task {id, goal, brief}',
+    `status (${HANDOFF_STATUSES.join('|')})`,
+    'decisions [{what, who, where' + (coordination ? ', quote' : '') + '}]',
+    'prohibitions [{what, source}]',
+    'code {repo, branch, head, pr, merged[, deployed {branch, head}]} vagy null',
+    'files [szoveg]',
+  ]
+  return coordination
+    ? [...common, "kind: 'coordination'", `state {phase (${COORDINATION_PHASES.join('|')}), summary}`,
+        'next_steps [{what, who}]', 'open_questions [{from, what}]']
+    : [...common, 'next_step', 'open_questions [szoveg]']
+}
+
 export interface StoredHandoff {
   id: number
   agent: string
@@ -292,14 +328,18 @@ export function latestTaskHandoff(db: Database.Database, taskId: string): Stored
 export interface CodeStateProbe {
   /** The branch head sha, `null` if the branch does not exist. */
   branchHead(repo: string, branch: string): Promise<string | null | undefined>
-  pullRequest(repo: string, number: number): Promise<{ state: string; merged: boolean; headSha: string } | null | undefined>
+  pullRequest(repo: string, number: number): Promise<{ state: string; merged: boolean; headSha: string; mergeSha?: string | null } | null | undefined>
+  /** A fingerprint of the commit's change, line numbers left out (git patch-id's idea); null: no such commit. */
+  changeOf?(repo: string, sha: string): Promise<string | null | undefined>
+  /** Whether the commit is on the branch (the branch head or behind it); null: no such commit or branch. */
+  onBranch?(repo: string, sha: string, branch: string): Promise<boolean | null | undefined>
 }
 
 export interface CodeStateCheck {
   ok: boolean
   /** One sentence each; the reader stops on any of them. */
   mismatches: string[]
-  measured: { branchHead: string | null | undefined; pr: { state: string; merged: boolean; headSha: string } | null | undefined }
+  measured: { branchHead: string | null | undefined; pr: { state: string; merged: boolean; headSha: string; mergeSha?: string | null } | null | undefined }
 }
 
 const sameSha = (recorded: string, actual: string) => actual.toLowerCase().startsWith(recorded.toLowerCase())
@@ -335,8 +375,10 @@ export async function verifyCodeState(code: HandoffCodeState | null, probe: Code
     // merged with another head than recorded: work landed that the record does not know
     else if (code.merged && !sameSha(code.head, measured.pr.headSha))
       mismatches.push(
-        `A #${code.pr} PR ${measured.pr.headSha.slice(0, 8)} fejjel olvadt be, a rekord ${code.head.slice(0, 8)} fejjel íródott.`,
+        `A #${code.pr} PR ${measured.pr.headSha.slice(0, 8)} fejjel olvadt be, a rekord ${code.head.slice(0, 8)} fejjel íródott.` +
+          ' Ha ez az élő fa commitja, a code.deployed mezőbe való ({branch, head}), a code.head pedig a PR feje.',
       )
+    else if (code.merged && code.deployed) await checkDeployed(code, measured.pr.mergeSha ?? null, probe, mismatches)
   }
 
   if (!code.merged) {
@@ -353,6 +395,48 @@ export async function verifyCodeState(code: HandoffCodeState | null, probe: Code
   }
 
   return { ok: mismatches.length === 0, mismatches, measured }
+}
+
+/**
+ * The live commit of a merged change: on its branch, and carrying the same change as the
+ * PR's merge commit. Each part not measurable is its own sentence, never agreement.
+ */
+async function checkDeployed(
+  code: HandoffCodeState,
+  mergeSha: string | null,
+  probe: CodeStateProbe,
+  mismatches: string[],
+): Promise<void> {
+  const d = code.deployed!
+  const label = `Az élő commit (${d.head.slice(0, 8)}, ${d.branch})`
+  if (!probe.onBranch || !probe.changeOf) { mismatches.push(`${label} nem mérhető: a mérő nem ismeri.`); return }
+  const on = await probe.onBranch(code.repo, d.head, d.branch)
+  if (on === undefined) mismatches.push(`${label} helye nem mérhető most.`)
+  else if (on === null) mismatches.push(`${label} vagy az ága nem található a ${code.repo} repóban.`)
+  else if (!on) mismatches.push(`${label} nincs rajta a ${d.branch} ágon.`)
+  if (!mergeSha) { mismatches.push(`A #${code.pr} PR beolvasztó commitja nem ismert, a változás nem vethető össze.`); return }
+  const [mine, theirs] = await Promise.all([probe.changeOf(code.repo, d.head), probe.changeOf(code.repo, mergeSha)])
+  if (mine === undefined || theirs === undefined) mismatches.push(`${label} változása nem vethető össze most.`)
+  else if (mine === null || theirs === null) mismatches.push(`${label} vagy a beolvasztó commit nem található.`)
+  else if (mine !== theirs)
+    mismatches.push(`${label} nem ugyanazt a változást hordozza, mint a #${code.pr} PR beolvasztó commitja (${mergeSha.slice(0, 8)}).`)
+}
+
+/**
+ * git patch-id's idea on GitHub's file list: the change without line numbers. Like
+ * patch-id, it does not measure the POSITION: the same hunk with the same three lines of
+ * context at another place in the file gives the same value.
+ */
+export function changeFingerprint(files: { filename: string; status: string; patch?: string; sha?: string; previous_filename?: string }[]): string {
+  return JSON.stringify(
+    [...files]
+      .sort((a, b) => (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0))
+      .map((f) => [f.filename, f.status, f.previous_filename ?? null,
+        // a binary or very large file has no patch: its blob sha is the identity of the
+        // file's NEW content, not of the change (a cherry-pick onto a branch with other
+        // changes in that file then differs: the safe direction)
+        f.patch !== undefined ? f.patch.replace(/^@@[^\n]*@@.*$/gm, '@@') : `blob:${f.sha ?? '?'}`]),
+  )
 }
 
 /**
@@ -385,7 +469,24 @@ export function githubProbe(token: string | null, fetchImpl: typeof fetch = fetc
       const body = await call(`/repos/${repo}/pulls/${number}`)
       return body === undefined || body === null
         ? body
-        : { state: String(body.state), merged: Boolean(body.merged), headSha: String(body.head?.sha ?? '') }
+        : { state: String(body.state), merged: Boolean(body.merged), headSha: String(body.head?.sha ?? ''),
+            mergeSha: typeof body.merge_commit_sha === 'string' ? body.merge_commit_sha : null }
+    },
+    async changeOf(repo, sha) {
+      const body = await call(`/repos/${repo}/commits/${encodeURIComponent(sha)}`)
+      if (body === undefined || body === null) return body
+      const files = Array.isArray(body.files) ? body.files : null
+      // not measurable, never "the same": GitHub lists at most 300 files; an empty list
+      // would make any two empty commits equal; a merge commit (two parents) carries the
+      // COMBINED diff, typically empty, not its change (barracuda, review of #75)
+      if (!files || files.length === 0 || files.length >= 300) return undefined
+      if (Array.isArray(body.parents) && body.parents.length > 1) return undefined
+      return changeFingerprint(files)
+    },
+    async onBranch(repo, sha, branch) {
+      const body = await call(`/repos/${repo}/compare/${encodeURIComponent(sha)}...${encodeURIComponent(branch).replace(/%2F/g, '/')}`)
+      if (body === undefined || body === null) return body
+      return body.status === 'identical' || body.status === 'ahead'
     },
   }
 }

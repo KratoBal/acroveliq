@@ -114,6 +114,8 @@ describe('the obligation is bound to the TASK, not to the writer (barracuda, rev
     expect(asDev.body.missing[0]).toMatch(/^kind \(this is a coordination task/)
     expect(asDev.body.missing).toContain('state')
     expect(asDev.body.missing).toContain('next_steps')
+    // and the full list of what a coordination record needs, in the same answer
+    expect(asDev.body.required).toContain("kind: 'coordination'")
     const full = await post(id, { ...valid(), task: { ...valid().task, id } })
     expect(full.status).toBe(201)
   })

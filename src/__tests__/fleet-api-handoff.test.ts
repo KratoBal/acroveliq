@@ -79,7 +79,7 @@ describe('fleet-api.sh handoff-read', () => {
 
 describe('fleet-api.sh handoff-write', () => {
   it('HANDOFF-CLI-WRITE: names every missing field, and sends the record unchanged', async () => {
-    answer = [400, { error: 'missing required fields', missing: ['next_step', 'decisions[0].who'] }]
+    answer = [400, { error: 'missing required fields', missing: ['next_step', 'decisions[0].who'], required: ['task {id, goal, brief}', 'code {repo, branch, head, pr, merged} vagy null'] }]
     const refused = await run(['handoff-write', 'hetfoi-lista-M3', 'murena', '-'], '{}')
     const tricky = { ...M3_HANDOFF, next_step: 'run `pnpm test` with $HOME and "quotes"' }
     answer = [201, { id: 8 }]
@@ -88,9 +88,10 @@ describe('fleet-api.sh handoff-write', () => {
       refused.code,
       refused.out.includes('hianyzik: next_step'),
       refused.out.includes('hianyzik: decisions[0].who'),
+      refused.out.includes('a rekord kotelezo mezoi:') && refused.out.includes('    task {id, goal, brief}') && refused.out.includes('    code {repo, branch, head'),
       written.code,
       received,
-    ], 'HANDOFF-CLI-WRITE').toEqual([1, true, true, 0, { agent: 'murena', record: tricky }])
+    ], 'HANDOFF-CLI-WRITE').toEqual([1, true, true, true, 0, { agent: 'murena', record: tricky }])
   })
 })
 
