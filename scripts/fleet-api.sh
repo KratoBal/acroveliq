@@ -44,6 +44,7 @@
 #         (a HIVO SAJAT munkamenetet: egy masik agenset az agent-restart --task regisztralja)
 #   bash scripts/fleet-api.sh agent-restart <agens> [--fresh] [--task <task_id>]
 #   bash scripts/fleet-api.sh task-usage <task_id> [variants]   # 3: atfedo ablak, ervenytelen
+#         (a kiado admin-hivasai feladatonkent jelzo ertekek, feladatok kozott nem osszeadhatok)
 #   bash scripts/fleet-api.sh kiadas <task_id> <agens> [--continue] [--parallel "<indok>"] [--kiado <nev>]
 #         (egy feladat kiadasa, megismetelheto; kilepes: 3 atado rekord, 4 feladat, 5 foglalt,
 #          6 restart, 7 uzenet, 8 a panel nem tetlen)
@@ -647,6 +648,9 @@ print(d.get("session_id","") if d.get("ok") is True and d.get("registered") is n
     # A feladat bontasa tokenfajtankent es kapacitas-fajtankent; "variants" mellett
     # a valtozatai is mellette. ATFEDO ABLAKNAL a feladat ERVENYTELEN: a parancs
     # ezt kiirja, es 3-as koddal lep ki, mert a szamai akkor nem teljesek.
+    # A KIADO admin-hivasai (az assigned esemeny admin-ablakot nyit a szereplojenek a done
+    # vagy merged esemenyig) FELADATONKENT JELZO ERTEKEK: parhuzamos kiadasoknal az ablakok
+    # szandekosan atfednek, ezert feladatok kozott NEM ADHATOK OSSZE (acrobot dontese, #60).
     argc_max 2 "$#" "fleet-api.sh task-usage <task_id> [variants]"
     TASK="${1:?task id required}"
     TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
