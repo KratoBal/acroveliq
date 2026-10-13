@@ -51,6 +51,13 @@ export interface AuthSources {
   subAgents: string[]
   /** The raw agent-config.json object of a sub-agent ({} if missing/unreadable). */
   subAgentConfig: (name: string) => Record<string, unknown>
+  /**
+   * The sub-agent's remote host as the launcher resolves it: the router-owned
+   * registry (readAgentRemoteHost, b77e2688), never the agent's own config, where
+   * a remoteHost is ignored at launch and an agent could write one to drop out of
+   * the measurement.
+   */
+  subAgentRemoteHost: (name: string) => string | null
   /** The model the sub-agent launcher resolves (readAgentModel). */
   subAgentModel: (name: string) => string | null
   /** A per-agent API key exists in the vault (agent-<name>-api-key). */
@@ -88,7 +95,7 @@ export function gatherAuthFacts(s: AuthSources): Record<string, AuthFacts | null
     const mode = cfg.authMode
     if (mode !== 'shared' && mode !== 'own_team' && mode !== 'api') { out[name] = null; continue }
     // A remote host or an own config dir / plan login is outside what we can see.
-    if (nonEmpty(cfg.remoteHost) || nonEmpty(cfg.claudeConfigDir) || nonEmpty(cfg.claudePlan)) {
+    if (nonEmpty(s.subAgentRemoteHost(name)) || nonEmpty(cfg.claudeConfigDir) || nonEmpty(cfg.claudePlan)) {
       out[name] = null
       continue
     }
