@@ -95,7 +95,7 @@ echo ""
 echo "(c) The log says whether the message went out (agent-msg.sh OK id= or not)"
 setup ok ok
 rc="$(run_guard)"
-if [ "$rc" = "3" ] && grep -q 'uzenet elment (OK id=1)' "$T/log.txt"; then
+if [ "$rc" = "3" ] && grep -q 'uzenet sorba kerult (a kezbesitest a message-status mondja meg) (OK id=1)' "$T/log.txt"; then
   pass "send ok: exit 3, the log names the message id"
 else
   fail "send ok, but rc=$rc log: $(cat "$T/log.txt" 2>/dev/null)"
@@ -104,7 +104,7 @@ rm -rf "$T"
 
 setup ok fail
 rc="$(run_guard)"
-if [ "$rc" = "4" ] && grep -q 'NEM ment el' "$T/log.txt" && ! grep -q 'elment (OK' "$T/log.txt"; then
+if [ "$rc" = "4" ] && grep -q 'NEM ment el' "$T/log.txt" && ! grep -q 'sorba kerult' "$T/log.txt"; then
   pass "send failed: exit 4, the log says the message did not go out"
 else
   fail "send failed, but rc=$rc log: $(cat "$T/log.txt" 2>/dev/null)"
