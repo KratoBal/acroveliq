@@ -9,7 +9,12 @@
 //   - the AcrovelIQ listener (ACROVELIQ_PORT) stops applying the list to EVERY request
 //     (the fail-closed layer: a proxy that rewrites Host cannot open the dashboard);
 //   - /api/agents or /api/agents/activity give out more on the AcrovelIQ surface than
-//     the fields the page reads (pane tail, ssh target, security profile, auth mode...).
+//     the fields the page reads (pane tail, ssh target, security profile, auth mode...);
+//   - /api/open-matters gives out more there than the three Döntéseim groups: the
+//     budgeted text (open tasks, every handoff question, waiting cards), its counts and
+//     ids, a question that waits on someone else, or the text form; or it answers
+//     anyone there but Balázs's session (a device key, an agent or the shared token).
+
 import { describe, it, expect } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -22,6 +27,7 @@ import {
   acroveliqAgentsView,
   acroveliqAllows,
   acroveliqBindAddress,
+  acroveliqOpenMattersView,
   isAcroveliqRequest,
   normalizeHost,
   parseAcroveliqHost,
@@ -31,6 +37,10 @@ import {
 import { matchRouteRule } from '../web/route-match.js'
 import { markAcroveliqShell } from '../web/routes/static.js'
 import { tryHandleAgents } from '../web/routes/agents.js'
+import { tryHandleOpenMatters } from '../web/routes/open-matters.js'
+import { getDb, initDatabase } from '../db.js'
+import { insertTaskHandoff, validateHandoffRecord } from '../task-handoff.js'
+import { addTaskEvent, upsertTask } from '../task-usage.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -118,7 +128,7 @@ describe('acroveliqAllows: the positive list', () => {
       ['GET', '/api/marveen/avatar'], ['GET', '/api/auth/status'], ['POST', '/api/auth/login'],
       ['GET', '/api/tasks'], ['GET', '/api/tasks/acroveliq-host-szures/timeline'],
       ['GET', '/api/agents'], ['GET', '/api/agents/activity'], ['GET', '/api/messages/backlog'],
-      ['OPTIONS', '/api/tasks'],
+      ['GET', '/api/open-matters'], ['OPTIONS', '/api/tasks'],
     ]) expect(acroveliqAllows(method!, path!), `${method} ${path}`).toBe(true)
   })
 
@@ -134,7 +144,8 @@ describe('acroveliqAllows: the positive list', () => {
       ['GET', '/api/approvals'], ['GET', '/api/fleet'], ['GET', '/api/vault/ssh-keys'],
       ['POST', '/'], ['HEAD', '/'], ['DELETE', '/app.js'], ['GET', '/sw.js'],
       ['GET', '/avatars/01_robot.png'], ['GET', '/icons/other.png'], ['GET', '/lang/de.js'],
-      ['OPTIONS', '/api/kanban'], ['GET', '/API/tasks'],
+      ['OPTIONS', '/api/kanban'], ['GET', '/API/tasks'], ['POST', '/api/open-matters'], ['GET', '/api/open-matters/x'],
+      ['GET', '/api/memories'], ['GET', '/api/memories/2303'],
     ]) expect(acroveliqAllows(method!, path!), `${method} ${path}`).toBe(false)
   })
 
@@ -234,6 +245,113 @@ describe('the two agent reads on the AcrovelIQ surface give the page fields only
   it('agents.ts serves the views on the AcrovelIQ surface only', () => {
     expect(AGENTS).toContain("jsonMaybeGzip(req, res, ctx.surface === 'acroveliq' ? acroveliqAgentsView(summaries) : summaries)")
     expect(AGENTS).toContain("jsonMaybeGzip(req, res, ctx.surface === 'acroveliq' ? acroveliqActivityView(entries) : entries)")
+  })
+})
+
+describe('/api/open-matters on the AcrovelIQ surface gives the Döntéseim groups only', () => {
+  const NOW = Math.floor(Date.now() / 1000)
+
+  const SESSION = { kind: 'session', user: 'balazs' } as const
+  function call(path: string, surface: RouteContext['surface'], who: RouteContext['auth'] | 'nobody' = SESSION) {
+    const auth = who === 'nobody' ? undefined : who
+    let body = ''
+    let status = 200
+    const res = {
+      statusCode: 200,
+      setHeader() { return res },
+      writeHead(code: number) { status = code; return res },
+      end(chunk?: string | Buffer) { if (chunk) body += chunk.toString() },
+    }
+    const url = new URL(`http://localhost:3420${path}`)
+    const ctx = { req: { headers: {} }, res, path: url.pathname, method: 'GET', url, surface, auth } as unknown as RouteContext
+    return tryHandleOpenMatters(ctx).then((handled) => ({ handled, status, body }))
+  }
+
+  it('through the real handler: the picked view there, the full shape and the text form on the dashboard', async () => {
+    initDatabase(':memory:')
+    const db = getDb()
+    upsertTask(db, { id: 'koord-x', type: null, parent_task: null, variant: null, brief_ref: null, title: 'koord',
+      assignee: 'acrobot', reviewer: null }, NOW - 100)
+    addTaskEvent(db, { task_id: 'koord-x', kind: 'started', actor: 'acrobot', at: NOW - 90, ref: null }, NOW - 90)
+    const rec = validateHandoffRecord({
+      task: { id: 'koord-x', goal: 'g', brief: 'b' }, kind: 'coordination', status: 'in_progress',
+      state: { phase: 'reszben', summary: 'a koordinacio folyik, valaszra var' }, decisions: [], prohibitions: [], code: null, files: [],
+      next_steps: [{ what: 'x', who: 'acrobot' }],
+      open_questions: [{ from: 'Balazs', what: 'mehet-e elesbe' }, { from: 'barracuda', what: 'belso technikai kerdes' }],
+    })
+    if (!rec.ok) throw new Error(rec.missing.join(','))
+    insertTaskHandoff(db, 'acrobot', rec.record, NOW - 80)
+    const mem = db.prepare(`INSERT INTO memories (chat_id, content, sector, created_at, accessed_at, agent_id, category, keywords)
+      VALUES ('c', ?, 'semantic', ?, ?, 'acrobot', 'hot', ?)`)
+    mem.run('dontesre var: domain', NOW - 10, NOW - 10, 'domain, dontesre-var')
+    mem.run('osszefoglalo jar', NOW - 20, NOW - 20, 'acrobot-tartozik')
+    db.prepare(`INSERT INTO kanban_cards (id, title, status, assignee, priority, created_at, updated_at, archived_at)
+      VALUES ('kkkkkkkk-1', 'titkos kartya cim', 'waiting', 'murena', 'high', ?, ?, NULL)`).run(NOW, NOW)
+
+    const aq = await call('/api/open-matters', 'acroveliq')
+    expect(aq.handled).toBe(true)
+    expect(aq.status).toBe(200)
+    const view = JSON.parse(aq.body)
+    expect(Object.keys(view).sort()).toEqual(['generated_at', 'items'])
+    expect(Object.keys(view.items).sort()).toEqual(['balazs_questions', 'decisions', 'owes'])
+    expect(view.items.decisions.map((m: { content: string }) => m.content)).toEqual(['dontesre var: domain'])
+    expect(view.items.owes.map((m: { content: string }) => m.content)).toEqual(['osszefoglalo jar'])
+    expect(view.items.balazs_questions.map((q: { what: string }) => q.what)).toEqual(['mehet-e elesbe'])
+    for (const hidden of ['belso technikai kerdes', 'titkos kartya cim', 'koord-x | utolso']) expect(aq.body).not.toContain(hidden)
+
+    const text = await call('/api/open-matters?format=text', 'acroveliq')
+    expect(text.status).toBe(400)
+    expect(text.body).not.toContain('titkos kartya cim')
+
+    const full = JSON.parse((await call('/api/open-matters', 'dashboard')).body)
+    expect(full.text).toContain('titkos kartya cim')
+    expect(full.text).toContain('belso technikai kerdes')
+    expect(full.items.balazs_questions).toHaveLength(1)
+    expect((await call('/api/open-matters?format=text', 'dashboard')).body).toContain('titkos kartya cim')
+  })
+
+  it('on the AcrovelIQ surface only the session: a device key, an agent token, the shared token and no principal get 403', async () => {
+    initDatabase(':memory:')
+    const others: (RouteContext['auth'] | 'nobody')[] = [
+      { kind: 'device', device: 'telefon', deviceId: 1 },
+      { kind: 'token', actor: 'acrobot', project: 'acropora' },
+      { kind: 'token', actor: 'nautilus', project: 'acropora' },
+      { kind: 'token', actor: 'legacy' },
+      { kind: 'token' },
+      { kind: 'federation', peer: 'masik' },
+      'nobody',
+    ]
+    for (const auth of others) {
+      for (const path of ['/api/open-matters', '/api/open-matters?format=text']) {
+        const r = await call(path, 'acroveliq', auth)
+        expect(r.status, `${JSON.stringify(auth)} ${path}`).toBe(403)
+        expect(r.body).not.toContain('items')
+      }
+    }
+    expect((await call('/api/open-matters', 'acroveliq', SESSION)).status).toBe(200)
+    // the dashboard port keeps the route rule's read access (acrobot, msg 30039)
+    expect((await call('/api/open-matters', 'dashboard', { kind: 'device', device: 'telefon', deviceId: 1 })).status).toBe(200)
+    expect((await call('/api/open-matters', 'dashboard', { kind: 'token', actor: 'nautilus', project: 'acropora' })).status).toBe(200)
+  })
+
+  it('the view picks: a field added to the builder later does not reach the surface', () => {
+    const out = {
+      generated_at: 1, text: 'szoveg', counts: {}, omitted: {},
+      items: {
+        owes: [{ id: 1, content: 'a', created_at: 2, keywords: 'titok' }],
+        decisions: [{ id: 3, content: 'b', created_at: 4, agent_id: 'acrobot' }],
+        balazs_questions: [{ task: 't', handoff: 5, index: 0, from: 'Balazs', what: 'c', agent: 'murena' }],
+        tasks: [{ id: 'x' }],
+      },
+    } as unknown as Parameters<typeof acroveliqOpenMattersView>[0]
+    expect(acroveliqOpenMattersView(out)).toEqual({
+      generated_at: 1,
+      items: {
+        owes: [{ id: 1, content: 'a', created_at: 2 }],
+        decisions: [{ id: 3, content: 'b', created_at: 4 }],
+        balazs_questions: [{ task: 't', handoff: 5, index: 0, from: 'Balazs', what: 'c' }],
+      },
+    })
   })
 })
 
