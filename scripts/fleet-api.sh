@@ -41,6 +41,8 @@
 #   bash scripts/fleet-api.sh task-timeline <task_id>
 #   bash scripts/fleet-api.sh task-busy <agens>     # a feladatai, amik foglalva tartjak
 #   bash scripts/fleet-api.sh task-session <task_id> <agens> <session_id>
+#         (a HIVO SAJAT munkamenetet: egy masik agenset az agent-restart --task regisztralja)
+#   bash scripts/fleet-api.sh agent-restart <agens> [--fresh] [--task <task_id>]
 #   bash scripts/fleet-api.sh task-usage <task_id> [variants]   # 3: atfedo ablak, ervenytelen
 #
 # Any argument may be "-" to read that value from STDIN (for long/multi-line content).
@@ -427,8 +429,35 @@ print("-- %d tetel, %s" % (len(d["items"]), d["task"]))'
     A_ENC="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$AGENT")"
     get "/tasks?assignee=${A_ENC}&busy=1"
     ;;
+  agent-restart)
+    # TC-Lite L2: egy agens ujrainditasa. --fresh: uj beszelgetes (nincs --continue).
+    # --task <id>: a SZERVER valaszt munkamenet-azonositot, azzal inditja, es a feladathoz
+    # regisztralja, az UTVONAL agensere (nem a hivora). A valaszban: {"ok":true,"session_id":...}.
+    # A --task csak --fresh mellett megy: a folytatott munkamenet a sajat azonositojat tartja.
+    argc_max 4 "$#" "fleet-api.sh agent-restart <agens> [--fresh] [--task <task_id>]"
+    AGENT="${1:?agent required}"; shift
+    FRESH=0; TASK=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --fresh) FRESH=1; shift ;;
+        --task) TASK="${2:?--task utan feladat-azonosito kell}"; shift 2 ;;
+        *) echo "FAIL: ismeretlen kapcsolo: $1 (--fresh, --task <task_id>)" >&2; exit 1 ;;
+      esac
+    done
+    if [ -n "$TASK" ] && [ "$FRESH" != 1 ]; then
+      echo "FAIL: a --task csak --fresh mellett megy (a folytatott munkamenet a sajat azonositojat tartja)" >&2; exit 1
+    fi
+    A_ENC="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$AGENT")"
+    BODY="$(FRESH="$FRESH" TASK="$TASK" python3 -c 'import json,os
+b={"fresh": os.environ["FRESH"] == "1"}
+if os.environ["TASK"]: b["task_id"] = os.environ["TASK"]
+print(json.dumps(b))')"
+    post "/agents/${A_ENC}/restart" "$BODY"
+    ;;
   task-session)
     # Egy munkamenet a feladate (a V3 eset): akkor minden hivasa a feladathoz megy.
+    # A HIVO SAJAT munkamenetere valo. Egy masik agens friss inditasat az agent-restart
+    # <agens> --fresh --task <id> regisztralja, a szerver altal valasztott azonositoval.
     argc_max 3 "$#" "fleet-api.sh task-session <task_id> <agens> <session_id>"
     TASK="${1:?task id required}"; AGENT="${2:?agent required}"; SESSION="${3:?session id required}"
     TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
@@ -889,7 +918,7 @@ if d.get("action_description"):
 '
     ;;
   *)
-    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-comment|kanban-comments|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read)"
+    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-comment|kanban-comments|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart)"
     exit 1
     ;;
 esac
