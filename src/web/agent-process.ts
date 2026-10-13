@@ -484,7 +484,7 @@ function writeJsonAtomic(path: string, value: unknown, opts: { groupShared?: boo
 // private group is missing: a group-shared write without it would fall back to
 // `fleet`, i.e. to all six agents. The callers log and carry on, as they did for
 // any other write failure.
-function writeAgentPrivateConfig(path: string, data: string, agent?: string): void {
+export function writeAgentPrivateConfig(path: string, data: string, agent?: string): void {
   const root = agentTreeRootOf(path)
   const name = agent ?? (root ? basename(root) : undefined)
   if (!root || !name) throw new Error(`B45 B2-6: ${path} is not inside an agent tree`)
