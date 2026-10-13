@@ -461,11 +461,14 @@ export function assignCalls(input: {
   unassigned: { call: UsageCall; role: 'admin' | 'review' }[]
   /** Coord calls of this task made while another task's window was open too. */
   concurrent: { call: UsageCall; tasks: string[] }[]
+  /** Calls in THIS task's windows that another task's coord window took. */
+  ceded: { call: UsageCall; tasks: string[] }[]
 } {
   const assigned: CallAssignment[] = []
   const overlaps: Overlap[] = []
   const unassigned: { call: UsageCall; role: 'admin' | 'review' }[] = []
   const concurrent: { call: UsageCall; tasks: string[] }[] = []
+  const ceded: { call: UsageCall; tasks: string[] }[] = []
   for (const call of input.calls) {
     const sessionOwner = input.sessions.get(`${call.agent}|${call.session_id}`)
     const hits = input.windows.filter((w) => w.agent === call.agent && inWindow(w, call.timestamp, input.now))
@@ -483,7 +486,9 @@ export function assignCalls(input: {
     const coordTasks = new Set(hits.filter((w) => w.role === 'coord').map((w) => w.task_id))
     if (coordTasks.size > 1) { unassigned.push({ call, role: 'admin' }); continue }
     if (coordTasks.size === 1) {
-      if (!coordTasks.has(input.taskId)) continue
+      // not ours, and SAID, so the task whose window it was does not shrink unnoticed
+      // (barracuda, review of #74 v2)
+      if (!coordTasks.has(input.taskId)) { ceded.push({ call, tasks: [...coordTasks] }); continue }
       assigned.push({ call, mode: 'window', role: 'coord' })
       const others = [...new Set(hits.filter((w) => w.task_id !== input.taskId).map((w) => w.task_id))].sort()
       if (others.length) concurrent.push({ call, tasks: others })
@@ -512,7 +517,7 @@ export function assignCalls(input: {
     }
     assigned.push({ call, mode: 'window', role })
   }
-  return { assigned, overlaps, unassigned, concurrent }
+  return { assigned, overlaps, unassigned, concurrent, ceded }
 }
 
 export interface TokenTotals {
@@ -578,7 +583,14 @@ export interface TaskUsage {
    * window was open too, and `concurrent_tasks` names those tasks. Not separable, only said.
    * `open_since`: a coord window of this task that was never closed (it runs to now).
    */
-  coordination: { concurrent: TokenTotals; concurrent_tasks: string[]; open_since: number | null }
+  coordination: {
+    concurrent: TokenTotals
+    concurrent_tasks: string[]
+    open_since: number | null
+    /** Calls in this task's own windows that another task's coord window took, and those tasks. */
+    ceded: TokenTotals
+    ceded_to: string[]
+  }
   totals: TokenTotals
   by_capacity: Record<CapacityKind, TokenTotals>
   by_agent: Record<string, TokenTotals>
@@ -619,7 +631,7 @@ export function taskUsage(db: Database.Database, taskId: string, now: number): T
       .all(w.agent, w.from, w.to ?? now + 1) as UsageCall[])
       calls.set(row.id, row)
 
-  const { assigned, overlaps, unassigned, concurrent } = assignCalls({
+  const { assigned, overlaps, unassigned, concurrent, ceded } = assignCalls({
     taskId,
     calls: [...calls.values()].sort((a, b) => a.timestamp - b.timestamp || a.id - b.id),
     windows,
@@ -660,6 +672,8 @@ export function taskUsage(db: Database.Database, taskId: string, now: number): T
   for (const u of unassigned) add(unassignedTotals[u.role], u.call)
   const concurrentTotals = emptyTotals()
   for (const c of concurrent) add(concurrentTotals, c.call)
+  const cededTotals = emptyTotals()
+  for (const c of ceded) add(cededTotals, c.call)
   return {
     task,
     valid: overlaps.length === 0,
@@ -670,6 +684,8 @@ export function taskUsage(db: Database.Database, taskId: string, now: number): T
       concurrent_tasks: [...new Set(concurrent.flatMap((c) => c.tasks))].sort(),
       // a coord window of this task with no close: it runs to the query time
       open_since: own.find((w) => w.role === 'coord' && w.to === null)?.from ?? null,
+      ceded: cededTotals,
+      ceded_to: [...new Set(ceded.flatMap((c) => c.tasks))].sort(),
     },
     totals,
     by_capacity: byCapacity,

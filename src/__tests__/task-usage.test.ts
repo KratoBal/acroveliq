@@ -689,6 +689,9 @@ describe('the coord window', () => {
     expect([f.valid, f.overlaps.length, f.by_capacity.work.calls, f.by_capacity.work.cache_read]).toEqual([true, 0, 1, 1])
     const k = taskUsage(db, 'k4', NOW)!
     expect([k.by_capacity.coord.calls, k.coordination.concurrent_tasks]).toEqual([1, ['fejl']])
+    // and the task whose window it was SAYS it (barracuda, review of #74 v2)
+    expect([f.coordination.ceded.calls, f.coordination.ceded.cache_read, f.coordination.ceded_to]).toEqual([1, 2, ['k4']])
+    expect([k.coordination.ceded.calls, k.coordination.ceded_to]).toEqual([0, []])
   })
 
   it('a forgotten coord_close: the actor\'s next coord_open, on another task, ends it; the last open one is named', () => {

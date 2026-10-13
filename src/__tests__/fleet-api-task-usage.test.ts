@@ -99,13 +99,13 @@ describe('fleet-api.sh task-usage', () => {
   it('FLEET-TASK-USAGE-COORD: the coord line, and the concurrent other tasks said on their own line', async () => {
     const u = usage('koord', null, true)
     answer = [200, { ...u, by_capacity: { ...u.by_capacity, coord: totals(12, 4_000_000) },
-      coordination: { concurrent: totals(5, 1_000_000), concurrent_tasks: ['masik', 'harmadik'], open_since: 1760252700 } }]
+      coordination: { concurrent: totals(5, 1_000_000), concurrent_tasks: ['masik', 'harmadik'], open_since: 1760252700, ceded: totals(2, 300_000), ceded_to: ['k4'] } }]
     const r = await run(['task-usage', 'koord'])
     answer = [200, { ...u, by_capacity: { ...u.by_capacity, coord: totals(12, 4_000_000) }, coordination: { concurrent: empty, concurrent_tasks: [] } }]
     const quiet = await run(['task-usage', 'koord'])
     expect([r.code, /coord +12 hivas .*cache-olv +4\.00M/.test(r.out),
       /coord: ebbol 5 hivas idejen mas feladat ablaka is nyitva volt \(masik, harmadik\)/.test(r.out),
-      /mas feladat ablaka/.test(quiet.out), /LEZARATLAN ablak 1760252700 ota/.test(r.out), /LEZARATLAN/.test(quiet.out)], 'FLEET-TASK-USAGE-COORD').toEqual([0, true, true, false, true, false])
+      /mas feladat ablaka/.test(quiet.out), /LEZARATLAN ablak 1760252700 ota/.test(r.out), /LEZARATLAN/.test(quiet.out), /coord: 2 hivas a feladat sajat ablakaban egy masik feladat coord ablakaba esett \(k4\), ott szamolva/.test(r.out), /coord ablakaba esett/.test(quiet.out)], 'FLEET-TASK-USAGE-COORD').toEqual([0, true, true, false, true, false, true, false])
   })
 
   it('FLEET-TASK-EVENT: the time and the reference go as given, the task id URL-encoded', async () => {
