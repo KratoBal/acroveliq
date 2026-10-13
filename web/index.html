@@ -82,6 +82,10 @@
         <span class="sb-label">Jóváhagyások</span>
         <span class="approvals-pending-badge sb-badge" id="approvalsPendingBadge" hidden></span>
       </a>
+      <a href="#" class="sb-link" data-page="acroveliq">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 21 20H3z"/><line x1="8" y1="14" x2="16" y2="14"/></svg>
+        <span class="sb-label">AcrovelIQ</span>
+      </a>
       <div class="sb-group" data-group="team">
         <button type="button" class="sb-group-header" aria-expanded="false" aria-controls="sbGroupTeam">
           <span class="sb-group-label" data-i18n="nav.group.team">CSAPAT</span>
@@ -285,6 +289,32 @@
           </div>
           <div class="overview-activity" id="overviewActivity"></div>
         </div>
+      </div>
+    </div>
+
+    <!-- === AcrovelIQ (read-only, acroveliq-vp-v1) Page === -->
+    <div class="page" id="acroveliqPage" hidden>
+      <div class="aq" id="aqRoot">
+        <div class="aq-head">
+          <div>
+            <h1 class="aq-title" id="aqTitle">AcrovelIQ</h1>
+            <p class="aq-sub" id="aqSub">A csapat munkája valódi adatból, csak olvasásra</p>
+          </div>
+          <div class="aq-head-side">
+            <span class="aq-badge aq-badge-live">ÉLŐ ADAT · CSAK OLVASÁS</span>
+            <button type="button" class="aq-refresh" id="aqRefresh">Frissítés</button>
+            <span class="aq-stamp" id="aqStamp"></span>
+          </div>
+        </div>
+        <nav class="aq-tabs" id="aqTabs" aria-label="AcrovelIQ nézetek">
+          <button type="button" class="aq-tab active" data-aq-view="overview">Áttekintés</button>
+          <button type="button" class="aq-tab" data-aq-view="agents">Ágensek</button>
+          <button type="button" class="aq-tab" data-aq-view="tasks">Feladatok</button>
+          <button type="button" class="aq-tab" data-aq-view="stalls">Elakadások</button>
+          <button type="button" class="aq-tab" data-aq-view="decisions">Döntéseim</button>
+        </nav>
+        <div id="aqBody" class="aq-body"><p class="aq-muted">Betöltés…</p></div>
+        <p class="aq-foot">Csak olvasó nézet: innen nem lehet feladatot kiadni, ágenst újraindítani vagy jóváhagyni. Ahol nincs mért adat, a felület ezt írja ki.</p>
       </div>
     </div>
 

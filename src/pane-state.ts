@@ -518,6 +518,29 @@ export function detectsBlockingMenu(pane: string): boolean {
   return MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)
 }
 
+// A tool-permission dialog asks "Do you want to proceed?" (or "... make this
+// edit ...", "... create ..."); an older build wrote "requires approval". A long
+// command block can scroll the question off the visible pane while the footer
+// stays (scripts/agent-pane.sh, measured 2026-08-22), so a parked menu WITHOUT
+// the question is reported as 'menu', never as "no prompt".
+const PERMISSION_QUESTION_RX = /Do you want to|requires approval/
+// The question sits above the choices and the footer; a longer reach would take
+// a question QUOTED higher up on a pane parked in some other menu (barracuda, #68).
+const PERMISSION_QUESTION_REGION_LINES = 12
+
+/**
+ * Which blocking dialog a pane is parked in, for the read-only AcrovelIQ view:
+ * 'permission' when the question is visible, 'menu' for any other parked
+ * modal (or a permission dialog whose question scrolled away), null when the
+ * pane is not parked. Pure; built on detectsBlockingMenu, so a busy or idle
+ * pane is never reported.
+ */
+export function detectBlockingPrompt(pane: string): 'permission' | 'menu' | null {
+  if (!detectsBlockingMenu(pane)) return null
+  const region = pane.split('\n').slice(-PERMISSION_QUESTION_REGION_LINES).join('\n')
+  return PERMISSION_QUESTION_RX.test(region) ? 'permission' : 'menu'
+}
+
 // Claude Code FIRST-RUN gates: the interactive dialogs a brand-new install
 // parks on before the prompt ever renders -- the per-project "Do you trust the
 // files in this folder?" consent, the --dangerously-skip-permissions "Bypass
