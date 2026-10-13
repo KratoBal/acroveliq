@@ -516,12 +516,12 @@ if not f.get("assignee"): missing.append("assignee")
 for k in missing: print("FAIL 1: hianyzik a feladatrol: %s" % k)
 if missing:
     print("  Potlas: fleet-api.sh task-new %s - < feladat.json. A goal, assignee es tarsai, ha nincsenek benne, maradnak;" % sys.argv[2])
-    print("  a project, parent_task, variant es brief_ref viszont felulirodik: azokat is add meg.")
+    print("  a project, type, parent_task, variant es brief_ref viszont felulirodik: azokat is add meg.")
     sys.exit(4)
 if f["assignee"] != agent:
     print("FAIL 1: a feladat felelose %s, nem %s" % (f["assignee"], agent))
-    print("  Atiras: fleet-api.sh task-new %s - < feladat.json, benne \"assignee\": \"%s\"; a project, parent_task," % (sys.argv[2], agent))
-    print("  variant es brief_ref felulirodik, azokat is add meg (a goal es tarsai maradnak).")
+    print("  Atiras: fleet-api.sh task-new %s - < feladat.json, benne \"assignee\": \"%s\"; a project, type," % (sys.argv[2], agent))
+    print("  parent_task, variant es brief_ref felulirodik, azokat is add meg (a goal es tarsai maradnak).")
     sys.exit(4)
 print("1 rendben: %s, felelos %s, profil %s" % (sys.argv[2], agent, f["verification_profile"]))' "$AGENT" "$TASK"
     RC1=$?; [ "$RC1" -eq 0 ] || exit "$RC1"
