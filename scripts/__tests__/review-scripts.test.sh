@@ -123,9 +123,9 @@ mkdir "$Z/pr-1709"; printf 'os PR 1709 \ntask_id: tsk-a\nfej: 1111111aaaa\nv2: t
 check 'a later round line (vN: task_id X,) binds that task -> 0' 0 "$(ell 1709 tsk-b CHANGES)"
 n="$(events)"
 
-echo 'the profile: the event writers are denied for the reviewer only'
+echo 'the profile: the Task Core writers are denied for the reviewer only'
 RV="$HERE/../../templates/profiles/reviewer.json"; RR="$HERE/../../templates/profiles/researcher-reader.json"
-for c in task-event kiadas; do
+for c in task-event kiadas task-new task-session handoff-write; do
   rule="\"Bash(bash \${HOME}/marveen/scripts/fleet-api.sh $c:*)\""
   check "reviewer.json denies fleet-api.sh $c" 1 "$(grep -cF "$rule" "$RV")"
   check "... researcher-reader.json (polip) does not" 0 "$(grep -cF "$rule" "$RR")"
