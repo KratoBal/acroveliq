@@ -204,9 +204,9 @@ else
     echo "stopping the pre-migration session in the router's own tmux"
     tmux kill-session -t "agent-$AGENT" 2>/dev/null || true
   fi
-  curl -s -X POST -H "Authorization: Bearer $TOKEN" "$DASH/api/agents/$AGENT/stop"; echo
+  curl -s -X POST -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "$DASH/api/agents/$AGENT/stop"; echo
   sleep 3
-  curl -s -X POST -H "Authorization: Bearer $TOKEN" "$DASH/api/agents/$AGENT/start"; echo
+  curl -s -X POST -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "$DASH/api/agents/$AGENT/start"; echo
   sleep 8
 fi
 

@@ -508,7 +508,7 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
       _guard_port="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
       curl -s --max-time 5 -X POST "http://localhost:${_guard_port:-3420}/api/messages" \
         -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $(cat "$INSTALL_DIR/store/.dashboard-token")" \
+        -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$INSTALL_DIR/store/.dashboard-token")") \
         -d "{\"from\":\"channels-sh-guard\",\"to\":\"${MAIN_AGENT_ID:-marveen}\",\"content\":\"[GUARD] A fo agens a KOZOS ~/.claude alol indult, pedig van flotta setup-token (store/.claude-oauth-token). A MAIN_AGENT_ISOLATED_CONFIG nincs beallitva, ezert az auth a rotalodo megosztott credentialbol megy: ez lejarhat, 401-be all a TUI, es a csatorna NEMAN elerhetetlen lesz. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 beallitasa, majd channels session restart.\"}" \
         -o /dev/null -w '%{http_code}' 2>>"$INSTALL_DIR/store/channels-failures.log" > "$INSTALL_DIR/store/.channels-guard-http.$$" || true
       # Honest delivery (NOTIFYVAKSWEEP826 zaro kor): a fenti WARN csak a helyi
@@ -534,7 +534,7 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
       _guard_port="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
       curl -s --max-time 5 -X POST "http://localhost:${_guard_port:-3420}/api/messages" \
         -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $(cat "$INSTALL_DIR/store/.dashboard-token")" \
+        -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$INSTALL_DIR/store/.dashboard-token")") \
         -d "{\"from\":\"channels-sh-guard\",\"to\":\"${MAIN_AGENT_ID:-marveen}\",\"content\":\"[GUARD] A channels session most a KOZOS ~/.claude alol indult, pedig letezik izolalt config dir (.channels-config). A MAIN_AGENT_ISOLATED_CONFIG beallitas valoszinuleg elveszett (store/config-overrides.json torlodott es nincs .env kulcs). Az auth a rotalodo shared sessionbol megy, 401-veszely. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 visszaallitasa, majd channels session restart.\"}" \
         -o /dev/null -w '%{http_code}' 2>>"$INSTALL_DIR/store/channels-failures.log" > "$INSTALL_DIR/store/.channels-guard-http.$$" || true
       # Honest delivery (NOTIFYVAKSWEEP826 zaro kor): a fenti WARN csak a helyi

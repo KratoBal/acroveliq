@@ -283,6 +283,54 @@ describe('fleet-api.sh presents the resolved token (end to end)', () => {
   })
 })
 
+// The token must not ride on curl's command line: /proc is mounted without
+// hidepid, so every agent's `ps` shows every process's argv, and an agent
+// could lift another's own token from a running curl (barracuda, #82 review).
+// The helpers hand the header over through a file descriptor instead. A curl
+// shim first on PATH records the argv it was given, then runs the real curl.
+describe('the helpers keep the token off curl\'s command line (end to end)', () => {
+  async function run(script: 'fleet-api.sh' | 'agent-msg.sh', args: string[]): Promise<{ auth: string; argv: string }> {
+    const root = tree({ runAsUser: ME })
+    mkdirSync(join(root, 'scripts', 'lib'), { recursive: true })
+    copyFileSync(join(REPO, 'scripts', script), join(root, 'scripts', script))
+    copyFileSync(join(REPO, 'scripts', 'lib', 'dashboard-token.sh'), join(root, 'scripts', 'lib', 'dashboard-token.sh'))
+    writeFileSync(join(root, 'store', 'tokens', 'scout.token'), 'own-token\n')
+    const bin = join(root, 'bin')
+    mkdirSync(bin)
+    const realCurl = spawnSync('bash', ['-c', 'command -v curl'], { encoding: 'utf8' }).stdout.trim()
+    writeFileSync(join(bin, 'curl'), `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${join(root, 'argv.log')}"\nexec "${realCurl}" "$@"\n`)
+    chmodSync(join(bin, 'curl'), 0o755)
+    let auth = ''
+    const server = createServer((req, res) => {
+      auth = String(req.headers.authorization ?? '')
+      req.resume()
+      req.on('end', () => {
+        res.setHeader('Content-Type', 'application/json')
+        res.end(req.method === 'POST' ? '{"id":7,"status":"pending"}' : '[]')
+      })
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+    const port = (server.address() as { port: number }).port
+    await new Promise<void>((r) =>
+      execFile('bash', [join(root, 'scripts', script), ...args], {
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, MARVEEN_WEB_PORT: String(port), WEB_PORT: String(port) },
+      }, () => r()),
+    )
+    server.close()
+    return { auth, argv: existsSync(join(root, 'argv.log')) ? readFileSync(join(root, 'argv.log'), 'utf8') : '' }
+  }
+
+  it('TOK-ARGV: fleet-api.sh sends the own token, and curl\'s argv does not carry it', async () => {
+    const r = await run('fleet-api.sh', ['kanban-list'])
+    expect([r.auth, r.argv.includes('own-token'), r.argv.includes('/dev/fd/')], 'TOK-ARGV').toEqual(['Bearer own-token', false, true])
+  })
+
+  it('TOK-ARGV-MSG: agent-msg.sh too', async () => {
+    const r = await run('agent-msg.sh', ['scout', 'acrobot', 'proba'])
+    expect([r.auth, r.argv.includes('own-token'), r.argv.includes('/dev/fd/')], 'TOK-ARGV-MSG').toEqual(['Bearer own-token', false, true])
+  })
+})
+
 describe('revokeAgentToken', () => {
   let db: Database.Database
   let root: string
