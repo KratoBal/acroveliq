@@ -276,7 +276,7 @@ print(json.dumps(b))')"
 attempt=0; max=3; CODE=""; ID=""
 while [ "$attempt" -lt "$max" ]; do
   attempt=$((attempt+1))
-  RESP="$(curl -s -X POST "$URL" -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
+  RESP="$(curl -s -X POST "$URL" -H "Content-Type: application/json" -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
   CODE="$(printf '%s' "$RESP" | tail -n1)"
   JSON="$(printf '%s' "$RESP" | sed '$d')"
   ID="$(printf '%s' "$JSON" | python3 -c 'import sys,json

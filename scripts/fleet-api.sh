@@ -122,7 +122,7 @@ post() {
   local resp code json
   resp="$(curl -s -X POST "${API}${path}" \
     -H 'Content-Type: application/json' \
-    -H "Authorization: Bearer $TOKEN" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") \
     -d "$body" -w $'\n%{http_code}' 2>/dev/null || true)"
   code="$(printf '%s' "$resp" | tail -n1)"
   json="$(printf '%s' "$resp" | sed '$d')"
@@ -134,7 +134,7 @@ post() {
 
 get() {
   local path="$1"
-  curl -s -H "Authorization: Bearer $TOKEN" "${API}${path}" || { echo "FAIL: GET ${path}"; exit 1; }
+  curl -s -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "${API}${path}" || { echo "FAIL: GET ${path}"; exit 1; }
 }
 
 # PUT <path> <json-body>; same contract as post(). Kanban card fields (assignee,
@@ -148,7 +148,7 @@ put() {
   local resp code json
   resp="$(curl -s -X PUT "${API}${path}" \
     -H 'Content-Type: application/json' \
-    -H "Authorization: Bearer $TOKEN" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") \
     -d "$body" -w $'\n%{http_code}' 2>/dev/null || true)"
   code="$(printf '%s' "$resp" | tail -n1)"
   json="$(printf '%s' "$resp" | sed '$d')"
@@ -287,7 +287,7 @@ except ValueError as e:
     sys.exit("FAIL: a rekord nem ervenyes JSON: %s" % e)
 print(json.dumps({"agent": sys.argv[1], "record": record}))' "$AGENT" "$RECORD")" || { echo "$BODY"; exit 1; }
     RESP="$(curl -s -X POST "${API}/tasks/${TASK_URL}/handoffs" \
-      -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
+      -H 'Content-Type: application/json' -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") \
       -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
     CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
     if [ "$CODE" = "201" ]; then printf '%s\n' "$JSON"; exit 0; fi
@@ -315,7 +315,7 @@ if body.get("required"):
     argc_max 1 "$#" "fleet-api.sh handoff-read <task_id>"
     TASK="${1:?task id required}"
     TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
-    RESP="$(curl -s -H "Authorization: Bearer $TOKEN" "${API}/tasks/${TASK_URL}/handoffs/latest?verify=1" -w $'\n%{http_code}' 2>/dev/null || true)"
+    RESP="$(curl -s -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "${API}/tasks/${TASK_URL}/handoffs/latest?verify=1" -w $'\n%{http_code}' 2>/dev/null || true)"
     CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
     [ "$CODE" = "200" ] || { echo "FAIL http=${CODE:-?} $(printf '%s' "$JSON" | head -c 200)"; exit 1; }
     printf '%s' "$JSON" | python3 -c '
@@ -399,7 +399,7 @@ print(json.dumps(d))' "$KIND" "$ACTOR" "${4:-}" "${5:-}" "$DATA_STDIN")" || exit
     KEY="$(python3 -c 'import uuid; print(uuid.uuid4())')"
     for attempt in 1 2 3; do
       RESP="$(curl -s -X POST "${API}/tasks/${TASK_URL}/events" \
-        -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: $KEY" \
+        -H 'Content-Type: application/json' -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") -H "Idempotency-Key: $KEY" \
         -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
       CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
       case "$CODE" in
@@ -416,7 +416,7 @@ print(json.dumps(d))' "$KIND" "$ACTOR" "${4:-}" "${5:-}" "$DATA_STDIN")" || exit
     argc_max 1 "$#" "fleet-api.sh task-timeline <task_id>"
     TASK="${1:?task id required}"
     TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
-    RESP="$(curl -s -H "Authorization: Bearer $TOKEN" "${API}/tasks/${TASK_URL}/timeline" -w $'\n%{http_code}' 2>/dev/null || true)"
+    RESP="$(curl -s -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "${API}/tasks/${TASK_URL}/timeline" -w $'\n%{http_code}' 2>/dev/null || true)"
     CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
     [ "$CODE" = "200" ] || { echo "FAIL http=${CODE:-?} $(printf '%s' "$JSON" | head -c 200)"; exit 1; }
     printf '%s' "$JSON" | python3 -c '
@@ -444,7 +444,7 @@ print("-- %d tetel, %s" % (len(d["items"]), d["task"]))'
     # munkamenet ELSO olvasasa. Generalt, minden sor a forrasat nevezi meg, es a keretbol
     # kimaradtakat a vegen darabszammal es azonositoval sorolja: nem masodik memoria.
     argc_max 0 "$#" "fleet-api.sh open-matters"
-    RESP="$(curl -s -H "Authorization: Bearer $TOKEN" "${API}/open-matters?format=text" -w $'\n%{http_code}' 2>/dev/null || true)"
+    RESP="$(curl -s -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "${API}/open-matters?format=text" -w $'\n%{http_code}' 2>/dev/null || true)"
     CODE="$(printf '%s' "$RESP" | tail -n1)"; BODYTXT="$(printf '%s' "$RESP" | sed '$d')"
     [ "$CODE" = "200" ] || { echo "FAIL http=${CODE:-?} $(printf '%s' "$BODYTXT" | head -c 200)"; exit 1; }
     printf '%s\n' "$BODYTXT"
@@ -518,7 +518,7 @@ print(json.dumps(b))')"
     # GET <path>: a torzs a KI_JSON-ba, a kod a KI_CODE-ba (a get() a kodot nem nezi)
     kget() {
       local resp
-      resp="$(curl -s -H "Authorization: Bearer $TOKEN" "${API}$1" -w $'\n%{http_code}' 2>/dev/null || true)"
+      resp="$(curl -s -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "${API}$1" -w $'\n%{http_code}' 2>/dev/null || true)"
       KI_CODE="$(printf '%s' "$resp" | tail -n1)"; KI_JSON="$(printf '%s' "$resp" | sed '$d')"
     }
     # 1. a feladat es a mezoi
@@ -630,7 +630,7 @@ print("  Ismeteld kesobb, vagy --continue alakban (restart nelkul, az uzenet a s
 sys.exit(8)' "$AGENT" || exit 8
       BODY="$(TASK="$TASK" python3 -c 'import json,os; print(json.dumps({"fresh": True, "task_id": os.environ["TASK"]}))')"
       RESP="$(curl -s -X POST "${API}/agents/${A_ENC}/restart" -H 'Content-Type: application/json' \
-        -H "Authorization: Bearer $TOKEN" -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
+        -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
       CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
       SID="$(printf '%s' "$JSON" | python3 -c '
 import json,sys
@@ -682,7 +682,7 @@ print(d.get("session_id","") if d.get("ok") is True and d.get("registered") is n
     TASK="${1:?task id required}"
     TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
     Q=""; [ "${2:-}" = "variants" ] && Q="?variants=1"
-    RESP="$(curl -s -H "Authorization: Bearer $TOKEN" "${API}/tasks/${TASK_URL}/usage${Q}" -w $'\n%{http_code}' 2>/dev/null || true)"
+    RESP="$(curl -s -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "${API}/tasks/${TASK_URL}/usage${Q}" -w $'\n%{http_code}' 2>/dev/null || true)"
     CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
     [ "$CODE" = "200" ] || { echo "FAIL http=${CODE:-?} $(printf '%s' "$JSON" | head -c 200)"; exit 1; }
     printf '%s' "$JSON" | python3 -c '
@@ -878,7 +878,7 @@ if r:
     # vagy valaki mas vonta vissza. (Korall merte 2026-08-18: a figyelmezteto szoveg
     # onmagaban minden done-ra kiirodik, tehat par het alatt hattérzaj lesz -- ez a
     # sor viszont CSAK akkor szolal meg, ha tenyleg baj van.)
-    AGENTS_JSON="$(curl -s -H "Authorization: Bearer $TOKEN" "${API}/agents" 2>/dev/null || true)"
+    AGENTS_JSON="$(curl -s -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "${API}/agents" 2>/dev/null || true)"
     # A LEKERDEZES AZ AZONOSITOVAL MEGY, NEM ABLAKKAL (javitva 2026-09-08 21:15).
     # Addig ez a parancs a szures nelkuli /messages listat nezte, amit a szerver 200
     # sornal vag -- tehat MINDEN ennel regebbi azonositora azt felelte, hogy "nincs az

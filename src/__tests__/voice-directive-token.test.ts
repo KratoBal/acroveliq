@@ -9,10 +9,9 @@ import { buildTtsDirective } from '../web/voice-directive.js'
 describe('buildTtsDirective carries no token', () => {
   const directive = buildTtsDirective({ chatId: '12345', stateDir: '/tmp/state', voiceModel: 'hu_HU-imre-medium' })
 
-  it('VOICE-NOTOKEN: the only Authorization value is read at run time from the resolved file', () => {
-    const bearers = [...(directive ?? '').matchAll(/Bearer (.*?)" -d @-/g)].map((m) => m[1])
+  it('VOICE-NOTOKEN: the only Authorization value is read at run time from the resolved file, through a file descriptor', () => {
     expect((directive ?? '').match(/Bearer/g)).toHaveLength(1)
-    expect(bearers, 'VOICE-NOTOKEN').toEqual(['$(cat "$TOKEN_FILE")'])
+    expect(directive, 'VOICE-NOTOKEN').toContain(`-H @<(printf 'Authorization: Bearer %s\\n' "$(cat "$TOKEN_FILE")") -d @-`)
   })
 
   it('VOICE-RESOLVER: the token file comes from the helpers\' resolver for this install', () => {

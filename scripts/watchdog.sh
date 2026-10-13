@@ -117,7 +117,7 @@ replay_unfinished_messages() {
   CUTOFF=$(( NOW - 7200 ))
 
   RESPONSE=$(curl -s -m 5 \
-    -H "Authorization: Bearer $TOKEN" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") \
     "http://localhost:${WEB_PORT}/api/messages?to=${AGENT_ID}&limit=200" 2>/dev/null) || return
 
   [ -z "$RESPONSE" ] || [ "$RESPONSE" = "[]" ] && return
