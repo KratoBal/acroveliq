@@ -14,7 +14,11 @@ Exit codes: 0 = no finding and no blind spot, 1 = finding, 2 = no finding but bl
 
 Usage:
   python3 -B b45-jogellenorzo.py [--root /home/marveen/marveen] [--max-examples 5]
-                                 [--dropzone PATH ...] [--json OUT]
+                                 [--dropzone PATH ...] [--json OUT] [--osszegzes OUT]
+
+--osszegzes writes counts, the failed positive probes and the blind list only. --json carries
+every finding, which before the B45 fix was five million rows: the daily run
+(b45-jogellenorzo-napi.py) must not fill the disk on the very day it has something to say.
 """
 import argparse, grp, json, os, pwd, stat, struct, sys
 
@@ -253,6 +257,7 @@ def main():
     ap.add_argument('--backup', action='append', default=[],
                     help='file or dir that no agent may read (default: the B47 list)')
     ap.add_argument('--json')
+    ap.add_argument('--osszegzes', help='compact JSON: counts, failed positive probes, blind list')
     ap.add_argument('--feltetelezett', help='what-if: getfacl-format target state (b45-acl.py cel)')
     args = ap.parse_args()
     root = args.root
@@ -342,6 +347,12 @@ def main():
     if args.json:
         with open(args.json, 'w') as fh:
             json.dump({'findings': c.findings, 'positive': c.positive, 'blind': c.blind}, fh)
+    if args.osszegzes:
+        with open(args.osszegzes, 'w') as fh:
+            json.dump({'findings': len(c.findings),
+                       'pairs': [[cat, att, vic, len(items)] for (cat, att, vic), items in sorted(by.items())],
+                       'positive': len(c.positive), 'positive_failed': pos_fail,
+                       'blind': c.blind}, fh)
     if c.findings or pos_fail:
         sys.exit(1)
     sys.exit(2 if c.blind else 0)
