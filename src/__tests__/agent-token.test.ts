@@ -1,4 +1,4 @@
-import { execFile, spawnSync } from 'node:child_process'
+import { execFile, spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { copyFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -170,9 +170,9 @@ describe('issueAgentTokenToPipe (the step sheet: root runs no repository code)',
     return { written, out: { isTty: false, write: (t: string) => { written.push(t) } } }
   }
 
-  it('TOK-PIPE: the token goes to the pipe only, the row holds its hash, no file is written', () => {
+  it('TOK-PIPE: the token goes to the pipe only, the row holds its hash, no file is written', async () => {
     const p = pipe()
-    const r = issueAgentTokenToPipe(db, { root, agent: 'scout', now: NOW, apply: true, out: p.out })
+    const r = await issueAgentTokenToPipe(db, { root, agent: 'scout', now: NOW, apply: true, out: p.out })
     expect(r.status).toBe('issued')
     expect(p.written).toHaveLength(1)
     const token = p.written[0]!.trim()
@@ -185,42 +185,72 @@ describe('issueAgentTokenToPipe (the step sheet: root runs no repository code)',
     expect(JSON.stringify(r)).not.toContain(token)
   })
 
-  it('TOK-PIPE-TTY: a terminal is refused before any row is written', () => {
+  it('TOK-PIPE-TTY: a terminal is refused before any row is written', async () => {
     const written: string[] = []
-    expect(() => issueAgentTokenToPipe(db, {
+    await expect(issueAgentTokenToPipe(db, {
       root, agent: 'scout', now: NOW, apply: true, out: { isTty: true, write: (t) => { written.push(t) } },
-    })).toThrow(/terminal/)
+    })).rejects.toThrow(/terminal/)
     expect(written).toEqual([])
     expect(rows()).toEqual([])
   })
 
-  it('TOK-PIPE-EXISTS: an existing file is refused, no row', () => {
+  it('TOK-PIPE-EXISTS: an existing file is refused, no row', async () => {
     mkdirSync(join(root, 'store', 'tokens'), { recursive: true })
     writeFileSync(agentTokenPath(root, 'scout'), 'old\n')
     const p = pipe()
-    expect(() => issueAgentTokenToPipe(db, { root, agent: 'scout', now: NOW, apply: true, out: p.out })).toThrow(/already exists/)
+    await expect(issueAgentTokenToPipe(db, { root, agent: 'scout', now: NOW, apply: true, out: p.out })).rejects.toThrow(/already exists/)
     expect(p.written).toEqual([])
     expect(rows()).toEqual([])
   })
 
-  it('TOK-PIPE-ROLLBACK: a failed write revokes the row', () => {
-    expect(() => issueAgentTokenToPipe(db, {
-      root, agent: 'scout', now: NOW, apply: true, out: { isTty: false, write: () => { throw new Error('EPIPE') } },
-    })).toThrow('EPIPE')
-    expect(rows()).toHaveLength(1)
-    expect(rows()[0]!.revoked_at).toBe(NOW)
+  // The real pipe, not a throwing mock (barracuda, #80): a child runs the
+  // CLI's writer on its own process.stdout, and Node reports a closed reader
+  // as an 'error' EVENT, which used to end the process with the row live.
+  const probe = (closeReader: boolean) => new Promise<{ code: number | null; err: string; out: string; db: string }>((resolve) => {
+    const dbPath = join(root, 'probe.db')
+    const child = spawn('npx', ['tsx', join(process.cwd(), 'src', '__tests__', 'fixtures', 'token-pipe-probe.ts'), dbPath, root, '700'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let out = ''
+    let err = ''
+    if (closeReader) child.stdout.destroy()
+    else child.stdout.on('data', (d) => { out += d })
+    child.stderr.on('data', (d) => { err += d })
+    child.on('close', (code) => resolve({ code, err, out, db: dbPath }))
   })
+  const probeRows = (dbPath: string) => {
+    const pdb = new Database(dbPath, { readonly: true })
+    try {
+      return pdb.prepare('SELECT key_hash, revoked_at FROM principal_tokens').all() as { key_hash: string; revoked_at: number | null }[]
+    } finally {
+      pdb.close()
+    }
+  }
 
-  it('TOK-PIPE-DRY: a dry run writes nothing and adds no row', () => {
+  it('TOK-PIPE-EPIPE: a pipe whose reader is gone revokes the row, and the process does not crash', async () => {
+    const r = await probe(true)
+    expect([r.code, r.err.trim()], 'TOK-PIPE-EPIPE').toEqual([3, 'rejected EPIPE'])
+    expect(probeRows(r.db).map((x) => x.revoked_at !== null)).toEqual([true])
+  }, 30_000)
+
+  it('TOK-PIPE-REAL: the same writer into a live reader: the token arrives and its row stays live', async () => {
+    const r = await probe(false)
+    expect([r.code, r.err.trim()], 'TOK-PIPE-REAL').toEqual([0, 'issued 1'])
+    const token = r.out.trim()
+    expect(token).toMatch(/^mvpt_/)
+    expect(probeRows(r.db)).toEqual([{ key_hash: createHash('sha256').update(token).digest('hex'), revoked_at: null }])
+  }, 30_000)
+
+  it('TOK-PIPE-DRY: a dry run writes nothing and adds no row', async () => {
     const p = pipe()
-    expect(issueAgentTokenToPipe(db, { root, agent: 'scout', now: NOW, apply: false, out: p.out }).status).toBe('dry-run')
+    expect((await issueAgentTokenToPipe(db, { root, agent: 'scout', now: NOW, apply: false, out: p.out })).status).toBe('dry-run')
     expect(p.written).toEqual([])
     expect(rows()).toEqual([])
   })
 
-  it('TOK-PIPE-NAME: a name that could leave the directory is refused', () => {
+  it('TOK-PIPE-NAME: a name that could leave the directory is refused', async () => {
     const p = pipe()
-    expect(() => issueAgentTokenToPipe(db, { root, agent: '../x', now: NOW, apply: true, out: p.out })).toThrow(/invalid agent name/)
+    await expect(issueAgentTokenToPipe(db, { root, agent: '../x', now: NOW, apply: true, out: p.out })).rejects.toThrow(/invalid agent name/)
     expect(rows()).toEqual([])
   })
 })

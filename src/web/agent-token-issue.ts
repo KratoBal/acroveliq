@@ -11,7 +11,11 @@
 // sheet): the install's owner writes the row and hands the token to a pipe;
 // root only places the file with base-system commands. Root then runs no
 // repository code, which the install's owner can rewrite. The token is written
-// to the pipe only, never to a terminal.
+// to the pipe only, never to a terminal. A write the pipe refuses (its reader
+// gone: EPIPE) revokes the row. What this side cannot see is a reader that
+// took the token and failed afterwards (behind `docker compose exec` the
+// write succeeds into docker's buffer whatever root's side does): there the
+// step sheet's revoke step is the guard (L2), not this code.
 //
 // Dry run unless `apply`: it says what it would do and touches nothing.
 import { chownSync, closeSync, existsSync, mkdirSync, openSync, unlinkSync, writeSync } from 'node:fs'
@@ -101,13 +105,41 @@ export function issueAgentToken(
 }
 
 /**
+ * Writes `text` to a stream and settles when the stream took it or refused
+ * it. Node reports a write into a pipe whose reader is gone (EPIPE) as an
+ * 'error' EVENT, not a throw, and an unhandled one ends the process (measured
+ * on process.stdout, 2026-10-13: the CLI said "issued", then died, and the row
+ * stayed live). The listener stays attached, so a late error cannot crash the
+ * process either.
+ */
+export function writeToPipe(stream: NodeJS.WritableStream, text: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const fail = (error: Error) => {
+      if (settled) return
+      settled = true
+      reject(error)
+    }
+    stream.on('error', fail)
+    stream.write(text, (error?: Error | null) => {
+      if (error) return fail(error)
+      if (settled) return
+      settled = true
+      resolve()
+    })
+  })
+}
+
+/**
  * Mints the agent's token and writes it to `out.write` instead of a file
  * (the step sheet's root step places the file). Refused when `out.isTty`: a
  * token on a screen is a token in a scrollback. Refused, as in the file way,
- * when the agent's file already exists. If the write throws, the row is
- * revoked: no live token exists that nothing received.
+ * when the agent's file already exists. If the write fails (it throws or its
+ * promise rejects: `writeToPipe` turns a refused pipe into a rejection), the
+ * row is revoked. A reader that took the token and failed later is not
+ * visible here (see the header).
  */
-export function issueAgentTokenToPipe(
+export async function issueAgentTokenToPipe(
   db: Database.Database,
   opts: {
     root: string
@@ -115,10 +147,10 @@ export function issueAgentTokenToPipe(
     expiresInDays?: number
     now: number
     apply: boolean
-    out: { isTty: boolean; write(text: string): void }
+    out: { isTty: boolean; write(text: string): void | Promise<void> }
     fs?: Pick<TokenFileOps, 'exists'>
   },
-): Omit<IssueResult, 'owner'> {
+): Promise<Omit<IssueResult, 'owner'>> {
   const fs = opts.fs ?? realTokenFileOps
   if (!AGENT_NAME.test(opts.agent)) throw new Error(`invalid agent name: ${opts.agent}`)
   if (opts.out.isTty) throw new Error('the token goes to a pipe only, and the output is a terminal: nothing issued')
@@ -129,7 +161,7 @@ export function issueAgentTokenToPipe(
   if (!opts.apply) return result
   const minted = createPrincipalToken(db, opts.agent, { expiresInDays: opts.expiresInDays, now: opts.now })
   try {
-    opts.out.write(`${minted.token}\n`)
+    await opts.out.write(`${minted.token}\n`)
   } catch (error) {
     revokePrincipalToken(db, minted.id, opts.now)
     throw error

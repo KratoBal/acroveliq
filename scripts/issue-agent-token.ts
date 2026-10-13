@@ -17,7 +17,7 @@ import { join } from 'node:path'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../src/config.js'
 import { getDb, initDatabase } from '../src/db.js'
 import { readAgentRunAsUser } from '../src/web/agent-config.js'
-import { issueAgentToken, issueAgentTokenToPipe } from '../src/web/agent-token-issue.js'
+import { issueAgentToken, issueAgentTokenToPipe, writeToPipe } from '../src/web/agent-token-issue.js'
 
 const args = process.argv.slice(2)
 const agent = args.find((a) => !a.startsWith('--'))
@@ -48,14 +48,20 @@ function ownerOf(name: string): { uid: number; gid: number; user: string } {
 const owner = ownerOf(agent)
 initDatabase()
 if (toStdout) {
-  const piped = issueAgentTokenToPipe(getDb(), {
-    root: PROJECT_ROOT,
-    agent,
-    expiresInDays,
-    now: Math.floor(Date.now() / 1000),
-    apply,
-    out: { isTty: process.stdout.isTTY === true, write: (text) => { process.stdout.write(text) } },
-  })
+  let piped
+  try {
+    piped = await issueAgentTokenToPipe(getDb(), {
+      root: PROJECT_ROOT,
+      agent,
+      expiresInDays,
+      now: Math.floor(Date.now() / 1000),
+      apply,
+      out: { isTty: process.stdout.isTTY === true, write: (text) => writeToPipe(process.stdout, text) },
+    })
+  } catch (error) {
+    console.error(`not issued: ${error instanceof Error ? error.message : String(error)} (a row written before the failure is revoked)`)
+    process.exit(1)
+  }
   console.error(
     piped.status === 'issued'
       ? `issued to the pipe: ${piped.agent}, principal_tokens id ${piped.id}; root places it at ${piped.path} (0400, ${owner.user})`
