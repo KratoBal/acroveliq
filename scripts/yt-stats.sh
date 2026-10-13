@@ -103,7 +103,7 @@ print((q.get("code") or [""])[0])
   csec="$(read_secret "$CLIENT_SECRET_FILE")" || exit 1
   resp="$(curl -sS --max-time 30 -X POST "https://oauth2.googleapis.com/token" \
     --data-urlencode "client_id=$cid" --data-urlencode "client_secret@"<(printf '%s' "$csec") \
-    --data-urlencode "code=$code" --data-urlencode "redirect_uri=$REDIRECT" \
+    --data-urlencode "code@"<(printf '%s' "$code") --data-urlencode "redirect_uri=$REDIRECT" \
     --data-urlencode "grant_type=authorization_code")" || die "halozati hiba a token cserenel"
   printf '%s' "$resp" | REFRESH="$REFRESH_FILE" python3 -c '
 import json, os, sys

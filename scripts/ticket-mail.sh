@@ -101,7 +101,7 @@ auth_code() {
   local cid sec; cid="$(read_file "$CID_FILE")"; sec="$(read_file "$SEC_FILE")"
   local resp
   resp="$(curl -s -m 30 -X POST https://oauth2.googleapis.com/token \
-    --data-urlencode "code=$code" --data-urlencode "redirect_uri=$REDIRECT" \
+    --data-urlencode "code@"<(printf '%s' "$code") --data-urlencode "redirect_uri=$REDIRECT" \
     --data-urlencode "client_id=$cid" --data-urlencode "client_secret@"<(printf '%s' "$sec") \
     --data-urlencode "grant_type=authorization_code")"
   RESP="$resp" OUT="$REFRESH_FILE" python3 -c '
