@@ -10,7 +10,7 @@ import Database from 'better-sqlite3'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { ensurePrincipalSchema } from '../web/auth-principals.js'
-import { agentTokenPath, issueAgentToken, realTokenFileOps, revokeAgentToken, type TokenFileOps } from '../web/agent-token-issue.js'
+import { agentTokenPath, issueAgentToken, issueAgentTokenToPipe, realTokenFileOps, revokeAgentToken, type TokenFileOps } from '../web/agent-token-issue.js'
 import { resolvePrincipalToken } from '../web/auth-principals.js'
 
 /*
@@ -154,6 +154,77 @@ describe('issueAgentToken', () => {
   })
 })
 
+describe('issueAgentTokenToPipe (the step sheet: root runs no repository code)', () => {
+  let db: Database.Database
+  let root: string
+  beforeEach(() => {
+    db = new Database(':memory:')
+    ensurePrincipalSchema(db)
+    root = mkdtempSync(join(tmpdir(), 'mv-pipe-'))
+  })
+  const rows = () => db.prepare('SELECT actor, key_hash, revoked_at FROM principal_tokens').all() as {
+    actor: string; key_hash: string; revoked_at: number | null
+  }[]
+  const pipe = () => {
+    const written: string[] = []
+    return { written, out: { isTty: false, write: (t: string) => { written.push(t) } } }
+  }
+
+  it('TOK-PIPE: the token goes to the pipe only, the row holds its hash, no file is written', () => {
+    const p = pipe()
+    const r = issueAgentTokenToPipe(db, { root, agent: 'scout', now: NOW, apply: true, out: p.out })
+    expect(r.status).toBe('issued')
+    expect(p.written).toHaveLength(1)
+    const token = p.written[0]!.trim()
+    expect(token).toMatch(/^mvpt_/)
+    expect(p.written[0]).toBe(`${token}\n`)
+    expect(rows()).toEqual([{ actor: 'scout', key_hash: createHash('sha256').update(token).digest('hex'), revoked_at: null }])
+    expect(resolvePrincipalToken(db, token, NOW + 1)).not.toBeNull()
+    expect(existsSync(agentTokenPath(root, 'scout'))).toBe(false)
+    expect(existsSync(join(root, 'store', 'tokens'))).toBe(false)
+    expect(JSON.stringify(r)).not.toContain(token)
+  })
+
+  it('TOK-PIPE-TTY: a terminal is refused before any row is written', () => {
+    const written: string[] = []
+    expect(() => issueAgentTokenToPipe(db, {
+      root, agent: 'scout', now: NOW, apply: true, out: { isTty: true, write: (t) => { written.push(t) } },
+    })).toThrow(/terminal/)
+    expect(written).toEqual([])
+    expect(rows()).toEqual([])
+  })
+
+  it('TOK-PIPE-EXISTS: an existing file is refused, no row', () => {
+    mkdirSync(join(root, 'store', 'tokens'), { recursive: true })
+    writeFileSync(agentTokenPath(root, 'scout'), 'old\n')
+    const p = pipe()
+    expect(() => issueAgentTokenToPipe(db, { root, agent: 'scout', now: NOW, apply: true, out: p.out })).toThrow(/already exists/)
+    expect(p.written).toEqual([])
+    expect(rows()).toEqual([])
+  })
+
+  it('TOK-PIPE-ROLLBACK: a failed write revokes the row', () => {
+    expect(() => issueAgentTokenToPipe(db, {
+      root, agent: 'scout', now: NOW, apply: true, out: { isTty: false, write: () => { throw new Error('EPIPE') } },
+    })).toThrow('EPIPE')
+    expect(rows()).toHaveLength(1)
+    expect(rows()[0]!.revoked_at).toBe(NOW)
+  })
+
+  it('TOK-PIPE-DRY: a dry run writes nothing and adds no row', () => {
+    const p = pipe()
+    expect(issueAgentTokenToPipe(db, { root, agent: 'scout', now: NOW, apply: false, out: p.out }).status).toBe('dry-run')
+    expect(p.written).toEqual([])
+    expect(rows()).toEqual([])
+  })
+
+  it('TOK-PIPE-NAME: a name that could leave the directory is refused', () => {
+    const p = pipe()
+    expect(() => issueAgentTokenToPipe(db, { root, agent: '../x', now: NOW, apply: true, out: p.out })).toThrow(/invalid agent name/)
+    expect(rows()).toEqual([])
+  })
+})
+
 describe('fleet-api.sh presents the resolved token (end to end)', () => {
   async function bearerSent(withOwnToken: boolean): Promise<string> {
     const root = tree({ runAsUser: ME })
@@ -227,6 +298,14 @@ describe('revokeAgentToken', () => {
     const failing: TokenFileOps = { ...realTokenFileOps, unlink: () => { throw new Error('EBUSY') } }
     expect(() => revokeAgentToken(db, { root, agent: 'scout', now: NOW + 1, apply: true, fs: failing })).toThrow('EBUSY')
     expect(resolvePrincipalToken(db, token, NOW + 2)).toBeNull()
+  })
+
+  it('TOK-REVOKE-DBONLY: the rows revoked, the file left for root', () => {
+    const token = issue('scout')
+    const r = revokeAgentToken(db, { root, agent: 'scout', now: NOW + 1, apply: true, dbOnly: true })
+    expect(r).toMatchObject({ status: 'revoked', ids: [1], file: true })
+    expect(resolvePrincipalToken(db, token, NOW + 2)).toBeNull()
+    expect(existsSync(agentTokenPath(root, 'scout'))).toBe(true)
   })
 
   it('TOK-REVOKE-NAME: a path-like name is refused', () => {

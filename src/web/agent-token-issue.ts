@@ -7,6 +7,12 @@
 // revoked and a half-made file removed: no token exists that no file holds.
 // The token is never returned or printed.
 //
+// The other way (`issueAgentTokenToPipe`, barracuda's review of the P0-1 step
+// sheet): the install's owner writes the row and hands the token to a pipe;
+// root only places the file with base-system commands. Root then runs no
+// repository code, which the install's owner can rewrite. The token is written
+// to the pipe only, never to a terminal.
+//
 // Dry run unless `apply`: it says what it would do and touches nothing.
 import { chownSync, closeSync, existsSync, mkdirSync, openSync, unlinkSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
@@ -94,6 +100,43 @@ export function issueAgentToken(
   return { ...result, status: 'issued', id: minted.id }
 }
 
+/**
+ * Mints the agent's token and writes it to `out.write` instead of a file
+ * (the step sheet's root step places the file). Refused when `out.isTty`: a
+ * token on a screen is a token in a scrollback. Refused, as in the file way,
+ * when the agent's file already exists. If the write throws, the row is
+ * revoked: no live token exists that nothing received.
+ */
+export function issueAgentTokenToPipe(
+  db: Database.Database,
+  opts: {
+    root: string
+    agent: string
+    expiresInDays?: number
+    now: number
+    apply: boolean
+    out: { isTty: boolean; write(text: string): void }
+    fs?: Pick<TokenFileOps, 'exists'>
+  },
+): Omit<IssueResult, 'owner'> {
+  const fs = opts.fs ?? realTokenFileOps
+  if (!AGENT_NAME.test(opts.agent)) throw new Error(`invalid agent name: ${opts.agent}`)
+  if (opts.out.isTty) throw new Error('the token goes to a pipe only, and the output is a terminal: nothing issued')
+  const path = agentTokenPath(opts.root, opts.agent)
+  if (fs.exists(path))
+    throw new Error(`${path} already exists: revoke the old token and remove the file first, nothing issued`)
+  const result = { status: 'dry-run' as IssueResult['status'], agent: opts.agent, path }
+  if (!opts.apply) return result
+  const minted = createPrincipalToken(db, opts.agent, { expiresInDays: opts.expiresInDays, now: opts.now })
+  try {
+    opts.out.write(`${minted.token}\n`)
+  } catch (error) {
+    revokePrincipalToken(db, minted.id, opts.now)
+    throw error
+  }
+  return { ...result, status: 'issued', id: minted.id }
+}
+
 export interface RevokeResult {
   status: 'dry-run' | 'revoked'
   agent: string
@@ -115,7 +158,16 @@ export interface RevokeResult {
  */
 export function revokeAgentToken(
   db: Database.Database,
-  opts: { root: string; agent: string; project?: string; now: number; apply: boolean; fs?: TokenFileOps },
+  opts: {
+    root: string
+    agent: string
+    project?: string
+    now: number
+    apply: boolean
+    /** revoke the rows only; the file is root's to remove (the pipe way) */
+    dbOnly?: boolean
+    fs?: TokenFileOps
+  },
 ): RevokeResult {
   const fs = opts.fs ?? realTokenFileOps
   if (!AGENT_NAME.test(opts.agent)) throw new Error(`invalid agent name: ${opts.agent}`)
@@ -130,6 +182,6 @@ export function revokeAgentToken(
   const result: RevokeResult = { status: 'dry-run', agent: opts.agent, ids, path, file }
   if (!opts.apply) return result
   for (const id of ids) revokePrincipalToken(db, id, opts.now)
-  if (file) fs.unlink(path)
+  if (file && !opts.dbOnly) fs.unlink(path)
   return { ...result, status: 'revoked' }
 }
