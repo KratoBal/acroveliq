@@ -4,7 +4,7 @@
 # review-csomag.sh <os|commerce|marveen> <PR> <task_id> [cimke]
 #   -> review-csomagok/pr-<PR> (os), pr-c<PR> (commerce) vagy pr-marveen<PR> (a flotta
 #      repoja, KratoBal/marveen): diff.patch + README.md
-#      (task_id, fej, merge-base, origin/main). Ha a mappa mar letezik, diff-vN.patch-et ir,
+#      (pr: owner/repo#N, task_id, fej, merge-base, origin/main). Ha a mappa mar letezik, diff-vN.patch-et ir,
 #      a kovetkezo szabad N-nel, a README-hez egy sort fuz.
 #   A task_id KOTELEZO (TC-Lite L4): barracuda a verdict esemenyt erre irja, es eddig
 #   visszakerdezett, ha a kerdesben nem allt.
@@ -31,26 +31,36 @@
 umask 022
 set -uo pipefail
 case "${1:-}" in
-  os) DEFAULT_REPO=/home/marveen/work/acropora-os; PFX="pr-" ;;
-  commerce) DEFAULT_REPO=/home/marveen/work/acropora-commerce; PFX="pr-c" ;;
+  os) DEFAULT_REPO=/home/marveen/work/acropora-os; PFX="pr-"; SLUG=KratoBal/acropora-os ;;
+  commerce) DEFAULT_REPO=/home/marveen/work/acropora-commerce; PFX="pr-c"; SLUG=KratoBal/acropora-commerce ;;
   # The fleet's own repo. Until 2026-10-13 these packets were made by hand, with three
   # README shapes (task_id:, task:, "task X" in the title): review-ellenoriz.sh binds a
   # verdict to the task the README names, so the shape now comes from here.
-  marveen) DEFAULT_REPO=/home/marveen/marveen; PFX="pr-marveen" ;;
+  marveen) DEFAULT_REPO=/home/marveen/marveen; PFX="pr-marveen"; SLUG=KratoBal/marveen ;;
   *) echo "usage: [REVIEW_CSOMAG_REPO=<sajat klon>] review-csomag.sh <os|commerce|marveen> <PR> <task_id> [cimke]" >&2; exit 2 ;;
 esac
 REPO="${REVIEW_CSOMAG_REPO:-$DEFAULT_REPO}"
 PR="${2:?PR szam}"; TASK="${3:-}"; LABEL="${4:-}"
-case "$PR" in ''|*[!0-9]*) echo "FAIL: a PR szam csak szamjegy lehet: $PR" >&2; exit 2 ;; esac
+case "$PR" in ''|0*|*[!0-9]*) echo "FAIL: a PR szam csak szamjegy lehet, nullaval nem kezdodik: $PR" >&2; exit 2 ;; esac
 if ! [[ "$TASK" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then
   echo "FAIL: a harmadik hely a task_id (kotelezo, feladat-azonosito), ez erkezett: '${TASK}'" >&2
   echo "  usage: [REVIEW_CSOMAG_REPO=<sajat klon>] review-csomag.sh <os|commerce|marveen> <PR> <task_id> [cimke]" >&2
   exit 2
 fi
+PRREF="$SLUG#$PR"
 ZONA="${REVIEW_CSOMAG_DIR:-/home/marveen/marveen/review-csomagok}"
 D="$ZONA/${PFX}${PR}"
 if [ ! -d "$REPO/.git" ] || [ ! -w "$REPO/.git" ]; then
   echo "FAIL: a klon ($REPO) nem git-klon, vagy nem irhato ennek a felhasznalonak ($(id -un)). Agenskent a sajat klonodat add meg: REVIEW_CSOMAG_REPO=<ut>" >&2
+  exit 1
+fi
+# The README names the PR as owner/repo#N (card f1e388e5): a bare "PR 77" exists in two
+# repos, and review-ellenoriz.sh writes this name into the verdict's ref, where the
+# Task Core binds it to the merge (#78). The name comes from the mode, so the clone must
+# BE that repo: a clone of another repo would fetch another repo's PR under this name.
+ORIGIN="$(git -C "$REPO" remote get-url origin 2>/dev/null || true)"
+if ! [[ "$ORIGIN" =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)${SLUG}(\.git)?/?$ ]]; then
+  echo "FAIL: a klon ($REPO) origin-ja nem a $SLUG repo: '${ORIGIN}'" >&2
   exit 1
 fi
 if [ ! -d "$ZONA" ] || [ -L "$ZONA" ]; then
@@ -68,7 +78,7 @@ if [ -e "$D" ]; then
 else
   mkdir -m 755 "$D" || { echo "FAIL: $D nem hozhato letre (kozben letrejott?)" >&2; exit 1; }
 fi
-[ "${REVIEW_CSOMAG_GUARD_ONLY:-0}" = 1 ] && { echo "ok: $D umask=$(umask)"; exit 0; }
+[ "${REVIEW_CSOMAG_GUARD_ONLY:-0}" = 1 ] && { echo "ok: $D pr: $PRREF umask=$(umask)"; exit 0; }
 cd "$REPO" || exit 1
 if ! ferr=$(bash /home/marveen/marveen/scripts/git-auth.sh fetch origin main "pull/$PR/head:pr-$PR" -f 2>&1 >/dev/null); then
   echo "FAIL: fetch ($REPO): $ferr" >&2; exit 1
@@ -80,7 +90,7 @@ if [ -e "$D/diff.patch" ]; then
   printf "v%s: task_id %s, fej %s, merge-base %s, origin/main %s %s\n" "$n" "$TASK" "$H" "$B" "$M" "$LABEL" >> "$D/README.md"
 else
   OUT="$D/diff.patch"
-  printf "%s PR %s %s\ntask_id: %s\nfej: %s\nmerge-base: %s\norigin/main: %s\n" "$1" "$PR" "$LABEL" "$TASK" "$H" "$B" "$M" > "$D/README.md"
+  printf "%s PR %s %s\npr: %s\ntask_id: %s\nfej: %s\nmerge-base: %s\norigin/main: %s\n" "$1" "$PR" "$LABEL" "$PRREF" "$TASK" "$H" "$B" "$M" > "$D/README.md"
 fi
 git diff "$B" "$H" > "$OUT"
 echo "$OUT ($(git diff --shortstat "$B" "$H"))"
