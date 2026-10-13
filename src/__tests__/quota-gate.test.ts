@@ -164,6 +164,9 @@ describe('quotaInputProblem -- the gate says when it is blind', () => {
       quotaInputProblem(snap({ five_hour: { used: 99 } }, { ageMs: QUOTA_GATE.staleAfterMs + 60_000 }), NOW),
     ).toBe('stale-snapshot:21m')
     expect(quotaInputProblem({ ...snap({}), windows: {} }, NOW)).toBe('no-usable-window')
+    expect(quotaInputProblem(snap({ five_hour: { used: 99 } }, { ageMs: -60 * 60_000 }), NOW)).toBe(
+      'future-snapshot:60m',
+    )
   })
 
   it('is null for fresh, trusted input -- and only then can the gate defer', () => {

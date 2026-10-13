@@ -8,8 +8,8 @@
 // percent of a window minutes before the owner needed it for real work.
 //
 // This module answers one question -- "should this piece of work start right
-// now?" -- from the snapshot quota-snapshot.ts reads (the statusline samples,
-// or store/usage-latest.json, whichever is newer). Kept pure so the thresholds are unit-tested without
+// now?" -- from the snapshot quota-snapshot.ts reads (the router-owned
+// store/quota-gate-sample.json). Kept pure so the thresholds are unit-tested without
 // a network call or a filesystem read; the caller supplies the snapshot.
 //
 // Two design rules, both deliberate:
@@ -35,7 +35,7 @@ export interface QuotaWindow {
   resets_at?: number | null
 }
 
-/** The `claude` section of store/usage-latest.json, or one statusline sample. */
+/** One quota snapshot: a router-owned statusline sample (quota-snapshot.ts). */
 export interface QuotaSnapshot {
   /** 'authoritative' | 'authoritative_cached' | 'claude-code-statusline' | 'estimate' | ... */
   source?: string | null
@@ -62,6 +62,11 @@ export interface QuotaDecision {
 export const QUOTA_GATE = {
   /** A snapshot older than this tells us nothing about now. */
   staleAfterMs: 20 * 60_000,
+  /**
+   * Clock skew we tolerate. A snapshot dated further ahead is not evidence:
+   * a negative age would otherwise read as perfectly fresh (barracuda, #76).
+   */
+  maxFutureSkewMs: 5 * 60_000,
   /** Background work stops at or above this utilization. */
   deferAtPercent: 85,
   /** ... and also stops above this, if the window is about to reset anyway. */
@@ -71,6 +76,8 @@ export const QUOTA_GATE = {
   /** Sources whose numbers are real. Anything else is a guess -- fail open. */
   // 'claude-code-statusline' is the rate_limits block Claude Code itself
   // reports to the statusline (scripts/measure-statusline.py), not a guess.
+  // Trusted only because quota-snapshot.ts accepts it from a router-owned,
+  // non-group-writable file; the fleet-writable sample log is never read here.
   trustedSources: ['authoritative', 'authoritative_cached', 'claude-code-statusline'],
 } as const
 
@@ -129,6 +136,7 @@ export function quotaInputProblem(
   if (typeof generatedAtMs !== 'number' || Number.isNaN(generatedAtMs)) return 'no-snapshot-timestamp'
   const ageMs = nowMs - generatedAtMs
   if (ageMs > QUOTA_GATE.staleAfterMs) return `stale-snapshot:${Math.round(ageMs / 60_000)}m`
+  if (-ageMs > QUOTA_GATE.maxFutureSkewMs) return `future-snapshot:${Math.round(-ageMs / 60_000)}m`
 
   if (quotaPressure(snapshot) === null) return 'no-usable-window'
   return null

@@ -546,7 +546,9 @@ export function resolveBoundChannel(agentName: string): BoundChannel {
 
 // The gate fails open on a missing or stale snapshot, which on its own is
 // indistinguishable from "no pressure": until 2026-10-13 it ran blind for
-// weeks because the file it read was never written, and nothing said so.
+// weeks because the file it read was never written, and nothing said so. A
+// rejected input (wrong owner, writable by others, a symlink or FIFO) reports
+// the same way, with its own reason.
 // Report the blind state when it starts and when it ends -- not every
 // 60-second tick, or the warning drowns in its own repetition.
 let lastQuotaInputProblem: string | null | undefined
@@ -1528,8 +1530,9 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // One read per tick, shared by every task the loop considers: the whole
     // fleet draws on ONE subscription quota pool, so the gate below asks the
     // same snapshot about all of them.
-    const quotaSnapshot = readQuotaSnapshot()
-    reportQuotaInput(quotaInputProblem(quotaSnapshot, now))
+    const quotaRead = readQuotaSnapshot()
+    const quotaSnapshot = quotaRead.snapshot
+    reportQuotaInput(quotaRead.problem ?? quotaInputProblem(quotaSnapshot, now))
 
     for (const task of tasks) {
       if (!task.enabled) continue
