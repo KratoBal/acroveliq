@@ -19,6 +19,8 @@ export interface HandoffDecision {
   who: string
   /** Message id, comment id or PR comment: where the decision is recorded. */
   where: string
+  /** The decider's words, verbatim; mandatory for every decision in a coordination handoff. */
+  quote?: string
 }
 
 /** A prohibition, with its source. Forgetting one is the costliest loss. */
@@ -39,16 +41,50 @@ export interface HandoffCodeState {
   merged: boolean
 }
 
+/**
+ * A COORDINATION unit's handoff (koord-munkamenet, plan item 2): the four fields a short
+ * coordination session hands over are mandatory, and the server refuses the record when
+ * one is missing (acrobot 2026-10-13, msg 29863; Balazs 18:45:34 UTC, msg
+ * 1559638247641194638).
+ */
+export const COORDINATION_PHASES = ['kesz', 'reszben', 'blokkolt'] as const
+
+export interface CoordinationState {
+  /** kesz / reszben / blokkolt */
+  phase: (typeof COORDINATION_PHASES)[number]
+  /** One sentence: where the unit stands. */
+  summary: string
+}
+
+/** A next step, in order, with whose step it is. */
+export interface CoordinationStep {
+  what: string
+  who: string
+}
+
+/** An open question: whom we wait on, and for what. */
+export interface CoordinationQuestion {
+  from: string
+  what: string
+}
+
 export interface HandoffRecord {
   task: { id: string; goal: string; brief: string }
+  /** 'coordination' makes the four fields below mandatory; absent for a development handoff. */
+  kind?: 'coordination'
   status: string
+  /** coordination only */
+  state?: CoordinationState
+  /** coordination only; next_step then carries the first step, for the readers that know only that field */
+  next_steps?: CoordinationStep[]
   decisions: HandoffDecision[]
   prohibitions: HandoffProhibition[]
   /** null only when the task touched no code at all. */
   code: HandoffCodeState | null
   files: string[]
   next_step: string
-  open_questions: string[]
+  /** strings in a development handoff, {from, what} in a coordination one */
+  open_questions: string[] | CoordinationQuestion[]
   /** Multi-project from day one; `acropora` when absent. */
   project: string
 }
@@ -91,9 +127,16 @@ const BRANCH_PATTERN = /^(?!.*\.\.)[\w.\/-]+$/
  */
 export function validateHandoffRecord(
   input: unknown,
+  opts: { coordinationTask?: boolean } = {},
 ): { ok: true; record: HandoffRecord } | { ok: false; missing: string[] } {
   const missing: string[] = []
   const raw = (input && typeof input === 'object' ? input : {}) as Record<string, any>
+  // The four fields are bound to the TASK, not to the writer: a handoff on a task whose
+  // type is `coordination` is held to them whether or not the record says so, so a
+  // forgotten `kind` is refused instead of passing as a development handoff
+  // (barracuda, review of #72; acrobot, msg 29886).
+  if (opts.coordinationTask && raw.kind !== 'coordination')
+    missing.push(`kind (this is a coordination task: the record must say kind: 'coordination' and carry its four fields)`)
 
   const task = raw.task && typeof raw.task === 'object' ? raw.task : null
   if (!task) missing.push('task')
@@ -133,9 +176,46 @@ export function validateHandoffRecord(
   }
 
   if (!Array.isArray(raw.files) || raw.files.some((file: unknown) => !isText(file))) missing.push('files')
-  if (!isText(raw.next_step)) missing.push('next_step')
-  if (!Array.isArray(raw.open_questions) || raw.open_questions.some((q: unknown) => !isText(q)))
-    missing.push('open_questions')
+
+  const coordination = raw.kind === 'coordination' || !!opts.coordinationTask
+  if ('kind' in raw && raw.kind !== 'coordination') missing.push("kind (only 'coordination', or leave it out)")
+  if (!coordination) {
+    if (!isText(raw.next_step)) missing.push('next_step')
+    if (!Array.isArray(raw.open_questions) || raw.open_questions.some((q: unknown) => !isText(q)))
+      missing.push('open_questions')
+  } else {
+    // 1. the state: a phase and one sentence, not one word
+    const st = raw.state && typeof raw.state === 'object' ? raw.state : null
+    if (!st) missing.push('state')
+    else {
+      if (!(COORDINATION_PHASES as readonly string[]).includes(st.phase))
+        missing.push(`state.phase (one of: ${COORDINATION_PHASES.join(', ')})`)
+      if (!isText(st.summary)) missing.push('state.summary')
+      else if (st.summary.trim().split(/\s+/).length < 4) missing.push('state.summary (a sentence, not a word)')
+    }
+    // 2. the decisions: `where` must be a message id (or a comment or PR number) that
+    // can be looked up, and each decision carries the decider's words verbatim
+    if (Array.isArray(raw.decisions))
+      raw.decisions.forEach((d: any, i: number) => {
+        if (d && isText(d.where) && !/\d{3,}/.test(d.where)) missing.push(`decisions[${i}].where (a message id)`)
+        // every decision, not only one whose `who` spells Balazs: a decision written as
+        // "the owner" or "gazda" would otherwise pass without his words (barracuda, #72)
+        if (d && !isText(d.quote)) missing.push(`decisions[${i}].quote (the decider's words, verbatim)`)
+      })
+    // 3. the next steps, in order, each with whose step it is; none only when done
+    if (!Array.isArray(raw.next_steps)) missing.push('next_steps')
+    else {
+      raw.next_steps.forEach((x: any, i: number) => {
+        for (const f of ['what', 'who']) if (!x || !isText(x[f])) missing.push(`next_steps[${i}].${f}`)
+      })
+      if (raw.next_steps.length === 0 && st?.phase !== 'kesz') missing.push('next_steps (empty only when state.phase is kesz)')
+    }
+    // 4. the open questions: whom we wait on and for what; an empty list is valid, a missing field is not
+    if (!Array.isArray(raw.open_questions)) missing.push('open_questions')
+    else raw.open_questions.forEach((q: any, i: number) => {
+      for (const f of ['from', 'what']) if (!q || !isText(q[f])) missing.push(`open_questions[${i}].${f}`)
+    })
+  }
 
   if (missing.length) return { ok: false, missing }
   return {
@@ -147,9 +227,14 @@ export function validateHandoffRecord(
       prohibitions: raw.prohibitions,
       code: raw.code,
       files: raw.files,
-      next_step: raw.next_step.trim(),
+      next_step: coordination
+        ? (raw.next_steps.length ? `${raw.next_steps[0].who}: ${raw.next_steps[0].what}`.trim() : 'nincs (kesz)')
+        : raw.next_step.trim(),
       open_questions: raw.open_questions,
       project: isText(raw.project) ? raw.project.trim() : DEFAULT_PROJECT,
+      ...(coordination
+        ? { kind: 'coordination' as const, state: { phase: raw.state.phase, summary: raw.state.summary.trim() }, next_steps: raw.next_steps }
+        : {}),
     },
   }
 }

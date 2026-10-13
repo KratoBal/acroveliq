@@ -39,6 +39,7 @@
 #   bash scripts/fleet-api.sh task-new <task_id> - < feladat.json   # cim, cel, felelos, profil...
 #   bash scripts/fleet-api.sh task-event <task_id> <fajta> <szereplo> [ido] [hivatkozas] [--data - < adat.json]
 #   bash scripts/fleet-api.sh task-timeline <task_id>
+#   bash scripts/fleet-api.sh open-matters         # a nyitott ugyek osszefoglaloja (koord-munkamenet)
 #   bash scripts/fleet-api.sh task-busy <agens>     # a feladatai, amik foglalva tartjak
 #   bash scripts/fleet-api.sh task-session <task_id> <agens> <session_id>
 #         (a HIVO SAJAT munkamenetet: egy masik agenset az agent-restart --task regisztralja)
@@ -422,6 +423,16 @@ for i in d["items"]:
         print("%s  %s  %s" % (t, i["source"], json.dumps(i, ensure_ascii=False)))
 print("-- %d tetel, %s" % (len(d["items"]), d["task"]))'
     exit $?
+    ;;
+  open-matters)
+    # A NYITOTT UGYEK OSSZEFOGLALOJA (koord-munkamenet, terv 1. pont): egy koordinacios
+    # munkamenet ELSO olvasasa. Generalt, minden sor a forrasat nevezi meg, es a keretbol
+    # kimaradtakat a vegen darabszammal es azonositoval sorolja: nem masodik memoria.
+    argc_max 0 "$#" "fleet-api.sh open-matters"
+    RESP="$(curl -s -H "Authorization: Bearer $TOKEN" "${API}/open-matters?format=text" -w $'\n%{http_code}' 2>/dev/null || true)"
+    CODE="$(printf '%s' "$RESP" | tail -n1)"; BODYTXT="$(printf '%s' "$RESP" | sed '$d')"
+    [ "$CODE" = "200" ] || { echo "FAIL http=${CODE:-?} $(printf '%s' "$BODYTXT" | head -c 200)"; exit 1; }
+    printf '%s\n' "$BODYTXT"
     ;;
   task-busy)
     # Egy agens feladatai, amik FOGLALVA tartjak: az utolso esemeny assigned, started vagy
