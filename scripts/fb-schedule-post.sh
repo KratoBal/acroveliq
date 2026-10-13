@@ -30,7 +30,10 @@ TOKEN="$(tr -d ' \t\r\n' < "$TOKEN_FILE")"
 PAGE="$(tr -d ' \t\r\n' < "$PAGE_FILE")"
 [ -n "$TOKEN" ] || die "ures token fajl"
 
-scrub() { sed "s|$TOKEN|<TOKEN>|g"; }
+# No secret on any command line: /proc shows every process's argv to every agent
+# (#85, #87). The token reaches curl as a form field read from a file descriptor
+# (-F "name=<file", curl(1) --form), and sed gets its script the same way.
+scrub() { sed -f <(printf 's|%s|<TOKEN>|g\n' "$TOKEN"); }
 
 case "${1:-}" in
   photo)
@@ -50,7 +53,7 @@ case "${1:-}" in
     # 2026-08-19), so the photo is uploaded unpublished first and then
     # attached to a scheduled feed post, which is the documented path.
     PHOTO_JSON=$(curl -s -X POST "$API/$PAGE/photos" \
-      -F "access_token=$TOKEN" \
+      -F "access_token=<"<(printf '%s' "$TOKEN") \
       -F "published=false" \
       -F "source=@$IMG")
     PHOTO_ID=$(printf '%s' "$PHOTO_JSON" | python3 -c "import json,sys;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
@@ -61,7 +64,7 @@ case "${1:-}" in
     fi
     echo "kep feltoltve (nem publikalt): $PHOTO_ID"
     POST_JSON=$(curl -s -X POST "$API/$PAGE/feed" \
-      -F "access_token=$TOKEN" \
+      -F "access_token=<"<(printf '%s' "$TOKEN") \
       -F "published=false" \
       -F "scheduled_publish_time=$WHEN" \
       -F "attached_media[0]={\"media_fbid\":\"$PHOTO_ID\"}" \
@@ -122,7 +125,7 @@ PY
     N=0
     for IMG in "$@"; do
       PHOTO_JSON=$(curl -s -X POST "$API/$PAGE/photos" \
-        -F "access_token=$TOKEN" \
+        -F "access_token=<"<(printf '%s' "$TOKEN") \
         -F "published=false" \
         -F "source=@$IMG")
       PHOTO_ID=$(printf '%s' "$PHOTO_JSON" | python3 -c "import json,sys;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
@@ -138,7 +141,7 @@ PY
       N=$((N + 1))
     done
     POST_JSON=$(curl -s -X POST "$API/$PAGE/feed" \
-      -F "access_token=$TOKEN" \
+      -F "access_token=<"<(printf '%s' "$TOKEN") \
       -F "published=false" \
       -F "scheduled_publish_time=$WHEN" \
       "${ATTACH[@]}" \
@@ -172,7 +175,7 @@ LEDGER
     ;;
   delete)
     ID="${2:-}"; [ -n "$ID" ] || die "hianyzik az id"
-    curl -s -X DELETE "$API/$ID" -F "access_token=$TOKEN" | scrub
+    curl -s -X DELETE "$API/$ID" -F "access_token=<"<(printf '%s' "$TOKEN") | scrub
     echo
     ;;
   list)
@@ -193,7 +196,7 @@ LEDGER
     [ -n "$ID" ] || die "hianyzik a post id"
     [ -f "$TXT" ] || die "nincs ilyen szovegfajl: $TXT"
     curl -s -X POST "$API/$ID" \
-      -F "access_token=$TOKEN" \
+      -F "access_token=<"<(printf '%s' "$TOKEN") \
       -F "message=<$TXT" | scrub
     echo
     ;;
@@ -206,7 +209,7 @@ LEDGER
     # scheduled_publish_time against the recorded upload + 29 days; rewriting the
     # ledger would erase exactly that evidence and re-arm the 25 day deletion.
     curl -s -X POST "$API/$ID" \
-      -F "access_token=$TOKEN" \
+      -F "access_token=<"<(printf '%s' "$TOKEN") \
       -F "scheduled_publish_time=$WHEN" | scrub
     echo
     # A success response is not proof. Read the object back.
