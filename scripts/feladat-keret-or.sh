@@ -21,17 +21,18 @@
 
 set -uo pipefail
 TASK="${1:?task_id}"; AGENT="${2:?agent}"; MAX_CR="${3:?max cache-read millio}"; MAX_CALLS="${4:?max hivas}"; EVERY="${5:-5}"
-ROOT=/home/marveen/marveen
+# KERET_OR_ROOT only exists for the contract test (scripts/__tests__/feladat-keret-or.test.sh).
+ROOT="${KERET_OR_ROOT:-/home/marveen/marveen}"
 TOKEN="$(cat "$ROOT/store/.dashboard-token")"
 DB="$ROOT/store/claudeclaw.db"
 
 while true; do
   curl -s -m 300 -X POST -H "Authorization: Bearer $TOKEN" http://localhost:3420/api/token-usage/collect >/dev/null
-  read -r CALLS CR CLOSED < <(python3 - "$DB" "$TASK" <<'PY'
+  read -r CALLS CR CLOSED < <(python3 - "$DB" "$TASK" "$ROOT" <<'PY'
 import sqlite3, sys, subprocess, re
 db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
 task = sys.argv[2]
-out = subprocess.run(["bash", "/home/marveen/marveen/scripts/fleet-api.sh", "task-usage", task],
+out = subprocess.run(["bash", sys.argv[3] + "/scripts/fleet-api.sh", "task-usage", task],
                      capture_output=True, text=True).stdout
 m = re.search(r"^\s*work\s+(\d+) hivas.*cache-olv\s+([\d.]+)M", out, re.M)
 calls, cr = (m.group(1), m.group(2)) if m else ("0", "0")
@@ -43,12 +44,30 @@ PY
   echo "$(date +%T) $TASK: $CALLS hivas, ${CR}M olvasas (keret: $MAX_CALLS hivas, ${MAX_CR}M)"
   if [ "$CLOSED" = "1" ]; then echo "lezarva, a keret alatt maradt"; exit 0; fi
   if python3 -c "import sys; sys.exit(0 if float('$CR') >= float('$MAX_CR') or int('$CALLS') >= int('$MAX_CALLS') else 1)"; then
-    sudo -n -u "agent-$AGENT" /usr/bin/tmux send-keys -t "agent-$AGENT" Escape 2>/dev/null \
-      || /usr/bin/tmux send-keys -t "agent-$AGENT" Escape 2>/dev/null
-    printf '%s\n' "KERET ELERVE, $TASK: $CALLS hivas, ${CR}M olvasott token (keret: $MAX_CALLS hivas, ${MAX_CR}M). A futo koredet en szakitottam meg (Escape), a feladat-keret-or.sh miatt. Allj meg, ird le egy sorban, hol tartasz, es varj. Ne folytasd." \
-      > "/tmp/keret-$TASK.txt"
-    bash "$ROOT/scripts/agent-msg.sh" acrobot "$AGENT" - < "/tmp/keret-$TASK.txt"
-    bash "$ROOT/scripts/daily-log.sh" acrobot "Feladat-keret elerve: $TASK" "$CALLS hivas, ${CR}M olvasas; keret $MAX_CALLS / ${MAX_CR}M; $AGENT megallitva."
+    # The message only claims the interruption when a send-keys call actually succeeded:
+    # without the sudo tmux rule both calls fail, and "I interrupted your turn" would be false.
+    if sudo -n -u "agent-$AGENT" /usr/bin/tmux send-keys -t "agent-$AGENT" Escape 2>/dev/null \
+      || /usr/bin/tmux send-keys -t "agent-$AGENT" Escape 2>/dev/null; then
+      STOPPED="A futo koredet en szakitottam meg (Escape), a feladat-keret-or.sh miatt."
+      LOGSTOP="$AGENT megallitva (Escape)."
+    else
+      STOPPED="A futo koredet NEM tudtam megszakitani (a tmux send-keys elbukott), ezert ez az uzenet a kor vegen er hozzad."
+      LOGSTOP="$AGENT Escape NEM ment (tmux send-keys elbukott), csak uzenet."
+    fi
+    # WHY a private directory (barracuda, review of tcl-l0, 2026-10-13): the old fixed
+    # /tmp/keret-<task>.txt could be pre-created by any other user. With
+    # fs.protected_regular=2 our write into it is refused, the script (no -e) went on, and
+    # agent-msg.sh sent THAT user's text in acrobot's name. mktemp -d gives a 0700
+    # directory with an unpredictable name, and a failed write now stops the send.
+    MSGDIR="$(mktemp -d)" || { echo "FAIL: mktemp -d" >&2; exit 1; }
+    MSG="$MSGDIR/keret.txt"
+    if ! printf '%s\n' "KERET ELERVE, $TASK: $CALLS hivas, ${CR}M olvasott token (keret: $MAX_CALLS hivas, ${MAX_CR}M). $STOPPED Allj meg, ird le egy sorban, hol tartasz, es varj. Ne folytasd." > "$MSG"; then
+      echo "FAIL: az uzenetet nem tudtam kiirni ($MSG), nem kuldok semmit" >&2
+      rm -rf "$MSGDIR"; exit 1
+    fi
+    bash "$ROOT/scripts/agent-msg.sh" acrobot "$AGENT" - < "$MSG"
+    rm -rf "$MSGDIR"
+    bash "$ROOT/scripts/daily-log.sh" acrobot "Feladat-keret elerve: $TASK" "$CALLS hivas, ${CR}M olvasas; keret $MAX_CALLS / ${MAX_CR}M; $LOGSTOP"
     exit 3
   fi
   sleep "$((EVERY * 60))"
