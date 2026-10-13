@@ -1,7 +1,7 @@
-import { readFileSync, existsSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { STORE_DIR, WEB_PORT } from '../config.js'
+import { PROJECT_ROOT, WEB_PORT } from '../config.js'
 import { AGENTS_BASE_DIR } from './agent-config.js'
 
 // Resolve the directory where an agent's channel plugin stores its bot .env.
@@ -39,25 +39,29 @@ export function inboundIsAudio(kind: string | null | undefined, fileId: string |
 }
 
 // Build a ready-to-run TTS directive block injected after the STT transcript.
-// Returns null if the dashboard token cannot be read.
+//
+// It carries NO token (acrovelIQ P0-1): the command reads the caller's own at
+// run time through scripts/lib/dashboard-token.sh, the same file the helpers
+// use (the agent's store/tokens/<agent>.token, or the shared one, loudly).
+// It used to embed the shared dashboard token, so the route could be the
+// session's only, and the agents' own hook got 403 under enforcement.
 export function buildTtsDirective(opts: {
   chatId: string
   stateDir: string
   voiceModel: string
 }): string | null {
   try {
-    const tokenPath = join(STORE_DIR, '.dashboard-token')
-    if (!existsSync(tokenPath)) return null
-    const token = readFileSync(tokenPath, 'utf-8').trim()
     const { chatId, stateDir, voiceModel } = opts
+    const lib = join(PROJECT_ROOT, 'scripts', 'lib', 'dashboard-token.sh')
     // Escape stateDir for embedding in a jq string argument
     const escapedStateDir = stateDir.replace(/'/g, "'\\''")
     return (
       `\n\n[Hang válasz direktíva]: A fenti hangüzenetre HANGBAN válaszolj. ` +
       `Amikor megvan a válaszod szövege, futtasd le ezt a parancsot (a szöveget JSON-escape-elve add meg a --arg-ban):\n` +
       `\`\`\`bash\n` +
+      `. '${lib}'; TOKEN_FILE="$(dashboard_token_file '${PROJECT_ROOT}')"\n` +
       `jq -n --arg t "A_VÁLASZOD_SZÖVEGE" '{"text":$t,"chat_id":"${chatId}","state_dir":"${escapedStateDir}","voice_model":"${voiceModel}"}' | ` +
-      `curl -s -X POST http://localhost:${WEB_PORT}/api/voice/tts -H "Content-Type: application/json" -H "Authorization: Bearer ${token}" -d @-\n` +
+      `curl -s -X POST http://localhost:${WEB_PORT}/api/voice/tts -H "Content-Type: application/json" -H "Authorization: Bearer $(cat "$TOKEN_FILE")" -d @-\n` +
       `\`\`\`\n` +
       `Szöveges választ NE küldj -- CSAK a fenti curl-t futtasd le a hangküldéshez.`
     )

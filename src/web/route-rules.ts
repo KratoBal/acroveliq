@@ -198,7 +198,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', path: '/api/onboarding/identity', module: 'onboarding', class: 'KRITIKUS' },
   { method: 'POST', path: '/api/onboarding/claude-auth', module: 'onboarding', class: 'KRITIKUS' },
   { method: 'POST', path: '/api/onboarding/launch', module: 'onboarding', class: 'KRITIKUS' },
-  { method: 'GET', path: '/api/voice/directive', module: 'voice', class: 'KRITIKUS', note: "titok kiadása: a dashboard token visszajön minden voice/auto módú agentre, egy device vagy session hívónak is" },
+  { method: 'GET', path: '/api/voice/directive', module: 'voice', class: 'ERZEKENY', note: "az agent saját hangüzenetének átirata és a hangválasz-utasítás; tokent nem ad ki (P0-1, a hívó a sajátját olvassa), de beszédfelismerést futtat" },
   { method: 'GET', path: '/api/voice/modality', module: 'voice', class: 'OLVASO' },
   { method: 'POST', path: '/api/voice/modality/set', module: 'voice', class: 'ERZEKENY' },
   { method: 'GET', path: '/api/voice/status', module: 'voice', class: 'OLVASO' },
