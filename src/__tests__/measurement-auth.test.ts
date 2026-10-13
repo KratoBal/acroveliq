@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { gatherAuthFacts, resolveAuthMode, resolveAuthModes, type AuthSources } from '../web/measurement-auth.js'
 
 // Where auth_mode may come from: only a credential the launch path explicitly
@@ -11,6 +14,7 @@ const base = (over: Partial<AuthSources> = {}): AuthSources => ({
   workerModel: 'claude-sonnet-5',
   subAgents: [],
   subAgentConfig: () => ({}),
+  subAgentRemoteHost: () => null,
   subAgentModel: () => 'claude-sonnet-5',
   vaultApiKey: () => false,
   ...over,
@@ -73,7 +77,7 @@ describe('gatherAuthFacts / resolveAuthModes', () => {
 
   it('sub-agent: remote host, own config dir, plan login or non-Claude model -> null', () => {
     const cfg: Record<string, Record<string, unknown>> = {
-      r: { authMode: 'shared', remoteHost: 'box' },
+      r: { authMode: 'shared' },
       d: { authMode: 'shared', claudeConfigDir: '~/.other' },
       p: { authMode: 'shared', claudePlan: 'team' },
       o: { authMode: 'shared' },
@@ -81,9 +85,33 @@ describe('gatherAuthFacts / resolveAuthModes', () => {
     const m = resolveAuthModes(base({
       subAgents: Object.keys(cfg),
       subAgentConfig: (n) => cfg[n],
+      subAgentRemoteHost: (n) => (n === 'r' ? 'box' : null),
       subAgentModel: (n) => (n === 'o' ? 'qwen3.6:27b' : 'claude-sonnet-5'),
     }))
     expect(m).toMatchObject({ r: null, d: null, p: null, o: null })
+  })
+
+  // b77e2688 (barracuda, #86 review): the remote host is the router-owned registry's.
+  // A remoteHost in the agent's own config is ignored at launch, so it must not take
+  // a local agent out of the measurement, and a registered one is remote without it.
+  it('sub-agent: the remote host comes from the registry, not from the agent config', () => {
+    const own = resolveAuthModes(base({
+      subAgents: ['a'],
+      subAgentConfig: () => ({ authMode: 'shared', remoteHost: 'box' }),
+      subAgentRemoteHost: () => null,
+    }))
+    expect(own.a).toBe('subscription')
+    const registered = resolveAuthModes(base({
+      subAgents: ['a'],
+      subAgentConfig: () => ({ authMode: 'shared' }),
+      subAgentRemoteHost: () => 'user@box',
+    }))
+    expect(registered.a).toBeNull()
+  })
+
+  it('the route wires the registry reader, the one the launcher uses', () => {
+    const route = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../web/routes/measurements.ts'), 'utf-8')
+    expect(route).toContain('subAgentRemoteHost: (n) => readAgentRemoteHost(n),')
   })
 
   it('never reports a fact for an agent it has no source for', () => {

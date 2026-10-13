@@ -16,7 +16,7 @@ import { getDb } from '../../db.js'
 import { STORE_DIR, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../../config.js'
 import { readEnvFile } from '../../env.js'
 import { json, readBody } from '../http-helpers.js'
-import { agentDir, listAgentNames, readAgentModel } from '../agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentRemoteHost } from '../agent-config.js'
 import { hasFleetOauthToken } from '../agent-process.js'
 import { getSecret } from '../vault.js'
 import { agentConfigPath, readJsonObject, resolveAuthModes } from '../measurement-auth.js'
@@ -43,6 +43,7 @@ export function refreshMeasurements(): { quotaInserted: number; runs: number } {
       workerModel: process.env.MARVEEN_WORKER_MODEL || DEFAULT_AGENT_MODEL || null,
       subAgents: listAgentNames(),
       subAgentConfig: (n) => readJsonObject(agentConfigPath(agentDir(n))),
+      subAgentRemoteHost: (n) => readAgentRemoteHost(n),
       subAgentModel: (n) => { try { return readAgentModel(n) } catch { return null } },
       vaultApiKey: (n) => { try { return !!getSecret(`agent-${n}-api-key`) } catch { return false } },
     })
