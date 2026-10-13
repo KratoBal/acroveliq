@@ -37,14 +37,16 @@ function serveIndexHtml(ctx: RouteContext, webDir: string): void {
     const s = statSync(filePath)
     // Both versioned asset tokens are part of the index ETag: a cached
     // index.html must be invalidated whenever the rewritten ?v= URLs change.
-    const etag = `"${s.mtimeMs}-${s.size}-${assetVersion(webDir, 'app.js')}-${assetVersion(webDir, 'style.css')}"`
+    // The surface is part of it too: the AcrovelIQ host gets a marked shell.
+    const acroveliq = ctx.surface === 'acroveliq'
+    const etag = `"${s.mtimeMs}-${s.size}-${assetVersion(webDir, 'app.js')}-${assetVersion(webDir, 'style.css')}${acroveliq ? '-aq' : ''}"`
     const ifNoneMatch = req.headers['if-none-match']
     if (ifNoneMatch === etag) {
       res.writeHead(304, { ETag: etag, 'Cache-Control': 'no-cache' })
       res.end()
       return
     }
-    const html = readFileSync(filePath, 'utf-8')
+    let html = readFileSync(filePath, 'utf-8')
       .replace(
         /(<script\s+src=")\/app\.js(")/,
         `$1/app.js?v=${assetVersion(webDir, 'app.js')}$2`,
@@ -63,6 +65,9 @@ function serveIndexHtml(ctx: RouteContext, webDir: string): void {
         /(<meta name="apple-mobile-web-app-title" content=")[^"]*(">)/,
         `$1${escapeAttr(BRAND_NAME)}$2`,
       )
+    // On the AcrovelIQ host the shell says so (data-surface): app.js opens the
+    // AcrovelIQ page only, and style.css hides the rest of the navigation.
+    if (acroveliq) html = markAcroveliqShell(html)
     res.writeHead(200, {
       'Content-Type': MIME['.html'],
       ETag: etag,
@@ -82,6 +87,11 @@ function detectAvatarType(): string | null {
     if (existsSync(join(PROJECT_ROOT, 'store', `marveen-avatar${ext}`))) return MIME[ext]
   }
   return null
+}
+
+/** The index.html of the AcrovelIQ host: `data-surface="acroveliq"` on the <html> tag. */
+export function markAcroveliqShell(html: string): string {
+  return html.replace(/<html(\s|>)/i, '<html data-surface="acroveliq"$1')
 }
 
 function escapeAttr(s: string): string {

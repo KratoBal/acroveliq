@@ -335,6 +335,16 @@ export const DASHBOARD_PUBLIC_URL = cfg('DASHBOARD_PUBLIC_URL') ?? ''
 // key, so it stays a plain env read (not routed through the override layer).
 export const DASHBOARD_ALLOWED_ORIGINS = env['DASHBOARD_ALLOWED_ORIGINS'] ?? ''
 export const OLLAMA_URL = cfg('OLLAMA_URL') ?? 'http://localhost:11434'
+// The AcrovelIQ host (task acroveliq-host-szures, src/web/acroveliq-host.ts):
+// a request on it reaches only the read-only AcrovelIQ page, its login and the
+// GETs it reads; every other path is a 404 there. Empty (the default) turns the
+// filter off. A plain env read like DASHBOARD_ALLOWED_ORIGINS, read once at start.
+export const ACROVELIQ_HOST = env['ACROVELIQ_HOST'] ?? ''
+// The AcrovelIQ listener (same file): a second port on which the positive list
+// applies to every request, whatever its headers say. The public proxy points at
+// this port only; it stays on the container network, not a published host port.
+// Empty (the default): no second listener.
+export const ACROVELIQ_PORT_SETTING = env['ACROVELIQ_PORT']
 
 // Kanban swimlanes: which field the board groups by on first load. Invalid
 // values silently fall back to 'none' (flat board) rather than breaking the
