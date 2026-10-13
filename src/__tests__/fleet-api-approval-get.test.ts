@@ -42,7 +42,10 @@ function run(args: string[]): Promise<string> {
     execFile(
       'bash',
       [script, ...args],
-      { env: { ...process.env, MARVEEN_WEB_PORT: String(port), TZ: 'UTC' } },
+      // UTC0, the POSIX form: no zone file is read. 'UTC' names a file, and in the fleet
+      // container /usr/share/zoneinfo/Etc/UTC is a bind mount of Europe/Budapest (measured
+      // 2026-10-13: same sha256, mountinfo), so 'UTC' printed +0200 there.
+      { env: { ...process.env, MARVEEN_WEB_PORT: String(port), TZ: 'UTC0' } },
       (_error, stdout) => resolve(stdout),
     )
   })
