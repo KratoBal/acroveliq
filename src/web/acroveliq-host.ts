@@ -123,7 +123,8 @@ export const ACROVELIQ_ROUTES: readonly AcroveliqRoute[] = [
   { method: 'GET', path: '/api/agents/activity', why: 'AcrovelIQ: agent state' },
   { method: 'GET', path: '/api/messages/backlog', why: 'AcrovelIQ: message backlog' },
   // memory text and handoff questions are internal: the surface gets the picked view
-  // below (acroveliqOpenMattersView), behind the same login as every row here
+  // below (acroveliqOpenMattersView), and only Balázs's session (the handler: 403
+  // for a device key or any token there)
   { method: 'GET', path: '/api/open-matters', why: 'AcrovelIQ: Döntéseim (picked view)' },
 ]
 

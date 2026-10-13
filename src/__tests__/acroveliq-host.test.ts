@@ -12,7 +12,9 @@
 //     the fields the page reads (pane tail, ssh target, security profile, auth mode...);
 //   - /api/open-matters gives out more there than the three Döntéseim groups: the
 //     budgeted text (open tasks, every handoff question, waiting cards), its counts and
-//     ids, a question that waits on someone else, or the text form.
+//     ids, a question that waits on someone else, or the text form; or it answers
+//     anyone there but Balázs's session (a device key, an agent or the shared token).
+
 import { describe, it, expect } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -249,7 +251,9 @@ describe('the two agent reads on the AcrovelIQ surface give the page fields only
 describe('/api/open-matters on the AcrovelIQ surface gives the Döntéseim groups only', () => {
   const NOW = Math.floor(Date.now() / 1000)
 
-  function call(path: string, surface: RouteContext['surface']) {
+  const SESSION = { kind: 'session', user: 'balazs' } as const
+  function call(path: string, surface: RouteContext['surface'], who: RouteContext['auth'] | 'nobody' = SESSION) {
+    const auth = who === 'nobody' ? undefined : who
     let body = ''
     let status = 200
     const res = {
@@ -259,7 +263,7 @@ describe('/api/open-matters on the AcrovelIQ surface gives the Döntéseim group
       end(chunk?: string | Buffer) { if (chunk) body += chunk.toString() },
     }
     const url = new URL(`http://localhost:3420${path}`)
-    const ctx = { req: { headers: {} }, res, path: url.pathname, method: 'GET', url, surface } as unknown as RouteContext
+    const ctx = { req: { headers: {} }, res, path: url.pathname, method: 'GET', url, surface, auth } as unknown as RouteContext
     return tryHandleOpenMatters(ctx).then((handled) => ({ handled, status, body }))
   }
 
@@ -286,6 +290,7 @@ describe('/api/open-matters on the AcrovelIQ surface gives the Döntéseim group
 
     const aq = await call('/api/open-matters', 'acroveliq')
     expect(aq.handled).toBe(true)
+    expect(aq.status).toBe(200)
     const view = JSON.parse(aq.body)
     expect(Object.keys(view).sort()).toEqual(['generated_at', 'items'])
     expect(Object.keys(view.items).sort()).toEqual(['balazs_questions', 'decisions', 'owes'])
@@ -303,6 +308,30 @@ describe('/api/open-matters on the AcrovelIQ surface gives the Döntéseim group
     expect(full.text).toContain('belso technikai kerdes')
     expect(full.items.balazs_questions).toHaveLength(1)
     expect((await call('/api/open-matters?format=text', 'dashboard')).body).toContain('titkos kartya cim')
+  })
+
+  it('on the AcrovelIQ surface only the session: a device key, an agent token, the shared token and no principal get 403', async () => {
+    initDatabase(':memory:')
+    const others: (RouteContext['auth'] | 'nobody')[] = [
+      { kind: 'device', device: 'telefon', deviceId: 1 },
+      { kind: 'token', actor: 'acrobot', project: 'acropora' },
+      { kind: 'token', actor: 'nautilus', project: 'acropora' },
+      { kind: 'token', actor: 'legacy' },
+      { kind: 'token' },
+      { kind: 'federation', peer: 'masik' },
+      'nobody',
+    ]
+    for (const auth of others) {
+      for (const path of ['/api/open-matters', '/api/open-matters?format=text']) {
+        const r = await call(path, 'acroveliq', auth)
+        expect(r.status, `${JSON.stringify(auth)} ${path}`).toBe(403)
+        expect(r.body).not.toContain('items')
+      }
+    }
+    expect((await call('/api/open-matters', 'acroveliq', SESSION)).status).toBe(200)
+    // the dashboard port keeps the route rule's read access (acrobot, msg 30039)
+    expect((await call('/api/open-matters', 'dashboard', { kind: 'device', device: 'telefon', deviceId: 1 })).status).toBe(200)
+    expect((await call('/api/open-matters', 'dashboard', { kind: 'token', actor: 'nautilus', project: 'acropora' })).status).toBe(200)
   })
 
   it('the view picks: a field added to the builder later does not reach the surface', () => {
