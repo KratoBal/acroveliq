@@ -26,8 +26,20 @@
 //             `review_requested`, or the task's `done` or `merged` by anyone;
 //   - review: from a `review_requested` to the `verdict` that answers it, for
 //             the verdict's actor;
-//   - admin:  from the actor's `assigned` to the task's `merged` or `done`.
+//   - admin:  from the actor's `assigned` to the task's `merged` or `done`;
+//   - coord:  from the actor's `coord_open` to its own `coord_close` (or the task's
+//             `done`/`merged`). The channel session marks the hand-out and the
+//             take-over of a coordination unit this way (koord-munkamenet, acrobot
+//             msg 29883). A registered SESSION would claim the whole long channel
+//             session, so the mark is a window, not a session.
 // An opened window with no close runs to the query time.
+//
+// A coord window is EXPLICIT, like a registered session: a call in it belongs to its
+// task even when another task's admin, review or work window is open for the same
+// agent, because the broad admin windows (assigned -> done) of a dozen tasks are open
+// all the time. What cannot be separated is only SAID: those calls are counted again
+// as `coordination.concurrent`, with the other tasks named (the channel session may
+// have done other work in the window). Two tasks' coord windows at once: unassigned.
 
 import type Database from 'better-sqlite3'
 
@@ -46,6 +58,9 @@ export const TASK_EVENT_KINDS = [
   'cancelled',
   'failed',
   'partial',
+  // koord-munkamenet: the channel session's start and end mark of a coordination unit
+  'coord_open',
+  'coord_close',
 ] as const
 export type TaskEventKind = (typeof TASK_EVENT_KINDS)[number]
 
@@ -122,7 +137,7 @@ export function rebuildTaskEventsIfNeeded(db: Database.Database): boolean {
   return true
 }
 
-export const CAPACITY_KINDS = ['work', 'review', 'fix', 'admin', 'repeat'] as const
+export const CAPACITY_KINDS = ['work', 'review', 'fix', 'admin', 'repeat', 'coord'] as const
 export type CapacityKind = (typeof CAPACITY_KINDS)[number]
 
 export function ensureTaskUsageSchema(db: Database.Database): void {
@@ -320,7 +335,7 @@ export function loadEvents(db: Database.Database): TaskEvent[] {
   return [...own, ...fromKanban].sort((a, b) => a.at - b.at)
 }
 
-export type WindowRole = 'work' | 'review' | 'admin'
+export type WindowRole = 'work' | 'review' | 'admin' | 'coord'
 
 export interface TaskWindow {
   task_id: string
@@ -339,6 +354,7 @@ export function taskWindows(events: readonly TaskEvent[]): TaskWindow[] {
   const windows: TaskWindow[] = []
   const openWork = new Map<string, TaskWindow>()
   const openAdmin = new Map<string, TaskWindow>()
+  const openCoord = new Map<string, TaskWindow>()
   let lastReviewRequest: number | null = null
   for (const event of events) {
     const { task_id, actor, at, kind } = event
@@ -355,6 +371,14 @@ export function taskWindows(events: readonly TaskEvent[]): TaskWindow[] {
       windows.push({ task_id, agent: actor, role: 'review', from: lastReviewRequest, to: at })
       lastReviewRequest = null
     }
+    if (kind === 'coord_open' && !openCoord.has(actor)) {
+      const window: TaskWindow = { task_id, agent: actor, role: 'coord', from: at, to: null }
+      openCoord.set(actor, window)
+      windows.push(window)
+    } else if (kind === 'coord_close' && openCoord.has(actor)) {
+      openCoord.get(actor)!.to = at
+      openCoord.delete(actor)
+    }
     if (kind === 'assigned' && !openAdmin.has(actor)) {
       const window: TaskWindow = { task_id, agent: actor, role: 'admin', from: at, to: null }
       openAdmin.set(actor, window)
@@ -364,9 +388,29 @@ export function taskWindows(events: readonly TaskEvent[]): TaskWindow[] {
     // usually merges, and a worker who wrote no close of its own would keep
     // its window open into its next task (barracuda, #18)
     if (kind === 'merged' || kind === 'done') {
-      for (const window of [...openAdmin.values(), ...openWork.values()]) window.to ??= at
+      for (const window of [...openAdmin.values(), ...openWork.values(), ...openCoord.values()]) window.to ??= at
       openAdmin.clear()
       openWork.clear()
+      openCoord.clear()
+    }
+  }
+  return windows
+}
+
+/**
+ * A coord window its actor never closed would run on and take every later call of that
+ * actor, and make each later coord window of theirs an overlap. A NEW coord_open by the
+ * same actor, on any task, ends the previous one (barracuda, review of #74). A window
+ * still open after this is the actor's last, and the report names it.
+ */
+export function closeSupersededCoord(windows: TaskWindow[]): TaskWindow[] {
+  const byAgent = new Map<string, TaskWindow[]>()
+  for (const w of windows) if (w.role === 'coord') byAgent.set(w.agent, [...(byAgent.get(w.agent) ?? []), w])
+  for (const list of byAgent.values()) {
+    list.sort((a, b) => a.from - b.from)
+    for (let i = 0; i + 1 < list.length; i++) {
+      const next = list[i + 1]!.from
+      if (list[i]!.to === null || list[i]!.to! > next) list[i]!.to = next
     }
   }
   return windows
@@ -411,10 +455,20 @@ export function assignCalls(input: {
   /** `agent|session` -> task id, every registered session. */
   sessions: ReadonlyMap<string, string>
   now: number
-}): { assigned: CallAssignment[]; overlaps: Overlap[]; unassigned: { call: UsageCall; role: 'admin' | 'review' }[] } {
+}): {
+  assigned: CallAssignment[]
+  overlaps: Overlap[]
+  unassigned: { call: UsageCall; role: 'admin' | 'review' }[]
+  /** Coord calls of this task made while another task's window was open too. */
+  concurrent: { call: UsageCall; tasks: string[] }[]
+  /** Calls in THIS task's windows that another task's coord window took. */
+  ceded: { call: UsageCall; tasks: string[] }[]
+} {
   const assigned: CallAssignment[] = []
   const overlaps: Overlap[] = []
   const unassigned: { call: UsageCall; role: 'admin' | 'review' }[] = []
+  const concurrent: { call: UsageCall; tasks: string[] }[] = []
+  const ceded: { call: UsageCall; tasks: string[] }[] = []
   for (const call of input.calls) {
     const sessionOwner = input.sessions.get(`${call.agent}|${call.session_id}`)
     const hits = input.windows.filter((w) => w.agent === call.agent && inWindow(w, call.timestamp, input.now))
@@ -426,6 +480,20 @@ export function assignCalls(input: {
       continue
     }
     if (own.length === 0) continue
+    // A coord window decides the call for EVERY task, not only for its own: queried from
+    // another task with a work window open at the same time, the call is the coord
+    // task's, not an overlap that would make that other task invalid.
+    const coordTasks = new Set(hits.filter((w) => w.role === 'coord').map((w) => w.task_id))
+    if (coordTasks.size > 1) { unassigned.push({ call, role: 'admin' }); continue }
+    if (coordTasks.size === 1) {
+      // not ours, and SAID, so the task whose window it was does not shrink unnoticed
+      // (barracuda, review of #74 v2)
+      if (!coordTasks.has(input.taskId)) { ceded.push({ call, tasks: [...coordTasks] }); continue }
+      assigned.push({ call, mode: 'window', role: 'coord' })
+      const others = [...new Set(hits.filter((w) => w.task_id !== input.taskId).map((w) => w.task_id))].sort()
+      if (others.length) concurrent.push({ call, tasks: others })
+      continue
+    }
     // two windows of the same task (work and review by one agent): review wins
     const role = own.some((w) => w.role === 'review')
       ? 'review'
@@ -449,7 +517,7 @@ export function assignCalls(input: {
     }
     assigned.push({ call, mode: 'window', role })
   }
-  return { assigned, overlaps, unassigned }
+  return { assigned, overlaps, unassigned, concurrent, ceded }
 }
 
 export interface TokenTotals {
@@ -494,6 +562,7 @@ export function capacityKind(
 ): CapacityKind {
   if (assignment.role === 'review') return 'review'
   if (assignment.role === 'admin') return 'admin'
+  if (assignment.role === 'coord') return 'coord'
   if (repeated) return 'repeat'
   return firstFixStart !== null && assignment.call.timestamp >= firstFixStart ? 'fix' : 'work'
 }
@@ -508,6 +577,20 @@ export interface TaskUsage {
    * the tasks, and not making the task invalid (acrobot 28588).
    */
   unassigned: Record<'admin' | 'review', TokenTotals>
+  /**
+   * The channel session's coord windows (coord_open -> coord_close): their calls are in
+   * `by_capacity.coord`; `concurrent` counts those of them made while another task's
+   * window was open too, and `concurrent_tasks` names those tasks. Not separable, only said.
+   * `open_since`: a coord window of this task that was never closed (it runs to now).
+   */
+  coordination: {
+    concurrent: TokenTotals
+    concurrent_tasks: string[]
+    open_since: number | null
+    /** Calls in this task's own windows that another task's coord window took, and those tasks. */
+    ceded: TokenTotals
+    ceded_to: string[]
+  }
   totals: TokenTotals
   by_capacity: Record<CapacityKind, TokenTotals>
   by_agent: Record<string, TokenTotals>
@@ -525,7 +608,7 @@ export function taskUsage(db: Database.Database, taskId: string, now: number): T
   const events = loadEvents(db)
   const byTask = new Map<string, TaskEvent[]>()
   for (const event of events) byTask.set(event.task_id, [...(byTask.get(event.task_id) ?? []), event])
-  const windows = [...byTask.values()].flatMap(taskWindows)
+  const windows = closeSupersededCoord([...byTask.values()].flatMap(taskWindows))
   const own = windows.filter((w) => w.task_id === taskId)
   const sessionRows = db.prepare('SELECT agent, session_id, task_id FROM task_sessions').all() as {
     agent: string
@@ -548,7 +631,7 @@ export function taskUsage(db: Database.Database, taskId: string, now: number): T
       .all(w.agent, w.from, w.to ?? now + 1) as UsageCall[])
       calls.set(row.id, row)
 
-  const { assigned, overlaps, unassigned } = assignCalls({
+  const { assigned, overlaps, unassigned, concurrent, ceded } = assignCalls({
     taskId,
     calls: [...calls.values()].sort((a, b) => a.timestamp - b.timestamp || a.id - b.id),
     windows,
@@ -587,11 +670,23 @@ export function taskUsage(db: Database.Database, taskId: string, now: number): T
   }
   const unassignedTotals = { admin: emptyTotals(), review: emptyTotals() }
   for (const u of unassigned) add(unassignedTotals[u.role], u.call)
+  const concurrentTotals = emptyTotals()
+  for (const c of concurrent) add(concurrentTotals, c.call)
+  const cededTotals = emptyTotals()
+  for (const c of ceded) add(cededTotals, c.call)
   return {
     task,
     valid: overlaps.length === 0,
     overlaps,
     unassigned: unassignedTotals,
+    coordination: {
+      concurrent: concurrentTotals,
+      concurrent_tasks: [...new Set(concurrent.flatMap((c) => c.tasks))].sort(),
+      // a coord window of this task with no close: it runs to the query time
+      open_since: own.find((w) => w.role === 'coord' && w.to === null)?.from ?? null,
+      ceded: cededTotals,
+      ceded_to: [...new Set(ceded.flatMap((c) => c.tasks))].sort(),
+    },
     totals,
     by_capacity: byCapacity,
     by_agent: byAgent,
