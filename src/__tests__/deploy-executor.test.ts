@@ -453,6 +453,18 @@ describe('one-time use and the commit actually deployed', () => {
     expect(cool.rollbacks).toHaveLength(1)
   })
 
+  it('the R is on disk as used at the moment Coolify is called', async () => {
+    const { rec, msg } = await approvedRequest()
+    const original = cool.rollback
+    let onDisk: string | undefined
+    cool.rollback = async (env, app, commit) => {
+      onDisk = (JSON.parse(readFileSync(join(config.stateDir, 'requests.json'), 'utf8')) as { requests: Record<string, { status: string }> }).requests[rec.r]!.status
+      return original(env, app, commit)
+    }
+    await ex.execute({ r: rec.r, requestMessageId: msg.id })
+    expect(onDisk).toBe('used')
+  })
+
   it('nor after a restart: the used state is on disk before the Coolify call', async () => {
     const { rec, msg } = await approvedRequest()
     cool.rollbackResult = 'throw'
