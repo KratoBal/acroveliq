@@ -5,7 +5,9 @@ import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed } from '../../db.js'
+import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, MESSAGE_TASK_ID } from '../../db.js'
+import { addTaskSession } from '../../task-usage.js'
+import { randomUUID } from 'node:crypto'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync, atomicWriteInTree } from '../atomic-write.js'
@@ -551,6 +553,46 @@ function listAgentSummaries(): AgentSummary[] {
 // stay pending (FIFO) for the next turn's drain -- bounds the context a single
 // turn absorbs, mirroring the router's MAX_MESSAGES_PER_TICK.
 const INBOX_DRAIN_CAP = 10
+
+/**
+ * The body of POST /api/agents/:name/start and /restart (TC-Lite L2). Pure.
+ * `fresh` as before (a body that is not JSON means not fresh). An optional
+ * `task_id` asks the server to choose the session id and register it for that
+ * task: it must be a task id (the message task_id shape) and needs `fresh`,
+ * because a resumed session keeps its own id.
+ */
+export function parseLaunchBody(raw: string): { fresh: boolean; taskId: string | null; error?: string } {
+  let body: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = JSON.parse(raw || '{}')
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) body = parsed as Record<string, unknown>
+  } catch {
+    // as before: an unreadable body is a plain, non-fresh launch
+  }
+  const fresh = body.fresh === true
+  const t = body.task_id
+  if (t === undefined || t === null) return { fresh, taskId: null }
+  if (typeof t !== 'string' || !MESSAGE_TASK_ID.test(t)) return { fresh, taskId: null, error: `task_id must match ${MESSAGE_TASK_ID}` }
+  if (!fresh) return { fresh, taskId: null, error: 'task_id needs fresh: true (a resumed session keeps its own id)' }
+  return { fresh, taskId: t }
+}
+
+/**
+ * After a successful launch with a server-chosen session id: the session is
+ * registered for the task under the agent of the ROUTE, never the caller (the
+ * caller is whoever restarts it, usually the main agent). The answer carries
+ * the id either way; `registered: false` says the row could not be written.
+ */
+function registerLaunchedSession(name: string, taskId: string, sessionId: string): boolean {
+  try {
+    const r = addTaskSession(getDb(), taskId, name, sessionId, Math.floor(Date.now() / 1000))
+    if (!r.ok) logger.warn({ name, taskId, owner: r.owner }, 'launched session already belongs to another task')
+    return r.ok
+  } catch (err) {
+    logger.warn({ err, name, taskId }, 'launched session could not be registered for its task')
+    return false
+  }
+}
 
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -1783,13 +1825,20 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     // Optional { "fresh": true } body -> no `--continue`. Required for channel
     // agents on Claude Code 2.1.193, where a `--continue` resume does not load
-    // the --channels plugin MCP server (agent comes up deaf).
-    let startFresh = false
-    try { startFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
-    const result = await startAgentProcess(name, { fresh: startFresh })
+    // the --channels plugin MCP server (agent comes up deaf). Optional
+    // "task_id" (TC-Lite L2): the server picks the session id and registers it.
+    const launch = parseLaunchBody((await readBody(req)).toString())
+    if (launch.error) { json(res, { error: launch.error }, 400); return true }
+    const sessionId = launch.taskId ? randomUUID() : undefined
+    const result = await startAgentProcess(name, sessionId ? { fresh: launch.fresh, sessionId } : { fresh: launch.fresh })
     // Record operator intent so the monitor keeps this agent up across shared
     // tmux-server restarts / reboots (see agent-desired-state.ts).
     if (result.ok || result.error === 'Agent is already running') addDesiredAgent(name)
+    if (result.ok && sessionId && launch.taskId) {
+      const registered = registerLaunchedSession(name, launch.taskId, sessionId)
+      json(res, registered ? { ok: true, session_id: sessionId } : { ok: true, session_id: sessionId, registered: false })
+      return true
+    }
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)
     return true
@@ -1857,22 +1906,34 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const restartMatch = path.match(/^\/api\/agents\/([^/]+)\/restart$/)
   if (restartMatch && method === 'POST') {
     const name = decodeURIComponent(restartMatch[1])
+    // read first: the main agent's path below must refuse a task_id, not drop it
+    const launch = parseLaunchBody((await readBody(req)).toString())
     // The main agent runs in the systemd/launchd-managed `<id>-channels` session,
     // not the `agent-<name>` template. Restart it through the channels helper --
     // the agent-process path would spawn a rogue duplicate session and fire
     // `/remote-control` (needs a full-scope login token the agent lacks). Mirror
     // the precedent in the channels-config handler above. Sub-agents unchanged.
     if (isMainChannelsAgent(name)) {
+      if (launch.taskId || launch.error) {
+        json(res, { error: 'task_id is not supported for the main agent (its session is service-managed)' }, 400)
+        return true
+      }
       const r = hardRestartMarveenChannels()
       if (r.ok) { json(res, { ok: true }); return true }
       json(res, { error: r.error || 'Restart failed' }, 500)
       return true
     }
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
-    // Optional { "fresh": true } body -> no `--continue` (see /start note).
-    let restartFresh = false
-    try { restartFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
-    const result = await restartAgentProcess(name, { fresh: restartFresh })
+    // Optional { "fresh": true } body -> no `--continue` (see /start note), and
+    // an optional task_id (TC-Lite L2, see /start).
+    if (launch.error) { json(res, { error: launch.error }, 400); return true }
+    const sessionId = launch.taskId ? randomUUID() : undefined
+    const result = await restartAgentProcess(name, sessionId ? { fresh: launch.fresh, sessionId } : { fresh: launch.fresh })
+    if (result.ok && sessionId && launch.taskId) {
+      const registered = registerLaunchedSession(name, launch.taskId, sessionId)
+      json(res, registered ? { ok: true, session_id: sessionId } : { ok: true, session_id: sessionId, registered: false })
+      return true
+    }
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)
     return true
