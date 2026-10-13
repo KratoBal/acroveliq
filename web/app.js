@@ -17165,7 +17165,7 @@ function aqRenderAgentDetail(data, name) {
       ${aqStat('Reviewer', a.reviews.length, 'Task Core-feladatban', 'grey')}
       ${aqStat('Utolsó feladat-esemény', last && last.last_at ? aqAgo(last.last_at) : '—', last ? last.id : null, 'grey')}
     </div>
-    ${a.backlog && a.backlog.pending ? `<div class="aq-note aq-note-warn">${a.backlog.pending} kézbesítetlen üzenet vár rá, a legrégebbi ${aqDuration(a.backlog.oldestAgeSeconds)} óta.</div>` : ''}
+    ${a.backlog && a.backlog.pending ? `<div class="aq-note aq-note-warn">${aqEsc(a.backlog.pending)} kézbesítetlen üzenet vár rá, a legrégebbi ${aqEsc(aqDuration(a.backlog.oldestAgeSeconds))} óta.</div>` : ''}
     <section class="aq-card"><h2>Leírás</h2><p>${aqEsc(a.description || 'Nincs leírás.')}</p></section>
     <section class="aq-card"><h2>Kapcsolódó feladatok</h2><p class="aq-muted">Ahol felelős vagy reviewer</p>
       ${[...a.tasks, ...a.reviews.filter((r) => !a.tasks.includes(r))].map(aqTaskRow).join('') || '<p class="aq-empty">Nincs hozzá kötött Task Core-feladat.</p>'}</section>`
@@ -17285,9 +17285,12 @@ function aqRenderDecisions() {
     <p class="aq-empty">Ehhez még nincs adatforrás. Amíg nincs, itt nem jelenik meg tétel: kitalált döntést nem mutatunk.</p></section>`
 }
 
+let aqRenderSeq = 0
 async function aqRender() {
   const body = document.getElementById('aqBody')
   if (!body || !aqState.data) return
+  // the task sheet awaits its timeline: a click during that wait starts a newer render, and the older one must not land after it
+  const seq = ++aqRenderSeq
   document.querySelectorAll('#aqTabs .aq-tab').forEach((b) => b.classList.toggle('active', b.dataset.aqView === aqState.view))
   const d = aqState.data
   let html
@@ -17298,6 +17301,7 @@ async function aqRender() {
   else if (aqState.view === 'stalls') html = aqRenderStalls(d)
   else if (aqState.view === 'decisions') html = aqRenderDecisions()
   else html = aqRenderOverview(d)
+  if (seq !== aqRenderSeq) return
   body.innerHTML = aqSourceNote(d) + html
   const stamp = document.getElementById('aqStamp')
   if (stamp) stamp.textContent = 'frissítve ' + new Date(d.at).toLocaleTimeString('hu-HU', { timeZone: 'Europe/Budapest' })

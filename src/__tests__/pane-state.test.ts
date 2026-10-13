@@ -2209,12 +2209,14 @@ describe('detectBlockingPrompt (AcrovelIQ: a measured "waiting on a permission p
     ' Esc to cancel · Tab to amend',
   ].join('\n')
   const MCP_MENU = ['   Manage MCP servers', '   ❯ claude.ai Canva · ✔ connected', '   ↑/↓ to navigate · Enter to confirm · Esc to cancel'].join('\n')
+  // a menu whose pane still shows an earlier, QUOTED question well above it (barracuda, #68)
+  const MENU_UNDER_QUOTE = ['⏺ It asked "Do you want to proceed?" and I said yes.', ...Array(14).fill(''), MCP_MENU].join('\n')
   // An idle agent whose last reply QUOTES the question: the live idle footer says it is not parked.
   const IDLE_QUOTING = ['⏺ The prompt read "Do you want to proceed?" and I answered it.', '', IDLE_BYPASS].join('\n')
 
   it('names the permission dialog, a parked menu, and nothing for an idle or busy pane', () => {
     expect(
-      [PERMISSION, PERMISSION_SCROLLED, MCP_MENU, IDLE_QUOTING, IDLE_STRICT, BUSY_FULL_FOOTER, ''].map(detectBlockingPrompt),
-    ).toEqual(['permission', 'menu', 'menu', null, null, null, null])
+      [PERMISSION, PERMISSION_SCROLLED, MCP_MENU, MENU_UNDER_QUOTE, IDLE_QUOTING, IDLE_STRICT, BUSY_FULL_FOOTER, ''].map(detectBlockingPrompt),
+    ).toEqual(['permission', 'menu', 'menu', 'menu', null, null, null, null])
   })
 })

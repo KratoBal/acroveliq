@@ -524,6 +524,9 @@ export function detectsBlockingMenu(pane: string): boolean {
 // stays (scripts/agent-pane.sh, measured 2026-08-22), so a parked menu WITHOUT
 // the question is reported as 'menu', never as "no prompt".
 const PERMISSION_QUESTION_RX = /Do you want to|requires approval/
+// The question sits above the choices and the footer; a longer reach would take
+// a question QUOTED higher up on a pane parked in some other menu (barracuda, #68).
+const PERMISSION_QUESTION_REGION_LINES = 12
 
 /**
  * Which blocking dialog a pane is parked in, for the read-only AcrovelIQ view:
@@ -534,7 +537,8 @@ const PERMISSION_QUESTION_RX = /Do you want to|requires approval/
  */
 export function detectBlockingPrompt(pane: string): 'permission' | 'menu' | null {
   if (!detectsBlockingMenu(pane)) return null
-  return PERMISSION_QUESTION_RX.test(pane) ? 'permission' : 'menu'
+  const region = pane.split('\n').slice(-PERMISSION_QUESTION_REGION_LINES).join('\n')
+  return PERMISSION_QUESTION_RX.test(region) ? 'permission' : 'menu'
 }
 
 // Claude Code FIRST-RUN gates: the interactive dialogs a brand-new install
