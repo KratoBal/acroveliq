@@ -16,7 +16,7 @@
 // These tests pin the target path and the watcher's re-render decision.
 
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, symlinkSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
@@ -93,6 +93,20 @@ describe('ensureQuarantineReader legacy cleanup (order: write first, remove afte
 
     expect(wrote).toBe(false) // content unchanged -> no rewrite ...
     expect(existsSync(legacyPath)).toBe(false) // ... but the legacy is still cleared
+  })
+
+  it('B45: a symlinked .claude/agents is not written through, and the legacy copy stays', () => {
+    const { root, tplPath, destDir, legacyPath, storeDir } = tmpSetup()
+    const other = join(root, 'other-agent', '.claude', 'agents')
+    mkdirSync(other, { recursive: true })
+    mkdirSync(join(destDir, '..'), { recursive: true })
+    symlinkSync(other, destDir)
+    mkdirSync(join(legacyPath, '..'), { recursive: true })
+    writeFileSync(legacyPath, 'legacy copy')
+
+    expect(ensureQuarantineReader(MAIN_AGENT_ID, { tplPath, destDir, legacyPath, storeDir })).toBe(false)
+    expect(readdirSync(other)).toEqual([])
+    expect(existsSync(legacyPath)).toBe(true) // never neither copy
   })
 
   it('a sub-agent run never touches the legacy path', () => {
