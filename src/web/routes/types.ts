@@ -33,6 +33,8 @@ export interface RouteContext {
   }
   /** The access check's position (acrovelIQ P0-1): what a self-declared actor field becomes for the shared token (actor-claims.ts). Absent is `naplo`. */
   accessMode?: import('../access-enforcement.js').AccessMode
+  /** Which surface the request is on: the AcrovelIQ host (acroveliq-host.ts) or the full dashboard. Absent is `dashboard`. */
+  surface?: 'dashboard' | 'acroveliq'
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<boolean>

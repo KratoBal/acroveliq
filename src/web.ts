@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
-import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, ACCESS_MODE_SETTING } from './config.js'
+import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, ACCESS_MODE_SETTING, ACROVELIQ_HOST } from './config.js'
+import { acroveliqAllows, isAcroveliqRequest, parseAcroveliqHost } from './web/acroveliq-host.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
 import { discordTransportFromEnv, startApprovalDiscordPoller } from './web/approval-discord.js'
@@ -108,6 +109,8 @@ export function startWebServer(port = 3420): http.Server {
   const access = parseAccessMode(ACCESS_MODE_SETTING)
   if (access.problem) logger.error(access.problem)
   logger.info({ mode: access.mode }, 'Access check')
+  const acroveliqHost = parseAcroveliqHost(ACROVELIQ_HOST)
+  if (acroveliqHost) logger.info({ host: acroveliqHost }, 'AcrovelIQ host filter')
   const accessDeps = { get db() { return getDb() }, mainAgent: MAIN_AGENT_ID, scheduleAgent: scheduleAgentFrom(SCHEDULED_TASKS_DIR, MAIN_AGENT_ID) }
   const allowedOrigins = new Set([
     `http://localhost:${port}`,
@@ -121,6 +124,15 @@ export function startWebServer(port = 3420): http.Server {
     const url = new URL(req.url || '/', `http://localhost:${port}`)
     const path = url.pathname
     const method = req.method || 'GET'
+
+    // The AcrovelIQ host serves its positive list only (src/web/acroveliq-host.ts),
+    // before CORS, auth and every route: anything else there is a plain 404.
+    const acroveliq = isAcroveliqRequest(acroveliqHost, req.headers)
+    if (acroveliq && !acroveliqAllows(method, path)) {
+      res.writeHead(404)
+      res.end('Not found')
+      return
+    }
 
     const origin = req.headers.origin
     // Emit CORS headers for allowlisted origins AND for genuinely same-origin
@@ -192,7 +204,7 @@ export function startWebServer(port = 3420): http.Server {
     }
 
     try {
-      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth, accessMode: access.mode }
+      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth, accessMode: access.mode, surface: acroveliq ? 'acroveliq' : 'dashboard' }
 
       if (await tryHandleSutyerak(routeCtx)) return
       if (await tryHandleAuth(routeCtx)) return
