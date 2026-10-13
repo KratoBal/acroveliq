@@ -420,8 +420,13 @@ for i in d["items"]:
         print("%s  esemeny  %-16s %-10s %s%s" % (t, i["kind"], i["actor"], i.get("ref") or "", extra))
     elif i["source"]=="handoff":
         print("%s  atadas   rekord %-9s %-10s %s" % (t, i["id"], i["agent"], i["status"]))
-    else:
+    elif i["source"]=="session":
         print("%s  session  %-16s %-10s" % (t, i["session_id"], i["agent"]))
+    elif i["source"]=="message":
+        print("%s  uzenet   %-16s %-10s %s" % (t, i["id"], "%s -> %s" % (i["from"], i["to"]), i["status"]))
+    else:
+        # A szerver ujabb tetelfajtat is adhat: ne hasaljon el, mutassa nyersen.
+        print("%s  %s  %s" % (t, i["source"], json.dumps(i, ensure_ascii=False)))
 print("-- %d tetel, %s" % (len(d["items"]), d["task"]))'
     exit $?
     ;;

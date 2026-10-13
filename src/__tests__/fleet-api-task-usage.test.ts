@@ -144,6 +144,17 @@ describe('fleet-api.sh task-usage', () => {
     expect([r.code, receivedPath, /esemeny  started +murena/.test(r.out), /session  sess-1/.test(r.out), /atadas   rekord 3/.test(r.out), /-- 3 tetel, t1/.test(r.out)],
       'FLEET-TASK-TIMELINE').toEqual([0, '/api/tasks/t1/timeline', true, true, true, true])
   })
+
+  it('FLEET-TASK-TIMELINE-MESSAGE: a message item prints its own line; an unknown source is shown raw, not a crash', async () => {
+    answer = [200, { task: 't1', items: [
+      { at: 1760252580, source: 'message', id: 29772, from: 'acrobot', to: 'murena', status: 'delivered' },
+      { at: 1760252590, source: 'jovobeli', id: 5, mi: 'uj fajta' },
+    ] }]
+    const r = await run(['task-timeline', 't1'])
+    expect([r.code, /uzenet +29772 +acrobot -> murena +delivered/.test(r.out), /jovobeli  \{.*"mi": "uj fajta"/.test(r.out),
+      /KeyError|Traceback/.test(r.out), /-- 2 tetel, t1/.test(r.out)],
+    'FLEET-TASK-TIMELINE-MESSAGE').toEqual([0, true, true, false, true])
+  })
 })
 
 // TC-Lite L5: fleet-api.sh kiadas. WHAT TURNS THIS RED:
