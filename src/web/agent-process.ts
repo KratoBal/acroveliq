@@ -1246,14 +1246,22 @@ export function launchSessionFlag(o: { hasPriorSession: boolean; fresh?: boolean
 let sessionIdSupported: string | null = null
 let claudeHelpProbe: (bin: string) => string = (bin) =>
   execFileSync(bin, ['--help'], { encoding: 'utf-8', timeout: 15_000, stdio: ['ignore', 'pipe', 'ignore'] })
+let claudeBinForProbe: () => string = () => claudeBin()
 
-export function setClaudeHelpProbeForTests(probe: (bin: string) => string): void {
+export function setClaudeHelpProbeForTests(probe: (bin: string) => string, bin = 'claude-test-bin'): void {
   claudeHelpProbe = probe
+  claudeBinForProbe = () => bin
   sessionIdSupported = null
 }
 
 export function claudeSupportsSessionId(): boolean {
-  const bin = claudeBin()
+  let bin: string
+  try {
+    bin = claudeBinForProbe()
+  } catch {
+    // no claude on PATH: nothing to launch with an id either
+    return false
+  }
   if (sessionIdSupported === bin) return true
   try {
     if (/^\s*--session-id\b/m.test(claudeHelpProbe(bin))) {
