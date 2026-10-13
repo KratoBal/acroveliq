@@ -13,7 +13,7 @@
 # feladat fogyasztasat (task-usage), es ha a cache-olvasas VAGY a hivasszam eleri a keretet:
 #   1. Escape-pel megszakitja az agens futo koret (a panelbe kerul, szoveg NEM),
 #   2. boritekos uzenetet kuld neki az okkal,
-#   3. naploz, es 3-as koddal kilep.
+#   3. naploz, es 3-as koddal kilep; ha az uzenet NEM ment el (agent-msg.sh nem `OK id=`), 4-gyel.
 # Ha a feladat lezarul (review_requested vagy done esemeny), 0-val kilep.
 #
 # A keret a feladat MUNKA-ablakara szol (task-usage "work" sora), tehat a review es az admin nem
@@ -65,10 +65,21 @@ PY
       echo "FAIL: az uzenetet nem tudtam kiirni ($MSG), nem kuldok semmit" >&2
       rm -rf "$MSGDIR"; exit 1
     fi
-    bash "$ROOT/scripts/agent-msg.sh" acrobot "$AGENT" - < "$MSG"
+    # A send counts only with exit 0 AND an `OK id=` line (barracuda, review of #39): the log
+    # used to read as if the agent had been told even when agent-msg.sh printed FAIL.
+    SENDOUT="$(bash "$ROOT/scripts/agent-msg.sh" acrobot "$AGENT" - < "$MSG")"; SENDRC=$?
     rm -rf "$MSGDIR"
-    bash "$ROOT/scripts/daily-log.sh" acrobot "Feladat-keret elerve: $TASK" "$CALLS hivas, ${CR}M olvasas; keret $MAX_CALLS / ${MAX_CR}M; $LOGSTOP"
-    exit 3
+    printf '%s\n' "$SENDOUT"
+    if [ "$SENDRC" -eq 0 ] && printf '%s\n' "$SENDOUT" | grep -q '^OK id='; then
+      SENT="uzenet sorba kerult (a kezbesitest a message-status mondja meg) ($(printf '%s\n' "$SENDOUT" | grep -o '^OK id=[0-9]*' | head -1))."
+      RC=3
+    else
+      SENT="az uzenet NEM ment el (agent-msg.sh rc=$SENDRC), $AGENT nem tud rola."
+      echo "FAIL: $SENT" >&2
+      RC=4
+    fi
+    bash "$ROOT/scripts/daily-log.sh" acrobot "Feladat-keret elerve: $TASK" "$CALLS hivas, ${CR}M olvasas; keret $MAX_CALLS / ${MAX_CR}M; $LOGSTOP $SENT"
+    exit "$RC"
   fi
   sleep "$((EVERY * 60))"
 done
