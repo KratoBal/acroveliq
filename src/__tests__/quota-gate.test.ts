@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   decideQuotaAction,
+  quotaInputProblem,
   quotaPressure,
   QUOTA_GATE,
   type QuotaSnapshot,
@@ -147,5 +148,45 @@ describe('decideQuotaAction -- the owner is never silenced', () => {
       workClass: 'owner-facing',
     })
     expect(d.pressure).toBe(97)
+  })
+})
+
+describe('quotaInputProblem -- the gate says when it is blind', () => {
+  it('names every input that makes the gate fail open', () => {
+    expect(quotaInputProblem(null, NOW)).toBe('no-snapshot')
+    expect(quotaInputProblem(snap({ five_hour: { used: 99 } }, { source: 'estimate' }), NOW)).toBe(
+      'untrusted-source:estimate',
+    )
+    expect(
+      quotaInputProblem({ ...snap({ five_hour: { used: 99 } }), generatedAtMs: null }, NOW),
+    ).toBe('no-snapshot-timestamp')
+    expect(
+      quotaInputProblem(snap({ five_hour: { used: 99 } }, { ageMs: QUOTA_GATE.staleAfterMs + 60_000 }), NOW),
+    ).toBe('stale-snapshot:21m')
+    expect(quotaInputProblem({ ...snap({}), windows: {} }, NOW)).toBe('no-usable-window')
+    expect(quotaInputProblem(snap({ five_hour: { used: 99 } }, { ageMs: -60 * 60_000 }), NOW)).toBe(
+      'future-snapshot:60m',
+    )
+  })
+
+  it('is null for fresh, trusted input -- and only then can the gate defer', () => {
+    const fresh = snap({ five_hour: { used: 99 } })
+    expect(quotaInputProblem(fresh, NOW)).toBeNull()
+    expect(background(fresh).action).toBe('defer')
+  })
+
+  it('agrees with the gate: a named problem is exactly a fail-open run with that reason', () => {
+    const stale = snap({ five_hour: { used: 99 } }, { ageMs: QUOTA_GATE.staleAfterMs + 1 })
+    expect(background(stale)).toEqual({
+      action: 'run',
+      reason: quotaInputProblem(stale, NOW),
+      pressure: null,
+    })
+  })
+
+  it('trusts the statusline sample, which is what the fleet actually writes', () => {
+    const s = snap({ five_hour: { used: 90 } }, { source: 'claude-code-statusline' })
+    expect(quotaInputProblem(s, NOW)).toBeNull()
+    expect(background(s)).toMatchObject({ action: 'defer', reason: 'pressure:90%' })
   })
 })

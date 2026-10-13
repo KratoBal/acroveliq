@@ -20,6 +20,16 @@ Quota sampling (every agent):
     ingester skips),
   * prints a one-line status (model, 5h %, 7d %).
 
+Quota-gate sample (the router's own statusline only):
+  The schedule runner's quota gate must not read the shared log above: the
+  log is fleet-writable, so any agent could forge a high value and silence
+  the heartbeats (acrobot's decision on #76, 2026-10-13). When this script
+  runs as the user that owns the store/ directory (the router, the same user
+  as the dashboard), it also replaces store/quota-gate-sample.json -- 0644,
+  in a directory no agent can write -- at most once per 60 s. Under any
+  other user it does nothing there. The dashboard checks owner and mode on
+  the opened file (src/quota-snapshot.ts).
+
 Usage export (`--export-usage`, sub-agents only):
   Since 2026-09-22 each sub-agent runs as its own OS user, and Claude Code
   writes its transcripts 0600. The dashboard (another user) cannot read them,
@@ -53,6 +63,8 @@ ROOT = os.environ.get("MARVEEN_ROOT", "/home/marveen/marveen")
 MEASURE_DIR = os.environ.get("MEASURE_DIR", os.path.join(ROOT, "store", "measurements"))
 OUT = os.environ.get("MEASURE_QUOTA_FILE", os.path.join(MEASURE_DIR, "quota-samples.jsonl"))
 USAGE_DIR = os.environ.get("MEASURE_USAGE_DIR", os.path.join(MEASURE_DIR, "usage"))
+GATE_FILE = os.environ.get("MEASURE_GATE_FILE", os.path.join(ROOT, "store", "quota-gate-sample.json"))
+GATE_INTERVAL_S = 60
 AGENT_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
 
@@ -107,21 +119,22 @@ def sample_quota(data, agent):
 
     if rl and (five is not None or seven is not None):
         now = int(time.time())
+        sample = {
+            "sampled_at": now,
+            "source": "claude-code-statusline",
+            "agent": agent,
+            "model": model,
+            "five_hour_pct": five,
+            "five_hour_resets_at": resets(rl.get("five_hour")),
+            "seven_day_pct": seven,
+            "seven_day_resets_at": resets(rl.get("seven_day")),
+        }
+        line = json.dumps(sample, separators=(",", ":")) + "\n"
         try:
             fresh = os.path.exists(OUT) and now - int(os.stat(OUT).st_mtime) < MIN_INTERVAL_S
         except OSError:
             fresh = False
         if not fresh:
-            line = json.dumps({
-                "sampled_at": now,
-                "source": "claude-code-statusline",
-                "agent": agent,
-                "model": model,
-                "five_hour_pct": five,
-                "five_hour_resets_at": resets(rl.get("five_hour")),
-                "seven_day_pct": seven,
-                "seven_day_resets_at": resets(rl.get("seven_day")),
-            }, separators=(",", ":")) + "\n"
             try:
                 ensure_dir(os.path.dirname(OUT), 0o2775)
                 fd = open_shared(OUT, os.O_WRONLY | os.O_APPEND)
@@ -131,7 +144,41 @@ def sample_quota(data, agent):
                     os.close(fd)
             except OSError:
                 pass
+        write_gate_sample(line, now)
     return model, five, seven
+
+
+def write_gate_sample(line, now):
+    """Replace the router-owned gate sample, only when we ARE the router user.
+
+    Ownership of the target directory decides, not MEASURE_AGENT: the agent
+    name is self-declared, the uid is not. Written to a private temp name and
+    renamed, so the dashboard never reads a half-written file.
+    """
+    gate_dir = os.path.dirname(GATE_FILE)
+    tmp = None
+    try:
+        if os.stat(gate_dir).st_uid != os.geteuid():
+            return
+        try:
+            if now - int(os.lstat(GATE_FILE).st_mtime) < GATE_INTERVAL_S:
+                return
+        except OSError:
+            pass
+        tmp = os.path.join(gate_dir, f".quota-gate-sample.{os.getpid()}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        try:
+            os.fchmod(fd, 0o644)
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.replace(tmp, GATE_FILE)
+    except OSError:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 # ---------- usage export (sub-agents) ----------
