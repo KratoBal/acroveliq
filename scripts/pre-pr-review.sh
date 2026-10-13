@@ -33,7 +33,7 @@ API="http://localhost:${WEB_PORT}/api/vault"
 get_secret() {
   local id="$1"
   local val
-  val="$(curl -sf -H "Authorization: Bearer $DASHBOARD_TOKEN" "$API/$id" 2>/dev/null)" || true
+  val="$(curl -sf -H @<(printf 'Authorization: Bearer %s\n' "$DASHBOARD_TOKEN") "$API/$id" 2>/dev/null)" || true
   echo "$val" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('value',''))" 2>/dev/null || true
 }
 
@@ -56,7 +56,7 @@ prompt = sys.stdin.read()
 print(json.dumps({'model': 'gpt-4o', 'messages': [{'role': 'user', 'content': prompt}], 'max_tokens': 1000}))
 " <<< "$PROMPT")"
   curl -sf https://api.openai.com/v1/chat/completions \
-    -H "Authorization: Bearer $OPENAI_KEY" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$OPENAI_KEY") \
     -H "Content-Type: application/json" \
     -d "$PAYLOAD" \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['choices'][0]['message']['content'])"

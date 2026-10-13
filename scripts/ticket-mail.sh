@@ -102,7 +102,7 @@ auth_code() {
   local resp
   resp="$(curl -s -m 30 -X POST https://oauth2.googleapis.com/token \
     --data-urlencode "code=$code" --data-urlencode "redirect_uri=$REDIRECT" \
-    --data-urlencode "client_id=$cid" --data-urlencode "client_secret=$sec" \
+    --data-urlencode "client_id=$cid" --data-urlencode "client_secret@"<(printf '%s' "$sec") \
     --data-urlencode "grant_type=authorization_code")"
   RESP="$resp" OUT="$REFRESH_FILE" python3 -c '
 import json, os, sys
@@ -129,8 +129,8 @@ access_token() {
   fi
   local cid sec rt resp; cid="$(read_file "$CID_FILE")"; sec="$(read_file "$SEC_FILE")"; rt="$(read_file "$REFRESH_FILE")"
   resp="$(curl -s -m 30 -X POST https://oauth2.googleapis.com/token \
-    --data-urlencode "client_id=$cid" --data-urlencode "client_secret=$sec" \
-    --data-urlencode "refresh_token=$rt" --data-urlencode "grant_type=refresh_token")"
+    --data-urlencode "client_id=$cid" --data-urlencode "client_secret@"<(printf '%s' "$sec") \
+    --data-urlencode "refresh_token@"<(printf '%s' "$rt") --data-urlencode "grant_type=refresh_token")"
   RESP="$resp" OUT="$ACCESS_FILE" python3 -c '
 import json, os, sys
 d = json.loads(os.environ["RESP"])
@@ -150,7 +150,7 @@ api_get() {
   local path="$1" tok
   tok="$(access_token)" || exit 1
   [ -n "$tok" ] || die "ures access token -- a jovahagyas hianyzik vagy lejart"
-  curl -s -m 30 -H "Authorization: Bearer $tok" "https://gmail.googleapis.com/gmail/v1/users/me/$path"
+  curl -s -m 30 -H @<(printf 'Authorization: Bearer %s\n' "$tok") "https://gmail.googleapis.com/gmail/v1/users/me/$path"
 }
 
 # ELOELLENORZES A CSOVEZETEK ELE, ES EZ NEM OVATOSSAG, HANEM MERT HIBA.
@@ -183,7 +183,7 @@ lista() {
   local n="${1:-10}" tok
   tok="$(access_token)" || exit 1
   [ -n "$tok" ] || die "ures access token -- a jovahagyas hianyzik vagy lejart"
-  curl -s -m 30 -H "Authorization: Bearer $tok" \
+  curl -s -m 30 -H @<(printf 'Authorization: Bearer %s\n' "$tok") \
     "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=$n" \
   | python3 -c '
 import json, sys

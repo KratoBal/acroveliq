@@ -70,10 +70,11 @@ tok, repo = os.environ["TOKEN"], os.environ["REPO"]
 API = "https://api.github.com/repos/" + repo
 
 def api(path):
+    # the header on stdin, not the argv: every agent's `ps` shows argv (P0-1)
     r = subprocess.run(
-        ["curl", "-s", "-H", "Authorization: Bearer " + tok,
+        ["curl", "-s", "-H", "@-",
          "-H", "Accept: application/vnd.github+json", API + path],
-        capture_output=True, text=True)
+        input="Authorization: Bearer " + tok + "\n", capture_output=True, text=True)
     try:
         return json.loads(r.stdout)
     except json.JSONDecodeError:
@@ -84,10 +85,10 @@ def naplo(job_id, cel):
     # es az ugy nez ki, mintha a jogkor hianyozna.
     r = subprocess.run(
         ["curl", "-sL", "-w", "%{http_code}", "-o", cel,
-         "-H", "Authorization: Bearer " + tok,
+         "-H", "@-",
          "-H", "Accept: application/vnd.github+json",
          API + "/actions/jobs/%s/logs" % job_id],
-        capture_output=True, text=True)
+        input="Authorization: Bearer " + tok + "\n", capture_output=True, text=True)
     return r.stdout.strip()
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")

@@ -177,14 +177,14 @@ LEDGER
     ;;
   list)
     curl -s -G "$API/$PAGE/scheduled_posts" \
-      --data-urlencode "access_token=$TOKEN" \
+      --data-urlencode "access_token@"<(printf '%s' "$TOKEN") \
       --data-urlencode "fields=id,message,scheduled_publish_time,created_time,is_published" | scrub
     echo
     ;;
   show)
     ID="${2:-}"; [ -n "$ID" ] || die "hianyzik a post id"
     curl -s -G "$API/$ID" \
-      --data-urlencode "access_token=$TOKEN" \
+      --data-urlencode "access_token@"<(printf '%s' "$TOKEN") \
       --data-urlencode "fields=id,message,scheduled_publish_time,created_time,is_published,permalink_url" | scrub
     echo
     ;;
@@ -211,7 +211,7 @@ LEDGER
     echo
     # A success response is not proof. Read the object back.
     curl -s -G "$API/$ID" \
-      --data-urlencode "access_token=$TOKEN" \
+      --data-urlencode "access_token@"<(printf '%s' "$TOKEN") \
       --data-urlencode "fields=id,scheduled_publish_time,is_published" | scrub
     echo
     ;;

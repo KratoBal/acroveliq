@@ -114,9 +114,10 @@ def hajt(s):
     return "".join(c for c in s if not unicodedata.combining(c)).lower()
 
 def api(path):
-    r = subprocess.run(["curl", "-s", "-H", "Authorization: Bearer " + tok,
+    # the header on stdin, not the argv: every agent's `ps` shows argv (P0-1)
+    r = subprocess.run(["curl", "-s", "-H", "@-",
                         "https://api.github.com/repos/" + repo + path],
-                       capture_output=True, text=True)
+                       input="Authorization: Bearer " + tok + "\n", capture_output=True, text=True)
     try:
         return json.loads(r.stdout)
     except json.JSONDecodeError:

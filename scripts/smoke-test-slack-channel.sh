@@ -64,7 +64,7 @@ if [ "$DRY_RUN" = "1" ]; then
   DM_CHANNEL="DRY_RUN_CHANNEL"
 else
   OPEN_RESP="$(curl -sf -X POST 'https://slack.com/api/conversations.open' \
-    -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$SLACK_BOT_TOKEN") \
     -H 'Content-Type: application/json' \
     -d "{\"users\":\"$USER_ID\"}" 2>/dev/null || true)"
   DM_OK="$(echo "$OPEN_RESP" | python3 -c "import json,sys; print(str(json.load(sys.stdin).get('ok','')).lower())" 2>/dev/null || true)"
@@ -97,7 +97,7 @@ if [ "$DRY_RUN" = "1" ]; then
   log "[DRY-RUN] chat.postMessage channel=$DM_CHANNEL text=$RANDOM_ID"
 else
   MSG_RESP="$(curl -sf -X POST 'https://slack.com/api/chat.postMessage' \
-    -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$SLACK_BOT_TOKEN") \
     -H 'Content-Type: application/json' \
     -d "{\"channel\":\"$DM_CHANNEL\",\"text\":\"$RANDOM_ID\"}" 2>/dev/null || true)"
   MSG_OK="$(echo "$MSG_RESP" | python3 -c "import json,sys; print(str(json.load(sys.stdin).get('ok','')).lower())" 2>/dev/null || true)"

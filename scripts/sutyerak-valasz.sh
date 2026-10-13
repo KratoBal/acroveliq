@@ -47,7 +47,7 @@ fi
 
 RESP=$(mktemp)
 CODE=$(curl -s -o "$RESP" -w '%{http_code}' -X POST "$BASE/assistant/handoff-reply" \
-  -H "Authorization: Bearer $(cat "$TOKEN_FILE")" \
+  -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")") \
   -H "Content-Type: application/json" \
   --data-binary "$BODY")
 echo "HTTP $CODE"
