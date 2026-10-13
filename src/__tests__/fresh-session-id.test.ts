@@ -14,8 +14,15 @@ vi.mock('node:child_process', async (importOriginal) => {
       subprocessCalls.push([file, ...args])
       throw new Error('no subprocess in this test')
     }),
+    // the real --help probe (asynchronous): answers with whatever asyncHelp holds
+    execFile: vi.fn((file: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout: string) => void) => {
+      asyncProbeCalls.push([file, ...args])
+      setTimeout(() => cb(null, asyncHelp.text), 0)
+    }),
   }
 })
+const asyncProbeCalls: string[][] = []
+const asyncHelp = { text: '' }
 
 import { agentDir } from '../web/agent-config.js'
 import {
@@ -123,34 +130,60 @@ describe('a launch with a session id is refused before anything starts or stops'
     expect(subprocessCalls).toEqual([])
   })
 
-  it('a valid request passes the check (and only then would the launch go on)', () => {
-    expect(sessionIdLaunchError(AGENT, { fresh: true, sessionId: UUID })).toBeNull()
-    expect(sessionIdLaunchError(AGENT, { fresh: true })).toBeNull()
-    expect(sessionIdLaunchError(AGENT, {})).toBeNull()
+  it('a valid request passes the check (and only then would the launch go on)', async () => {
+    expect(await sessionIdLaunchError(AGENT, { fresh: true, sessionId: UUID })).toBeNull()
+    expect(await sessionIdLaunchError(AGENT, { fresh: true })).toBeNull()
+    expect(await sessionIdLaunchError(AGENT, {})).toBeNull()
   })
 })
 
 describe('the --help probe', () => {
-  it('a positive answer is cached; a failed probe is asked again next time', () => {
+  it('a positive answer is cached; a failed probe is asked again next time', async () => {
     let calls = 0
     setClaudeHelpProbeForTests(() => {
       calls++
       throw new Error('timeout')
     })
-    expect(claudeSupportsSessionId()).toBe(false)
-    expect(claudeSupportsSessionId()).toBe(false)
+    expect(await claudeSupportsSessionId()).toBe(false)
+    expect(await claudeSupportsSessionId()).toBe(false)
     expect(calls).toBe(2)
     setClaudeHelpProbeForTests(() => {
       calls++
       return HELP_WITH
     })
-    expect(claudeSupportsSessionId()).toBe(true)
-    expect(claudeSupportsSessionId()).toBe(true)
+    expect(await claudeSupportsSessionId()).toBe(true)
+    expect(await claudeSupportsSessionId()).toBe(true)
     expect(calls).toBe(3)
   })
 
-  it('the flag must be an option line, not a word in some description', () => {
+  it('the flag must be an option line, not a word in some description', async () => {
     setClaudeHelpProbeForTests(() => '  --resume   Resume; see also --session-id in the docs\n')
-    expect(claudeSupportsSessionId()).toBe(false)
+    expect(await claudeSupportsSessionId()).toBe(false)
+  })
+
+  it('the real probe is asynchronous: execFile, never execFileSync', async () => {
+    asyncProbeCalls.length = 0
+    asyncHelp.text = HELP_WITH
+    setClaudeHelpProbeForTests(null)
+    expect(await claudeSupportsSessionId()).toBe(true)
+    expect(asyncProbeCalls).toEqual([['claude-test-bin', '--help']])
+    expect(subprocessCalls).toEqual([])
+  })
+
+  it('launches that arrive while a probe runs share that one probe', async () => {
+    const pending: Array<(text: string) => void> = []
+    const answerAll = (text: string) => pending.splice(0).forEach((r) => r(text))
+    setClaudeHelpProbeForTests(() => new Promise<string>((r) => pending.push(r)))
+    const first = claudeSupportsSessionId()
+    const second = claudeSupportsSessionId()
+    expect(pending.length).toBe(1)
+    answerAll(HELP_WITHOUT)
+    expect(await first).toBe(false)
+    expect(await second).toBe(false)
+    // the failed probe is not cached: the next launch asks again
+    const third = claudeSupportsSessionId()
+    expect(pending.length).toBe(1)
+    answerAll(HELP_WITHOUT)
+    expect(await third).toBe(false)
   })
 })
