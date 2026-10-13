@@ -25,7 +25,7 @@ import {
   detectsFeedbackOptOutPrompt,
   type FirstRunGateKind,
 } from '../pane-state.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, resolveRunAsUser } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentRunIdentity, readAgentMemoryIsolation, resolveRunAsUser } from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
@@ -147,6 +147,22 @@ export const FLEET_OAUTH_TOKEN_PATH = join(STORE_DIR, '.claude-oauth-token')
 // isolated config dir WITHOUT auth would launch the sub-agent logged-out, so
 // isolation is gated on this: no token -> keep the shared ~/.claude (degraded
 // dup-poller risk, but never a broken login).
+// B45 (Security Baseline, 2026-10-13): a per-user agent starts with umask 022,
+// not 002. Every agent's PRIMARY group is `fleet`, so under 002 each file it
+// created outside an ACL-managed directory (its home: ~/.npm, ~/.local/bin,
+// ~/.cache; the shared session-env; /tmp) was writable by all six agents --
+// murena's GitHub MCP server runs from ~/.npm/_npx.
+// The original reason for 002 (the router must keep stamping files in the
+// agent's own tree; korall lost hasCompletedOnboarding on every restart,
+// 2026-08-19) does not depend on the umask any more: inside the agent tree a
+// DEFAULT ACL grants the router (marveen) its write, and a default ACL makes the
+// kernel ignore the umask there. The router writes those files by atomic rename
+// (atomicWriteFileSync), which needs the directory, not the file mode. Measured
+// 2026-10-13: the router owns 0 entries in the six agent homes.
+export function agentUmaskPrefix(runAsUser: string | null | undefined): string {
+  return runAsUser ? 'umask 022 && ' : ''
+}
+
 export function hasFleetOauthToken(): boolean {
   try {
     return existsSync(FLEET_OAUTH_TOKEN_PATH) && readFileSync(FLEET_OAUTH_TOKEN_PATH, 'utf-8').trim().length > 0
@@ -1205,6 +1221,15 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
 
+  // B45 B2-2: refuse BEFORE any provisioning or the remote branch when the run
+  // identity in the agent's own config does not match its OS user (see
+  // checkAgentRunIdentity). No fallback: a wrong identity is a stopped agent.
+  const identity = readAgentRunIdentity(name)
+  if (!identity.ok) {
+    logger.error({ name, error: identity.error }, 'Agent start refused: run identity mismatch')
+    return { ok: false, error: identity.error }
+  }
+
   // Remote agents are handled entirely by the ssh path above (with its own
   // start guard), before any local already-running check / scaffolding.
   const remote = readAgentRemoteConfig(name)
@@ -1600,13 +1625,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // values like `claude-opus-4-8[1m]` (1M-context suffix) from being glob-expanded AND makes a `'`
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
     // ANTHROPIC_MODEL env sites above.
-    // A per-user agent shares its directory with the router (group `fleet`), and
-    // the router still provisions into it on every start -- so files the agent
-    // creates must stay group-writable. Without this the default 022 umask writes
-    // 0600 files that the router can no longer stamp; measured 2026-08-19, that is
-    // exactly how korall lost its `hasCompletedOnboarding` flag on every restart
-    // and parked on the login picker with a perfectly good token in its env.
-    const umaskPrefix = agentTmuxTarget(name).runAsUser ? 'umask 002 && ' : ''
+    const umaskPrefix = agentUmaskPrefix(agentTmuxTarget(name).runAsUser)
     const cmd = `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
