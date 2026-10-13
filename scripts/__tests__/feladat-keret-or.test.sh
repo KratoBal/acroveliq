@@ -25,8 +25,9 @@ GUARD="${KERET_OR_GUARD:-$INSTALL_DIR/scripts/feladat-keret-or.sh}"
 
 # One fixture per case: a fake ROOT whose task is already over its call limit.
 # $1: "ok" or "fail" -- what the stubbed sudo returns (and tmux is made to fail).
+# $2: "ok" (default) or "fail" -- what the stubbed agent-msg.sh answers.
 setup() {
-  local sudo_rc="$1"
+  local sudo_rc="$1" send="${2:-ok}"
   T="$(mktemp -d)"
   mkdir -p "$T/root/scripts" "$T/root/store" "$T/bin"
   echo "stub-token" > "$T/root/store/.dashboard-token"
@@ -35,11 +36,12 @@ setup() {
   cat > "$T/root/scripts/fleet-api.sh" <<'EOF'
 echo "  work   130 hivas  ki 1k  cache-olv 12.5M"
 EOF
-  cat > "$T/root/scripts/agent-msg.sh" <<EOF
-cat > "$T/sent.txt"
-echo "OK id=1"
-EOF
-  : > "$T/root/scripts/daily-log.sh"
+  if [ "$send" = ok ]; then
+    printf 'cat > "%s/sent.txt"\necho "OK id=1"\n' "$T" > "$T/root/scripts/agent-msg.sh"
+  else
+    printf 'cat > "%s/sent.txt"\necho "FAIL from=acrobot to=x http=500"\nexit 1\n' "$T" > "$T/root/scripts/agent-msg.sh"
+  fi
+  printf 'printf "%%s\\n" "$*" > "%s/log.txt"\n' "$T" > "$T/root/scripts/daily-log.sh"
   printf '#!/bin/sh\nexit 0\n' > "$T/bin/curl"
   printf '#!/bin/sh\nexit %s\n' "$([ "$sudo_rc" = ok ] && echo 0 || echo 1)" > "$T/bin/sudo"
   chmod +x "$T/bin/curl" "$T/bin/sudo"
@@ -86,6 +88,26 @@ if grep -q 'NEM tudtam megszakitani' "$T/sent.txt" && ! grep -q 'en szakitottam 
   pass "send-keys failed: the message says so"
 else
   fail "send-keys failed, but: $(cat "$T/sent.txt")"
+fi
+rm -rf "$T"
+
+echo ""
+echo "(c) The log says whether the message went out (agent-msg.sh OK id= or not)"
+setup ok ok
+rc="$(run_guard)"
+if [ "$rc" = "3" ] && grep -q 'uzenet elment (OK id=1)' "$T/log.txt"; then
+  pass "send ok: exit 3, the log names the message id"
+else
+  fail "send ok, but rc=$rc log: $(cat "$T/log.txt" 2>/dev/null)"
+fi
+rm -rf "$T"
+
+setup ok fail
+rc="$(run_guard)"
+if [ "$rc" = "4" ] && grep -q 'NEM ment el' "$T/log.txt" && ! grep -q 'elment (OK' "$T/log.txt"; then
+  pass "send failed: exit 4, the log says the message did not go out"
+else
+  fail "send failed, but rc=$rc log: $(cat "$T/log.txt" 2>/dev/null)"
 fi
 rm -rf "$T"
 
