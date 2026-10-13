@@ -123,7 +123,7 @@ export class DeployExecutor {
     if (!(entry.actions as readonly string[]).includes(action)) throw new Refusal('action is not allowed for this application')
 
     await this.requireOnBranch(entry.repo, entry.branch, sha)
-    const relation = await this.measureRelation(entry.env, entry.coolifyUuid, entry.repo, sha)
+    const relation = await this.measureRelation(entry.coolifyHost, entry.coolifyUuid, entry.repo, sha)
 
     let id = ''
     do id = Array.from({ length: R_LENGTH }, () => CODE_ALPHABET[this.pickInt(CODE_ALPHABET.length)]).join('')
@@ -133,6 +133,7 @@ export class DeployExecutor {
       id,
       env: entry.env,
       app: entry.name,
+      coolifyHost: entry.coolifyHost,
       coolifyUuid: entry.coolifyUuid,
       action: action as RequestRecord['action'],
       sha,
@@ -172,11 +173,11 @@ export class DeployExecutor {
 
     // the world may have moved since the request: measure both claims again
     const entry = findApp(config, rec.env, rec.app)
-    if (!entry || entry.coolifyUuid !== rec.coolifyUuid || !(entry.actions as readonly string[]).includes(rec.action)) {
+    if (!entry || entry.coolifyHost !== rec.coolifyHost || entry.coolifyUuid !== rec.coolifyUuid || !(entry.actions as readonly string[]).includes(rec.action)) {
       return refuse('application is no longer on the allowlist')
     }
     await this.requireOnBranch(entry.repo, entry.branch, rec.sha).catch((e: unknown) => refuse(e instanceof Refusal ? e.reason : 'branch check failed'))
-    const relation = await this.measureRelation(rec.env, rec.coolifyUuid, entry.repo, rec.sha)
+    const relation = await this.measureRelation(rec.coolifyHost, rec.coolifyUuid, entry.repo, rec.sha)
     if (!sameRelation(relation, rec.relation)) return refuse('the running version changed since the approval')
 
     // spend the R FIRST, durably; then the one outside call that deploys
@@ -188,7 +189,7 @@ export class DeployExecutor {
 
     let deploymentUuid: string | null = null
     try {
-      deploymentUuid = (await coolify.rollback(rec.env, rec.coolifyUuid, rec.sha)).deploymentUuid
+      deploymentUuid = (await coolify.rollback(rec.coolifyHost, rec.coolifyUuid, rec.sha)).deploymentUuid
     } catch (err) {
       store.audit('deploy_call_failed', { r, error: err instanceof Error ? err.message : 'unknown' })
     }
@@ -236,9 +237,9 @@ export class DeployExecutor {
     if (cmp.status !== 'ahead' && cmp.status !== 'identical') throw new Refusal('commit is not part of the branch')
   }
 
-  private async measureRelation(env: string, appUuid: string, repo: string, sha: string): Promise<Relation> {
+  private async measureRelation(host: string, appUuid: string, repo: string, sha: string): Promise<Relation> {
     try {
-      const list = await this.deps.coolify.listAppDeployments(env, appUuid, 20)
+      const list = await this.deps.coolify.listAppDeployments(host, appUuid, 20)
       const running = list.find((d) => d.status === 'finished' && d.pullRequestId === 0)?.commit
       if (!running || !SHA.test(running)) return { kind: 'unmeasured' }
       const cmp = await this.deps.github.compare(repo, running, sha)
@@ -270,7 +271,7 @@ export class DeployExecutor {
       await this.sleep(every)
       let d = null
       try {
-        d = await coolify.getDeployment(rec.env, deploymentUuid)
+        d = await coolify.getDeployment(rec.coolifyHost, deploymentUuid)
       } catch {
         // a failed read is not an outcome; the next one retries
       }

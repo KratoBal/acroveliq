@@ -10,9 +10,15 @@ export const ACTIONS = ['deploy'] as const
 export type ExecutorAction = (typeof ACTIONS)[number]
 
 export interface AppEntry {
+  /** the label in the canonical line and its approval (prod, stage) */
   env: string
   /** the name in the canonical line; the uuid, not the name, is what is deployed */
   name: string
+  /**
+   * which Coolify runs it. Not the same as env: the AI API runs on the AI
+   * machine's Coolify and is still a production app (three-changes 3)
+   */
+  coolifyHost: string
   coolifyUuid: string
   /** owner/name on GitHub */
   repo: string
@@ -23,7 +29,7 @@ export interface AppEntry {
   approvalMinutes: number
 }
 
-export interface EnvironmentEntry {
+export interface CoolifyHostEntry {
   /** e.g. https://coolify.example/api/v1 */
   coolifyApiUrl: string
   coolifyTokenFile: string
@@ -42,7 +48,7 @@ export interface ExecutorConfig {
     tokenFile: string
   }
   github: { tokenFile: string }
-  environments: Readonly<Record<string, EnvironmentEntry>>
+  coolifyHosts: Readonly<Record<string, CoolifyHostEntry>>
   apps: readonly AppEntry[]
 }
 
@@ -95,7 +101,7 @@ function apiUrl(v: unknown, path: string): string {
 }
 
 export function parseExecutorConfig(raw: unknown): ExecutorConfig {
-  const top = obj(raw, '', ['stateDir', 'discord', 'github', 'environments', 'apps'])
+  const top = obj(raw, '', ['stateDir', 'discord', 'github', 'coolifyHosts', 'apps'])
   const d = obj(top['discord'], 'discord', ['channelId', 'requestBotUserId', 'deciderUserIds', 'yes', 'no', 'tokenFile'])
   const deciders = d['deciderUserIds']
   if (!Array.isArray(deciders) || deciders.length === 0) fail('discord.deciderUserIds', 'must be a non-empty array')
@@ -109,18 +115,18 @@ export function parseExecutorConfig(raw: unknown): ExecutorConfig {
 
   const g = obj(top['github'], 'github', ['tokenFile'])
 
-  const envsRaw = top['environments']
-  if (typeof envsRaw !== 'object' || envsRaw === null || Array.isArray(envsRaw)) fail('environments', 'must be an object')
-  const environments: Record<string, EnvironmentEntry> = {}
-  for (const [name, v] of Object.entries(envsRaw as Record<string, unknown>)) {
-    if (!NAME.test(name)) fail(`environments.${name}`, 'bad environment name')
-    const e = obj(v, `environments.${name}`, ['coolifyApiUrl', 'coolifyTokenFile'])
-    environments[name] = {
-      coolifyApiUrl: apiUrl(e['coolifyApiUrl'], `environments.${name}.coolifyApiUrl`),
-      coolifyTokenFile: absPath(e['coolifyTokenFile'], `environments.${name}.coolifyTokenFile`),
+  const hostsRaw = top['coolifyHosts']
+  if (typeof hostsRaw !== 'object' || hostsRaw === null || Array.isArray(hostsRaw)) fail('coolifyHosts', 'must be an object')
+  const coolifyHosts: Record<string, CoolifyHostEntry> = {}
+  for (const [name, v] of Object.entries(hostsRaw as Record<string, unknown>)) {
+    if (!NAME.test(name)) fail(`coolifyHosts.${name}`, 'bad host name')
+    const e = obj(v, `coolifyHosts.${name}`, ['coolifyApiUrl', 'coolifyTokenFile'])
+    coolifyHosts[name] = {
+      coolifyApiUrl: apiUrl(e['coolifyApiUrl'], `coolifyHosts.${name}.coolifyApiUrl`),
+      coolifyTokenFile: absPath(e['coolifyTokenFile'], `coolifyHosts.${name}.coolifyTokenFile`),
     }
   }
-  if (Object.keys(environments).length === 0) fail('environments', 'empty')
+  if (Object.keys(coolifyHosts).length === 0) fail('coolifyHosts', 'empty')
 
   const appsRaw = top['apps']
   if (!Array.isArray(appsRaw) || appsRaw.length === 0) fail('apps', 'must be a non-empty array')
@@ -128,10 +134,11 @@ export function parseExecutorConfig(raw: unknown): ExecutorConfig {
   const seenUuid = new Set<string>()
   const apps: AppEntry[] = appsRaw.map((v, i) => {
     const p = `apps[${i}]`
-    const a = obj(v, p, ['env', 'name', 'coolifyUuid', 'repo', 'branch', 'actions', 'approvalMinutes'])
+    const a = obj(v, p, ['env', 'name', 'coolifyHost', 'coolifyUuid', 'repo', 'branch', 'actions', 'approvalMinutes'])
     const env = str(a['env'], `${p}.env`, NAME)
-    if (!environments[env]) fail(`${p}.env`, 'not in environments')
     const name = str(a['name'], `${p}.name`, NAME)
+    const coolifyHost = str(a['coolifyHost'], `${p}.coolifyHost`, NAME)
+    if (!Object.hasOwn(coolifyHosts, coolifyHost)) fail(`${p}.coolifyHost`, 'not in coolifyHosts')
     const coolifyUuid = str(a['coolifyUuid'], `${p}.coolifyUuid`, COOLIFY_UUID)
     if (seen.has(`${env}/${name}`)) fail(p, 'duplicate env/name')
     if (seenUuid.has(coolifyUuid)) fail(p, 'duplicate coolifyUuid')
@@ -150,6 +157,7 @@ export function parseExecutorConfig(raw: unknown): ExecutorConfig {
     return {
       env,
       name,
+      coolifyHost,
       coolifyUuid,
       repo: str(a['repo'], `${p}.repo`, REPO),
       branch: str(a['branch'], `${p}.branch`, BRANCH),
@@ -169,7 +177,7 @@ export function parseExecutorConfig(raw: unknown): ExecutorConfig {
       tokenFile: absPath(d['tokenFile'], 'discord.tokenFile'),
     },
     github: { tokenFile: absPath(g['tokenFile'], 'github.tokenFile') },
-    environments,
+    coolifyHosts,
     apps,
   }
 }

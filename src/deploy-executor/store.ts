@@ -31,6 +31,7 @@ export interface RequestRecord {
   id: string
   env: string
   app: string
+  coolifyHost: string
   coolifyUuid: string
   action: ExecutorAction
   sha: string

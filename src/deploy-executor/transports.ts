@@ -38,10 +38,10 @@ export interface CoolifyDeployment {
 }
 
 export interface CoolifyClient {
-  rollback(env: string, appUuid: string, commit: string): Promise<{ deploymentUuid: string | null }>
-  getDeployment(env: string, deploymentUuid: string): Promise<CoolifyDeployment | null>
+  rollback(host: string, appUuid: string, commit: string): Promise<{ deploymentUuid: string | null }>
+  getDeployment(host: string, deploymentUuid: string): Promise<CoolifyDeployment | null>
   /** newest first */
-  listAppDeployments(env: string, appUuid: string, take: number): Promise<CoolifyDeployment[]>
+  listAppDeployments(host: string, appUuid: string, take: number): Promise<CoolifyDeployment[]>
 }
 
 const TIMEOUT_MS = 15_000
@@ -114,12 +114,12 @@ function toDeployment(raw: unknown): CoolifyDeployment {
 }
 
 export function coolifyRest(
-  envs: Readonly<Record<string, { coolifyApiUrl: string; token: string }>>,
+  hosts: Readonly<Record<string, { coolifyApiUrl: string; token: string }>>,
   fetchImpl: typeof fetch = fetch,
 ): CoolifyClient {
   const env = (name: string) => {
-    const e = envs[name]
-    if (!e) throw new Error(`no Coolify settings for environment ${name}`)
+    const e = Object.hasOwn(hosts, name) ? hosts[name] : undefined
+    if (!e) throw new Error(`no Coolify settings for host ${name}`)
     return { base: e.coolifyApiUrl, headers: { Authorization: `Bearer ${e.token}`, Accept: 'application/json' } }
   }
   return {

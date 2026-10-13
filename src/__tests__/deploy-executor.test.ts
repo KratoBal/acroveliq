@@ -58,13 +58,15 @@ function configRaw(stateDir: string) {
     stateDir,
     discord: { channelId: CHANNEL, requestBotUserId: BOT, deciderUserIds: [OWNER], yes: 'igen', no: 'nem', tokenFile: '/run/secrets/discord' },
     github: { tokenFile: '/run/secrets/github' },
-    environments: {
-      prod: { coolifyApiUrl: 'https://prod.example/api/v1', coolifyTokenFile: '/run/secrets/coolify-prod' },
-      stage: { coolifyApiUrl: 'http://100.64.0.1:8000/api/v1', coolifyTokenFile: '/run/secrets/coolify-stage' },
+    coolifyHosts: {
+      'prod-gep': { coolifyApiUrl: 'https://prod.example/api/v1', coolifyTokenFile: '/run/secrets/coolify-prod' },
+      'ai-gep': { coolifyApiUrl: 'http://100.64.0.1:8000/api/v1', coolifyTokenFile: '/run/secrets/coolify-ai' },
     },
     apps: [
-      { env: 'prod', name: 'acropora-api', coolifyUuid: 'prodapi0001', repo: 'KratoBal/acropora-os', branch: 'main', actions: ['deploy'], approvalMinutes: 30 },
-      { env: 'stage', name: 'acropora-stage-api', coolifyUuid: 'stageapi0001', repo: 'KratoBal/acropora-os', branch: 'main', actions: ['deploy'], approvalMinutes: 30 },
+      { env: 'prod', name: 'acropora-api', coolifyHost: 'prod-gep', coolifyUuid: 'prodapi0001', repo: 'KratoBal/acropora-os', branch: 'main', actions: ['deploy'], approvalMinutes: 30 },
+      { env: 'stage', name: 'acropora-stage-api', coolifyHost: 'ai-gep', coolifyUuid: 'stageapi0001', repo: 'KratoBal/acropora-os', branch: 'main', actions: ['deploy'], approvalMinutes: 30 },
+      // a production app on the AI machine's Coolify (three-changes 3)
+      { env: 'prod', name: 'acropora-ai-api', coolifyHost: 'ai-gep', coolifyUuid: 'aiapi00001', repo: 'KratoBal/acropora-ai', branch: 'main', actions: ['deploy'], approvalMinutes: 30 },
     ],
   }
 }
@@ -88,8 +90,8 @@ function fakeGitHub(): GitHubReader & { main: string[]; calls: number } {
 }
 
 function fakeCoolify() {
-  const running: Record<string, string> = { prodapi0001: MAIN[2]!, stageapi0001: MAIN[2]! }
-  const rollbacks: { env: string; app: string; commit: string }[] = []
+  const running: Record<string, string> = { prodapi0001: MAIN[2]!, stageapi0001: MAIN[2]!, aiapi00001: MAIN[2]! }
+  const rollbacks: { host: string; app: string; commit: string }[] = []
   const deployments = new Map<string, CoolifyDeployment & { logs?: string }>()
   const c = {
     running,
@@ -97,8 +99,8 @@ function fakeCoolify() {
     deployments,
     failList: false,
     rollbackResult: 'queue' as 'queue' | 'skip' | 'throw',
-    async rollback(env: string, app: string, commit: string) {
-      rollbacks.push({ env, app, commit })
+    async rollback(host: string, app: string, commit: string) {
+      rollbacks.push({ host, app, commit })
       if (c.rollbackResult === 'throw') throw new Error('Coolify API 500')
       if (c.rollbackResult === 'skip') return { deploymentUuid: null }
       const uuid = `dep${rollbacks.length}`
@@ -256,7 +258,7 @@ describe('the positive path', () => {
     const out = await ex.execute({ r: rec.r, requestMessageId: msg.id })
     expect(out.status).toBe('used')
     expect(out.outcome).toBe('queued')
-    expect(cool.rollbacks).toEqual([{ env: 'prod', app: 'prodapi0001', commit: MAIN[4] }])
+    expect(cool.rollbacks).toEqual([{ host: 'prod-gep', app: 'prodapi0001', commit: MAIN[4] }])
 
     cool.deployments.get(out.deploymentUuid!)!.status = 'finished'
     await Promise.all(ex.following)
@@ -266,7 +268,14 @@ describe('the positive path', () => {
   it('a stage deployment needs the same approval (plan 6/3)', async () => {
     const { rec, msg } = await approvedRequest({ env: 'stage', app: 'acropora-stage-api' })
     await ex.execute({ r: rec.r, requestMessageId: msg.id })
-    expect(cool.rollbacks).toEqual([{ env: 'stage', app: 'stageapi0001', commit: MAIN[4] }])
+    expect(cool.rollbacks).toEqual([{ host: 'ai-gep', app: 'stageapi0001', commit: MAIN[4] }])
+  })
+
+  it('the AI API is approved as prod and deployed on the AI machine (three-changes 3)', async () => {
+    const { rec, msg } = await approvedRequest({ app: 'acropora-ai-api' })
+    expect(rec.canonicalLine).toBe(`VEGREHAJTO R=${rec.r} / prod / acropora-ai-api / deploy / ${MAIN[4]}`)
+    await ex.execute({ r: rec.r, requestMessageId: msg.id })
+    expect(cool.rollbacks).toEqual([{ host: 'ai-gep', app: 'aiapi00001', commit: MAIN[4] }])
   })
 })
 
@@ -457,9 +466,9 @@ describe('one-time use and the commit actually deployed', () => {
     const { rec, msg } = await approvedRequest()
     const original = cool.rollback
     let onDisk: string | undefined
-    cool.rollback = async (env, app, commit) => {
+    cool.rollback = async (host, app, commit) => {
       onDisk = (JSON.parse(readFileSync(join(config.stateDir, 'requests.json'), 'utf8')) as { requests: Record<string, { status: string }> }).requests[rec.r]!.status
-      return original(env, app, commit)
+      return original(host, app, commit)
     }
     await ex.execute({ r: rec.r, requestMessageId: msg.id })
     expect(onDisk).toBe('used')
@@ -547,10 +556,10 @@ describe('nothing secret leaves the executor', () => {
       calls.push({ url, init })
       return new Response(JSON.stringify({ message: `bad token ${SECRET}` }), { status: 401 })
     }) as unknown as typeof fetch
-    const cl = coolifyRest({ prod: { coolifyApiUrl: 'https://prod.example/api/v1', token: SECRET } }, fetchImpl)
+    const cl = coolifyRest({ 'prod-gep': { coolifyApiUrl: 'https://prod.example/api/v1', token: SECRET } }, fetchImpl)
     const errs = await Promise.all([
-      cl.rollback('prod', 'prodapi0001', MAIN[1]!).catch((e: Error) => e.message),
-      cl.listAppDeployments('prod', 'prodapi0001', 20).catch((e: Error) => e.message),
+      cl.rollback('prod-gep', 'prodapi0001', MAIN[1]!).catch((e: Error) => e.message),
+      cl.listAppDeployments('prod-gep', 'prodapi0001', 20).catch((e: Error) => e.message),
       discordRest(SECRET, fetchImpl).listAfter(CHANNEL, '1').catch((e: Error) => e.message),
       githubRest(SECRET, fetchImpl).compare('KratoBal/acropora-os', MAIN[1]!, 'main').catch((e: Error) => e.message),
     ])
@@ -564,8 +573,8 @@ describe('nothing secret leaves the executor', () => {
 
   it('a Coolify answer without a deployment uuid (queue skipped) is not a deployment', async () => {
     const fetchImpl = (async () => new Response(JSON.stringify({ message: 'skipped' }), { status: 200 })) as unknown as typeof fetch
-    const cl = coolifyRest({ prod: { coolifyApiUrl: 'https://prod.example/api/v1', token: SECRET } }, fetchImpl)
-    expect(await cl.rollback('prod', 'prodapi0001', MAIN[1]!)).toEqual({ deploymentUuid: null })
+    const cl = coolifyRest({ 'prod-gep': { coolifyApiUrl: 'https://prod.example/api/v1', token: SECRET } }, fetchImpl)
+    expect(await cl.rollback('prod-gep', 'prodapi0001', MAIN[1]!)).toEqual({ deploymentUuid: null })
   })
 })
 
@@ -580,8 +589,9 @@ describe('the state file and the settings fail closed', () => {
     ['the request bot as a decider', (c: ReturnType<typeof configRaw>) => c.discord.deciderUserIds.push(BOT), /request bot/],
     ['a long approval window', (c: ReturnType<typeof configRaw>) => (c.apps[0]!.approvalMinutes = 61), /approvalMinutes/],
     ['an action not implemented', (c: ReturnType<typeof configRaw>) => (c.apps[0]!.actions = ['deploy', 'restart']), /actions\[1\]/],
-    ['a token inside the API URL', (c: ReturnType<typeof configRaw>) => (c.environments.prod.coolifyApiUrl = 'https://u:p@prod.example/api/v1'), /credentials/],
+    ['a token inside the API URL', (c: ReturnType<typeof configRaw>) => (c.coolifyHosts['prod-gep'].coolifyApiUrl = 'https://u:p@prod.example/api/v1'), /credentials/],
     ['a relative secret path', (c: ReturnType<typeof configRaw>) => (c.github.tokenFile = 'secrets/github'), /absolute/],
+    ['an app on an unknown Coolify', (c: ReturnType<typeof configRaw>) => (c.apps[0]!.coolifyHost = 'harmadik-gep'), /not in coolifyHosts/],
     ['one uuid under two names', (c: ReturnType<typeof configRaw>) => (c.apps[1]!.coolifyUuid = 'prodapi0001'), /duplicate coolifyUuid/],
   ])('refuses %s', (_name, mutate, re) => {
     const c = configRaw('/var/lib/vegrehajto')
