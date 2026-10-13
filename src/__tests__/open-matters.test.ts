@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { buildOpenMatters, DECISION_TAG, waitsOn } from '../open-matters.js'
+import { buildOpenMatters, DECISION_TAG, OWES_TAG, waitsOn } from '../open-matters.js'
 import { ensureTaskHandoffSchema, insertTaskHandoff, validateHandoffRecord } from '../task-handoff.js'
 import { addTaskEvent, ensureTaskUsageSchema, upsertTask } from '../task-usage.js'
 
@@ -10,7 +10,8 @@ import { addTaskEvent, ensureTaskUsageSchema, upsertTask } from '../task-usage.j
   closed task listed, an open one missing; the wrong party named as the one a task
   waits on; a question of the latest handoff missing; an untagged hot memory, another
   agent's memory or a near-miss tag counted as waiting on a decision; an archived or
-  non-waiting card listed; and, Balazs's condition, an item that is neither in the text
+  non-waiting card listed; a hot memory tagged `acrobot-tartozik` missing, listed twice,
+  or listed after the tasks; and, Balazs's condition, an item that is neither in the text
   nor in the omitted list once the budget runs out.
 */
 
@@ -70,7 +71,7 @@ describe('the four sources', () => {
     card.run('cccccccc-3', 'tervezett', 'planned', null, 'normal', NOW, null)
 
     const out = buildOpenMatters(db, { now: NOW })
-    expect(out.counts).toEqual({ tasks: 2, questions: 1, decisions: 1, cards: 1 })
+    expect(out.counts).toEqual({ owes: 0, tasks: 2, questions: 1, decisions: 1, cards: 1 })
     expect(out.text).toContain('[nyitott]')
     expect(out.text).toMatch(/\[nyitott\].*var: barracuda/)
     expect(out.text).toContain('[esemeny-nelkul]')
@@ -84,6 +85,64 @@ describe('the four sources', () => {
     expect(out.text).not.toContain('[bbbbbbbb]')
     expect(out.text).not.toContain('[cccccccc]')
     expect(out.text).toMatch(/## Kimaradt a keretbol \(0\)\n- semmi/)
+  })
+})
+
+describe('what Acrobot owes Balazs (Balazs, 2026-10-13 20:34:46 UTC)', () => {
+  // The missed case: acroveliq.acropora.hu stood only in a hot memory (2303), approved
+  // preparation with the next step at Acrobot, and the summary read only the decision tag.
+  it('a hot memory tagged acrobot-tartozik gets its own section, first, before the tasks and questions', () => {
+    task('nyitott'); ev('nyitott', 'started')
+    const ins = db.prepare('INSERT INTO memories VALUES (?,?,?,?,?,?)')
+    ins.run(2303, 'acrobot', 'hot', `acroveliq, ${OWES_TAG}`, 'acroveliq.acropora.hu: elokeszites jovahagyva, a lepessor nalam', NOW - 10)
+    ins.run(11, 'acrobot', 'hot', `${OWES_TAG}-nem`, 'majdnem cimke', NOW - 10)
+    ins.run(12, 'murena', 'hot', OWES_TAG, 'mas agense', NOW - 10)
+    ins.run(13, 'acrobot', 'warm', OWES_TAG, 'nem hot', NOW - 10)
+    ins.run(14, 'acrobot', 'hot', ` ${OWES_TAG.toUpperCase()} ,domain`, 'nagybetu es szokoz', NOW - 20)
+
+    const out = buildOpenMatters(db, { now: NOW })
+    expect(out.counts.owes).toBe(2)
+    expect(out.text).toContain(`## Amivel Acrobot tartozik Balazsnak (2, kulcsszo: ${OWES_TAG})`)
+    expect(out.text).toContain('[emlek 2303] acroveliq.acropora.hu')
+    expect(out.text).toContain('[emlek 14]')
+    for (const id of [11, 12, 13]) expect(out.text).not.toContain(`[emlek ${id}]`)
+    const owesAt = out.text.indexOf('## Amivel Acrobot tartozik')
+    expect(owesAt).toBeGreaterThan(0)
+    expect(owesAt).toBeLessThan(out.text.indexOf('## Nyitott feladatok'))
+    expect(owesAt).toBeLessThan(out.text.indexOf('## Kerdesek, amikre varunk'))
+    expect(out.text.indexOf('[emlek 2303]')).toBeLessThan(out.text.indexOf('## Nyitott feladatok'))
+  })
+
+  it('a memory tagged both ways is listed once, under what Acrobot owes', () => {
+    db.prepare('INSERT INTO memories VALUES (?,?,?,?,?,?)').run(7, 'acrobot', 'hot', `${DECISION_TAG}, ${OWES_TAG}`, 'mindketto', NOW)
+    const out = buildOpenMatters(db, { now: NOW })
+    expect(out.counts).toMatchObject({ owes: 1, decisions: 0 })
+    expect(out.text.split('[emlek 7]').length - 1).toBe(1)
+  })
+
+  it('a long task list cannot push it out of the budget, and what does not fit is named', () => {
+    for (let i = 0; i < 40; i++) { task(`feladat-${i}`, { title: 'hosszu cim '.repeat(6) }); ev(`feladat-${i}`, 'started') }
+    const ins = db.prepare('INSERT INTO memories VALUES (?,?,?,?,?,?)')
+    for (let i = 1; i <= 3; i++) ins.run(100 + i, 'acrobot', 'hot', OWES_TAG, 'tartozas '.repeat(10), NOW - i)
+    const out = buildOpenMatters(db, { now: NOW, budgetChars: 2500 })
+    expect(out.omitted.tasks.length).toBeGreaterThan(0)
+    expect(out.omitted.owes).toEqual([])
+    for (let i = 1; i <= 3; i++) expect(out.text).toContain(`[emlek ${100 + i}]`)
+
+    for (let i = 4; i <= 60; i++) ins.run(100 + i, 'acrobot', 'hot', OWES_TAG, 'tartozas '.repeat(25), NOW - i)
+    const tight = buildOpenMatters(db, { now: NOW, budgetChars: 3000 })
+    expect(tight.text.length).toBeLessThanOrEqual(3000)
+    expect(tight.omitted.owes.length).toBeGreaterThan(0)
+    for (let i = 1; i <= 60; i++) {
+      const id = 100 + i
+      expect(tight.text.includes(`[emlek ${id}]`) || tight.omitted.owes.includes(id), String(id)).toBe(true)
+    }
+    // the omitted line names exactly the omitted ids: parsed, not substring-matched
+    // (barracuda, #77: '101' is also inside '1010')
+    const line = tight.text.match(/^- (\d+) emlek, Acrobot tartozasa \(GET \/api\/memories\/<id>\): ([\d ]+)$/m)
+    expect(line).not.toBeNull()
+    expect(Number(line![1])).toBe(tight.omitted.owes.length)
+    expect(line![2].trim().split(' ').map(Number)).toEqual(tight.omitted.owes)
   })
 })
 
