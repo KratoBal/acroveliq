@@ -4,7 +4,6 @@ import sys
 import os
 import json
 import re
-import random
 import urllib.request
 import urllib.error
 
@@ -150,20 +149,9 @@ def main():
     except Exception:
         pass  # never block the agent
 
-    # Prune old entries with ~1% probability to keep the table from growing indefinitely.
-    if random.random() < 0.01:
-        try:
-            urllib.request.urlopen(
-                urllib.request.Request(
-                    f'{base_url}/tool-log/prune',
-                    data=b'{}',
-                    headers=headers,
-                    method='POST',
-                ),
-                timeout=3,
-            )
-        except Exception:
-            pass
+    # No pruning from here: the server prunes the log hourly (src/web.ts). The
+    # prune route is the session's and the main agent's, so an agent's own
+    # token got a silent 403 on it under enforcement (acrovelIQ P0-1).
 
     sys.exit(0)
 
