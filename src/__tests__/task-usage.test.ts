@@ -37,6 +37,7 @@ import {
   ensureTaskUsageSchema,
   loadTaskEvents,
   parseTaskCoreMode,
+  reviewRefGuard,
   taskTimeline,
   taskUsage,
   taskUsageWithVariants,
@@ -537,6 +538,67 @@ describe('TC-Lite L1: the done guard', () => {
     event('t', 'merged', 'acrobot', 10)
     addTaskEvent(db, { task_id: 't', kind: 'merged', actor: 'acrobot', at: 20, ref: null, data: claim(7, SHA_A) }, 20)
     expect(doneGuard(loadTaskEvents(db, 't'), 'code_app')).toEqual({ need: 'verify', claim: claim(7, SHA_A) })
+  })
+})
+
+describe('the review ref guard', () => {
+  const saved = { ...taskCoreSettings }
+  afterEach(() => Object.assign(taskCoreSettings, saved))
+
+  it('REVIEW-REF-SHAPES: owner/repo#N in the ref, or data.repo + data.pr; a file path only for docs and ops', () => {
+    const pass = [
+      reviewRefGuard('review_requested', 'KratoBal/marveen#76 fej 2409741', null, 'code_fleet'),
+      reviewRefGuard('verdict', 'APPROVE KratoBal/acropora-os#1685 fej abc1234', null, 'code_app'),
+      reviewRefGuard('verdict', 'APPROVE', { repo: 'KratoBal/marveen', pr: 76 }, 'code_fleet'),
+      reviewRefGuard('review_requested', null, { repo: 'KratoBal/marveen', pr: '76' }, null),
+      reviewRefGuard('review_requested', 'exchange/terv-2026-10-13.md', null, 'docs'),
+      reviewRefGuard('verdict', 'APPROVE scripts/futtat.sh', null, 'ops'),
+      reviewRefGuard('started', null, null, 'code_app'),
+    ]
+    const refused = [
+      reviewRefGuard('review_requested', null, null, 'code_fleet'),
+      reviewRefGuard('review_requested', 'PR #72 6fc2146', null, 'code_fleet'),
+      reviewRefGuard('review_requested', 'marveen#76', null, 'code_fleet'),
+      reviewRefGuard('verdict', 'APPROVE #77 fej f368684', null, 'code_fleet'),
+      reviewRefGuard('verdict', 'KratoBal/marveen#0', null, 'code_fleet'),
+      reviewRefGuard('verdict', 'a/../b#3', null, 'code_fleet'),
+      reviewRefGuard('verdict', 'APPROVE', { pr: 76 }, 'code_fleet'),
+      reviewRefGuard('verdict', 'APPROVE', { repo: 'KratoBal/marveen', pr: 0 }, 'code_fleet'),
+      reviewRefGuard('review_requested', 'exchange/terv.md', null, 'code_app'),
+      reviewRefGuard('review_requested', 'exchange/terv.md', null, null),
+      reviewRefGuard('review_requested', 'terv.md', null, 'docs'),
+    ]
+    expect([pass, refused.map((r) => typeof r === 'string' && r.includes('KratoBal/marveen#76'))], 'REVIEW-REF-SHAPES').toEqual([
+      pass.map(() => null), refused.map(() => true),
+    ])
+    // the file hint is given only where a file would pass
+    expect([/fájl útja/.test(refused[8]!), /fájl útja/.test(refused[10]!)], 'REVIEW-REF-HINT').toEqual([false, true])
+  })
+
+  it('REVIEW-REF-MODES: without a PR naplo marks, kenyszerit refuses with 409, off is the old behaviour; a full ref passes', async () => {
+    const send = async (mode: 'off' | 'naplo' | 'kenyszerit', kind: string, ref: string | null) => {
+      initDatabase(':memory:')
+      taskCoreSettings.mode = mode
+      const id = `ref-${Math.random().toString(36).slice(2)}`
+      const post = async (path: string, body: unknown) => {
+        const { ctx, out } = fakeCtx(path, 'POST', body)
+        await tryHandleTaskUsage(ctx)
+        return out
+      }
+      await post('/api/tasks', { id, verification_profile: 'code_fleet' })
+      const out = await post(`/api/tasks/${id}/events`, { kind, actor: 'murena', ...(ref ? { ref } : {}) })
+      const row = getDb().prepare('SELECT data FROM task_events WHERE task_id = ? AND kind = ?').get(id, kind) as { data: string | null } | undefined
+      return [out.status, out.body?.would_reject === true, row ? JSON.parse(row.data ?? 'null')?.would_reject ?? null : 'nincs sor']
+    }
+    expect([
+      await send('naplo', 'review_requested', 'PR #78'),
+      await send('kenyszerit', 'verdict', 'APPROVE #78'),
+      await send('off', 'verdict', null),
+      await send('kenyszerit', 'review_requested', 'KratoBal/marveen#78 fej abc1234'),
+      await send('kenyszerit', 'started', null),
+    ], 'REVIEW-REF-MODES').toEqual([
+      [201, true, true], [409, false, 'nincs sor'], [201, false, null], [201, false, null], [201, false, null],
+    ])
   })
 })
 
