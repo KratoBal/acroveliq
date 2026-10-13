@@ -17017,8 +17017,9 @@ function aqAgentState(act) {
 }
 
 async function aqLoadData() {
-  const [tasks, agents, activity, backlog] = await Promise.all([
+  const [tasks, agents, activity, backlog, openMatters] = await Promise.all([
     aqGet('/api/tasks'), aqGet('/api/agents'), aqGet('/api/agents/activity'), aqGet('/api/messages/backlog'),
+    aqGet('/api/open-matters'),
   ])
   const taskList = tasks.ok && Array.isArray(tasks.value) ? tasks.value : []
   const actList = activity.ok && Array.isArray(activity.value) ? activity.value : []
@@ -17043,7 +17044,8 @@ async function aqLoadData() {
       backlog: byName(backlogList.map((b) => ({ name: b.agent, ...b })), name),
     }
   })
-  return { tasks: taskList, team, errors: { tasks, agents, activity, backlog }, backlog: backlogList, at: Date.now() }
+  const items = openMatters.ok && openMatters.value && openMatters.value.items ? openMatters.value.items : null
+  return { tasks: taskList, team, errors: { tasks, agents, activity, backlog, openMatters }, backlog: backlogList, items, at: Date.now() }
 }
 
 // Only the measurable technical kinds (brief, item 4): a parked dialog, an old
@@ -17070,7 +17072,7 @@ function aqStalls(data) {
 function aqSourceNote(data) {
   const missing = Object.entries(data.errors).filter(([, r]) => !r.ok)
   if (!missing.length) return ''
-  const names = { tasks: 'feladatlista', agents: 'ágenslista', activity: 'panel-állapot', backlog: 'üzenetsor' }
+  const names = { tasks: 'feladatlista', agents: 'ágenslista', activity: 'panel-állapot', backlog: 'üzenetsor', openMatters: 'nyitott ügyek' }
   return `<div class="aq-note aq-note-warn">Nem elérhető adatforrás: ${missing.map(([k, r]) => aqEsc(names[k] + ' (' + r.error + ')')).join(', ')}. Az ebből számolt értékek hiányoznak, nem nullák.</div>`
 }
 
@@ -17289,9 +17291,39 @@ function aqRenderStalls(data) {
     <p class="aq-muted">A „másik ágensre vár” és az „automatikusan újrapróbálható” elakadásnak még nincs adatforrása, ezért nem szerepel.</p></section>`
 }
 
-function aqRenderDecisions() {
-  return `<section class="aq-card aq-decisions"><h2>Döntéseim</h2>
-    <p class="aq-empty">Ehhez még nincs adatforrás. Amíg nincs, itt nem jelenik meg tétel: kitalált döntést nem mutatunk.</p></section>`
+// A memory from /api/open-matters: its id and time are the source, the text opens in full.
+function aqMemoryItem(m) {
+  const text = String(m.content || '')
+  const head = text.length > 220 ? text.slice(0, 219) + '…' : text
+  return `<div class="aq-stall"><div class="aq-stall-head">${aqPill('emlék ' + m.id, 'grey')} <span class="aq-row-sub">${aqEsc(aqTime(m.created_at))}</span></div>
+    ${text.length > 220 ? `<details class="aq-dec-more"><summary class="aq-stall-why">${aqEsc(head)}</summary><div class="aq-stall-why aq-dec-text">${aqEsc(text)}</div></details>`
+      : `<div class="aq-stall-why aq-dec-text">${aqEsc(text)}</div>`}</div>`
+}
+
+function aqQuestionItem(q) {
+  return `<div class="aq-stall"><div class="aq-stall-head"><button type="button" class="aq-link" data-aq-task="${aqEsc(q.task)}">${aqEsc(q.task)}</button>
+    <span class="aq-row-sub">átadó rekord ${aqEsc(q.handoff)}, ${aqEsc(q.index + 1)}. kérdés</span></div>
+    <div class="aq-stall-why aq-dec-text">${aqEsc(q.what)}</div></div>`
+}
+
+// Three groups from /api/open-matters (task acroveliq-donteseim), each with its source;
+// an empty group says so, an unreachable source says that instead of an empty list.
+function aqRenderDecisions(data) {
+  const src = data.errors.openMatters
+  if (!src || !src.ok || !data.items)
+    return `<section class="aq-card aq-decisions"><h2>Döntéseim</h2>
+      <p class="aq-empty">A nyitott ügyek forrása nem elérhető${src && src.error ? ' (' + aqEsc(src.error) + ')' : ''}, ezért itt nem jelenik meg tétel. Ez nem azt jelenti, hogy nincs döntésre váró ügy.</p></section>`
+  const it = data.items
+  const list = (rows) => (Array.isArray(rows) ? rows : [])
+  const group = (title, source, rows, render, empty) => `<section class="aq-card aq-decisions"><h2>${aqEsc(title)} · ${rows.length}</h2>
+    <p class="aq-muted">${aqEsc(source)}</p>
+    ${rows.length ? rows.map(render).join('') : `<p class="aq-empty">${aqEsc(empty)}</p>`}</section>`
+  return group('Döntésre vár', 'Acrobot hot emlékei, kulcsszó: dontesre-var', list(it.decisions), aqMemoryItem,
+      'Most egy hot emlék sem visel dontesre-var kulcsszót.') +
+    group('Kérdések, amikre tőled várunk választ', 'A nyitott feladatok legutóbbi átadó rekordja, ahol a kérdés címzettje (from) Balázs', list(it.balazs_questions), aqQuestionItem,
+      'Egyik nyitott feladat legutóbbi átadó rekordjában sincs olyan kérdés, aminek a címzettje Balázs.') +
+    group('Amivel Acrobot tartozik neked', 'Acrobot hot emlékei, kulcsszó: acrobot-tartozik', list(it.owes), aqMemoryItem,
+      'Most egy hot emlék sem visel acrobot-tartozik kulcsszót.')
 }
 
 let aqRenderSeq = 0
@@ -17308,7 +17340,7 @@ async function aqRender() {
   else if (aqState.view === 'agents') html = aqRenderAgents(d)
   else if (aqState.view === 'tasks') html = aqRenderTasks(d)
   else if (aqState.view === 'stalls') html = aqRenderStalls(d)
-  else if (aqState.view === 'decisions') html = aqRenderDecisions()
+  else if (aqState.view === 'decisions') html = aqRenderDecisions(d)
   else html = aqRenderOverview(d)
   if (seq !== aqRenderSeq) return
   body.innerHTML = aqSourceNote(d) + html

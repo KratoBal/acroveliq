@@ -21,6 +21,8 @@
 //      `host=` names ACROVELIQ_HOST. A client can add a header, so a header can
 //      only ever turn the filter ON, never off. This is the second layer.
 
+import type { OpenMatters, OpenMattersMemory } from '../open-matters.js'
+
 /** Lowercased host without port and trailing dot; '' for an empty or unparsable value. */
 export function normalizeHost(raw: string | undefined | null): string {
   let h = (raw ?? '').trim().toLowerCase()
@@ -120,6 +122,9 @@ export const ACROVELIQ_ROUTES: readonly AcroveliqRoute[] = [
   { method: 'GET', path: '/api/agents', why: 'AcrovelIQ: agent descriptions' },
   { method: 'GET', path: '/api/agents/activity', why: 'AcrovelIQ: agent state' },
   { method: 'GET', path: '/api/messages/backlog', why: 'AcrovelIQ: message backlog' },
+  // memory text and handoff questions are internal: the surface gets the picked view
+  // below (acroveliqOpenMattersView), behind the same login as every row here
+  { method: 'GET', path: '/api/open-matters', why: 'AcrovelIQ: Döntéseim (picked view)' },
 ]
 
 function pathMatches(pattern: string, path: string): boolean {
@@ -161,4 +166,20 @@ export function acroveliqAgentsView(rows: readonly object[]): Record<string, unk
 /** /api/agents/activity rows as the AcrovelIQ surface serves them. */
 export function acroveliqActivityView(rows: readonly object[]): Record<string, unknown>[] {
   return rows.map((r) => pick(r, ACROVELIQ_ACTIVITY_FIELDS))
+}
+
+// /api/open-matters on the AcrovelIQ surface: the three groups of the Döntéseim view
+// and their generation time, picked (task acroveliq-donteseim). Not there: the
+// budgeted text and the counts and ids beside it, which also carry the open tasks, every
+// handoff question and the waiting cards; the view does not read them.
+export function acroveliqOpenMattersView(out: OpenMatters): { generated_at: number; items: OpenMatters['items'] } {
+  const memory = (m: OpenMattersMemory): OpenMattersMemory => ({ id: m.id, content: m.content, created_at: m.created_at })
+  return {
+    generated_at: out.generated_at,
+    items: {
+      owes: out.items.owes.map(memory),
+      decisions: out.items.decisions.map(memory),
+      balazs_questions: out.items.balazs_questions.map((q) => ({ task: q.task, handoff: q.handoff, index: q.index, from: q.from, what: q.what })),
+    },
+  }
 }

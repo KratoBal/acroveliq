@@ -27,6 +27,12 @@
 //      A memory carrying both tags is listed once, under source 1.
 //   5. kanban cards in `waiting`
 //
+// Beside the budgeted text, `items` carries three groups in full, as records: what
+// Acrobot owes Balazs, the decision memories, and the open questions that wait on
+// Balazs (a coordination question's `from` is the party the answer comes from). The
+// AcrovelIQ "Dontéseim" view lists these (task acroveliq-donteseim); the budget is
+// for a session's context, not for a page, so nothing is cut there.
+//
 // Pure: `db` and `now` are passed in, so a test runs it on an in-memory database.
 
 import type Database from 'better-sqlite3'
@@ -43,6 +49,11 @@ export const DECISION_TAG = 'dontesre-var'
 /** The keyword that marks a hot memory as something Acrobot owes Balazs. */
 export const OWES_TAG = 'acrobot-tartozik'
 
+/** Whether a question's `from` names Balazs: case and accents do not matter, nothing else may stand there. */
+export function fromBalazs(from: string): boolean {
+  return from.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase() === 'balazs'
+}
+
 /** About 3-4 thousand tokens of mostly ASCII Hungarian (plan, item 1). */
 export const DEFAULT_BUDGET_CHARS = 12000
 
@@ -53,11 +64,17 @@ export interface OpenMattersOptions {
   memoryAgent?: string
 }
 
+export interface OpenMattersMemory { id: number; content: string; created_at: number }
+
+export interface OpenMattersQuestion { task: string; handoff: number; index: number; from: string; what: string }
+
 export interface OpenMatters {
   generated_at: number
   text: string
   counts: { owes: number; tasks: number; questions: number; decisions: number; cards: number }
   omitted: { owes: number[]; tasks: string[]; questions: string[]; decisions: number[]; cards: string[] }
+  /** The three groups that wait on Balazs or are owed to him, in full (not budgeted). */
+  items: { owes: OpenMattersMemory[]; decisions: OpenMattersMemory[]; balazs_questions: OpenMattersQuestion[] }
 }
 
 const tableExists = (db: Database.Database, name: string): boolean =>
@@ -93,7 +110,7 @@ export function waitsOn(t: Pick<ListedTask, 'last_kind' | 'last_ref' | 'assignee
   }
 }
 
-interface Question { task: string; handoff: number; index: number; from: string; what: string }
+type Question = OpenMattersQuestion
 
 function questionsOf(db: Database.Database, taskId: string): Question[] {
   if (!tableExists(db, 'task_handoffs')) return []
@@ -126,7 +143,7 @@ export function buildOpenMatters(db: Database.Database, opts: OpenMattersOptions
            WHERE agent_id = ? AND category = 'hot' AND (',' || replace(lower(keywords), ' ', '') || ',') LIKE ?
            ORDER BY created_at DESC, id DESC`,
         )
-        .all(memoryAgent, `%,${tag},%`) as { id: number; content: string; created_at: number }[])
+        .all(memoryAgent, `%,${tag},%`) as OpenMattersMemory[])
     : []
   const owes = taggedHot(OWES_TAG)
   const owedIds = new Set(owes.map((m) => m.id))
@@ -215,5 +232,6 @@ export function buildOpenMatters(db: Database.Database, opts: OpenMattersOptions
     text: lines.join('\n') + '\n',
     counts: { owes: owes.length, tasks: tasks.length, questions: questions.length, decisions: decisions.length, cards: cards.length },
     omitted,
+    items: { owes, decisions, balazs_questions: questions.filter((q) => fromBalazs(q.from)) },
   }
 }
