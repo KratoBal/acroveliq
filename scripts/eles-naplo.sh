@@ -21,7 +21,7 @@ TOKEN_FILE=/home/marveen/marveen/store/.coolify-token-prod
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: nem olvashato: $TOKEN_FILE" >&2; exit 1; }
 MODE="${1:-}"
 
-curl -s -m 20 -H "Authorization: Bearer $(cat "$TOKEN_FILE")" \
+curl -s -m 20 -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")") \
   "https://coolify.acropora.hu/api/v1/applications" \
   | python3 -c 'import json,sys
 for a in json.load(sys.stdin):
@@ -29,7 +29,7 @@ for a in json.load(sys.stdin):
   | while IFS=$'\t' read -r uuid name; do
       echo
       echo "===== $name ====="
-      curl -s -m 40 -H "Authorization: Bearer $(cat "$TOKEN_FILE")" \
+      curl -s -m 40 -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")") \
         "https://coolify.acropora.hu/api/v1/applications/${uuid}/logs?lines=100000" \
         | AC_NAME="$name" AC_MODE="$MODE" python3 -c '
 import json, os, sys

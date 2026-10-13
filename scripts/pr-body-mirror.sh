@@ -87,7 +87,7 @@ rc=0
 for n in "$@"; do
   tmp=$(mktemp)
   code=$(curl -s -o "$tmp" -w '%{http_code}' \
-    -H "Authorization: Bearer $TOKEN" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") \
     -H "Accept: application/vnd.github+json" \
     "https://api.github.com/repos/$REPO/pulls/$n")
   if [ "$code" != "200" ]; then

@@ -129,9 +129,13 @@ TOK="$(cat /home/marveen/marveen/store/.github-token)"
 TARTAS=/home/marveen/marveen/exchange/pr-tartas.txt
 
 ESEMENY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/beolvadt-esemeny.py"
-python3 - "$PR" "$REPO" "$TOK" "$NEZ" "$TARTAS" "$FRISS_OK" "$BAZIS_OK" "$SORREND_OK" "$DUPLA_OK" "$KOZOS_OK" "$TASK" "$ESEMENY" << 'PYEOF'
+# the token goes in the environment, not the argv (every agent's `ps` shows argv;
+# acrovelIQ P0-1); argv[3] stays a placeholder so the positions do not move
+PR_BEOLVASZT_TOK="$TOK" python3 - "$PR" "$REPO" "-" "$NEZ" "$TARTAS" "$FRISS_OK" "$BAZIS_OK" "$SORREND_OK" "$DUPLA_OK" "$KOZOS_OK" "$TASK" "$ESEMENY" << 'PYEOF'
 import json, os, re as _re, subprocess, sys, time
-pr, repo, tok = sys.argv[1], sys.argv[2], sys.argv[3]
+pr, repo = sys.argv[1], sys.argv[2]
+# popped, so the curl, git and python children do not inherit it
+tok = os.environ.pop('PR_BEOLVASZT_TOK', '')
 nez = sys.argv[4] == '1'
 tartas_fajl = sys.argv[5]
 friss_ok = sys.argv[6] if len(sys.argv) > 6 else ''
@@ -170,13 +174,14 @@ if os.path.exists(tartas_fajl):
             sys.exit(1)
 
 def api(method, path, body=None):
+    # the header on stdin, not the argv: every agent's `ps` shows argv (P0-1)
     cmd = ['curl', '-sL', '-w', '\nHTTP %{http_code}', '-m', '60', '-X', method,
-           '-H', 'Authorization: Bearer ' + tok,
+           '-H', '@-',
            '-H', 'Accept: application/vnd.github+json',
            f'https://api.github.com/repos/{repo}{path}']
     if body is not None:
         cmd += ['-d', json.dumps(body)]
-    out = subprocess.run(cmd, capture_output=True, text=True).stdout
+    out = subprocess.run(cmd, input='Authorization: Bearer ' + tok + '\n', capture_output=True, text=True).stdout
     text, _, code = out.rpartition('\nHTTP ')
     return text, code.strip()
 
@@ -238,10 +243,10 @@ if state != 'open':
 _hrepo = ((d.get('head') or {}).get('repo') or {}).get('full_name') or repo
 _href = d['head']['ref']
 _ht = subprocess.run(
-    ['curl', '-sL', '-m', '30', '-H', 'Authorization: Bearer ' + tok,
+    ['curl', '-sL', '-m', '30', '-H', '@-',
      '-H', 'Accept: application/vnd.github+json',
      f'https://api.github.com/repos/{_hrepo}/git/ref/heads/{_href}'],
-    capture_output=True, text=True).stdout
+    input='Authorization: Bearer ' + tok + '\n', capture_output=True, text=True).stdout
 try:
     _agfej = json.loads(_ht)['object']['sha']
 except Exception:
@@ -320,9 +325,9 @@ def _jeloltek_kiir(_sha, _push_epoch):
         with open('/home/marveen/marveen/store/.dashboard-token') as _f:
             _tok = _f.read().strip()
         _r = subprocess.run(
-            ['curl', '-s', '-m', '10', '-H', 'Authorization: Bearer ' + _tok,
+            ['curl', '-s', '-m', '10', '-H', '@-',
              'http://localhost:3420/api/messages?limit=120'],
-            capture_output=True, text=True)
+            input='Authorization: Bearer ' + _tok + '\n', capture_output=True, text=True)
         _d = json.loads(_r.stdout)
         _ms = _d if isinstance(_d, list) else _d.get('messages', [])
     except Exception:
@@ -765,10 +770,10 @@ _DEF = [_re.compile(r'^\+\s*(--[a-z0-9-]+)\s*:'),
 
 def _nyers(path):
     r = subprocess.run(['curl', '-sL', '-m', '30',
-                        '-H', 'Authorization: Bearer ' + tok,
+                        '-H', '@-',
                         '-H', 'Accept: application/vnd.github.raw',
                         f'https://api.github.com/repos/{repo}{path}'],
-                       capture_output=True, text=True)
+                       input='Authorization: Bearer ' + tok + '\n', capture_output=True, text=True)
     return r.stdout
 
 _base = d.get('base', {}).get('sha')

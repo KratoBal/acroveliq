@@ -39,7 +39,7 @@ show() {
   local endpoint
   for endpoint in applications databases services; do
     echo "  --- $endpoint ---"
-    curl -s -m 20 -H "Authorization: Bearer $token" "$host/api/v1/$endpoint" \
+    curl -s -m 20 -H @<(printf 'Authorization: Bearer %s\n' "$token") "$host/api/v1/$endpoint" \
       | AC_EP="$endpoint" python3 -c '
 import json, os, sys
 ep = os.environ["AC_EP"]
@@ -95,13 +95,13 @@ mod() {
   fi
   local token uuid
   token="$(cat "$tokenfile")"
-  for uuid in $(curl -s -m 20 -H "Authorization: Bearer $token" "$host/api/v1/applications" \
+  for uuid in $(curl -s -m 20 -H @<(printf 'Authorization: Bearer %s\n' "$token") "$host/api/v1/applications" \
       | python3 -c 'import json,sys
 try: d=json.load(sys.stdin)
 except Exception: d=[]
 for a in d if isinstance(d,list) else []:
     if a.get("uuid"): print(a["uuid"])'); do
-    curl -s -m 20 -H "Authorization: Bearer $token" "$host/api/v1/applications/$uuid" \
+    curl -s -m 20 -H @<(printf 'Authorization: Bearer %s\n' "$token") "$host/api/v1/applications/$uuid" \
       | python3 -c 'import json,sys
 try: a=json.load(sys.stdin)
 except Exception: sys.exit(0)

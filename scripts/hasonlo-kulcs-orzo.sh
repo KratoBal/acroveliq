@@ -120,7 +120,7 @@ letolt() {
   ki="$3"
   API_BAJ=""
   kod="$(curl -s -o "${ki}" -w '%{http_code}' \
-    -H "Authorization: Bearer $(cat "${TOKEN_FILE}")" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$(cat "${TOKEN_FILE}")") \
     -H "Accept: application/vnd.github.raw" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "https://api.github.com/repos/${OWNER}/${repo}/contents/${utvonal}?ref=main" 2>/dev/null)"
@@ -153,7 +153,7 @@ letolt() {
 fo_ag_sha() {
   repo="$1"
   valasz="$(curl -s \
-    -H "Authorization: Bearer $(cat "${TOKEN_FILE}")" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$(cat "${TOKEN_FILE}")") \
     -H "Accept: application/vnd.github.sha" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "https://api.github.com/repos/${OWNER}/${repo}/commits/main" 2>/dev/null)"

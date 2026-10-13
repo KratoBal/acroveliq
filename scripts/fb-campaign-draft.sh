@@ -101,13 +101,13 @@ api_post() {
   # api_post <path> <field=value>...   -- POST, and the ONLY writing function here.
   local path="$1"; shift
   local url="https://graph.facebook.com/$API_VER/$path"
-  local -a args=(-sS --max-time 60 -w '\n%{http_code}' -H "Authorization: Bearer $TOKEN")
+  local -a args=(-sS --max-time 60 -w '\n%{http_code}')
   local pair
   for pair in "$@"; do
     args+=(--data-urlencode "$pair")
   done
   local body code
-  body="$(curl "${args[@]}" "$url" 2>&1)" || die "halozati hiba a Graph API fele"
+  body="$(curl "${args[@]}" -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "$url" 2>&1)" || die "halozati hiba a Graph API fele"
   code="$(tail -n1 <<< "$body")"
   body="$(sed '$d' <<< "$body" | scrub)"
   if [ "$code" != "200" ]; then
@@ -120,7 +120,7 @@ api_post() {
 api_get() {
   local path="$1" qs="${2:-}"
   local url="https://graph.facebook.com/$API_VER/$path"
-  local -a args=(-sS -G --max-time 30 -w '\n%{http_code}' -H "Authorization: Bearer $TOKEN")
+  local -a args=(-sS -G --max-time 30 -w '\n%{http_code}')
   local pair
   if [ -n "$qs" ]; then
     local IFS='&'
@@ -129,7 +129,7 @@ api_get() {
     done
   fi
   local body code
-  body="$(curl "${args[@]}" "$url" 2>&1)" || die "halozati hiba a Graph API fele"
+  body="$(curl "${args[@]}" -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "$url" 2>&1)" || die "halozati hiba a Graph API fele"
   code="$(tail -n1 <<< "$body")"
   body="$(sed '$d' <<< "$body" | scrub)"
   [ "$code" = "200" ] || { echo "$body" >&2; die "Graph API HTTP $code"; }

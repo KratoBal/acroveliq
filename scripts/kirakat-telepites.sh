@@ -52,7 +52,7 @@ GEP=fleet@100.88.199.87
 
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: nincs olvashato Coolify token: $TOKEN_FILE" >&2; exit 1; }
 
-api() { /usr/bin/curl -s -H "Authorization: Bearer $(/bin/cat $TOKEN_FILE)" "$@"; }
+api() { /usr/bin/curl -s -H @<(printf 'Authorization: Bearer %s\n' "$(/bin/cat $TOKEN_FILE)") "$@"; }
 
 case "${1:-allapot}" in
   allapot)

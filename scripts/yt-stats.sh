@@ -102,8 +102,8 @@ print((q.get("code") or [""])[0])
   cid="$(read_secret "$CLIENT_ID_FILE")" || exit 1
   csec="$(read_secret "$CLIENT_SECRET_FILE")" || exit 1
   resp="$(curl -sS --max-time 30 -X POST "https://oauth2.googleapis.com/token" \
-    --data-urlencode "client_id=$cid" --data-urlencode "client_secret=$csec" \
-    --data-urlencode "code=$code" --data-urlencode "redirect_uri=$REDIRECT" \
+    --data-urlencode "client_id=$cid" --data-urlencode "client_secret@"<(printf '%s' "$csec") \
+    --data-urlencode "code@"<(printf '%s' "$code") --data-urlencode "redirect_uri=$REDIRECT" \
     --data-urlencode "grant_type=authorization_code")" || die "halozati hiba a token cserenel"
   printf '%s' "$resp" | REFRESH="$REFRESH_FILE" python3 -c '
 import json, os, sys
@@ -141,8 +141,8 @@ except Exception:
   [ -f "$REFRESH_FILE" ] || die "nincs refresh token. Futtasd elobb: yt-stats.sh auth-url, majd auth-code"
   local rt; rt="$(tr -d ' \t\r\n' < "$REFRESH_FILE")"
   resp="$(curl -sS --max-time 30 -X POST "https://oauth2.googleapis.com/token" \
-    --data-urlencode "client_id=$cid" --data-urlencode "client_secret=$csec" \
-    --data-urlencode "refresh_token=$rt" --data-urlencode "grant_type=refresh_token")" \
+    --data-urlencode "client_id=$cid" --data-urlencode "client_secret@"<(printf '%s' "$csec") \
+    --data-urlencode "refresh_token@"<(printf '%s' "$rt") --data-urlencode "grant_type=refresh_token")" \
     || die "halozati hiba a token frissitesnel"
   printf '%s' "$resp" | ACCESS="$ACCESS_FILE" python3 -c '
 import json,os,sys,time
@@ -162,12 +162,12 @@ api_get() {
   # api_get <full-url> <querystring>   -- GET only, token in the header, never in the URL.
   local url="$1" qs="${2:-}" tok body code
   tok="$(access_token)" || exit 1
-  local -a args=(-sS -G --max-time 60 -w '\n%{http_code}' -H "Authorization: Bearer $tok")
+  local -a args=(-sS -G --max-time 60 -w '\n%{http_code}')
   if [ -n "$qs" ]; then
     local IFS='&' pair
     for pair in $qs; do [ -n "$pair" ] && args+=(--data-urlencode "$pair"); done
   fi
-  body="$(curl "${args[@]}" "$url")" || die "halozati hiba: $url"
+  body="$(curl "${args[@]}" -H @<(printf 'Authorization: Bearer %s\n' "$tok") "$url")" || die "halozati hiba: $url"
   code="$(tail -n1 <<< "$body")"; body="$(sed '$d' <<< "$body")"
   [ "$code" = "200" ] || { echo "$body" >&2; die "HTTP $code"; }
   echo "$body"
@@ -280,13 +280,13 @@ print(json.dumps({"snippet": {"title": os.environ["TITLE"], "description": os.en
 ')"
     loc="$(curl -sS --max-time 60 -D - -o /dev/null -X POST \
       "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status" \
-      -H "Authorization: Bearer $tok" -H "Content-Type: application/json; charset=UTF-8" \
+      -H @<(printf 'Authorization: Bearer %s\n' "$tok") -H "Content-Type: application/json; charset=UTF-8" \
       -H "X-Upload-Content-Length: $size" -H "X-Upload-Content-Type: video/*" \
       --data-binary "$meta" | tr -d '\r' | sed -n 's/^[Ll]ocation: //p' | tail -1)"
     [ -n "$loc" ] || die "nem kaptam feltoltesi cimet (lejart a jovahagyas, vagy hianyzik a youtube.upload scope?)"
     echo "feltoltes indul, $size byte..."
     curl -sS --max-time 3600 -X PUT "$loc" \
-      -H "Authorization: Bearer $tok" -H "Content-Type: video/*" \
+      -H @<(printf 'Authorization: Bearer %s\n' "$tok") -H "Content-Type: video/*" \
       --data-binary "@$file" | python3 -c '
 import json,sys
 d = json.load(sys.stdin)
