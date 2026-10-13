@@ -800,6 +800,40 @@ export function doneGuard(events: readonly StoredTaskEvent[], profile: string | 
   return { need: 'verify', claim: { repo, pr, merge_sha: sha } }
 }
 
+/** The events whose ref ties a review to its PR. */
+export const REVIEW_REF_KINDS: ReadonlySet<string> = new Set(['review_requested', 'verdict'])
+/** Profiles whose review may be of a file, not a PR. */
+const FILE_REF_PROFILES: ReadonlySet<string> = new Set(['docs', 'ops'])
+const REF_PR = /(?<![\w./-])((?!\S*\.\.)[\w.-]+\/[\w.-]+)#(\d+)(?!\w)/
+const REF_PATH = /(?<![\w./-])[\w.-]+(?:\/[\w.-]+)+(?![\w#])/
+
+/**
+ * A review_requested or verdict must say WHICH PR it is about, as owner/repo#N
+ * in the ref or as data.repo + data.pr: a bare `#76` exists in two repos, and
+ * thirteen tasks' merges could not be tied to them (handoff 40). A docs or ops
+ * task may name the reviewed file instead. A task without a profile is held
+ * to the code rule, as the done guard holds it. Null when the event passes.
+ */
+export function reviewRefGuard(
+  kind: string,
+  ref: string | null,
+  data: Record<string, unknown> | null,
+  profile: string | null | undefined,
+): string | null {
+  if (!REVIEW_REF_KINDS.has(kind)) return null
+  const pr = REF_PR.exec(ref ?? '')
+  if (pr && Number(pr[2]) > 0) return null
+  const d = data ?? {}
+  const dataPr = typeof d.pr === 'number' ? d.pr : typeof d.pr === 'string' && /^\d+$/.test(d.pr) ? Number(d.pr) : 0
+  if (typeof d.repo === 'string' && REPO.test(d.repo) && Number.isInteger(dataPr) && dataPr > 0) return null
+  const files = !!profile && FILE_REF_PROFILES.has(profile)
+  if (files && REF_PATH.test(ref ?? '')) return null
+  return (
+    `a ${kind} ref mezőjéből hiányzik a repo#PR (pl. "KratoBal/marveen#76 fej <sha>"), és a data sem nevezi meg (repo + pr)` +
+    (files ? `; ${profile} profilnál a vizsgált fájl útja is jó (pl. "exchange/terv.md")` : '')
+  )
+}
+
 /**
  * GitHub, as the guard asks it. Each answer is `undefined` when it could not
  * be measured: that is its own outcome, never agreement.

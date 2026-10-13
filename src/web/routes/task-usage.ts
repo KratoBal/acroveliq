@@ -5,6 +5,7 @@ import { STORE_DIR, TASK_CORE_MODE_SETTING } from '../../config.js'
 import { getDb } from '../../db.js'
 import { logger } from '../../logger.js'
 import {
+  REVIEW_REF_KINDS,
   TASK_EVENT_KINDS,
   VERIFICATION_PROFILES,
   addTaskEvent,
@@ -15,6 +16,7 @@ import {
   githubMergeProbe,
   loadTaskEvents,
   parseTaskCoreMode,
+  reviewRefGuard,
   taskTimeline,
   taskUsageWithVariants,
   upsertTask,
@@ -48,6 +50,11 @@ import type { RouteContext } from './types.js'
 // before L1; `naplo` (the default) accepts every `done` and marks the one it
 // would refuse (`data.would_reject`); `kenyszerit` refuses it with 409. What
 // it asks for is in doneGuard and verifyMerge (src/task-usage.ts).
+//
+// THE REVIEW REF GUARD, by the same setting: a review_requested or verdict
+// names its PR (owner/repo#N in the ref, or data.repo + data.pr); a docs or ops
+// task may name the file. `naplo` marks the event, `kenyszerit` refuses it with
+// 409. Events already stored are not touched. See reviewRefGuard.
 
 const TASK_PATH = /^\/api\/tasks\/([^/]+)\/(events|sessions|usage|timeline)$/
 
@@ -257,6 +264,18 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       }
       if (reason && taskCoreSettings.mode === 'kenyszerit') {
         json(res, { error: 'done refused', reason }, 409)
+        return true
+      }
+      if (reason) {
+        wouldReject = reason
+        stored = { ...(stored ?? {}), would_reject: true, would_reject_reason: reason }
+      }
+    }
+    if (REVIEW_REF_KINDS.has(kind!) && taskCoreSettings.mode !== 'off') {
+      const task = db.prepare('SELECT verification_profile FROM tasks WHERE id = ?').get(taskId) as { verification_profile: string | null }
+      const reason = reviewRefGuard(kind!, text(b.ref), data as Record<string, unknown> | null, task.verification_profile)
+      if (reason && taskCoreSettings.mode === 'kenyszerit') {
+        json(res, { error: `${kind} refused`, reason }, 409)
         return true
       }
       if (reason) {

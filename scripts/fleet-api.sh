@@ -359,6 +359,9 @@ print(json.dumps(d))' "$TASK")" || exit 1
     # Az ido masodperc vagy ISO (2026-10-12T07:03:00Z); hianyaban MOST. A besorolas
     # ezekbol vezetodik le, a hivasokra semmi nem irodik.
     # Zaro fajtak a done mellett: blocked|cancelled|failed|partial.
+    # review_requested es verdict: a hivatkozasban a repo#PR ALLJON ("KratoBal/marveen#76 fej <sha>"),
+    # vagy a --data nevezze meg ({"repo":"KratoBal/marveen","pr":76}); docs/ops profilnal a fajl utja is jo.
+    # Nelkule a szerver naplo modban would_reject jelet tesz ra, kenyszerit modban 409.
     # `--data -` a VEGEN: egy JSON objektum STDIN-rol (fajlbol, atiranyitassal), pl. a merged
     # esemeny {"repo":"KratoBal/marveen","pr":41,"merge_sha":"<40 jegy>"} adata.
     # IDEMPOTENCIA: a futas EGY kulcsot general, es halozati hibanal vagy 5xx-nel UGYANAZZAL
