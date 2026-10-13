@@ -1,7 +1,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { safeJoin } from './sanitize.js'
 import { isValidModelId, InvalidModelIdError } from '../model-id.js'
@@ -318,9 +318,53 @@ export function resolveRemoteConfig(rawConfigJson: string): RemoteAgentConfig {
   return { host, workdir }
 }
 
+// B45 follow-up (b77e2688, Security Baseline 2026-10-13): the remote host is an
+// ssh destination the ROUTER connects to, with the router's own key, from every
+// panel and lifecycle path (send-keys, capture, stop, restart, start). It used to
+// come from agent-config.json, which lives in the agent's own tree: the agent owns
+// that directory and the fleet group can write the file. An agent could therefore
+// point the router's ssh at any host it chose. The host now comes from a registry
+// the router owns (store/, not writable by any agent), written only by
+// writeAgentRemoteConfig (PUT /api/agents/:name/remote). A remoteHost or
+// remoteWorkdir left in agent-config.json has no effect any more.
+//
+// Shape: { "<agent>": { "remoteHost": "...", "remoteWorkdir": "..." } }, each entry
+// validated exactly like the old config keys (resolveRemoteConfig).
+let remoteHostsFile = join(STORE_DIR, 'agent-remote-hosts.json')
+
+export function setAgentRemoteHostsFileForTests(path: string): void {
+  remoteHostsFile = path
+}
+
+function parseRemoteRegistry(rawRegistryJson: string): Record<string, unknown> {
+  let reg: unknown
+  try { reg = JSON.parse(rawRegistryJson) } catch { return {} }
+  if (!reg || typeof reg !== 'object' || Array.isArray(reg)) return {}
+  return reg as Record<string, unknown>
+}
+
+// Pure resolver over the registry text. Own keys only: a name like "constructor"
+// must not resolve through the prototype.
+export function resolveRemoteRegistryEntry(rawRegistryJson: string, name: string): RemoteAgentConfig {
+  const reg = parseRemoteRegistry(rawRegistryJson)
+  if (!Object.prototype.hasOwnProperty.call(reg, name)) return { host: null, workdir: null }
+  const entry = reg[name]
+  if (!entry || typeof entry !== 'object') return { host: null, workdir: null }
+  return resolveRemoteConfig(JSON.stringify(entry))
+}
+
 export function readAgentRemoteConfig(name: string): RemoteAgentConfig {
+  return resolveRemoteRegistryEntry(readFileOr(remoteHostsFile, '{}'), name)
+}
+
+// A remoteHost still standing in the agent's own config: ignored, reported so an
+// install that configured a remote agent the old way sees why it now runs locally.
+export function agentConfigHasIgnoredRemoteHost(name: string): boolean {
   const configPath = join(agentDir(name), 'agent-config.json')
-  return resolveRemoteConfig(readFileOr(configPath, '{}'))
+  try {
+    const cfg = JSON.parse(readFileOr(configPath, '{}')) as Record<string, unknown>
+    return !!cfg && typeof cfg.remoteHost === 'string' && cfg.remoteHost.trim() !== ''
+  } catch { return false }
 }
 
 // Convenience for the many callers that only need the host to decide whether a
@@ -404,25 +448,27 @@ export function agentOsUserName(name: string): string {
 // re-read (review of #57 v2).
 export type RunIdentity = { ok: true; runAsUser: string | null } | { ok: false; error: string }
 
+// `remoteHost` is the router's registry value (readAgentRemoteHost), never the
+// config's: a remoteHost in agent-config.json launches nothing any more (b77e2688).
 export function checkAgentRunIdentity(
   name: string,
   rawConfigJson: string,
   osUserExists: (user: string) => boolean,
+  remoteHost: string | null = null,
 ): RunIdentity {
   const expected = agentOsUserName(name)
   const own = osUserExists(expected)
   let raw: unknown = undefined
-  let remote: unknown = undefined
   try {
     const cfg = JSON.parse(rawConfigJson) as Record<string, unknown>
-    if (cfg && typeof cfg === 'object') { raw = cfg.runAsUser; remote = cfg.remoteHost }
+    if (cfg && typeof cfg === 'object') raw = cfg.runAsUser
   } catch { /* unparseable: judged below like a missing value */ }
   const actual = resolveRunAsUser(rawConfigJson)
   if (own) {
     if (actual !== expected) {
       return { ok: false, error: `run identity refused: OS user ${expected} exists, agent-config.json runAsUser is ${JSON.stringify(raw ?? null)}` }
     }
-    if (typeof remote === 'string' && remote.trim()) {
+    if (remoteHost) {
       return { ok: false, error: `run identity refused: agent ${name} has its own OS user, a remoteHost would run it outside that uid` }
     }
     return { ok: true, runAsUser: expected }
@@ -462,21 +508,24 @@ export function readAgentRunIdentity(name: string): RunIdentity {
   // B45 B2-2 follow-up (barracuda): an unreadable or empty /etc/passwd made every
   // OS user look absent, so an agent WITH its own user and no runAsUser in its
   // config would have started as the router. Unknown identity is a stop, too.
-  return checkAgentRunIdentityWithPasswd(name, readFileOr(configPath, '{}'), readFileOr('/etc/passwd', ''))
+  return checkAgentRunIdentityWithPasswd(name, readFileOr(configPath, '{}'), readFileOr('/etc/passwd', ''), readAgentRemoteHost(name))
 }
 
 export function checkAgentRunIdentityWithPasswd(
   name: string,
   rawConfigJson: string,
   passwd: string,
+  remoteHost: string | null = null,
 ): RunIdentity {
   if (!passwd.trim()) return { ok: false, error: 'run identity refused: /etc/passwd is unreadable or empty' }
-  return checkAgentRunIdentity(name, rawConfigJson, osUserExistsFromPasswd(passwd))
+  return checkAgentRunIdentity(name, rawConfigJson, osUserExistsFromPasswd(passwd), remoteHost)
 }
 
-// Validate-and-persist the remote config. Empty strings clear the fields
-// (revert the agent to local). Returns the resolved config on success, or an
-// error string when a non-empty value fails validation.
+// Validate-and-persist the remote config into the router's registry (see
+// readAgentRemoteConfig). Empty strings clear the entry (revert the agent to
+// local). Returns the resolved config on success, or an error string when a
+// non-empty value fails validation. The agent's own agent-config.json is not
+// touched: nothing in it decides the host any more.
 export function writeAgentRemoteConfig(
   name: string,
   host: string,
@@ -484,15 +533,14 @@ export function writeAgentRemoteConfig(
 ): { ok: true; remote: RemoteAgentConfig } | { ok: false; error: string } {
   const h = host.trim()
   const w = workdir.trim()
-  const configPath = join(agentDir(name), 'agent-config.json')
-  let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  const reg = parseRemoteRegistry(readFileOr(remoteHostsFile, '{}'))
 
-  // Clearing: both empty -> remove the fields, agent becomes local.
+  // Clearing: both empty -> remove the entry, agent becomes local.
   if (!h && !w) {
-    delete config.remoteHost
-    delete config.remoteWorkdir
-    atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+    if (Object.prototype.hasOwnProperty.call(reg, name)) {
+      delete reg[name]
+      atomicWriteFileSync(remoteHostsFile, JSON.stringify(reg, null, 2), { mode: 0o644 })
+    }
     return { ok: true, remote: { host: null, workdir: null } }
   }
 
@@ -507,9 +555,8 @@ export function writeAgentRemoteConfig(
       error: 'Invalid remoteHost (alias or user@host, no port/metachars) or remoteWorkdir (must be an absolute path without `..`).',
     }
   }
-  config.remoteHost = probe.host
-  config.remoteWorkdir = probe.workdir
-  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+  reg[name] = { remoteHost: probe.host, remoteWorkdir: probe.workdir }
+  atomicWriteFileSync(remoteHostsFile, JSON.stringify(reg, null, 2), { mode: 0o644 })
   return { ok: true, remote: probe }
 }
 
