@@ -131,7 +131,7 @@ describe('the budget loses nothing (Balazs, 18:45:34 UTC)', () => {
   })
 
   it('long task ids (up to 100 characters): the reserve is taken from the real ids, the text keeps the budget', () => {
-    for (let i = 0; i < 30; i++) { const id = `${'hosszu-azonosito-'.repeat(5)}${i}`.slice(0, 100); task(id); ev(id, 'started') }
+    for (let i = 0; i < 40; i++) { const id = `${i}-${'hosszu-azonosito-'.repeat(6)}`.slice(0, 100); task(id); ev(id, 'started') }
     const out = buildOpenMatters(db, { now: NOW, budgetChars: 6000 })
     expect(out.omitted.tasks.length).toBeGreaterThan(0)
     expect(out.text.length).toBeLessThanOrEqual(6000)
