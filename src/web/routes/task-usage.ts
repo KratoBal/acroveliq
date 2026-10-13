@@ -136,11 +136,18 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
     }
     // the profile decides what `done` must prove: a different one on an
     // existing task is refused, not ignored (barracuda, #46)
-    const stored = getDb().prepare('SELECT verification_profile FROM tasks WHERE id = ?').get(id) as
-      | { verification_profile: string | null }
+    const stored = getDb().prepare('SELECT verification_profile, type FROM tasks WHERE id = ?').get(id) as
+      | { verification_profile: string | null; type: string | null }
       | undefined
     if (profile && stored?.verification_profile && stored.verification_profile !== profile) {
       json(res, { error: `verification_profile is ${stored.verification_profile} and cannot be changed` }, 409)
+      return true
+    }
+    // a coordination task holds its handoffs to the four fields (task-handoffs.ts); an
+    // update that left `type` out would CLEAR it (the original fields are written as
+    // given), and with it the obligation. So the type stays (koord-munkamenet, #72).
+    if (stored?.type === 'coordination' && text(b.type) !== 'coordination') {
+      json(res, { error: 'type is coordination and cannot be changed (send type: coordination with the update)' }, 409)
       return true
     }
     upsertTask(
