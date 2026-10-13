@@ -199,7 +199,9 @@ export type TaskInput = Pick<TaskRow, 'id' | 'type' | 'parent_task' | 'variant' 
 /**
  * A task, created or updated. The original fields are written as given (an
  * update without them clears them, as before L1); an L1 field left out keeps
- * its stored value, so a later partial write does not erase a title.
+ * its stored value, so a later partial write does not erase a title. The
+ * verification profile is written once and never replaced here: a `code_app`
+ * task turned `docs` before its `done` would skip the GitHub re-measure.
  */
 export function upsertTask(db: Database.Database, task: TaskInput, now: number): void {
   const fields = Object.fromEntries(TASK_FIELDS.map((f) => [f, task[f] ?? null]))
@@ -211,7 +213,10 @@ export function upsertTask(db: Database.Database, task: TaskInput, now: number):
      ON CONFLICT(id) DO UPDATE SET
        project = excluded.project, type = excluded.type, parent_task = excluded.parent_task,
        variant = excluded.variant, brief_ref = excluded.brief_ref, updated_at = excluded.updated_at,
-       ${TASK_FIELDS.map((f) => `${f} = coalesce(excluded.${f}, tasks.${f})`).join(', ')}`,
+       ${TASK_FIELDS.map((f) =>
+         // the profile decides what `done` must prove: once written it stays (barracuda, #46)
+         f === 'verification_profile' ? `${f} = coalesce(tasks.${f}, excluded.${f})` : `${f} = coalesce(excluded.${f}, tasks.${f})`,
+       ).join(', ')}`,
   ).run({
     id: task.id,
     type: task.type,

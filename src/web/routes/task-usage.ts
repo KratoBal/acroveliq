@@ -118,6 +118,15 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid task', missing: [`verification_profile (${VERIFICATION_PROFILES.join('|')})`] }, 400)
       return true
     }
+    // the profile decides what `done` must prove: a different one on an
+    // existing task is refused, not ignored (barracuda, #46)
+    const stored = getDb().prepare('SELECT verification_profile FROM tasks WHERE id = ?').get(id) as
+      | { verification_profile: string | null }
+      | undefined
+    if (profile && stored?.verification_profile && stored.verification_profile !== profile) {
+      json(res, { error: `verification_profile is ${stored.verification_profile} and cannot be changed` }, 409)
+      return true
+    }
     upsertTask(
       getDb(),
       {

@@ -18,6 +18,8 @@
 //   - L1: a `done` without the evidence its profile asks for is accepted
 //     unmarked (naplo) or accepted at all (kenyszerit); a merge sha that is not
 //     on main, or that belongs to another PR, passes;
+//   - L1: a task's verification profile can be replaced (code_app -> docs) and
+//     its `done` then skips the re-measure (barracuda, #46);
 //   - L1: the timeline is out of order, or an agent stays busy after it asked
 //     for review.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -487,6 +489,27 @@ describe('TC-Lite L1: the done guard', () => {
       right.status, right.wouldReject, unmerged.status, badData.status, /merge_sha/.test(badData.reason)], 'TCL-DONE-VERIFY').toEqual([
       409, true, 409, true, 201, false, 409, 409, true,
     ])
+  })
+
+  it('TCL-PROFILE-FIXED: a written profile cannot be swapped for docs before the done; the guard still measures', async () => {
+    initDatabase(':memory:')
+    taskCoreSettings.mode = 'kenyszerit'
+    taskCoreSettings.probe = () => fakeProbe({}, [])
+    const id = `profil-${Math.random().toString(36).slice(2)}`
+    const post = async (path: string, body: unknown) => {
+      const { ctx, out } = fakeCtx(path, 'POST', body)
+      await tryHandleTaskUsage(ctx)
+      return out
+    }
+    await post('/api/tasks', { id, verification_profile: 'code_app' })
+    const swap = await post('/api/tasks', { id, verification_profile: 'docs' })
+    const same = await post('/api/tasks', { id, verification_profile: 'code_app', title: 'Cím' })
+    const omitted = await post('/api/tasks', { id, assignee: 'murena' })
+    // the function itself keeps it too, whoever calls it
+    upsertTask(getDb(), { id, type: null, parent_task: null, variant: null, brief_ref: null, verification_profile: 'docs' }, 9)
+    const profile = (getDb().prepare('SELECT verification_profile FROM tasks WHERE id = ?').get(id) as { verification_profile: string }).verification_profile
+    const finish = await post(`/api/tasks/${id}/events`, { kind: 'done', actor: 'murena' })
+    expect([swap.status, same.status, omitted.status, profile, finish.status], 'TCL-PROFILE-FIXED').toEqual([409, 201, 201, 'code_app', 409])
   })
 
   it('TCL-DONE-UNMEASURABLE: GitHub out of reach: kenyszerit 409 "nem mérhető", naplo accepts and marks', async () => {
