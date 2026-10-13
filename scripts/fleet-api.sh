@@ -44,6 +44,9 @@
 #         (a HIVO SAJAT munkamenetet: egy masik agenset az agent-restart --task regisztralja)
 #   bash scripts/fleet-api.sh agent-restart <agens> [--fresh] [--task <task_id>]
 #   bash scripts/fleet-api.sh task-usage <task_id> [variants]   # 3: atfedo ablak, ervenytelen
+#   bash scripts/fleet-api.sh kiadas <task_id> <agens> [--continue] [--parallel "<indok>"] [--kiado <nev>]
+#         (egy feladat kiadasa, megismetelheto; kilepes: 3 atado rekord, 4 feladat, 5 foglalt,
+#          6 restart, 7 uzenet, 8 a panel nem tetlen)
 #
 # Any argument may be "-" to read that value from STDIN (for long/multi-line content).
 # Output: the raw API response on success; "FAIL <reason>" + exit 1 otherwise.
@@ -446,6 +449,168 @@ b={"fresh": os.environ["FRESH"] == "1"}
 if os.environ["TASK"]: b["task_id"] = os.environ["TASK"]
 print(json.dumps(b))')"
     post "/agents/${A_ENC}/restart" "$BODY"
+    ;;
+  kiadas)
+    # TC-Lite L5: EGY feladat kiadasa EGY agensnek, egyetlen, megismetelheto paranccsal.
+    # A lepesek a terv tablaja szerint (exchange/acroveliq/tcl-elokeszites-2026-10-13.md, ### L5),
+    # mindegyik a SAJAT kilepesi kodjaval all meg, hogy a hivo tudja, hol:
+    #   1  a feladat letezik, es van goal, authorization_ref, verification_profile, a felelose
+    #      pedig ez az agens (enelkul a foglaltsag-lekerdezes sosem latna)    -> 4
+    #   2  az atado rekord, visszamerve (handoff-read)                         -> 3 tovabbadva
+    #   3  az agensnek nincs MASIK foglalt feladata; --parallel "<indok>" atengedi -> 5
+    #   4  assigned esemeny, csak ha a feladat meg nincs ennek az agensnek kiadva
+    #   4b a panel tetlen (idle vagy stopped) ES nincs neki szolo fuggo uzenet -> 8, restart nincs
+    #   5  friss inditas a feladat munkamenet-azonositojaval, ha nincs --continue
+    #      es a feladaton meg nincs az agensnek munkamenete                    -> 6
+    #   6  indito uzenet --task-kal, ha a feladaton meg nincs neki szolo uzenet -> 7
+    # FUTO KORT NEM SZAKITUNK MEG: a 4b CSAK akkor fut, ha az 5 ujrainditana. Ha nem tetlen,
+    # a kiadas --continue alakban ismetelheto (akkor az uzenet a sorba megy, restart nelkul).
+    # Ismetleskor a 4, 5 es 6 a feladat idovonalabol latja, hogy mar megtortent, es kihagyja.
+    # A kiado (az esemeny szereploje, az uzenet feladoja) alapbol acrobot: a restart utvonalat
+    # csak a fo agens tokenje nyitja; --kiado <nev> felulirja.
+    TASK="${1:?task id required}"; AGENT="${2:?agent required}"; shift 2
+    CONTINUE=0; PARALLEL=""; KIADO="acrobot"
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --continue) CONTINUE=1; shift ;;
+        --parallel) PARALLEL="${2:-}"; [ -n "$PARALLEL" ] || { echo "FAIL: a --parallel utan indok kell" >&2; exit 1; }; shift 2 ;;
+        --kiado) KIADO="${2:?--kiado utan agens-nev kell}"; shift 2 ;;
+        *) echo "FAIL: ismeretlen kapcsolo: $1 (--continue, --parallel \"<indok>\", --kiado <nev>)" >&2; exit 1 ;;
+      esac
+    done
+    if ! [[ "$TASK" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then
+      echo "FAIL: a feladat-azonosito alakja (betu, szam, . _ -), ez erkezett: $TASK" >&2; exit 1
+    fi
+    TASK_URL="$TASK"
+    A_ENC="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$AGENT")"
+    # GET <path>: a torzs a KI_JSON-ba, a kod a KI_CODE-ba (a get() a kodot nem nezi)
+    kget() {
+      local resp
+      resp="$(curl -s -H "Authorization: Bearer $TOKEN" "${API}$1" -w $'\n%{http_code}' 2>/dev/null || true)"
+      KI_CODE="$(printf '%s' "$resp" | tail -n1)"; KI_JSON="$(printf '%s' "$resp" | sed '$d')"
+    }
+    # 1. a feladat es a mezoi
+    kget "/tasks/${TASK_URL}/timeline"
+    if [ "$KI_CODE" = "404" ]; then echo "FAIL 1: nincs ilyen feladat: $TASK (fleet-api.sh task-new)"; exit 4; fi
+    [ "$KI_CODE" = "200" ] || { echo "FAIL 1: http=${KI_CODE:-?} $(printf '%s' "$KI_JSON" | head -c 200)"; exit 1; }
+    TIMELINE="$KI_JSON"
+    printf '%s' "$TIMELINE" | python3 -c '
+import json,sys
+agent=sys.argv[1]
+f=json.load(sys.stdin).get("fields")
+if not isinstance(f, dict):
+    print("FAIL 1: a valaszban nincs a feladat mezoinek listaja (fields): a dashboard regebbi, mint az L5"); sys.exit(4)
+missing=[k for k in ("goal","authorization_ref","verification_profile") if not f.get(k)]
+if not f.get("assignee"): missing.append("assignee")
+for k in missing: print("FAIL 1: hianyzik a feladatrol: %s" % k)
+if missing: sys.exit(4)
+if f["assignee"] != agent:
+    print("FAIL 1: a feladat felelose %s, nem %s" % (f["assignee"], agent)); sys.exit(4)
+print("1 rendben: %s, felelos %s, profil %s" % (sys.argv[2], agent, f["verification_profile"]))' "$AGENT" "$TASK" || exit 4
+    # 2. az atado rekord, visszamerve
+    HO_OUT="$(bash "${BASH_SOURCE[0]}" handoff-read "$TASK" 2>&1)"; HO_RC=$?
+    if [ "$HO_RC" -ne 0 ]; then
+      printf '%s\n' "$HO_OUT" | grep -E '^(FAIL|ELTERES|  - )' || printf '%s\n' "$HO_OUT" | tail -n 3
+      echo "FAIL 2: az atado rekord nem hasznalhato (handoff-read kilepes $HO_RC)"
+      [ "$HO_RC" -eq 3 ] && exit 3; exit 1
+    fi
+    echo "2 rendben: $(printf '%s\n' "$HO_OUT" | grep -m1 -- '^-- irta:')"
+    # 3. foglaltsag: a MASIK feladatai (ez a feladat ismetleskor mar foglalt, az nem akadaly)
+    kget "/tasks?assignee=${A_ENC}&busy=1"
+    [ "$KI_CODE" = "200" ] || { echo "FAIL 3: http=${KI_CODE:-?} $(printf '%s' "$KI_JSON" | head -c 200)"; exit 1; }
+    BUSY="$(printf '%s' "$KI_JSON" | python3 -c '
+import json,sys
+print(" ".join("%s(%s)" % (t["id"], t.get("last_kind")) for t in json.load(sys.stdin) if t["id"] != sys.argv[1]))' "$TASK")" || exit 1
+    if [ -n "$BUSY" ]; then
+      if [ -z "$PARALLEL" ]; then
+        echo "FAIL 3: $AGENT foglalt: $BUSY"
+        echo "  Ha szandekosan parhuzamos: --parallel \"<indok>\" (az indok az assigned esemenybe kerul)"
+        exit 5
+      fi
+      echo "3 foglalt ($BUSY), de --parallel: $PARALLEL"
+    else
+      echo "3 rendben: $AGENT nem foglalt"
+    fi
+    # Mi tortent mar a feladaton? (4, 5 es 6 ismetlesre ebbol dont)
+    read -r HAS_ASSIGNED HAS_SESSION HAS_MESSAGE < <(printf '%s' "$TIMELINE" | python3 -c '
+import json,sys
+agent=sys.argv[1]
+items=json.load(sys.stdin)["items"]
+assigned=[i for i in items if i["source"]=="event" and i["kind"]=="assigned"]
+last=assigned[-1] if assigned else None
+to_me = bool(last) and ((last.get("data") or {}).get("agent")==agent or last.get("ref")==agent)
+session=any(i["source"]=="session" and i["agent"]==agent for i in items)
+message=any(i["source"]=="message" and i.get("to")==agent for i in items)
+print(int(to_me), int(session), int(message))' "$AGENT")
+    # 4. assigned
+    if [ "${HAS_ASSIGNED:-0}" = "1" ]; then
+      echo "4 kihagyva: a feladat mar ki van adva $AGENT agensnek"
+    else
+      DATA="$(AGENT="$AGENT" PARALLEL="$PARALLEL" python3 -c 'import json,os
+d={"agent":os.environ["AGENT"]}
+if os.environ["PARALLEL"]: d["parallel"]=os.environ["PARALLEL"]
+print(json.dumps(d))')"
+      EV_OUT="$(printf '%s' "$DATA" | bash "${BASH_SOURCE[0]}" task-event "$TASK" assigned "$KIADO" "" "$AGENT" --data - 2>&1)" \
+        || { printf '%s\n' "$EV_OUT"; echo "FAIL 4: az assigned esemeny nem ment be"; exit 1; }
+      echo "4 rendben: assigned -> $AGENT ($EV_OUT)"
+    fi
+    # 4b es 5: friss inditas, csak tetlen panelre
+    if [ "$CONTINUE" = "1" ]; then
+      echo "5 kihagyva: --continue (a futo munkamenet marad, az uzenet a sorba megy)"
+    elif [ "${HAS_SESSION:-0}" = "1" ]; then
+      echo "5 kihagyva: a feladaton mar van $AGENT munkamenete (ismetles)"
+    else
+      kget "/agents/activity"
+      [ "$KI_CODE" = "200" ] || { echo "FAIL 4b: http=${KI_CODE:-?} $(printf '%s' "$KI_JSON" | head -c 200)"; exit 1; }
+      ACT="$KI_JSON"
+      kget "/messages?agent=${A_ENC}&status=pending"
+      [ "$KI_CODE" = "200" ] || { echo "FAIL 4b: http=${KI_CODE:-?} $(printf '%s' "$KI_JSON" | head -c 200)"; exit 1; }
+      PENDING="$KI_JSON"
+      ACT="$ACT" PENDING="$PENDING" python3 -c '
+import json,os,sys
+agent=sys.argv[1]
+me=[a for a in json.loads(os.environ["ACT"]) if a.get("name")==agent]
+pending=[m for m in json.loads(os.environ["PENDING"]) if m.get("to_agent")==agent]
+state=me[0].get("state") if me else None
+if state in ("idle","stopped") and not pending:
+    print("4b rendben: %s %s, nincs fuggo uzenete" % (agent, state)); sys.exit(0)
+print("FAIL 4b: %s nem tetlen, restart nincs. Allapot: %s, fuggo uzenet: %d%s" % (
+    agent, state or "nem latom az agenst", len(pending),
+    " (" + ", ".join(str(m.get("id")) for m in pending[:10]) + ")" if pending else ""))
+for line in (me[0].get("tail") or [])[-5:] if me else []:
+    print("  | %s" % line)
+print("  Ismeteld kesobb, vagy --continue alakban (restart nelkul, az uzenet a sorba megy).")
+sys.exit(8)' "$AGENT" || exit 8
+      BODY="$(TASK="$TASK" python3 -c 'import json,os; print(json.dumps({"fresh": True, "task_id": os.environ["TASK"]}))')"
+      RESP="$(curl -s -X POST "${API}/agents/${A_ENC}/restart" -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer $TOKEN" -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
+      CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
+      SID="$(printf '%s' "$JSON" | python3 -c '
+import json,sys
+try: d=json.load(sys.stdin)
+except ValueError: d={}
+print(d.get("session_id","") if d.get("ok") is True and d.get("registered") is not False else "")' 2>/dev/null)"
+      if { [ "$CODE" != "200" ] && [ "$CODE" != "201" ]; } || [ -z "$SID" ]; then
+        echo "FAIL 5: a friss inditas nem sikerult vagy a munkamenet nincs a feladathoz kotve: http=${CODE:-?} $(printf '%s' "$JSON" | head -c 200)"
+        exit 6
+      fi
+      echo "5 rendben: $AGENT frissen indult, munkamenet $SID"
+    fi
+    # 6. indito uzenet
+    if [ "${HAS_MESSAGE:-0}" = "1" ]; then
+      echo "6 kihagyva: a feladathoz mar van $AGENT agensnek szolo uzenet"
+    else
+      MSG="Uj feladat: ${TASK}. Az elso lepes az atado rekord: bash ${BASE}/scripts/fleet-api.sh handoff-read ${TASK}"
+      MSG_OUT="$(printf '%s' "$MSG" | bash "$BASE/scripts/agent-msg.sh" --task "$TASK" "$KIADO" "$AGENT" - 2>&1)"
+      MSG_ID="$(printf '%s\n' "$MSG_OUT" | sed -n 's/^OK id=\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+      if [ -z "$MSG_ID" ]; then
+        printf '%s\n' "$MSG_OUT" | tail -n 3
+        echo "FAIL 6: az indito uzenet nem ment el (nincs OK id= sor)"
+        exit 7
+      fi
+      echo "6 rendben: indito uzenet OK id=$MSG_ID (sorba kerult; a kezbesitest a message-status mondja meg)"
+    fi
+    echo "KIADVA: $TASK -> $AGENT"
     ;;
   task-session)
     # Egy munkamenet a feladate (a V3 eset): akkor minden hivasa a feladathoz megy.
@@ -904,7 +1069,7 @@ if d.get("action_description"):
 '
     ;;
   *)
-    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-comment|kanban-comments|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart)"
+    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-comment|kanban-comments|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart|kiadas)"
     exit 1
     ;;
 esac
