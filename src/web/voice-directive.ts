@@ -44,7 +44,9 @@ export function inboundIsAudio(kind: string | null | undefined, fileId: string |
 // run time through scripts/lib/dashboard-token.sh, the same file the helpers
 // use (the agent's store/tokens/<agent>.token, or the shared one, loudly).
 // It used to embed the shared dashboard token, so the route could be the
-// session's only, and the agents' own hook got 403 under enforcement.
+// session's only, and the agents' own hook got 403 under enforcement. The
+// header goes to curl through a file descriptor, not its argv, which every
+// agent's `ps` shows (/proc without hidepid; acrovelIQ P0-1, L6 point 9).
 export function buildTtsDirective(opts: {
   chatId: string
   stateDir: string
@@ -61,7 +63,7 @@ export function buildTtsDirective(opts: {
       `\`\`\`bash\n` +
       `. '${lib}'; TOKEN_FILE="$(dashboard_token_file '${PROJECT_ROOT}')"\n` +
       `jq -n --arg t "A_VÁLASZOD_SZÖVEGE" '{"text":$t,"chat_id":"${chatId}","state_dir":"${escapedStateDir}","voice_model":"${voiceModel}"}' | ` +
-      `curl -s -X POST http://localhost:${WEB_PORT}/api/voice/tts -H "Content-Type: application/json" -H "Authorization: Bearer $(cat "$TOKEN_FILE")" -d @-\n` +
+      `curl -s -X POST http://localhost:${WEB_PORT}/api/voice/tts -H "Content-Type: application/json" -H @<(printf 'Authorization: Bearer %s\\n' "$(cat "$TOKEN_FILE")") -d @-\n` +
       `\`\`\`\n` +
       `Szöveges választ NE küldj -- CSAK a fenti curl-t futtasd le a hangküldéshez.`
     )
