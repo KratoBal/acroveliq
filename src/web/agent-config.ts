@@ -355,7 +355,17 @@ export function resolveRunAsUser(rawConfigJson: string): string | null {
 
 export function readAgentRunAsUser(name: string): string | null {
   const configPath = join(agentDir(name), 'agent-config.json')
-  return resolveRunAsUser(readFileOr(configPath, '{}'))
+  return runAsUserForPanel(name, resolveRunAsUser(readFileOr(configPath, '{}')))
+}
+
+// B45 B2-2 follow-up (barracuda, review of #45): the START is checked against the
+// OS (checkAgentRunIdentity), but every other tmux call of the panel (key input,
+// pane capture, stop) still took runAsUser from the agent-writable config at call
+// time. Only the agent's OWN user (agent-<name>) is honoured there now; another
+// agent's user, the router or root resolves to null, i.e. the router's own tmux
+// server, where a per-user agent has no session.
+export function runAsUserForPanel(name: string, configured: string | null): string | null {
+  return configured === agentOsUserName(name) ? configured : null
 }
 
 // B45 B2-2 (Security Baseline, 2026-10-13): the run identity is checked against
@@ -430,7 +440,19 @@ export function readAgentConfigGroupGid(name: string): number | null {
 
 export function readAgentRunIdentity(name: string): { ok: true } | { ok: false; error: string } {
   const configPath = join(agentDir(name), 'agent-config.json')
-  return checkAgentRunIdentity(name, readFileOr(configPath, '{}'), osUserExistsFromPasswd(readFileOr('/etc/passwd', '')))
+  // B45 B2-2 follow-up (barracuda): an unreadable or empty /etc/passwd made every
+  // OS user look absent, so an agent WITH its own user and no runAsUser in its
+  // config would have started as the router. Unknown identity is a stop, too.
+  return checkAgentRunIdentityWithPasswd(name, readFileOr(configPath, '{}'), readFileOr('/etc/passwd', ''))
+}
+
+export function checkAgentRunIdentityWithPasswd(
+  name: string,
+  rawConfigJson: string,
+  passwd: string,
+): { ok: true } | { ok: false; error: string } {
+  if (!passwd.trim()) return { ok: false, error: 'run identity refused: /etc/passwd is unreadable or empty' }
+  return checkAgentRunIdentity(name, rawConfigJson, osUserExistsFromPasswd(passwd))
 }
 
 // Validate-and-persist the remote config. Empty strings clear the fields
