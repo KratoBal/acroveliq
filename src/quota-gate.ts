@@ -8,8 +8,8 @@
 // percent of a window minutes before the owner needed it for real work.
 //
 // This module answers one question -- "should this piece of work start right
-// now?" -- from the snapshot scripts/usage-collect.py writes to
-// store/usage-latest.json. Kept pure so the thresholds are unit-tested without
+// now?" -- from the snapshot quota-snapshot.ts reads (the router-owned
+// store/quota-gate-sample.json). Kept pure so the thresholds are unit-tested without
 // a network call or a filesystem read; the caller supplies the snapshot.
 //
 // Two design rules, both deliberate:
@@ -17,7 +17,10 @@
 //   FAIL OPEN. A missing, stale, unparseable or estimate-only snapshot means we
 //   do not know the quota state, and "unknown" must never silence the fleet.
 //   Every uncertain path returns 'run'. The gate can only ever stop work when
-//   it has fresh, authoritative evidence of real pressure.
+//   it has fresh, authoritative evidence of real pressure. Failing open is not
+//   failing silent: quotaInputProblem() names the missing input so the caller
+//   can log it -- a gate that quietly runs blind looks exactly like a gate that
+//   found no pressure.
 //
 //   ONLY BACKGROUND WORK IS DEFERRED. Anything the owner sees or waits for runs
 //   regardless of pressure -- a quota window that is nearly full is not a
@@ -32,9 +35,9 @@ export interface QuotaWindow {
   resets_at?: number | null
 }
 
-/** The `claude` section of store/usage-latest.json. */
+/** One quota snapshot: a router-owned statusline sample (quota-snapshot.ts). */
 export interface QuotaSnapshot {
-  /** 'authoritative' | 'authoritative_cached' | 'estimate' | ... */
+  /** 'authoritative' | 'authoritative_cached' | 'claude-code-statusline' | 'estimate' | ... */
   source?: string | null
   generatedAtMs?: number | null
   windows?: Record<string, QuotaWindow> | null
@@ -59,6 +62,11 @@ export interface QuotaDecision {
 export const QUOTA_GATE = {
   /** A snapshot older than this tells us nothing about now. */
   staleAfterMs: 20 * 60_000,
+  /**
+   * Clock skew we tolerate. A snapshot dated further ahead is not evidence:
+   * a negative age would otherwise read as perfectly fresh (barracuda, #76).
+   */
+  maxFutureSkewMs: 5 * 60_000,
   /** Background work stops at or above this utilization. */
   deferAtPercent: 85,
   /** ... and also stops above this, if the window is about to reset anyway. */
@@ -66,7 +74,11 @@ export const QUOTA_GATE = {
   /** "About to reset": waiting this long is cheaper than spending the tail. */
   nearResetMs: 30 * 60_000,
   /** Sources whose numbers are real. Anything else is a guess -- fail open. */
-  trustedSources: ['authoritative', 'authoritative_cached'],
+  // 'claude-code-statusline' is the rate_limits block Claude Code itself
+  // reports to the statusline (scripts/measure-statusline.py), not a guess.
+  // Trusted only because quota-snapshot.ts accepts it from a router-owned,
+  // non-group-writable file; the fleet-writable sample log is never read here.
+  trustedSources: ['authoritative', 'authoritative_cached', 'claude-code-statusline'],
 } as const
 
 /** Highest utilization across all windows, or null when none reports one. */
@@ -104,6 +116,32 @@ function windowResettingSoon(
   return best
 }
 
+/**
+ * Why the gate cannot judge pressure right now, or null when the input is
+ * fresh, trusted and carries a percentage. Every non-null answer makes
+ * decideQuotaAction fail open; the reason is what the caller should report.
+ */
+export function quotaInputProblem(
+  snapshot: QuotaSnapshot | null | undefined,
+  nowMs: number,
+): string | null {
+  if (!snapshot) return 'no-snapshot'
+
+  const source = (snapshot.source ?? '').toLowerCase()
+  if (!(QUOTA_GATE.trustedSources as readonly string[]).includes(source)) {
+    return `untrusted-source:${source || 'none'}`
+  }
+
+  const generatedAtMs = snapshot.generatedAtMs
+  if (typeof generatedAtMs !== 'number' || Number.isNaN(generatedAtMs)) return 'no-snapshot-timestamp'
+  const ageMs = nowMs - generatedAtMs
+  if (ageMs > QUOTA_GATE.staleAfterMs) return `stale-snapshot:${Math.round(ageMs / 60_000)}m`
+  if (-ageMs > QUOTA_GATE.maxFutureSkewMs) return `future-snapshot:${Math.round(-ageMs / 60_000)}m`
+
+  if (quotaPressure(snapshot) === null) return 'no-usable-window'
+  return null
+}
+
 export function decideQuotaAction(input: {
   snapshot: QuotaSnapshot | null | undefined
   nowMs: number
@@ -114,24 +152,11 @@ export function decideQuotaAction(input: {
   // Shell commands cost no tokens -- the gate has no business touching them.
   if (workClass === 'free') return { action: 'run', reason: 'no-model-cost', pressure: null }
 
-  if (!snapshot) return { action: 'run', reason: 'no-snapshot', pressure: null }
-
-  const source = (snapshot.source ?? '').toLowerCase()
-  if (!(QUOTA_GATE.trustedSources as readonly string[]).includes(source)) {
-    return { action: 'run', reason: `untrusted-source:${source || 'none'}`, pressure: null }
-  }
-
-  const generatedAtMs = snapshot.generatedAtMs
-  if (typeof generatedAtMs !== 'number' || Number.isNaN(generatedAtMs)) {
-    return { action: 'run', reason: 'no-snapshot-timestamp', pressure: null }
-  }
-  const ageMs = nowMs - generatedAtMs
-  if (ageMs > QUOTA_GATE.staleAfterMs) {
-    return { action: 'run', reason: `stale-snapshot:${Math.round(ageMs / 60_000)}m`, pressure: null }
-  }
-
+  const problem = quotaInputProblem(snapshot, nowMs)
   const pressure = quotaPressure(snapshot)
-  if (pressure === null) return { action: 'run', reason: 'no-usable-window', pressure: null }
+  if (problem || !snapshot || pressure === null) {
+    return { action: 'run', reason: problem ?? 'no-usable-window', pressure: null }
+  }
 
   // The owner is waiting, or will read the result. Pressure is not a reason to
   // go quiet on them -- report it in the reason and run.

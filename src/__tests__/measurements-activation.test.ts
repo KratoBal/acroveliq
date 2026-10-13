@@ -80,7 +80,9 @@ describe('measure-statusline.py --export-usage', () => {
     const input = JSON.stringify({ model: { id: 'claude-opus-5-5' }, transcript_path: join(proj, 'sess1.jsonl'),
       rate_limits: { five_hour: { used_percentage: 12, resets_at: 1790534400 }, seven_day: { used_percentage: 90, resets_at: 1790578800 } } })
     const r = spawnSync('python3', [SCRIPT, '--export-usage'], { input, encoding: 'utf-8',
-      env: { ...process.env, MEASURE_AGENT: 'murena', MEASURE_DIR: mdir, MEASURE_QUOTA_FILE: join(mdir, 'quota-samples.jsonl'), MEASURE_USAGE_DIR: join(mdir, 'usage') } })
+      env: { ...process.env, MEASURE_AGENT: 'murena', MEASURE_DIR: mdir, MEASURE_QUOTA_FILE: join(mdir, 'quota-samples.jsonl'), MEASURE_USAGE_DIR: join(mdir, 'usage'),
+        // Never the live store/: run as the router user it would plant a fake 90% for the quota gate.
+        MEASURE_GATE_FILE: join(TMP, 'quota-gate-sample.json') } })
     expect(r.status).toBe(0)
     expect(r.stdout.trim()).toBe('claude-opus-5-5 | 5h 12% | 7d 90%')
 
