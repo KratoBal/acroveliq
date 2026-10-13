@@ -358,6 +358,62 @@ export function readAgentRunAsUser(name: string): string | null {
   return resolveRunAsUser(readFileOr(configPath, '{}'))
 }
 
+// B45 B2-2 (Security Baseline, 2026-10-13): the run identity is checked against
+// the OS, not taken from the agent's own config. agent-config.json lives in the
+// agent's own directory, and the agent OWNS that directory, so it can always
+// replace the file. Two values used to be honoured from it:
+//   - an empty / missing runAsUser -> the router started the agent as ITSELF
+//     (marveen: every store/ secret), ssh-tmux.ts buildTmuxInvocation;
+//   - another agent's user ("agent-murena" in barracuda's config) -> started via
+//     `sudo -n -u agent-murena`, with murena's groups (GitHub, Expo).
+// A remoteHost has the same effect for an agent that has its own OS user: the
+// router would launch it over ssh with its own key, outside the agent's uid.
+// Rule: if the OS user `agent-<name>` exists, runAsUser must be exactly that and
+// no remote host may be set; if it does not exist, runAsUser must be absent.
+// Anything else refuses the start (fail closed) instead of picking a fallback.
+export function agentOsUserName(name: string): string {
+  return `agent-${name}`
+}
+
+export function checkAgentRunIdentity(
+  name: string,
+  rawConfigJson: string,
+  osUserExists: (user: string) => boolean,
+): { ok: true } | { ok: false; error: string } {
+  const expected = agentOsUserName(name)
+  const own = osUserExists(expected)
+  let raw: unknown = undefined
+  let remote: unknown = undefined
+  try {
+    const cfg = JSON.parse(rawConfigJson) as Record<string, unknown>
+    if (cfg && typeof cfg === 'object') { raw = cfg.runAsUser; remote = cfg.remoteHost }
+  } catch { /* unparseable: judged below like a missing value */ }
+  const actual = resolveRunAsUser(rawConfigJson)
+  if (own) {
+    if (actual !== expected) {
+      return { ok: false, error: `run identity refused: OS user ${expected} exists, agent-config.json runAsUser is ${JSON.stringify(raw ?? null)}` }
+    }
+    if (typeof remote === 'string' && remote.trim()) {
+      return { ok: false, error: `run identity refused: agent ${name} has its own OS user, a remoteHost would run it outside that uid` }
+    }
+    return { ok: true }
+  }
+  if (raw !== undefined && raw !== null && raw !== '') {
+    return { ok: false, error: `run identity refused: no OS user ${expected}, but agent-config.json sets runAsUser ${JSON.stringify(raw)}` }
+  }
+  return { ok: true }
+}
+
+export function osUserExistsFromPasswd(passwd: string): (user: string) => boolean {
+  const names = new Set(passwd.split('\n').map(l => l.split(':')[0]).filter(Boolean))
+  return (user: string) => names.has(user)
+}
+
+export function readAgentRunIdentity(name: string): { ok: true } | { ok: false; error: string } {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  return checkAgentRunIdentity(name, readFileOr(configPath, '{}'), osUserExistsFromPasswd(readFileOr('/etc/passwd', '')))
+}
+
 // Validate-and-persist the remote config. Empty strings clear the fields
 // (revert the agent to local). Returns the resolved config on success, or an
 // error string when a non-empty value fails validation.
