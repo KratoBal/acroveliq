@@ -1,10 +1,10 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, STORE_DIR } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
-import { atomicWriteFileSync } from './atomic-write.js'
+import { atomicWriteFileSync, atomicWriteInTree } from './atomic-write.js'
 import { injectMeasureStatusLine } from './measure-statusline.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
@@ -969,7 +969,15 @@ export function ensureQuarantineReader(
       upToDate = readFileSync(destPath, 'utf-8') === rendered
     } catch { /* unreadable -> treat as stale, re-write below */ }
   }
-  if (!upToDate) writeFileSync(destPath, rendered)
+  // B45 B2-3: the destination is inside the agent's tree (X/.claude/agents), so the
+  // write must not follow a symlink the agent planted; the tree root is two levels up.
+  if (!upToDate) {
+    try {
+      atomicWriteInTree(dirname(dirname(destDir)), destPath, rendered)
+    } catch {
+      return false
+    }
+  }
   // Legacy cleanup, deliberately AFTER the project-scoped copy is guaranteed
   // on disk (either it was already current, or the line above just wrote it):
   // there must be no window in which NEITHER copy exists. The user-scope copy
@@ -1094,13 +1102,13 @@ export function scaffoldAgentDir(name: string) {
 
   // Initialize empty files if they don't exist
   const memoryMd = join(dir, 'memory', 'MEMORY.md')
-  if (!existsSync(memoryMd)) writeFileSync(memoryMd, '')
+  if (!existsSync(memoryMd)) atomicWriteFileSync(memoryMd, '')
   const mcpJson = join(dir, '.mcp.json')
   if (!existsSync(mcpJson)) {
     // Copy shared MCP config so agents get access to common tools (e.g. aiam-blog)
     const sharedMcp = join(PROJECT_ROOT, '.mcp.json')
     if (existsSync(sharedMcp)) {
-      copyFileSync(sharedMcp, mcpJson)
+      atomicWriteFileSync(mcpJson, readFileSync(sharedMcp))
     } else {
       // Valid empty shape -- `claude /doctor` rejects plain "{}"
       atomicWriteFileSync(mcpJson, JSON.stringify({ mcpServers: {} }, null, 2))

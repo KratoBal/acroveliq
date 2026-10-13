@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, renameSync } from 'node:fs'
 import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
@@ -8,7 +8,7 @@ import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed } from '../../db.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
-import { atomicWriteFileSync } from '../atomic-write.js'
+import { atomicWriteFileSync, atomicWriteInTree } from '../atomic-write.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
@@ -940,7 +940,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
     for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
       const p = join(agentDir(name), `avatar${ext}`)
-      if (existsSync(p)) unlinkSync(p)
+      // B45 B2-3: unlink without existsSync, which follows links and misses a dangling one.
+      try { unlinkSync(p) } catch { /* not there */ }
     }
 
     if (contentType.includes('application/json')) {
@@ -953,7 +954,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (!existsSync(srcPath)) { json(res, { error: 'Avatar not found' }, 404); return true }
       const ext = extname(galleryAvatar) || '.png'
       const destPath = join(agentDir(name), `avatar${ext}`)
-      copyFileSync(srcPath, destPath)
+      atomicWriteInTree(agentDir(name), destPath, readFileSync(srcPath))
       sendAvatarChangeMessage(name, destPath).catch(() => {})
       json(res, { ok: true })
       return true
@@ -962,7 +963,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (!file) { json(res, { error: 'No file uploaded' }, 400); return true }
       const ext = extname(file.name) || '.png'
       const destPath = join(agentDir(name), `avatar${ext}`)
-      writeFileSync(destPath, file.data)
+      atomicWriteInTree(agentDir(name), destPath, file.data)
       sendAvatarChangeMessage(name, destPath).catch(() => {})
       json(res, { ok: true })
       return true
@@ -1511,7 +1512,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // contract (the channel server polls approved/ to send the "Paired!"
       // confirmation; current server keys off the filename, the chatId
       // contents keep us aligned with the documented format).
-      writeFileSync(join(approvedDir, entry.senderId), String(entry.chatId ?? ''))
+      atomicWriteFileSync(join(approvedDir, entry.senderId), String(entry.chatId ?? ''))
 
       logger.info({ name, provider, senderId: entry.senderId, code }, 'Channel pairing approved')
       json(res, { ok: true, senderId: entry.senderId })
