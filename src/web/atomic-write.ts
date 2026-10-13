@@ -1,4 +1,4 @@
-import { writeFileSync, chmodSync, renameSync, lstatSync, realpathSync } from 'node:fs'
+import { writeFileSync, chmodSync, renameSync, lstatSync, realpathSync, chownSync, mkdirSync, unlinkSync } from 'node:fs'
 import { resolve, relative, dirname, join, sep, isAbsolute, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
@@ -87,4 +87,49 @@ export function atomicWriteInTree(
     throw new Error(`atomicWriteInTree: ${dirname(p)} resolves to ${parentReal}, outside ${rootReal}`)
   }
   rawAtomicWrite(join(parentReal, basename(p)), data, opts)
+}
+
+// B45 B2-6 (Security Baseline, 2026-10-13): a file the router writes into an
+// agent's tree that ONLY the agent and the router may read (the agent's
+// .claude.json: its user-scope mcpServers can carry tokens in env).
+// Two things made the old group-shared write (0660, inherited group) readable by
+// every agent: the group was `fleet`, which is the primary group of all six; and
+// a file CREATED inside the agent's .claude-config inherits that directory's
+// default ACL, i.e. a named `group:fleet` entry the router cannot remove (node
+// has no ACL API). So the tmp file is created in `stageDir`, a router-owned
+// directory WITHOUT a default ACL on the same filesystem, given the agent's
+// private group and 0660 before any content is written, and only then renamed
+// into the tree (rename keeps the inode: no inherited entry). The tree rule of
+// atomicWriteInTree applies to the destination.
+export function atomicWriteGroupPrivate(
+  root: string,
+  path: string,
+  data: string | Buffer,
+  gid: number,
+  stageDir: string,
+): void {
+  const r = resolve(root)
+  const p = resolve(path)
+  const rel = relative(r, p)
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error(`atomicWriteGroupPrivate: ${p} is not inside ${r}`)
+  }
+  if (lstatSync(r).isSymbolicLink()) throw new Error(`atomicWriteGroupPrivate: the tree root ${r} is a symlink`)
+  const rootReal = realpathSync(r)
+  const parentReal = realpathSync(dirname(p))
+  if (parentReal !== rootReal && !parentReal.startsWith(rootReal + sep)) {
+    throw new Error(`atomicWriteGroupPrivate: ${dirname(p)} resolves to ${parentReal}, outside ${rootReal}`)
+  }
+  mkdirSync(stageDir, { recursive: true, mode: 0o700 })
+  const tmp = join(stageDir, `${basename(p)}.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}.tmp`)
+  writeFileSync(tmp, '', { mode: 0o600, flag: 'wx' })
+  try {
+    chownSync(tmp, -1, gid)
+    chmodSync(tmp, 0o660)
+    writeFileSync(tmp, data)
+    renameSync(tmp, join(parentReal, basename(p)))
+  } catch (err) {
+    try { unlinkSync(tmp) } catch { /* already gone */ }
+    throw err
+  }
 }

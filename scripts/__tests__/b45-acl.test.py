@@ -66,6 +66,8 @@ class FakePwd:
 
 
 acl.uname = lambda uid: NAMES.get(uid, str(uid))
+GROUPS = {1001: 'fleet', 1102: 'agent-murena-cfg'}
+acl.gname = lambda gid: GROUPS.get(gid, str(gid))
 acl.pwd = FakePwd
 
 
@@ -117,6 +119,24 @@ plain = None   # no ACL today, mode 0640
 uid, gid, flags, new, newd = acl.transform(
     TREE + '/key.env', St(stat.S_IFREG | 0o640, 1000), plain, None, ROUTER, OWNERS)
 check('640 ACL nelkul: a csoport olvas, nem ir', eff_for(new, gid, other_agent) == 4)
+
+open_private = [(UO, 0, 6), (GO, 0, 7), (G, FLEET, 7), (M, 0, 6), (O, 0, 0)]
+uid, gid, flags, new, newd = acl.transform(
+    TREE + '/.claude-config/.claude.json', St(stat.S_IFREG | 0o660, 1000), open_private, None, ROUTER, OWNERS)
+check('.claude.json 660 fleet: a masik agens nem olvas', eff_for(new, gid, other_agent) == 0)
+check('.claude.json 660 fleet: a router sem kap bejegyzest', not ents(new, U))
+check('.claude.json 660 fleet: a maszk ---', ents(new, M) == [(M, 0, 0)])
+uid, gid, flags, new, newd = acl.transform(
+    TREE + '/.claude-config/.credentials.json', St(stat.S_IFREG | 0o640, 1004), None, None, ROUTER, OWNERS)
+check('.credentials.json 640 ACL nelkul: csoport 0', ents(new, GO) == [(GO, 0, 0)])
+
+own_cfg = [(UO, 0, 6), (GO, 0, 6), (O, 0, 0)]
+uid, gid, flags, new, newd = acl.transform(
+    TREE + '/.claude-config/.claude.json', St(stat.S_IFREG | 0o660, 1000, gid=1102), None, None, ROUTER, OWNERS)
+murena_cfg = who(1004, {FLEET, 1102})
+check('.claude.json a sajat -cfg csoporttal: a csoport rw marad', ents(new, GO) == [(GO, 0, 6)])
+check('.claude.json a sajat -cfg csoporttal: az agens olvas', eff_for(new, gid, murena_cfg) == 6)
+check('.claude.json a sajat -cfg csoporttal: a masik agens nem', eff_for(new, gid, other_agent) == 0)
 
 print('2. uj default ACL sehol')
 uid, gid, flags, new, newd = acl.transform(
