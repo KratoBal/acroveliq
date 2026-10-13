@@ -2231,10 +2231,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // orphaned session survives the delete, rewrites a minimal .claude-config
     // under agents/<name>/, and the agent "returns" as an empty draft (persona
     // gone) that still reports running=true, with the model reset to the default.
-    // stopAgentProcess() reads config from the dir (remote host, channel
+    // stopAgentProcess() reads config from the dir (channel
     // provider) for its orphan reap, so it must run while the dir still exists.
     if (isAgentRunning(name)) await stopAgentProcess(name)
     rmSync(dir, { recursive: true, force: true })
+    // the router's remote-host entry outlives the directory: a later agent
+    // created under the same name must not inherit its ssh destination
+    writeAgentRemoteConfig(name, '', '')
     cleanupTeamReferences(name)
     json(res, { ok: true })
     return true
