@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
-import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, ACCESS_MODE_SETTING } from './config.js'
+import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, ACCESS_MODE_SETTING, ACROVELIQ_HOST, ACROVELIQ_PORT_SETTING } from './config.js'
+import { acroveliqAllows, isAcroveliqRequest, parseAcroveliqHost, parseAcroveliqPort } from './web/acroveliq-host.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
 import { discordTransportFromEnv, startApprovalDiscordPoller } from './web/approval-discord.js'
@@ -108,6 +109,10 @@ export function startWebServer(port = 3420): http.Server {
   const access = parseAccessMode(ACCESS_MODE_SETTING)
   if (access.problem) logger.error(access.problem)
   logger.info({ mode: access.mode }, 'Access check')
+  const acroveliqHost = parseAcroveliqHost(ACROVELIQ_HOST)
+  if (acroveliqHost) logger.info({ host: acroveliqHost }, 'AcrovelIQ host filter')
+  const acroveliqListener = parseAcroveliqPort(ACROVELIQ_PORT_SETTING, port)
+  if (acroveliqListener.problem) logger.error(acroveliqListener.problem)
   const accessDeps = { get db() { return getDb() }, mainAgent: MAIN_AGENT_ID, scheduleAgent: scheduleAgentFrom(SCHEDULED_TASKS_DIR, MAIN_AGENT_ID) }
   const allowedOrigins = new Set([
     `http://localhost:${port}`,
@@ -116,13 +121,30 @@ export function startWebServer(port = 3420): http.Server {
     ...(DASHBOARD_PUBLIC_URL ? [DASHBOARD_PUBLIC_URL.replace(/\/$/, '')] : []),
     ...DASHBOARD_ALLOWED_ORIGINS.split(',').map((o) => o.trim().replace(/\/$/, '')).filter(Boolean),
   ])
+  // The AcrovelIQ surface also accepts its own public origin: behind a proxy
+  // that rewrites Host, the login POST from https://<ACROVELIQ_HOST> would
+  // otherwise read as cross-origin. Only for requests on that surface, where
+  // the positive list leaves the login as the one write.
+  const acroveliqOrigins = acroveliqHost ? new Set([...allowedOrigins, `https://${acroveliqHost}`]) : allowedOrigins
 
-  const server = http.createServer(async (req, res) => {
+  // onAcroveliqPort: the request came in on the AcrovelIQ listener, where the
+  // positive list holds for every request (src/web/acroveliq-host.ts).
+  const handleRequest = async (req: http.IncomingMessage, res: http.ServerResponse, onAcroveliqPort: boolean): Promise<void> => {
     const url = new URL(req.url || '/', `http://localhost:${port}`)
     const path = url.pathname
     const method = req.method || 'GET'
 
+    // The AcrovelIQ host serves its positive list only (src/web/acroveliq-host.ts),
+    // before CORS, auth and every route: anything else there is a plain 404.
+    const acroveliq = onAcroveliqPort || isAcroveliqRequest(acroveliqHost, req.headers)
+    if (acroveliq && !acroveliqAllows(method, path)) {
+      res.writeHead(404)
+      res.end('Not found')
+      return
+    }
+
     const origin = req.headers.origin
+    const originsHere = acroveliq ? acroveliqOrigins : allowedOrigins
     // Emit CORS headers for allowlisted origins AND for genuinely same-origin
     // requests reached via a reverse proxy (e.g. Tailscale Serve's ts.net host,
     // where the Origin host matches Host / X-Forwarded-Host). Without this, an
@@ -130,7 +152,7 @@ export function startWebServer(port = 3420): http.Server {
     // proxy gets a 204 with no Access-Control-* headers and the browser blocks
     // the request -- the page shell loads but no data does. Authorization must be
     // in Allow-Headers or the preflight rejects the Bearer header.
-    if (origin && (allowedOrigins.has(origin) ||
+    if (origin && (originsHere.has(origin) ||
         originMatchesServedHost(origin, req.headers.host, req.headers['x-forwarded-host'] as string | undefined))) {
       res.setHeader('Access-Control-Allow-Origin', origin)
       res.setHeader('Vary', 'Origin')
@@ -143,7 +165,7 @@ export function startWebServer(port = 3420): http.Server {
     // Same-origin fetches (Origin absent, allowlisted, or matching the host the
     // server was actually reached on -- e.g. a Tailscale Serve / reverse-proxy
     // hostname) are accepted; a foreign Origin is rejected (the CSRF defence).
-    if (isBlockedCrossOriginWrite(method, origin, req.headers.host, req.headers['x-forwarded-host'] as string | undefined, allowedOrigins)) {
+    if (isBlockedCrossOriginWrite(method, origin, req.headers.host, req.headers['x-forwarded-host'] as string | undefined, originsHere)) {
       logger.warn({ method, path, origin, host: req.headers.host, xForwardedHost: req.headers['x-forwarded-host'] }, 'CSRF: blocked write from foreign origin')
       res.writeHead(403, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Origin not allowed' }))
@@ -192,7 +214,7 @@ export function startWebServer(port = 3420): http.Server {
     }
 
     try {
-      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth, accessMode: access.mode }
+      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth, accessMode: access.mode, surface: acroveliq ? 'acroveliq' : 'dashboard' }
 
       if (await tryHandleSutyerak(routeCtx)) return
       if (await tryHandleAuth(routeCtx)) return
@@ -249,7 +271,8 @@ export function startWebServer(port = 3420): http.Server {
       logger.error({ err }, 'Web szerver hiba')
       json(res, { error: 'Szerver hiba' }, 500)
     }
-  })
+  }
+  const server = http.createServer((req, res) => { void handleRequest(req, res, false) })
 
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
@@ -319,6 +342,16 @@ export function startWebServer(port = 3420): http.Server {
       `\nDashboard access URL (paste into browser, token is stored afterward):\n  ${bootstrapUrl}\n\n`
     )
   })
+
+  // The AcrovelIQ listener: the same handler, with the positive list on every
+  // request. A failure to bind is logged and leaves the dashboard running; the
+  // proxy then reaches nothing, which is the closed direction.
+  if (acroveliqListener.port !== null) {
+    const aqPort = acroveliqListener.port
+    const acroveliqServer = http.createServer((req, res) => { void handleRequest(req, res, true) })
+    acroveliqServer.on('error', (err) => logger.error({ err, port: aqPort }, 'AcrovelIQ listener failed'))
+    acroveliqServer.listen(aqPort, WEB_HOST, () => logger.info({ port: aqPort }, 'AcrovelIQ listener: positive list on every request'))
+  }
 
   // Self-heal a SILENT listener failure. Under launchd, a `kickstart -k` can
   // race the dying predecessor's lingering socket: the EADDRINUSE reclaim +

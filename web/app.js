@@ -342,6 +342,10 @@ themeToggle.addEventListener('click', () => {
 })()
 
 // === Page switching ===
+// On the AcrovelIQ host (task acroveliq-host-szures) the server marks the shell
+// with data-surface="acroveliq" and answers nothing but that page's reads: the
+// router opens only the AcrovelIQ page, and the dashboard's boot loads are skipped.
+const AQ_SURFACE = document.documentElement.dataset.surface === 'acroveliq'
 const navLinks = document.querySelectorAll('.sb-link[data-page], .nav-link[data-page]')
 const pages = document.querySelectorAll('.page')
 
@@ -12047,8 +12051,10 @@ document.getElementById('updatesApplyBtn').addEventListener('click', async () =>
 
 // Poll the badge on startup and every 5 min so the nav link reflects
 // the cached status even on tabs other than the Updates page.
-pollUpdatesBadge()
-setInterval(pollUpdatesBadge, 5 * 60_000)
+if (!AQ_SURFACE) {
+  pollUpdatesBadge()
+  setInterval(pollUpdatesBadge, 5 * 60_000)
+}
 
 // === First-run onboarding wizard ===
 // Full-screen overlay shown when /api/onboarding/status reports the install
@@ -12393,16 +12399,18 @@ function wireOnboarding(step) {
 }
 
 // === Init ===
-populateAvatarGrid()
-loadMemAgents()
-loadOverview()
-loadAvailableModels()
-loadOllamaModels()
+if (!AQ_SURFACE) {
+  populateAvatarGrid()
+  loadMemAgents()
+  loadOverview()
+  loadAvailableModels()
+  loadOllamaModels()
+}
 {
   const onbClose = document.getElementById('onboardingClose')
   if (onbClose) onbClose.addEventListener('click', dismissOnboarding)
 }
-initOnboarding()
+if (!AQ_SURFACE) initOnboarding()
 
 // "DeepSeek API kulcs hozzáadása" link az agent edit panel-en --
 // a Vault page-re visz, ahol a felhasználó egy DEEPSEEK_API_KEY
@@ -15936,6 +15944,7 @@ function wireFederationPage() {
   function routeFromHash() {
     let pageId = decodeURIComponent((location.hash || '').replace(/^#/, ''))
     if (!pageId) pageId = new URLSearchParams(window.location.search).get('page') || ''
+    if (AQ_SURFACE) pageId = 'acroveliq'
     // 'team' page is merged into 'agents' (org-chart view toggle).
     if (pageId === 'team') { pageId = 'agents'; _agentsActiveView = 'tree' }
     if (pageId && document.getElementById(pageId + 'Page')) switchPage(pageId)
