@@ -57,3 +57,14 @@ jobs:
       - run: bash scripts/__tests__/git-olvas.test.sh
       - run: bash scripts/__tests__/review-scripts.test.sh
       - run: bash scripts/__tests__/review-csomag.test.sh
+      # B8: the restore probe of the OS, Commerce and document-store backups (the host script
+      # with a docker stub and a local NAS), and the fleet's reader of its result.
+      - run: bash scripts/__tests__/acropora-restore-probe.test.sh
+      # ...and its counting SQL against a REAL postgres: the runner image ships one, stopped.
+      # The test fails (does not skip) without psql, so a runner change shows up red.
+      - name: Start postgres for the restore probe's SQL test
+        run: |
+          sudo systemctl start postgresql.service
+          sudo -u postgres createuser -s "$USER"
+          createdb probe_sql
+      - run: bash scripts/__tests__/acropora-restore-probe-sql.test.sh

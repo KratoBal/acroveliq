@@ -15,12 +15,19 @@
 #   ai     Acropora_Backup/acropora-ai/*.dump        pg_restore into a throwaway postgres:16
 #                                                    container on the stage machine, row counts
 #                                                    vs the live AI database, then removed
-# NOT YET: the OS, Commerce and document-store dumps. They are mode 0600, owner acropora-backup;
-# the fleet's NAS account (AcroBot) can list them but not read them (measured 2026-10-07 19:05).
-# A read grant on the NAS was asked from Balazs the same minute. When it exists, add an "os"
-# section on the "ai" pattern (the OS dump is ~110 MB, the stage disk has room).
+#   os, commerce, docstore                           NOT restored here: only the RESULT is read
+#                    Acropora_Backup/acropora-restore-probe/result-*.json  (the newest one)
 #
-# USAGE   bash scripts/visszaallitasi-proba.sh [fleet|ai|all]     (default: all)
+# WHY THE LAST THREE ARE DIFFERENT. Their files are 0600, owner acropora-backup, and the fleet's
+# NAS account (AcroBot) cannot read them (measured again 2026-10-13 23:37; the document-store
+# directory cannot even be listed). Balazs, 2026-10-13 17:07:37 UTC (Token thread, msg
+# 1559613596789383233): the fleet's rights do NOT grow for this. So the restore runs on the
+# production host under the backups' own identity (scripts/host/acropora-restore-probe.sh,
+# weekly, Sunday 04:40) and the fleet reads its JSON, through scripts/visszaallitasi-proba-eredmeny.py.
+# A result older than PROBA_RESULT_MAX_AGE_H (default 192, eight days) is a stopped probe.
+#
+# USAGE   bash scripts/visszaallitasi-proba.sh [fleet|ai|os|commerce|docstore|host|all]   (default: all)
+#         host = os + commerce + docstore
 # EXIT 0 only if every covered backup restored and passed its checks.
 
 set -uo pipefail
@@ -108,6 +115,24 @@ if not l or bad or int(g.get("messages", "0") or 0) == 0 or int(g.get("conversat
     print("FAIL[ai]: visszatoltve=%s elo=%s gyanus=%s" % (g, l, bad)); sys.exit(1)
 PY
     rm -f "$WORK/ai.dump"
+  fi
+fi
+
+HOST_KINDS=""
+case "$WHAT" in all|host) HOST_KINDS="os commerce docstore" ;; os|commerce|docstore) HOST_KINDS="$WHAT" ;; esac
+if [ -n "$HOST_KINDS" ]; then
+  echo "== host-oldali proba (eles gep): $HOST_KINDS"
+  F=$(nas_ls Acropora_Backup/acropora-restore-probe | /bin/grep -o 'result-[0-9_-]*\.json' | sort | tail -1)
+  if [ -z "$F" ]; then
+    for k in $HOST_KINDS; do fail "$k" "nincs eredmeny a NAS-on (Acropora_Backup/acropora-restore-probe): a host-oldali proba nem fut"; done
+  else
+    rm -f "$WORK/host-result.json"; nas_get "Acropora_Backup/acropora-restore-probe/$F" "$WORK/host-result.json"
+    echo "   $F"
+    for k in $HOST_KINDS; do
+      echo "   -- $k"
+      python3 "$ROOT/scripts/visszaallitasi-proba-eredmeny.py" "$WORK/host-result.json" "$k" "${PROBA_RESULT_MAX_AGE_H:-192}" || FAILS=$((FAILS + 1))
+    done
+    rm -f "$WORK/host-result.json"
   fi
 fi
 

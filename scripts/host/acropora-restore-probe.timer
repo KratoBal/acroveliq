@@ -1,0 +1,13 @@
+[Unit]
+Description=Weekly Acropora restore probe (B8)
+
+[Timer]
+# Sunday, after the night's backups (OS 03:0x, document store 03:30, Commerce 04:0x) and
+# before the fleet reads the result (scripts/mentes-cron.sh proba, Sunday 05:30).
+OnCalendar=Sun *-*-* 04:40:00 Europe/Budapest
+Persistent=true
+RandomizedDelaySec=5m
+Unit=acropora-restore-probe.service
+
+[Install]
+WantedBy=timers.target

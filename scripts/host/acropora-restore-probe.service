@@ -1,0 +1,21 @@
+[Unit]
+Description=Acropora restore probe: OS, Commerce and document-store backups from the NAS (B8)
+Wants=network-online.target docker.service
+# after the three backups, when started in the same transaction; the timer keeps them apart daily
+After=network-online.target docker.service acropora-postgres-backup.service acropora-commerce-postgres-backup.service acropora-document-store-backup.service
+
+[Service]
+Type=oneshot
+# The same identity as the three backups: root, the same NAS credential. The fleet only reads
+# the result file this leaves on the NAS (Acropora_Backup/acropora-restore-probe/).
+User=root
+Group=root
+EnvironmentFile=-/etc/acropora-restore-probe.env
+ExecStart=/usr/local/sbin/acropora-restore-probe
+Nice=19
+IOSchedulingClass=idle
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=full
+TimeoutStartSec=3h
