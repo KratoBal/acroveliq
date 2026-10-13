@@ -157,7 +157,7 @@ if (( ! DRY )) && [[ "$VERIFY_RUN_AS" != "$USER_NAME" ]]; then
   exit 1
 fi
 
-step "4. directory ownership (owner $USER_NAME, group fleet, group-writable)"
+step "4. directory ownership (owner $USER_NAME, group fleet; the group READS, the router WRITES)"
 CUR_OWNER="$(stat -c %U "$DIR")"
 if [[ "$CUR_OWNER" == "$USER_NAME" ]]; then
   echo "ok: already owned by $USER_NAME"
@@ -165,11 +165,16 @@ else
   echo "current owner: $CUR_OWNER"
   run sudo -n chown -Rh "$USER_NAME:fleet" "$DIR"
   run sudo -n find "$DIR" -type d -exec chmod 2775 {} +
-  # Files: give the group write, but never touch the mode of the private profile
-  # (.claude.json stays 0600 -- it is the agent's own, and nothing else reads it).
-  run sudo -n find "$DIR" -type f ! -name '.claude.json' -exec chmod g+rw {} +
-  run sudo -n setfacl -R -m "g:fleet:rwX" "$DIR"
-  run sudo -n setfacl -R -d -m "g:fleet:rwX" "$DIR"
+  # B45 (2026-10-13): `fleet` is the PRIMARY group of every agent, so a group write
+  # here is a write for all six agents into this one's CLAUDE.md, settings.json,
+  # skills and agent-config.json. The group only READS; the router (marveen), which
+  # provisions into the dir on every start, gets its write through a NAMED entry,
+  # and the default ACL carries both to new files.
+  # Only entries the group can already read get an ACL: a 0600 file (.claude.json,
+  # .credentials.json) or a mask::--- entry stays closed. A `g::rX` on those would
+  # OPEN group read, so `-perm -g=r` is the filter, not a name list.
+  run sudo -n find "$DIR" ! -type l \( -type d -o -perm -g=r \) -exec setfacl -m "u:marveen:rwX,g::rX,g:fleet:rX" {} +
+  run sudo -n setfacl -R -d -m "u:marveen:rwX,u:$USER_NAME:rwX,g::rX,g:fleet:rX" "$DIR"
 fi
 
 step "5. back up the agent's Claude profile"
