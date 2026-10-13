@@ -50,3 +50,8 @@ jobs:
       # B45: the agent-tree ACL target and the write check. Pure logic, no fleet
       # user needed; a guard that only runs by hand rots like the one above.
       - run: python3 -B scripts/__tests__/b45-acl.test.py
+      # reviewer-profil: the git reader (a trapped repo runs nothing through it; script(1)
+      # gives git a terminal for the pager trap), the packet reader and the verdict writer.
+      - run: bash scripts/__tests__/git-olvas.test.sh
+      - run: bash scripts/__tests__/review-scripts.test.sh
+      - run: bash scripts/__tests__/review-csomag.test.sh

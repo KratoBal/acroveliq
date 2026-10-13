@@ -39,6 +39,11 @@ check 'a file in place of the folder -> refuse' 1 "$(run "$T/zona" 104)"
 ln -s "$T/zona" "$T/zona-link"
 check 'zone itself a symlink -> refuse' 1 "$(run "$T/zona-link" 105)"
 
+echo 'reviewer-profil: the fleet repo gets its own prefix'
+check 'marveen -> accepted' 0 "$(REVIEW_CSOMAG_REPO="$T/repo" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" marveen 109 tcl-proba >/dev/null 2>&1; echo $?)"
+check '... into pr-marveen<N>' 0 "$([ -d "$T/zona/pr-marveen109" ]; echo $?)"
+check 'an unknown repo name -> usage error' 2 "$(REVIEW_CSOMAG_REPO="$T/repo" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" nincs 110 tcl-proba >/dev/null 2>&1; echo $?)"
+
 echo 'B45 B1 follow-up: the clone and the umask'
 check 'not a writable git clone -> refuse' 1 "$(REVIEW_CSOMAG_REPO="$T/nincs" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" os 106 tcl-proba >/dev/null 2>&1; echo $?)"
 check '... and no packet folder left behind' 1 "$([ -e "$T/zona/pr-106" ] && echo 0 || echo 1)"
