@@ -225,6 +225,8 @@ for name, line, mode, ok in (
         ('egy teljes agensfa elutasitva', '{root}/agents/x/**', 0o600, False),
         ('egy agens-home egesze elutasitva', '/home/agent-x/**', 0o600, False),
         ('relativ sor elutasitva', 'agents/x/sub', 0o600, False),
+        ('.. a /** sorban elutasitva', '/home/agent-x/../../**', 0o600, False),
+        ('.. a pontos sorban elutasitva', '/home/agent-x/a/../b', 0o600, False),
         ('masnak irhato fajl elutasitva', '{root}/agents/x/sub/**', 0o620, False),
         ('fan beluli elotag elfogadva', '{root}/agents/x/sub/**', 0o600, True),
         ('agens-home alatti elotag elfogadva', '/home/agent-x/.pki/**', 0o600, True)):
