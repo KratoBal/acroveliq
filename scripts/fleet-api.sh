@@ -44,6 +44,7 @@
 #         (a HIVO SAJAT munkamenetet: egy masik agenset az agent-restart --task regisztralja)
 #   bash scripts/fleet-api.sh agent-restart <agens> [--fresh] [--task <task_id>]
 #   bash scripts/fleet-api.sh task-usage <task_id> [variants]   # 3: atfedo ablak, ervenytelen
+#         (a kiado admin-hivasai feladatonkent jelzo ertekek, feladatok kozott nem osszeadhatok)
 #   bash scripts/fleet-api.sh kiadas <task_id> <agens> [--continue] [--parallel "<indok>"] [--kiado <nev>]
 #         (egy feladat kiadasa, megismetelheto; kilepes: 3 atado rekord, 4 feladat, 5 foglalt,
 #          6 restart, 7 uzenet, 8 a panel nem tetlen)
@@ -504,16 +505,26 @@ print(json.dumps(b))')"
     printf '%s' "$TIMELINE" | python3 -c '
 import json,sys
 agent=sys.argv[1]
-f=json.load(sys.stdin).get("fields")
+try:
+    f=json.load(sys.stdin).get("fields")
+except (ValueError, AttributeError):
+    print("FAIL 1: a timeline valasza nem olvashato JSON objektum"); sys.exit(1)
 if not isinstance(f, dict):
     print("FAIL 1: a valaszban nincs a feladat mezoinek listaja (fields): a dashboard regebbi, mint az L5"); sys.exit(4)
 missing=[k for k in ("goal","authorization_ref","verification_profile") if not f.get(k)]
 if not f.get("assignee"): missing.append("assignee")
 for k in missing: print("FAIL 1: hianyzik a feladatrol: %s" % k)
-if missing: sys.exit(4)
+if missing:
+    print("  Potlas: fleet-api.sh task-new %s - < feladat.json. A goal, assignee es tarsai, ha nincsenek benne, maradnak;" % sys.argv[2])
+    print("  a project, type, parent_task, variant es brief_ref viszont felulirodik: azokat is add meg.")
+    sys.exit(4)
 if f["assignee"] != agent:
-    print("FAIL 1: a feladat felelose %s, nem %s" % (f["assignee"], agent)); sys.exit(4)
-print("1 rendben: %s, felelos %s, profil %s" % (sys.argv[2], agent, f["verification_profile"]))' "$AGENT" "$TASK" || exit 4
+    print("FAIL 1: a feladat felelose %s, nem %s" % (f["assignee"], agent))
+    print("  Atiras: fleet-api.sh task-new %s - < feladat.json, benne \"assignee\": \"%s\"; a project, type," % (sys.argv[2], agent))
+    print("  parent_task, variant es brief_ref felulirodik, azokat is add meg (a goal es tarsai maradnak).")
+    sys.exit(4)
+print("1 rendben: %s, felelos %s, profil %s" % (sys.argv[2], agent, f["verification_profile"]))' "$AGENT" "$TASK"
+    RC1=$?; [ "$RC1" -eq 0 ] || exit "$RC1"
     # 2. az atado rekord, visszamerve
     HO_OUT="$(bash "${BASH_SOURCE[0]}" handoff-read "$TASK" 2>&1)"; HO_RC=$?
     if [ "$HO_RC" -ne 0 ]; then
@@ -549,6 +560,11 @@ to_me = bool(last) and ((last.get("data") or {}).get("agent")==agent or last.get
 session=any(i["source"]=="session" and i["agent"]==agent for i in items)
 message=any(i["source"]=="message" and i.get("to")==agent for i in items)
 print(int(to_me), int(session), int(message))' "$AGENT")
+    # ZARVA hibazik: ures ertek mellett a 4, 5 es 6 ujra lefutna (dupla assigned, restart, uzenet)
+    case "${HAS_ASSIGNED:-}${HAS_SESSION:-}${HAS_MESSAGE:-}" in
+      [01][01][01]) ;;
+      *) echo "FAIL: az idovonalbol nem olvashato, mi tortent mar a feladaton; nem irok semmit"; exit 1 ;;
+    esac
     # 4. assigned
     if [ "${HAS_ASSIGNED:-0}" = "1" ]; then
       echo "4 kihagyva: a feladat mar ki van adva $AGENT agensnek"
@@ -632,6 +648,9 @@ print(d.get("session_id","") if d.get("ok") is True and d.get("registered") is n
     # A feladat bontasa tokenfajtankent es kapacitas-fajtankent; "variants" mellett
     # a valtozatai is mellette. ATFEDO ABLAKNAL a feladat ERVENYTELEN: a parancs
     # ezt kiirja, es 3-as koddal lep ki, mert a szamai akkor nem teljesek.
+    # A KIADO admin-hivasai (az assigned esemeny admin-ablakot nyit a szereplojenek a done
+    # vagy merged esemenyig) FELADATONKENT JELZO ERTEKEK: parhuzamos kiadasoknal az ablakok
+    # szandekosan atfednek, ezert feladatok kozott NEM ADHATOK OSSZE (acrobot dontese, #60).
     argc_max 2 "$#" "fleet-api.sh task-usage <task_id> [variants]"
     TASK="${1:?task id required}"
     TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"

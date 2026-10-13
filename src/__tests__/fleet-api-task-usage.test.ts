@@ -229,9 +229,22 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
     const missing = await run(['kiadas', 't5', 'nautilus'])
     install(fake({ fields: { ...goodFields, assignee: 'murena' } }))
     const other = await run(['kiadas', 't5', 'nautilus'])
+    const otherWrites = writes()
+    install(fake())
+    router = ((inner) => (method: string, path: string, body: unknown) =>
+      path === '/api/tasks/t5/timeline' ? [200, 'nem objektum'] as [number, unknown] : inner!(method, path, body))(router)
+    const garbled = await run(['kiadas', 't5', 'nautilus'])
     expect([none.code, /nincs ilyen feladat: t5/.test(none.out), missing.code, /hianyzik a feladatrol: goal/.test(missing.out),
-      /hianyzik a feladatrol: authorization_ref/.test(missing.out), other.code, /felelose murena, nem nautilus/.test(other.out), writes()],
-    'FLEET-KIADAS-1').toEqual([4, true, 4, true, true, 4, true, []])
+      /hianyzik a feladatrol: authorization_ref/.test(missing.out), other.code, /felelose murena, nem nautilus/.test(other.out),
+      /Atiras: fleet-api\.sh task-new t5 - < feladat\.json, benne "assignee": "nautilus"/.test(other.out), otherWrites,
+      garbled.code, /nem olvashato JSON objektum/.test(garbled.out), writes()],
+    'FLEET-KIADAS-1').toEqual([4, true, 4, true, true, 4, true, true, [], 1, true, []])
+  })
+
+  it('FLEET-KIADAS-REPEAT-CLOSED: an unreadable timeline item stops with 1 before any write (no second assigned, restart, message)', async () => {
+    install(fake({ items: [{ at: 1, kind: 'assigned' }] }))
+    const r = await run(['kiadas', 't5', 'nautilus'])
+    expect([r.code, /nem olvashato, mi tortent mar a feladaton/.test(r.out), writes()], 'FLEET-KIADAS-REPEAT-CLOSED').toEqual([1, true, []])
   })
 
   it('FLEET-KIADAS-2: a handoff record about a changed state stops with 3 and shows the mismatch', async () => {
