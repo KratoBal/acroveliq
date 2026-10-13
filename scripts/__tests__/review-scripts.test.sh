@@ -85,12 +85,13 @@ echo 'review-ellenoriz: the one write it may do'
 check 'the packet task, APPROVE -> 0' 0 "$(ell marveen70 tsk-a APPROVE)"
 check '... one event' 1 "$(events)"
 check '... kind verdict, actor the caller, ref from the packet' \
-  "task-event tsk-a verdict $ACTOR  APPROVE pr-marveen70 fej 1234567" "$(tail -n1 "$EV")"
+  "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/marveen#70 pr-marveen70 fej 1234567" "$(tail -n1 "$EV")"
 check '... and it says it read it back' 1 "$(grep -c '^OK verdict rogzitve' "$T/out")"
 check 'the same verdict again (a second round) -> 0, read back as a NEW line' 0 "$(ell marveen70 tsk-a APPROVE)"
 check 'hand-made README with task: -> 0' 0 "$(ell 1700 tsk-b CHANGES)"
+check '... the PR named from the packet name (pr-N: acropora-os)' "task-event tsk-b verdict $ACTOR  CHANGES KratoBal/acropora-os#1700 pr-1700 fej abcdef1" "$(tail -n1 "$EV")"
 check 'hand-made README with task in the title -> 0' 0 "$(ell c80 tsk-c CHANGES)"
-check '... ref with the head from "head <sha>"' "task-event tsk-c verdict $ACTOR  CHANGES pr-c80 fej 7654321" "$(tail -n1 "$EV")"
+check '... ref with the head from "head <sha>"' "task-event tsk-c verdict $ACTOR  CHANGES KratoBal/acropora-commerce#80 pr-c80 fej 7654321" "$(tail -n1 "$EV")"
 n="$(events)"
 
 echo 'review-ellenoriz: what it refuses, and that nothing was written'
@@ -118,9 +119,18 @@ mkdir "$Z/pr-1708"; printf 'task_id: tsk-a\nmegjegyzes: a task blocks merging un
 cp "$T/tl-tsk-a" "$T/tl-blocks"
 check 'a prose line ("a task blocks ...") names no task -> 1' 1 "$(ell 1708 blocks APPROVE)"
 check 'a packet owner that is not a packager -> 1' 1 "$(bash "$T/ell-idegen-csomag.sh" marveen70 tsk-a APPROVE >/dev/null 2>&1; echo $?)"
+mkdir "$Z/pr-marveen71"; printf 'marveen PR 71 \npr: KratoBal/marveen#17\ntask_id: tsk-a\nfej: 1234567\n' > "$Z/pr-marveen71/README.md"
+check 'a README pr: line naming another PR than the packet -> 1' 1 "$(ell marveen71 tsk-a APPROVE)"
+mkdir "$Z/pr-marveen72"; printf 'marveen PR 72 \npr: KratoBal/acropora-os#72\ntask_id: tsk-a\nfej: 1234567\n' > "$Z/pr-marveen72/README.md"
+check 'a README pr: line naming another repo than the packet -> 1' 1 "$(ell marveen72 tsk-a APPROVE)"
+check 'packet 0 -> 2' 2 "$(ell 0 tsk-a APPROVE)"
+check 'a packet number with a leading zero -> 2' 2 "$(ell marveen070 tsk-a APPROVE)"
 check 'no refusal wrote an event' "$n" "$(events)"
 mkdir "$Z/pr-1709"; printf 'os PR 1709 \ntask_id: tsk-a\nfej: 1111111aaaa\nv2: task_id tsk-b, fej 2222222bbbb, merge-base x, origin/main y \n' > "$Z/pr-1709/README.md"
 check 'a later round line (vN: task_id X,) binds that task -> 0' 0 "$(ell 1709 tsk-b CHANGES)"
+check '... and the ref names THAT round head, not the first' "task-event tsk-b verdict $ACTOR  CHANGES KratoBal/acropora-os#1709 pr-1709 fej 2222222" "$(tail -n1 "$EV")"
+mkdir "$Z/pr-marveen73"; printf 'marveen PR 73 \npr: KratoBal/marveen#73\ntask_id: tsk-a\nfej: 3333333cccc\n' > "$Z/pr-marveen73/README.md"
+check 'a README pr: line that agrees (review-csomag.sh shape) -> 0' 0 "$(ell marveen73 tsk-a APPROVE)"
 n="$(events)"
 
 echo 'the profile: the Task Core writers are denied for the reviewer only'
@@ -141,6 +151,9 @@ touch "$T/swallow"
 check 'a 200 that left no line on the timeline -> 1' 1 "$(ell marveen70 tsk-a CHANGES)"
 check '... and says why' 1 "$(grep -c 'nem latszik az uj sor' "$T/out")"
 rm "$T/swallow"
+
+# the refs the script wrote, for the Task Core guard test (src/__tests__/review-ref-shape.test.ts)
+[ -n "${REVIEW_REFS_OUT:-}" ] && grep ' verdict ' "$EV" | sed -E 's/^task-event [^ ]+ verdict [^ ]+  //' > "$REVIEW_REFS_OUT"
 
 echo
 [ "$fails" = 0 ] && { echo 'all pass'; exit 0; }

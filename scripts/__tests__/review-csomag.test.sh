@@ -17,7 +17,8 @@ fails=0
 check() {  # name, expected rc, actual rc
   if [ "$2" = "$3" ]; then echo "  [PASS] $1"; else echo "  [FAIL] $1 (rc $3, want $2)"; fails=$((fails + 1)); fi
 }
-git init -q "$T/repo"
+git init -q "$T/repo"; git -C "$T/repo" remote add origin https://github.com/KratoBal/acropora-os.git
+git init -q "$T/mrepo"; git -C "$T/mrepo" remote add origin git@github.com:KratoBal/marveen.git
 run() { REVIEW_CSOMAG_REPO="$T/repo" REVIEW_CSOMAG_DIR="$1" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" os "$2" tcl-proba >/dev/null 2>&1; echo $?; }
 # TC-Lite L4: the third place is a task id, mandatory, checked before the zone is touched
 run3() { REVIEW_CSOMAG_REPO="$T/repo" REVIEW_CSOMAG_DIR="$1" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" os "$2" "$3" >/dev/null 2>&1; echo $?; }
@@ -25,6 +26,8 @@ run3() { REVIEW_CSOMAG_REPO="$T/repo" REVIEW_CSOMAG_DIR="$1" REVIEW_CSOMAG_GUARD
 check 'no zone -> refuse' 1 "$(run "$T/nincs" 101)"
 mkdir -m 3775 "$T/zona"
 check 'non-numeric PR -> usage error' 2 "$(run "$T/zona" '12/../x')"
+check 'PR 0 -> usage error' 2 "$(run "$T/zona" 0)"
+check 'a leading zero -> usage error' 2 "$(run "$T/zona" 0101)"
 check 'no task_id -> usage error' 2 "$(run3 "$T/zona" 108 '')"
 check 'a label in the task_id place -> usage error' 2 "$(run3 "$T/zona" 108 'B1 proba')"
 check 'a refused task_id creates no folder' 1 "$([ -e "$T/zona/pr-108" ]; echo $?)"
@@ -40,15 +43,31 @@ ln -s "$T/zona" "$T/zona-link"
 check 'zone itself a symlink -> refuse' 1 "$(run "$T/zona-link" 105)"
 
 echo 'reviewer-profil: the fleet repo gets its own prefix'
-check 'marveen -> accepted' 0 "$(REVIEW_CSOMAG_REPO="$T/repo" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" marveen 109 tcl-proba >/dev/null 2>&1; echo $?)"
+check 'marveen -> accepted' 0 "$(REVIEW_CSOMAG_REPO="$T/mrepo" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" marveen 109 tcl-proba >/dev/null 2>&1; echo $?)"
 check '... into pr-marveen<N>' 0 "$([ -d "$T/zona/pr-marveen109" ]; echo $?)"
-check 'an unknown repo name -> usage error' 2 "$(REVIEW_CSOMAG_REPO="$T/repo" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" nincs 110 tcl-proba >/dev/null 2>&1; echo $?)"
+check 'an unknown repo name -> usage error' 2 "$(REVIEW_CSOMAG_REPO="$T/mrepo" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" nincs 110 tcl-proba >/dev/null 2>&1; echo $?)"
 
 echo 'B45 B1 follow-up: the clone and the umask'
 check 'not a writable git clone -> refuse' 1 "$(REVIEW_CSOMAG_REPO="$T/nincs" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" os 106 tcl-proba >/dev/null 2>&1; echo $?)"
 check '... and no packet folder left behind' 1 "$([ -e "$T/zona/pr-106" ] && echo 0 || echo 1)"
 out="$(umask 002; REVIEW_CSOMAG_REPO="$T/repo" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" os 107 tcl-proba 2>&1)"
 check 'caller with umask 002: the script runs with 0022' 'umask=0022' "${out##* }"
+
+echo 'card f1e388e5: the packet names its PR as owner/repo#N, and the clone must be that repo'
+g() { REVIEW_CSOMAG_REPO="$1" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" "$2" "$3" tcl-proba 2>&1; }
+check 'os -> KratoBal/acropora-os#N' 1 "$(g "$T/repo" os 111 | grep -c ' pr: KratoBal/acropora-os#111 umask=')"
+check 'marveen over ssh -> KratoBal/marveen#N' 1 "$(g "$T/mrepo" marveen 112 | grep -c ' pr: KratoBal/marveen#112 umask=')"
+check 'the README line review-ellenoriz.sh reads' 1 "$(grep -c '"%s PR %s %s\\npr: %s\\ntask_id: %s' "$S")"
+check 'a clone of another repo for the mode -> refuse' 1 "$(g "$T/repo" marveen 113 >/dev/null; echo $?)"
+check '... and no packet folder left behind' 1 "$([ -e "$T/zona/pr-marveen113" ] && echo 0 || echo 1)"
+k=0
+for u in https://github.com/KratoBal/acropora-os-fork.git https://github.com/evil/KratoBal/acropora-os.git https://evil.example/KratoBal/acropora-os.git; do
+  git init -q "$T/r-$((++k))"; git -C "$T/r-$k" remote add origin "$u"
+  check "a lookalike origin ($u) -> refuse" 1 "$(g "$T/r-$k" os 114 >/dev/null; echo $?)"
+done
+git init -q "$T/noorigin"
+check 'a clone with no origin -> refuse' 1 "$(g "$T/noorigin" os 115 >/dev/null; echo $?)"
+check 'no refused clone left a folder' 0 "$(ls "$T/zona" | grep -cE '^pr-(marveen)?11[345]$')"
 
 echo
 [ "$fails" = 0 ] && { echo 'all pass'; exit 0; }
