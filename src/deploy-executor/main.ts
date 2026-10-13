@@ -28,7 +28,8 @@ async function main(): Promise<void> {
     coolify: coolifyRest(hosts),
   })
   const recovered = await executor.recover()
-  process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), event: 'recovered', ...recovered })}\n`)
+  const pruned = executor.prune().length
+  process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), event: 'recovered', ...recovered, pruned })}\n`)
   const port = Number(process.env['VEGREHAJTO_PORT'] ?? '8787')
   createExecutorServer(executor).listen(port, '0.0.0.0', () => {
     process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), event: 'listening', port, apps: config.apps.length })}\n`)

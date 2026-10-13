@@ -10,6 +10,7 @@ import {
   DeployExecutor,
   EXECUTIONS_PER_MINUTE,
   MAX_OPEN_REQUESTS,
+  PRUNE_AFTER_DAYS,
   RateLimited,
   Refusal,
   REQUESTS_PER_MINUTE,
@@ -637,6 +638,23 @@ describe('a flood is cut off before any outside call (barracuda, #49 review 3)',
     await expect(req()).resolves.toMatchObject({ status: 'open' })
   })
 
+  it('a flood is refused at once, not queued behind the call in progress (barracuda, #51 review 1)', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((res) => (release = res))
+    const compare = gh.compare
+    gh.compare = async (...a) => {
+      await gate
+      return compare(...a)
+    }
+    const calls = Array.from({ length: REQUESTS_PER_MINUTE + 4 }, () => req().then(() => 'ok', (e: unknown) => e))
+    // the first call is held at GitHub; the four over the window must already be settled
+    const settled = await Promise.race([Promise.all(calls.slice(REQUESTS_PER_MINUTE)), new Promise((res) => setTimeout(() => res('pending'), 200))])
+    expect(Array.isArray(settled)).toBe(true)
+    for (const e of settled as unknown[]) expect(e).toBeInstanceOf(RateLimited)
+    release()
+    expect((await Promise.all(calls.slice(0, REQUESTS_PER_MINUTE))).every((x) => x === 'ok')).toBe(true)
+  })
+
   it(`at most ${MAX_OPEN_REQUESTS} open Rs; an expired one no longer counts`, async () => {
     for (let i = 0; i < MAX_OPEN_REQUESTS; i++) {
       await req()
@@ -663,6 +681,44 @@ describe('a flood is cut off before any outside call (barracuda, #49 review 3)',
     const err = await ex.execute({ r: rec.r, requestMessageId: msg.id }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(RateLimited)
     expect(reads).toBe(EXECUTIONS_PER_MINUTE)
+  })
+})
+
+describe('the state file stays bounded (barracuda, #51 review 2)', () => {
+  it(`finished Rs older than ${PRUNE_AFTER_DAYS} days leave it; a deployment still followed stays`, async () => {
+    const done = await approvedRequest()
+    const outDone = await ex.execute({ r: done.rec.r, requestMessageId: done.msg.id })
+    cool.deployments.get(outDone.deploymentUuid!)!.status = 'finished'
+    await Promise.all(ex.following)
+    const expired = await req()
+    tick(5000)
+    const followed = await approvedRequest()
+    await ex.execute({ r: followed.rec.r, requestMessageId: followed.msg.id })
+    // the follow-up of `followed` gives up after a minute; make it look still queued
+    await Promise.all(ex.following)
+    const raw = store.get(followed.rec.r)!
+    store.put({ ...raw, outcome: 'queued' })
+
+    clock += (PRUNE_AFTER_DAYS + 1) * 86_400_000
+    const gone = ex.prune()
+    expect(gone.sort()).toEqual([done.rec.r, expired.r].sort())
+    expect(ex.status(done.rec.r)).toBeNull()
+    expect(ex.status(followed.rec.r)).toMatchObject({ outcome: 'queued' })
+    expect(readFileSync(join(config.stateDir, 'audit.log'), 'utf8')).toContain('"event":"pruned"')
+  })
+
+  it('a young R is never pruned, open or used and finished', async () => {
+    const open = await req()
+    const used = await approvedRequest()
+    const out = await ex.execute({ r: used.rec.r, requestMessageId: used.msg.id })
+    // finished, so only its age can keep it
+    cool.deployments.get(out.deploymentUuid!)!.status = 'finished'
+    await Promise.all(ex.following)
+    expect(ex.status(used.rec.r)!.outcome).toBe('finished_verified')
+    clock += 29 * 86_400_000
+    expect(ex.prune()).toEqual([])
+    expect(ex.status(open.r)).not.toBeNull()
+    expect(ex.status(used.rec.r)).not.toBeNull()
   })
 })
 
