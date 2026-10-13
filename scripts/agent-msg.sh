@@ -8,7 +8,8 @@
 # the HTTP status AND the returned message id, and RETRIES on failure. A message counts as sent only
 # when an id came back.
 #
-# Usage:  bash scripts/agent-msg.sh <from> <to> "<content>"
+# Usage:  bash scripts/agent-msg.sh [--felulir <msg_id>] [--task <task_id>] <from> <to> "<content>"
+#   --task: link the message to a task (TC-Lite L3); it then shows on the task's timeline.
 #   content: plain text (quotes / newlines OK) -- the body is built with json.dumps (no quoting pitfalls).
 #   large / multi-line content may come from STDIN when the 3rd arg is "-":
 #     echo "<long text>" | bash scripts/agent-msg.sh <from> <to> -
@@ -65,14 +66,32 @@ LOG="$BASE/store/agent-msg-failures.log"
 # letezik-e, es nem is jelöli meg amazt. A sor egy ALLITAS, amit en teszek --
 # annyit er, amennyit a kuldo hozzatesz. A cimzettnek viszont van mire
 # visszakeresnie, es ez a kulonbseg a tippeleshez kepest.
+# === --task <task_id> : AZ UZENET A FELADATHOZ KOTVE (TC-Lite L3) ===
+# A dashboard a task_id-t eltarolja, es az uzenet megjelenik a feladat idovonalan
+# (GET /api/tasks/<task>/timeline). Az alak ugyanaz, mint a futtato feladat-nevee
+# (scripts/futtat.py SAFE_NAME): szabad szoveg nem lehet, a szerver 400-zal elutasitja.
+# A ket kapcsolo barmely sorrendben jöhet, a from/to/content ELOTT.
 FELULIR=""
-if [ "${1:-}" = "--felulir" ]; then
-  FELULIR="${2:?--felulir utan msg_id kell}"
-  case "$FELULIR" in
-    ''|*[!0-9]*) echo "FAIL: a --felulir utan szam (msg_id) all, ez erkezett: $FELULIR" >&2; exit 1 ;;
+TASK=""
+while :; do
+  case "${1:-}" in
+    --felulir)
+      FELULIR="${2:?--felulir utan msg_id kell}"
+      case "$FELULIR" in
+        ''|*[!0-9]*) echo "FAIL: a --felulir utan szam (msg_id) all, ez erkezett: $FELULIR" >&2; exit 1 ;;
+      esac
+      shift 2
+      ;;
+    --task)
+      TASK="${2:?--task utan feladat-azonosito kell}"
+      if ! [[ "$TASK" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then
+        echo "FAIL: a --task utan feladat-azonosito all (betu, szam, . _ -), ez erkezett: $TASK" >&2; exit 1
+      fi
+      shift 2
+      ;;
+    *) break ;;
   esac
-  shift 2
-fi
+done
 
 if [ "$#" -gt 3 ]; then
   echo "FAIL: $# argumentum erkezett, de az agent-msg.sh harmat ismer (from, to, content)." >&2
@@ -249,7 +268,10 @@ fi
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: no token file at $TOKEN_FILE"; exit 1; }
 TOKEN="$(cat "$TOKEN_FILE")"
 
-BODY="$(FROM="$FROM" TO="$TO" C="$C" python3 -c 'import json,os; print(json.dumps({"from":os.environ["FROM"],"to":os.environ["TO"],"content":os.environ["C"]}))')"
+BODY="$(FROM="$FROM" TO="$TO" C="$C" TASK="$TASK" python3 -c 'import json,os
+b={"from":os.environ["FROM"],"to":os.environ["TO"],"content":os.environ["C"]}
+if os.environ["TASK"]: b["task_id"]=os.environ["TASK"]
+print(json.dumps(b))')"
 
 attempt=0; max=3; CODE=""; ID=""
 while [ "$attempt" -lt "$max" ]; do
