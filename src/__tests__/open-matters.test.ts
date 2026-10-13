@@ -137,8 +137,12 @@ describe('what Acrobot owes Balazs (Balazs, 2026-10-13 20:34:46 UTC)', () => {
       const id = 100 + i
       expect(tight.text.includes(`[emlek ${id}]`) || tight.omitted.owes.includes(id), String(id)).toBe(true)
     }
-    expect(tight.text).toMatch(/- \d+ emlek, Acrobot tartozasa \(GET \/api\/memories\/<id>\): [\d ]+/)
-    for (const id of tight.omitted.owes) expect(tight.text).toContain(String(id))
+    // the omitted line names exactly the omitted ids: parsed, not substring-matched
+    // (barracuda, #77: '101' is also inside '1010')
+    const line = tight.text.match(/^- (\d+) emlek, Acrobot tartozasa \(GET \/api\/memories\/<id>\): ([\d ]+)$/m)
+    expect(line).not.toBeNull()
+    expect(Number(line![1])).toBe(tight.omitted.owes.length)
+    expect(line![2].trim().split(' ').map(Number)).toEqual(tight.omitted.owes)
   })
 })
 
