@@ -66,8 +66,9 @@ host_config() {
   case "$HOST" in
     acropora-prod-01)
       OPS="ps system-df df uptime reboot-required apt-check sshd-match builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-sum backup-put backup-prune"
-      # psql-ro connects as fleet_ro, a read-only role (pg_read_all_data, no
-      # superuser): docs/fleet-gate.md, "A csak olvasó szerep"
+      # psql-ro connects as fleet_ro, a read-only role with per-table, per-column
+      # SELECT grants only (#63; no pg_read_all_data, no superuser):
+      # docs/fleet-gate.md, "Telepítés, gépenként"
       PSQL_TARGETS="iwm34jaqp9xmwb72qkrqkwhy:acropora:fleet_ro"
       DUMP_TARGETS="iwm34jaqp9xmwb72qkrqkwhy:acropora:acropora xdfswedgxuehokvymhjotpfs:medusa:postgres"
       RESTORE_LIST_KEYS="iwm34jaqp9xmwb72qkrqkwhy xdfswedgxuehokvymhjotpfs"
