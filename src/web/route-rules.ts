@@ -341,6 +341,7 @@ export const ROUTE_RULES: RouteRule[] = [
   // after the inventory: structured task handoff (#16, 2026-10-12)
   { method: 'POST', path: '/api/tasks/:id/handoffs', module: 'task-handoffs', class: 'ERZEKENY', note: 'append-only handoff record, shared state' },
   { method: 'GET', path: '/api/tasks/:id/handoffs/latest', module: 'task-handoffs', class: 'OLVASO', note: '?verify=1 calls GitHub with the fleet token server-side; the token is never returned' },
+  { method: 'GET', path: '/api/open-matters', module: 'open-matters', class: 'OLVASO', note: 'generated summary: open tasks, their open questions, hot memories tagged dontesre-var, waiting cards; ?format=text' },
   // after the inventory: task usage (#18, 2026-10-12)
   { method: 'POST', path: '/api/tasks', module: 'task-usage', class: 'ERZEKENY', note: 'creates or updates a task record' },
   { method: 'GET', path: '/api/tasks/:id/usage', module: 'task-usage', class: 'OLVASO' },

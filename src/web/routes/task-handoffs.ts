@@ -60,7 +60,9 @@ export async function tryHandleTaskHandoffs(ctx: RouteContext): Promise<boolean>
       json(res, { error: 'agent required' }, 400)
       return true
     }
-    const checked = validateHandoffRecord(body.record)
+    // a coordination task holds its handoff to the four fields, whatever the record says
+    const taskType = (getDb().prepare('SELECT type FROM tasks WHERE id = ?').get(taskId) as { type: string | null } | undefined)?.type
+    const checked = validateHandoffRecord(body.record, { coordinationTask: taskType === 'coordination' })
     if (!checked.ok) {
       json(res, { error: 'missing required fields', missing: checked.missing }, 400)
       return true

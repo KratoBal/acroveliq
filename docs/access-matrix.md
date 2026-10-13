@@ -350,6 +350,7 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | GET | `/api/daily-log/dates` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | POST | `/api/tasks/:id/handoffs` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
 | GET | `/api/tasks/:id/handoffs/latest` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
+| GET | `/api/open-matters` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | POST | `/api/tasks` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
 | GET | `/api/tasks/:id/usage` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | POST | `/api/tasks/:id/events` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
