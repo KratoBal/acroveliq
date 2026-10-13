@@ -1831,7 +1831,11 @@ export async function startAgentProcess(name: string, opts: LaunchOpts = {}): Pr
     // silently started it as the router's user -- measured 2026-08-19: the start
     // reported ok, no session existed under the agent's user, and the first
     // capture-pane failed against the router's empty tmux server.
-    const startTarget: TmuxTarget = { host: readAgentRemoteHost(name), runAsUser: identity.runAsUser }
+    // host: null, not a read of the config. A remote agent left at the remote check
+    // above, so this is the local path and the host IS null; a config rewritten since
+    // (the agent's own tree) must not send the launch, with the router's ssh key and
+    // the OAuth token in cmd, to a host the agent named (barracuda, review of #57 v2).
+    const startTarget: TmuxTarget = { host: null, runAsUser: identity.runAsUser }
     runTmux(startTarget, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')

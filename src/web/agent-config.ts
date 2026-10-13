@@ -399,7 +399,9 @@ export function agentOsUserName(name: string): string {
 // the router's user). The start uses this value and does not read the config again:
 // between the check and the launch the whole provisioning runs, and the config is in
 // the agent's own, agent-writable tree (barracuda, review of #57). Re-reading it there
-// would let a changed config pick the launch user after the check.
+// would let a changed config pick the launch user after the check. The same holds for
+// the HOST: the local launch target is host null, decided by the remote check, not a
+// re-read (review of #57 v2).
 export type RunIdentity = { ok: true; runAsUser: string | null } | { ok: false; error: string }
 
 export function checkAgentRunIdentity(

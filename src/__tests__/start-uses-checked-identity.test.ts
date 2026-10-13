@@ -37,7 +37,12 @@ const CHECKED = `agent-${AGENT}`
 // ANOTHER user, as if it had been rewritten after the check (barracuda, review of #57)
 vi.mock('../web/agent-config.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../web/agent-config.js')>()
-  return { ...orig, readAgentRunIdentity: vi.fn(() => ({ ok: true, runAsUser: CHECKED })) }
+  return {
+    ...orig,
+    readAgentRunIdentity: vi.fn(() => ({ ok: true, runAsUser: CHECKED })),
+    // the remote check saw a local agent; the file may say otherwise by the launch
+    readAgentRemoteConfig: vi.fn(() => ({ host: null, workdir: null })),
+  }
 })
 
 import { agentDir } from '../web/agent-config.js'
@@ -66,5 +71,15 @@ describe('the start runs as the CHECKED identity, not a second read of the confi
     const cmd = ns[0][ns[0].length - 1]
     expect(cmd.startsWith('umask 022 && ')).toBe(true)
     expect(cmd).toContain('export GIT_CEILING_DIRECTORIES=')
+  })
+
+  it('a remote host written into the config after the remote check: the launch stays local', async () => {
+    writeFileSync(join(agentDir(AGENT), 'agent-config.json'),
+      JSON.stringify({ runAsUser: CHECKED, remoteHost: 'tamado.example', remoteWorkdir: '/home/x/proj' }))
+    await startAgentProcess(AGENT)
+    const ns = calls.filter((c) => c.includes('new-session'))
+    expect(ns).toHaveLength(1)
+    expect(ns[0].slice(0, 4)).toEqual(['sudo', '-n', '-u', CHECKED])
+    expect(ns[0].join(' ')).not.toContain('tamado.example')
   })
 })
