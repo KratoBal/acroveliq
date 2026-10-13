@@ -11,14 +11,21 @@
 // the budget is used; what does not fit is not dropped silently: the last section counts
 // it per source and lists every omitted id, with the call that brings it back.
 //
-// The four sources:
-//   1. Task Core: every task whose last event is not a closing one, with who it waits on
-//   2. open questions: the latest handoff record of each open task (a coordination
+// The five sources:
+//   1. hot memories of the main agent tagged `acrobot-tartozik`: what Acrobot owes Balazs
+//      (a prepared step, a promised answer). Balazs 2026-10-13 20:34:46 UTC (msg
+//      1559665728909475985): acroveliq.acropora.hu was missing from the status report,
+//      because it lived only in a hot memory (2303: approved preparation, the next step
+//      was Acrobot's) and this summary read only the decision tag. FIRST section on
+//      purpose: the budget fills in order, so a long task list cannot push these out.
+//   2. Task Core: every task whose last event is not a closing one, with who it waits on
+//   3. open questions: the latest handoff record of each open task (a coordination
 //      handoff names who the question waits on; a plain one is a bare string)
-//   3. hot memories of the main agent tagged `dontesre-var` in their keywords: there was
+//   4. hot memories of the main agent tagged `dontesre-var` in their keywords: there was
 //      no marker for "waits on a decision" before (measured 2026-10-13: 108 hot
-//      memories, none machine-recognisable), so the tag is the convention from here on
-//   4. kanban cards in `waiting`
+//      memories, none machine-recognisable), so the tag is the convention from here on.
+//      A memory carrying both tags is listed once, under source 1.
+//   5. kanban cards in `waiting`
 //
 // Pure: `db` and `now` are passed in, so a test runs it on an in-memory database.
 
@@ -33,6 +40,9 @@ export const CLOSED_KINDS = new Set(['done', 'merged', 'cancelled', 'failed', 'p
 /** The keyword that marks a hot memory as waiting on a decision. */
 export const DECISION_TAG = 'dontesre-var'
 
+/** The keyword that marks a hot memory as something Acrobot owes Balazs. */
+export const OWES_TAG = 'acrobot-tartozik'
+
 /** About 3-4 thousand tokens of mostly ASCII Hungarian (plan, item 1). */
 export const DEFAULT_BUDGET_CHARS = 12000
 
@@ -46,8 +56,8 @@ export interface OpenMattersOptions {
 export interface OpenMatters {
   generated_at: number
   text: string
-  counts: { tasks: number; questions: number; decisions: number; cards: number }
-  omitted: { tasks: string[]; questions: string[]; decisions: number[]; cards: string[] }
+  counts: { owes: number; tasks: number; questions: number; decisions: number; cards: number }
+  omitted: { owes: number[]; tasks: string[]; questions: string[]; decisions: number[]; cards: string[] }
 }
 
 const tableExists = (db: Database.Database, name: string): boolean =>
@@ -108,15 +118,19 @@ export function buildOpenMatters(db: Database.Database, opts: OpenMattersOptions
     ? allTasks(db).filter((t) => t.last_kind === null || !CLOSED_KINDS.has(t.last_kind))
     : []
   const questions = tasks.flatMap((t) => questionsOf(db, t.id))
-  const decisions = tableExists(db, 'memories') && columnExists(db, 'memories', 'keywords')
+  const hasMemories = tableExists(db, 'memories') && columnExists(db, 'memories', 'keywords')
+  const taggedHot = (tag: string) => hasMemories
     ? (db
         .prepare(
           `SELECT id, content, created_at FROM memories
            WHERE agent_id = ? AND category = 'hot' AND (',' || replace(lower(keywords), ' ', '') || ',') LIKE ?
            ORDER BY created_at DESC, id DESC`,
         )
-        .all(memoryAgent, `%,${DECISION_TAG},%`) as { id: number; content: string; created_at: number }[])
+        .all(memoryAgent, `%,${tag},%`) as { id: number; content: string; created_at: number }[])
     : []
+  const owes = taggedHot(OWES_TAG)
+  const owedIds = new Set(owes.map((m) => m.id))
+  const decisions = taggedHot(DECISION_TAG).filter((d) => !owedIds.has(d.id))
   const cards = tableExists(db, 'kanban_cards')
     ? (db
         .prepare(
@@ -133,15 +147,23 @@ export function buildOpenMatters(db: Database.Database, opts: OpenMattersOptions
   // the omitted section is reserved up front: it must fit whatever happens above it
   // from the real id lengths: a task id may be up to 100 characters (barracuda, #72)
   const reserve = 600 +
+    owes.reduce((n, m) => n + String(m.id).length + 1, 0) +
     tasks.reduce((n, t) => n + t.id.length + 1, 0) +
     questions.reduce((n, q) => n + q.task.length + 8, 0) +
     decisions.reduce((n, d) => n + String(d.id).length + 1, 0) +
     cards.length * 9
   const room = (line: string): boolean => used + line.length + 1 <= Math.max(budget - reserve, 0)
   const put = (line: string): void => { lines.push(line); used += line.length + 1 }
-  const omitted: OpenMatters['omitted'] = { tasks: [], questions: [], decisions: [], cards: [] }
+  const omitted: OpenMatters['omitted'] = { owes: [], tasks: [], questions: [], decisions: [], cards: [] }
 
   put(`# Nyitott ugyek (generalva ${at(opts.now)}, forras: Task Core, atado rekordok, hot emlekek, kanban)`)
+
+  put('')
+  put(`## Amivel Acrobot tartozik Balazsnak (${owes.length}, kulcsszo: ${OWES_TAG})`)
+  for (const m of owes) {
+    const line = `- [emlek ${m.id}] ${oneLine(m.content, 200)}`
+    if (room(line)) put(line); else omitted.owes.push(m.id)
+  }
 
   put('')
   put(`## Nyitott feladatok (${tasks.length})`)
@@ -173,10 +195,12 @@ export function buildOpenMatters(db: Database.Database, opts: OpenMattersOptions
     if (room(line)) put(line); else omitted.cards.push(c.id.slice(0, 8))
   }
 
-  const n = omitted.tasks.length + omitted.questions.length + omitted.decisions.length + omitted.cards.length
+  const n = omitted.owes.length + omitted.tasks.length + omitted.questions.length + omitted.decisions.length + omitted.cards.length
   put('')
   put(`## Kimaradt a keretbol (${n})`)
   if (n === 0) put('- semmi')
+  if (omitted.owes.length)
+    put(`- ${omitted.owes.length} emlek, Acrobot tartozasa (GET /api/memories/<id>): ${omitted.owes.join(' ')}`)
   if (omitted.tasks.length)
     put(`- ${omitted.tasks.length} feladat (fleet-api.sh task-timeline <id>): ${omitted.tasks.join(' ')}`)
   if (omitted.questions.length)
@@ -189,7 +213,7 @@ export function buildOpenMatters(db: Database.Database, opts: OpenMattersOptions
   return {
     generated_at: opts.now,
     text: lines.join('\n') + '\n',
-    counts: { tasks: tasks.length, questions: questions.length, decisions: decisions.length, cards: cards.length },
+    counts: { owes: owes.length, tasks: tasks.length, questions: questions.length, decisions: decisions.length, cards: cards.length },
     omitted,
   }
 }
