@@ -18,7 +18,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectPaneState, paneShowsContextSaturation } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
-import { createAgentMessage, closeMessagesWithoutDelivery } from '../db.js'
+import { createAgentMessage, closeMessagesWithoutDelivery, getPendingMessages } from '../db.js'
 import {
   decideGuard,
   contextLimitForModel,
@@ -250,11 +250,6 @@ export function envelopeContent(panelText: string): string {
   )
 }
 
-// agent name -> ids of envelope copies the guard queued for it. A copy still
-// pending at restart time would otherwise reach the FRESH session and replay a
-// request addressed to the old one ("write HANDOFF.md, then stop").
-const queuedEnvelopes = new Map<string, number[]>()
-
 /**
  * Write a guard prompt into the pane, then queue its envelope copy. The copy
  * goes only after a successful panel write: a copy without its panel original
@@ -266,22 +261,33 @@ export async function sendGuardPrompt(name: string, session: string, text: strin
   const panelText = withEnvelopeNotice(name, text)
   await sendPromptToSession(session, panelText)
   try {
-    const msg = createAgentMessage(guardEnvelopeSender(name), name, envelopeContent(panelText), GUARD_ENVELOPE_ORIGIN)
-    queuedEnvelopes.set(name, [...(queuedEnvelopes.get(name) ?? []), msg.id])
+    createAgentMessage(guardEnvelopeSender(name), name, envelopeContent(panelText), GUARD_ENVELOPE_ORIGIN)
   } catch (err) {
     logger.warn({ err, name }, 'context-guard: envelope copy failed (panel prompt already sent)')
   }
 }
 
-/** Close, undelivered, the envelope copies a restart is about to orphan. */
+/**
+ * Close, undelivered, the envelope copies a restart is about to orphan. A copy
+ * still pending at restart time would otherwise reach the FRESH session and
+ * replay a request addressed to the old one ("write HANDOFF.md, then stop").
+ *
+ * Read from the queue, not from an in-memory list: guardStates resets on a
+ * dashboard restart, and a list kept beside it would forget exactly the copies
+ * queued before that restart (review on #94). Matched on sender AND origin, so
+ * a message that merely tags itself 'context-guard' from elsewhere is left
+ * alone.
+ */
 export function closeQueuedEnvelopes(name: string): number {
-  const ids = queuedEnvelopes.get(name) ?? []
-  queuedEnvelopes.delete(name)
-  if (!ids.length) return 0
   try {
+    const sender = guardEnvelopeSender(name)
+    const ids = getPendingMessages(name)
+      .filter((m) => m.from_agent === sender && m.origin_note === GUARD_ENVELOPE_ORIGIN)
+      .map((m) => m.id)
+    if (!ids.length) return 0
     return closeMessagesWithoutDelivery(ids, 'context-guard restart: addressed to the previous session')
   } catch (err) {
-    logger.warn({ err, name, ids }, 'context-guard: closing orphaned envelope copies failed')
+    logger.warn({ err, name }, 'context-guard: closing orphaned envelope copies failed')
     return 0
   }
 }

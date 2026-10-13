@@ -30,13 +30,21 @@ vi.mock('../config.js', async (orig) => {
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))
+// A minimal queue: enough rows for closeQueuedEnvelopes to read back what the
+// guard (or anyone else) queued, the way the real table would answer.
+type Row = { id: number; from_agent: string; to_agent: string; origin_note: string | null; status: string }
+const queue: Row[] = []
 vi.mock('../db.js', () => ({
-  createAgentMessage: vi.fn((from: string, to: string) => {
+  createAgentMessage: vi.fn((from: string, to: string, _content: string, origin?: string | null) => {
     calls.push(`message ${from}->${to}`)
-    return { id: nextMsgId++ }
+    const row = { id: nextMsgId++, from_agent: from, to_agent: to, origin_note: origin ?? null, status: 'pending' }
+    queue.push(row)
+    return row
   }),
+  getPendingMessages: vi.fn((to: string) => queue.filter((m) => m.status === 'pending' && m.to_agent === to)),
   closeMessagesWithoutDelivery: vi.fn((ids: number[]) => {
     calls.push(`close ${ids.join(',')}`)
+    for (const m of queue) if (ids.includes(m.id) && m.status === 'pending') m.status = 'closed'
     return ids.length
   }),
 }))
@@ -84,7 +92,7 @@ const runner = await import('../web/context-guard-runner.js')
 const db = await import('../db.js')
 const agentProcess = await import('../web/agent-process.js')
 const { INITIAL_GUARD_STATE, IDLE_FLUSH_REASON_PREFIX, STALE_REFRESH_REASON_PREFIX } = await import('../context-guard.js')
-const { classifyAgentMessage } = await import('../web/agent-message-wrap.js')
+const { classifyAgentMessage, wrapAgentMessageForDelivery } = await import('../web/agent-message-wrap.js')
 
 const createMsg = vi.mocked(db.createAgentMessage)
 const sendPanel = vi.mocked(agentProcess.sendPromptToSession)
@@ -102,9 +110,7 @@ function sentPair(): { panel: string; envelope: string; from: string; to: string
 }
 
 beforeEach(() => {
-  // The queued-copy registry is module state; earlier cases must not leak ids.
-  runner.closeQueuedEnvelopes('samu')
-  runner.closeQueuedEnvelopes('marveen')
+  queue.length = 0
   calls.length = 0
   remoteHost = null
   panelFails = false
@@ -207,5 +213,37 @@ describe('restart closes the copies addressed to the previous session', () => {
     calls.length = 0
     expect(runner.closeQueuedEnvelopes('samu')).toBe(0)
     expect(calls).toEqual([])
+  })
+
+  it('a copy queued before a dashboard restart is still found: the queue is the record, not process memory', () => {
+    // Row written by a previous dashboard process -- this runner never saw it.
+    queue.push({ id: 7, from_agent: 'marveen', to_agent: 'samu', origin_note: 'context-guard', status: 'pending' })
+    expect(runner.closeQueuedEnvelopes('samu')).toBe(1)
+    expect(calls).toEqual(['close 7'])
+  })
+
+  it('leaves alone a message that only tags itself context-guard, and one already delivered', () => {
+    queue.push({ id: 8, from_agent: 'barracuda', to_agent: 'samu', origin_note: 'context-guard', status: 'pending' })
+    queue.push({ id: 9, from_agent: 'marveen', to_agent: 'samu', origin_note: 'context-guard', status: 'delivered' })
+    queue.push({ id: 10, from_agent: 'marveen', to_agent: 'samu', origin_note: null, status: 'pending' })
+    expect(runner.closeQueuedEnvelopes('samu')).toBe(0)
+    expect(calls).toEqual([])
+  })
+})
+
+// Review on #94, point b: for a sub-agent the envelope says "@<main>-tol", but
+// the main agent did not write it. The real source must survive delivery
+// framing in two places: the self-tagged origin in the prefix, and the
+// header line of the content.
+describe('the delivered frame still names the guard as the source', () => {
+  it('trusted-peer prefix carries the origin, and the content opens with the guard header', () => {
+    const content = runner.envelopeContent('x')
+    const cls = classifyAgentMessage(runner.guardEnvelopeSender('samu'), 'samu')
+    expect(cls?.category).toBe('trusted-peer')
+    const { prefix, wrapped } = wrapAgentMessageForDelivery(
+      cls!.category, cls!.safeFrom, runner.guardEnvelopeSender('samu'), content, 1, runner.GUARD_ENVELOPE_ORIGIN,
+    )
+    expect(prefix).toContain('self-tagged origin:"context-guard"')
+    expect(wrapped).toContain('[CONTEXT-GUARD BORÍTÉK]')
   })
 })
