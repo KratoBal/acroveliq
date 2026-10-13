@@ -354,8 +354,28 @@ export function resolveRunAsUser(rawConfigJson: string): string | null {
 }
 
 export function readAgentRunAsUser(name: string): string | null {
+  return runAsUserForPanel(name, readAgentConfiguredRunAsUser(name))
+}
+
+// The configured value, UNFILTERED. The router's own writes into an agent's tree (B45
+// B2-6: is this .claude.json written through the private group?) decide from this, not
+// from the panel's filtered value: an agent that writes another user into its own
+// config must not turn its tree's writes back into plain, fleet-readable ones. The two
+// questions differ: "which tmux server do I talk to" may fall back to the router's,
+// "is this a per-user tree" must not fall back to "no" (rebase of #57 onto #54).
+export function readAgentConfiguredRunAsUser(name: string): string | null {
   const configPath = join(agentDir(name), 'agent-config.json')
   return resolveRunAsUser(readFileOr(configPath, '{}'))
+}
+
+// B45 B2-2 follow-up (barracuda, review of #45): the START is checked against the
+// OS (checkAgentRunIdentity), but every other tmux call of the panel (key input,
+// pane capture, stop) still took runAsUser from the agent-writable config at call
+// time. Only the agent's OWN user (agent-<name>) is honoured there now; another
+// agent's user, the router or root resolves to null, i.e. the router's own tmux
+// server, where a per-user agent has no session.
+export function runAsUserForPanel(name: string, configured: string | null): string | null {
+  return configured === agentOsUserName(name) ? configured : null
 }
 
 // B45 B2-2 (Security Baseline, 2026-10-13): the run identity is checked against
@@ -375,11 +395,20 @@ export function agentOsUserName(name: string): string {
   return `agent-${name}`
 }
 
+// The checked identity: on ok, the user the agent RUNS AS (its own OS user, or null =
+// the router's user). The start uses this value and does not read the config again:
+// between the check and the launch the whole provisioning runs, and the config is in
+// the agent's own, agent-writable tree (barracuda, review of #57). Re-reading it there
+// would let a changed config pick the launch user after the check. The same holds for
+// the HOST: the local launch target is host null, decided by the remote check, not a
+// re-read (review of #57 v2).
+export type RunIdentity = { ok: true; runAsUser: string | null } | { ok: false; error: string }
+
 export function checkAgentRunIdentity(
   name: string,
   rawConfigJson: string,
   osUserExists: (user: string) => boolean,
-): { ok: true } | { ok: false; error: string } {
+): RunIdentity {
   const expected = agentOsUserName(name)
   const own = osUserExists(expected)
   let raw: unknown = undefined
@@ -396,12 +425,12 @@ export function checkAgentRunIdentity(
     if (typeof remote === 'string' && remote.trim()) {
       return { ok: false, error: `run identity refused: agent ${name} has its own OS user, a remoteHost would run it outside that uid` }
     }
-    return { ok: true }
+    return { ok: true, runAsUser: expected }
   }
   if (raw !== undefined && raw !== null && raw !== '') {
     return { ok: false, error: `run identity refused: no OS user ${expected}, but agent-config.json sets runAsUser ${JSON.stringify(raw)}` }
   }
-  return { ok: true }
+  return { ok: true, runAsUser: null }
 }
 
 export function osUserExistsFromPasswd(passwd: string): (user: string) => boolean {
@@ -428,9 +457,21 @@ export function readAgentConfigGroupGid(name: string): number | null {
   return gidFromGroupFile(readFileOr('/etc/group', ''), agentConfigGroupName(name))
 }
 
-export function readAgentRunIdentity(name: string): { ok: true } | { ok: false; error: string } {
+export function readAgentRunIdentity(name: string): RunIdentity {
   const configPath = join(agentDir(name), 'agent-config.json')
-  return checkAgentRunIdentity(name, readFileOr(configPath, '{}'), osUserExistsFromPasswd(readFileOr('/etc/passwd', '')))
+  // B45 B2-2 follow-up (barracuda): an unreadable or empty /etc/passwd made every
+  // OS user look absent, so an agent WITH its own user and no runAsUser in its
+  // config would have started as the router. Unknown identity is a stop, too.
+  return checkAgentRunIdentityWithPasswd(name, readFileOr(configPath, '{}'), readFileOr('/etc/passwd', ''))
+}
+
+export function checkAgentRunIdentityWithPasswd(
+  name: string,
+  rawConfigJson: string,
+  passwd: string,
+): RunIdentity {
+  if (!passwd.trim()) return { ok: false, error: 'run identity refused: /etc/passwd is unreadable or empty' }
+  return checkAgentRunIdentity(name, rawConfigJson, osUserExistsFromPasswd(passwd))
 }
 
 // Validate-and-persist the remote config. Empty strings clear the fields

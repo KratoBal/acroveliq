@@ -25,7 +25,7 @@ import {
   detectsFeedbackOptOutPrompt,
   type FirstRunGateKind,
 } from '../pane-state.js'
-import { AGENTS_BASE_DIR, agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentRunIdentity, readAgentMemoryIsolation, resolveRunAsUser, readAgentConfigGroupGid, agentConfigGroupName } from './agent-config.js'
+import { AGENTS_BASE_DIR, agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentConfiguredRunAsUser, readAgentRunIdentity, readAgentMemoryIsolation, resolveRunAsUser, readAgentConfigGroupGid, agentConfigGroupName } from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
@@ -811,7 +811,7 @@ function provisionIsolatedConfigDir(
     try {
       // Does this agent run as its own OS user? Then everything the router writes
       // into its config dir has to stay readable AND writable for that user.
-      const perUser = readAgentRunAsUser(name) != null
+      const perUser = readAgentConfiguredRunAsUser(name) != null
       const dotClaude = join(cfg, '.claude.json')
       const sharedDot = join(homedir(), '.claude.json')
       if (!existsSync(dotClaude)) {
@@ -925,7 +925,7 @@ function preservedConfigMode(path: string): number {
 // router-user agent's) keeps its mode as before.
 function writeDotClaude(dotClaudePath: string, data: string): void {
   const root = agentTreeRootOf(dotClaudePath)
-  if (root && readAgentRunAsUser(basename(root)) != null) {
+  if (root && readAgentConfiguredRunAsUser(basename(root)) != null) {
     writeAgentPrivateConfig(dotClaudePath, data, basename(root))
     return
   }
@@ -1186,8 +1186,7 @@ function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opt
 // 'unreachable' (the session is almost certainly still alive on the laptop --
 // an SSH drop must never read as 'stopped', which would trigger a wrong
 // auto-restart or a duplicate start). See classifyRunState.
-export function agentRunState(name: string): AgentRunState {
-  const target = agentTmuxTarget(name)
+export function agentRunState(name: string, target: TmuxTarget = agentTmuxTarget(name)): AgentRunState {
   const host = target.host
   try {
     const out = captureTmux(target, ['list-sessions', '-F', '#{session_name}'])
@@ -1204,8 +1203,8 @@ export function agentRunState(name: string): AgentRunState {
   }
 }
 
-export function isAgentRunning(name: string): boolean {
-  return agentRunState(name) === 'running'
+export function isAgentRunning(name: string, target?: TmuxTarget): boolean {
+  return agentRunState(name, target) === 'running'
 }
 
 // Host-aware "does this tmux session exist" check, shared by the message router
@@ -1451,7 +1450,13 @@ export async function startAgentProcess(name: string, opts: LaunchOpts = {}): Pr
   ensureSharedClaudeOnboarded()
 
 
-  if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
+  // From here on the launch is LOCAL (the remote check above has left otherwise), and
+  // every tmux call of the launch goes to the CHECKED target: host null, the checked
+  // user. None re-reads the config, which sits in the agent's own tree and may have
+  // changed since the check (barracuda, reviews of #57 v1 and v2).
+  const launchTarget: TmuxTarget = { host: null, runAsUser: identity.runAsUser }
+
+  if (isAgentRunning(name, launchTarget)) return { ok: false, error: 'Agent is already running' }
 
   const agentProvider = resolveAgentProvider(name)
   const provider = getProvider(agentProvider)
@@ -1492,7 +1497,7 @@ export async function startAgentProcess(name: string, opts: LaunchOpts = {}): Pr
 
   try {
     try {
-      runTmux(agentTmuxTarget(name), ['kill-session', '-t', session])
+      runTmux(launchTarget, ['kill-session', '-t', session])
       await delay(3000)
     } catch { /* ok */ }
 
@@ -1822,15 +1827,19 @@ export async function startAgentProcess(name: string, opts: LaunchOpts = {}): Pr
     // values like `claude-opus-4-8[1m]` (1M-context suffix) from being glob-expanded AND makes a `'`
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
     // ANTHROPIC_MODEL env sites above.
-    const umaskPrefix = agentUmaskPrefix(agentTmuxTarget(name).runAsUser)
-    const gitEnv = agentGitEnv(agentTmuxTarget(name).runAsUser, dir)
+    // the CHECKED identity, not a second read of the config (see RunIdentity)
+    const umaskPrefix = agentUmaskPrefix(identity.runAsUser)
+    const gitEnv = agentGitEnv(identity.runAsUser, dir)
     const cmd = `${umaskPrefix}${gitEnv}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
     // reported ok, no session existed under the agent's user, and the first
     // capture-pane failed against the router's empty tmux server.
-    const startTarget = agentTmuxTarget(name)
+    // launchTarget, not a read of the config: a config rewritten since the check must
+    // not send the launch, with the router's ssh key and the OAuth token in cmd, to a
+    // host the agent named (barracuda, review of #57 v2).
+    const startTarget = launchTarget
     runTmux(startTarget, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
