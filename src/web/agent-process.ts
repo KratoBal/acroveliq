@@ -480,7 +480,9 @@ function writeJsonAtomic(path: string, value: unknown, opts: { groupShared?: boo
 }
 
 // B45 B2-6: write a per-user agent's private config file (its .claude.json) so that
-// only the agent and the router can read it. Refuses (throws) when the agent's
+// only the agent and the router can read it. Claude Code's OWN later rewrite puts it
+// back to 0600 agent:fleet: still private, but the router can no longer read it, and
+// the stamps then skip silently, exactly as they do today (barracuda, review of #54). Refuses (throws) when the agent's
 // private group is missing: a group-shared write without it would fall back to
 // `fleet`, i.e. to all six agents. The callers log and carry on, as they did for
 // any other write failure.

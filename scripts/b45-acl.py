@@ -26,9 +26,12 @@ UO, U, GO, G, M, O = 1, 2, 4, 8, 0x10, 0x20
 TAGNAME = {UO: 'user', U: 'user', GO: 'group', G: 'group', M: 'mask', O: 'other'}
 W = 2
 HARDLINK_HELD = []
-# Files that only their owner may read: no group, no other, no named entry
-# (barracuda review of B2-6: a .claude.json can carry tokens in its mcpServers env,
-# so the target is 0600 with no group read, not a group read-only).
+# Files that only the agent (and the router) may read: no other, no named entry,
+# and no group EXCEPT the agent's own private group agent-<name>-cfg (B2-6). A
+# .claude.json can carry tokens in its mcpServers env, so a `fleet` group loses all
+# rights; but the router writes it as marveen:agent-<name>-cfg 0660 and the agent
+# reads it through that group, so taking THAT group away would lock the agent out
+# of its own config (the korall case, 2026-08-19; barracuda review of #54).
 PRIVATE_NAMES = {'.claude.json', '.credentials.json'}
 
 
@@ -121,9 +124,11 @@ def transform(path, st, acc, dfl, router, owners):
         uid = pwd.getpwnam(owner_name).pw_uid           # foreign agent -> tree owner
     old = acc if acc is not None else minimal(mode)
     if stat.S_ISREG(mode) and os.path.basename(path) in PRIVATE_NAMES and owner_name:
-        priv = [(UO, 0, (mode >> 6) & 7), (GO, 0, 0), (O, 0, 0)]
+        own_group = gname(st.st_gid) == owner_name + '-cfg'
+        g = ((mode >> 3) & 7) if own_group else 0
+        priv = [(UO, 0, (mode >> 6) & 7), (GO, 0, g), (O, 0, 0)]
         if acc is not None:
-            priv.append((M, 0, 0))
+            priv.append((M, 0, g))
         return uid, st.st_gid, mode & (stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX), priv, None
     new = []
     for t, i, p in old:
