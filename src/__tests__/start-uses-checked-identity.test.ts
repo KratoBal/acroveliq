@@ -77,9 +77,11 @@ describe('the start runs as the CHECKED identity, not a second read of the confi
     writeFileSync(join(agentDir(AGENT), 'agent-config.json'),
       JSON.stringify({ runAsUser: CHECKED, remoteHost: 'tamado.example', remoteWorkdir: '/home/x/proj' }))
     await startAgentProcess(AGENT)
+    // first: nothing at all went to the host the config names (over ssh the tmux
+    // command is one joined argument, so a new-session filter alone would miss it)
+    expect(calls.filter((c) => c.join(' ').includes('tamado.example'))).toEqual([])
     const ns = calls.filter((c) => c.includes('new-session'))
     expect(ns).toHaveLength(1)
     expect(ns[0].slice(0, 4)).toEqual(['sudo', '-n', '-u', CHECKED])
-    expect(ns[0].join(' ')).not.toContain('tamado.example')
   })
 })
