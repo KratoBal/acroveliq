@@ -25,7 +25,7 @@ import {
   detectsFeedbackOptOutPrompt,
   type FirstRunGateKind,
 } from '../pane-state.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, resolveRunAsUser } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentRunIdentity, readAgentMemoryIsolation, resolveRunAsUser } from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
@@ -1220,6 +1220,15 @@ function startRemoteAgentProcess(
 export async function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
+
+  // B45 B2-2: refuse BEFORE any provisioning or the remote branch when the run
+  // identity in the agent's own config does not match its OS user (see
+  // checkAgentRunIdentity). No fallback: a wrong identity is a stopped agent.
+  const identity = readAgentRunIdentity(name)
+  if (!identity.ok) {
+    logger.error({ name, error: identity.error }, 'Agent start refused: run identity mismatch')
+    return { ok: false, error: identity.error }
+  }
 
   // Remote agents are handled entirely by the ssh path above (with its own
   // start guard), before any local already-running check / scaffolding.
