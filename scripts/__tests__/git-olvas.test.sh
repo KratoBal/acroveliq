@@ -59,8 +59,21 @@ chmod g+w "$GW/.git/refs"
 GF="$T/gitfile"; mkdir "$GF"; printf 'gitdir: %s/.git\n' "$R" > "$GF/.git"
 AL="$T/alt"; git init -q "$AL"; git -C "$AL" -c user.name=t -c user.email=t@t commit -q --allow-empty -m i
 printf '%s/.git/objects\n' "$R" > "$AL/.git/objects/info/alternates"
-sed "s|^TREES=.*|TREES=\"t=$R gw=$GW gf=$GF al=$AL\"|" "$SRC" > "$S"
+# a signed commit, and a fake gpg first on the copy's PATH that leaves a marker: the
+# %G? placeholders verify the signature, and with no gpg.program git runs `gpg` from
+# PATH (barracuda, review of #69). The fake stands in for /usr/bin/gpg, which exists on
+# the fleet host; a %G? output is no measure (with no key a real gpg runs and says E).
+FAKE="$T/fakebin"; mkdir "$FAKE"
+for g in gpg gpgsm ssh-keygen; do printf '#!/bin/sh\ntouch %s/%s\nexit 1\n' "$M" "$g" > "$FAKE/$g"; chmod 755 "$FAKE/$g"; done
+SIGNED="$(printf 'tree %s\nparent %s\nauthor t <t@t> 1700000000 +0000\ncommitter t <t@t> 1700000000 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n iQEzBAABCAAdFiEE\n -----END PGP SIGNATURE-----\n\nsigned\n' \
+  "$(git -C "$R" rev-parse HEAD^{tree})" "$(git -C "$R" rev-parse HEAD)" | git -C "$R" hash-object -t commit -w --stdin)"
+echo 'positive control: plain git verifies the signature with gpg from PATH'
+PATH="$FAKE:$PATH" git -C "$R" log -1 --format=%G? "$SIGNED" >/dev/null 2>&1
+check 'the fake gpg ran' 'gpg' "$(markers)"
+rm -f "$M"/*
+sed -e "s|^TREES=.*|TREES=\"t=$R gw=$GW gf=$GF al=$AL\"|" -e "s|env -i PATH=/usr/bin:/bin |env -i PATH=$FAKE:/usr/bin:/bin |" "$SRC" > "$S"
 check 'the copy has the test tree table' 1 "$(grep -c "^TREES=\"t=$R " "$S")"
+check '... and the fake gpg first on its PATH' 1 "$(grep -c "env -i PATH=$FAKE:" "$S")"
 mkdir "$T/tmp"
 run() { TMPDIR="$T/tmp" bash "$S" "$@" >"$T/out" 2>"$T/err"; echo $?; }
 
@@ -73,7 +86,12 @@ check 'show -> 0' 0 "$(run t show HEAD:a.txt)"
 check 'grep -> 0' 0 "$(run t grep -n hello)"
 TMPDIR="$T/tmp" script -qec "bash '$S' t log -1" /dev/null >/dev/null 2>&1
 check 'log on a terminal (where the pager would run) -> 0' 0 "$?"
-check 'no trap fired' '' "$(markers)"
+# (%GT is left out: git 2.39.5 aborts on it, exit 134, with or without the script)
+for f in '%G?' '%GS' '%GK' '%GF' '%GG' '%GP'; do
+  check "log --format=$f on a signed commit -> 0" 0 "$(run t log -1 "--format=$f" "$SIGNED")"
+done
+check 'show --pretty=format:%G? -> 0' 0 "$(run t show -s "--pretty=format:%G?" "$SIGNED")"
+check 'no trap fired, gpg included' '' "$(markers)"
 check 'the private git dir is removed after every call' '' "$(ls -A "$T/tmp")"
 
 echo 'refused subcommands'

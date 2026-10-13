@@ -39,6 +39,13 @@ EOF
 sed -e "s|^ZONA=.*|ZONA=$Z|" -e "s|^FLEET_API=.*|FLEET_API=$T/fleet-api.sh|" -e 's|^ME=.*|ME=agent-tesztelo|' \
   "$HERE/../review-ellenoriz.sh" > "$T/ell.sh"
 sed -e 's|^ME=agent-tesztelo|ME=runner|' "$T/ell.sh" > "$T/ell-nem-agens.sh"
+# the packets below are owned by whoever runs the test (CI: runner): the main copy also
+# accepts that owner, a second copy accepts nobody
+RUNNER="$(id -un)"
+sed -i "s|^PACKAGERS_RE=.*|PACKAGERS_RE='^(agent-.+\\|marveen\\|$RUNNER)\$'|" "$T/ell.sh"
+sed -e "s|^PACKAGERS_RE=.*|PACKAGERS_RE='^senki-sem\$'|" "$T/ell.sh" > "$T/ell-idegen-csomag.sh"
+check 'the main copy accepts the runner' 1 "$(grep -cxF "PACKAGERS_RE='^(agent-.+|marveen|$RUNNER)\$'" "$T/ell.sh")"
+check 'the second copy accepts nobody' 1 "$(grep -cxF "PACKAGERS_RE='^senki-sem\$'" "$T/ell-idegen-csomag.sh")"
 sed -e "s|^ZONA=.*|ZONA=$Z|" "$HERE/../review-olvas.sh" > "$T/olv.sh"
 check 'the copies point at the test zone' 2 "$(grep -c "^ZONA=$Z\$" "$T/ell.sh" "$T/olv.sh" | grep -c ':1$')"
 check '... and name a test caller' 1 "$(grep -c '^ME=agent-tesztelo$' "$T/ell.sh")"
@@ -107,7 +114,24 @@ mkdir "$Z/pr-1707"; printf 'task_id: tsk-a-masik\n' > "$Z/pr-1707/README.md"
 cp "$T/tl-tsk-a" "$T/tl-tsk-a-masik"
 check 'a task id that only STARTS like the named one -> 1' 1 "$(ell 1707 tsk-a APPROVE)"
 check 'a caller that is not an agent user -> 1' 1 "$(bash "$T/ell-nem-agens.sh" marveen70 tsk-a APPROVE >/dev/null 2>&1; echo $?)"
+mkdir "$Z/pr-1708"; printf 'task_id: tsk-a\nmegjegyzes: a task blocks merging until review\n' > "$Z/pr-1708/README.md"
+cp "$T/tl-tsk-a" "$T/tl-blocks"
+check 'a prose line ("a task blocks ...") names no task -> 1' 1 "$(ell 1708 blocks APPROVE)"
+check 'a packet owner that is not a packager -> 1' 1 "$(bash "$T/ell-idegen-csomag.sh" marveen70 tsk-a APPROVE >/dev/null 2>&1; echo $?)"
 check 'no refusal wrote an event' "$n" "$(events)"
+mkdir "$Z/pr-1709"; printf 'os PR 1709 \ntask_id: tsk-a\nfej: 1111111aaaa\nv2: task_id tsk-b, fej 2222222bbbb, merge-base x, origin/main y \n' > "$Z/pr-1709/README.md"
+check 'a later round line (vN: task_id X,) binds that task -> 0' 0 "$(ell 1709 tsk-b CHANGES)"
+n="$(events)"
+
+echo 'the profile: the event writers are denied for the reviewer only'
+RV="$HERE/../../templates/profiles/reviewer.json"; RR="$HERE/../../templates/profiles/researcher-reader.json"
+for c in task-event kiadas; do
+  rule="\"Bash(bash \${HOME}/marveen/scripts/fleet-api.sh $c:*)\""
+  check "reviewer.json denies fleet-api.sh $c" 1 "$(grep -cF "$rule" "$RV")"
+  check "... researcher-reader.json (polip) does not" 0 "$(grep -cF "$rule" "$RR")"
+done
+check 'review-ellenoriz.sh writes from its own process, not through the harness' 1 \
+  "$(grep -cF 'bash "$FLEET_API" task-event "$TASK" verdict "$ACTOR"' "$HERE/../review-ellenoriz.sh")"
 
 echo 'review-ellenoriz: the write is read back'
 touch "$T/fail-event"

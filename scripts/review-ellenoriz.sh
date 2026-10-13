@@ -54,12 +54,29 @@ for r in README.md README; do
 done
 [ -n "$README" ] || { echo "FAIL: a csomagban nincs README, tehat nem tudom, melyik feladate" >&2; exit 1; }
 
-# the task ids the README names, and the head it was packaged at
-NAMED=" "; HEAD7=""
+# Who packaged it: the folder and its README must have the SAME owner, an agent user or
+# marveen (acrobot's packets). The README is the only thing that binds the verdict to a
+# task, and the zone lets anyone create a pr-<N> folder first (barracuda, review of #69).
+PACKAGERS_RE='^(agent-.+|marveen)$'
+DO="$(stat -c %U "$D")"; RO="$(stat -c %U "$README")"
+[ "$DO" = "$RO" ] || { echo "FAIL: a csomagmappa ($DO) es a README ($RO) tulajdonosa elter" >&2; exit 1; }
+[[ "$DO" =~ $PACKAGERS_RE ]] || { echo "FAIL: a csomag tulajdonosa ($DO) nem agens es nem marveen" >&2; exit 1; }
+
+# the task ids the README names, and the head it was packaged at. Only three shapes, so
+# a prose line ("a task blocks ...") names nothing: `task_id: X` or `task: X` at a line's
+# start, `vN: task_id X,` (review-csomag.sh's later rounds), and "task X" in the TITLE line
+# (the hand-made packets before 2026-10-13).
+NAMED=" "; HEAD7=""; first=1
+ID_RE='([A-Za-z0-9][A-Za-z0-9._-]*)'
 while IFS= read -r line || [ -n "$line" ]; do
-  if [[ "$line" =~ (^|[[:space:],])task(_id)?:?[[:space:]]+([A-Za-z0-9][A-Za-z0-9._-]*) ]]; then
-    NAMED="$NAMED${BASH_REMATCH[3]} "
+  if [[ "$line" =~ ^task(_id)?:[[:space:]]+$ID_RE([[:space:]]|$) ]]; then
+    NAMED="$NAMED${BASH_REMATCH[2]} "
+  elif [[ "$line" =~ ^v[0-9]+:[[:space:]]+task_id[[:space:]]+$ID_RE(,|[[:space:]]|$) ]]; then
+    NAMED="$NAMED${BASH_REMATCH[1]} "
+  elif [ "$first" = 1 ] && [[ "$line" =~ (^|[[:space:],])task[[:space:]]+$ID_RE([[:space:],]|$) ]]; then
+    NAMED="$NAMED${BASH_REMATCH[2]} "
   fi
+  first=0
   if [ -z "$HEAD7" ] && [[ "$line" =~ ^(fej|head):?[[:space:]]+([0-9a-f]{7,40}) ]]; then
     HEAD7="${BASH_REMATCH[2]:0:7}"
   fi

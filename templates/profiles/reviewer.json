@@ -1,7 +1,7 @@
 {
   "id": "reviewer",
   "label": "Reviewer (olvasó eszközökkel, git-olvasással)",
-  "description": "A researcher-reader profil másolata, plusz három nevesített szkript, és semmi más: scripts/git-olvas.sh (csak olvasó git-alparancsok három rögzített fán, a repó saját konfigja nem töltődik be, a programot futtató, fájlt író és fán kívül olvasó kapcsolók tiltva), scripts/review-olvas.sh (egy review-csomag README-je és fájllistája egy hívásban) és scripts/review-ellenoriz.sh (CSAK a csomag által megnevezett feladat verdict eseménye, a hívó nevében, visszaolvasva). Nyers git, általános shell (bash -c, python3, awk) NINCS. Külön profil, mert a researcher-reader-t polip is használja, és neki ez nem jár. Balázs 2026-10-13 18:05:14 és 18:07:16 UTC (msg 1559628094447296554, 1559628609390383170) hagyta jóvá a fejlesztést; a profil élesítése (barracuda átállítása) KÜLÖN döntés. A tiltólista (store, .channels-config, ssh, titkok) és a szigorú mód változatlan.",
+  "description": "A researcher-reader profil másolata, plusz három nevesített szkript, és semmi más: scripts/git-olvas.sh (csak olvasó git-alparancsok három rögzített fán, a repó saját konfigja nem töltődik be, a programot futtató, fájlt író és fán kívül olvasó kapcsolók tiltva), scripts/review-olvas.sh (egy review-csomag README-je és fájllistája egy hívásban) és scripts/review-ellenoriz.sh (CSAK a csomag által megnevezett feladat verdict eseménye, a hívó nevében, visszaolvasva). A fleet-api.sh két eseményíró ága (task-event, és a kiadas, ami belül assigned eseményt ír) a TILTÓLISTÁN áll, hogy a szűkítés a profil szintjén is igaz legyen (acrobot döntése, 2026-10-13, barracuda review-ja nyomán); a review-ellenoriz.sh a saját folyamatából hívja a task-event-et, azt a harness-szabály nem érinti. Ez szövegre illesztett harness-szabály: más írásmódra (dupla szóköz, relatív út) nem illeszkedik, azok engedélykérésre esnek. Nyers git, általános shell (bash -c, python3, awk) NINCS. Külön profil, mert a researcher-reader-t polip is használja, és neki ez nem jár. Balázs 2026-10-13 18:05:14 és 18:07:16 UTC (msg 1559628094447296554, 1559628609390383170) hagyta jóvá a fejlesztést; a profil élesítése (barracuda átállítása) KÜLÖN döntés. A tiltólista (store, .channels-config, ssh, titkok) és a szigorú mód változatlan.",
   "permissionMode": "strict",
   "filesystem": {
     "allow": [
@@ -130,7 +130,9 @@
       "Bash(sed --in-place:*)",
       "Bash(/bin/sed --in-place:*)",
       "Bash(/usr/bin/sed -i:*)",
-      "Bash(/usr/bin/sed --in-place:*)"
+      "Bash(/usr/bin/sed --in-place:*)",
+      "Bash(bash ${HOME}/marveen/scripts/fleet-api.sh task-event:*)",
+      "Bash(bash ${HOME}/marveen/scripts/fleet-api.sh kiadas:*)"
     ],
     "directories": [
       "${HOME}/marveen"

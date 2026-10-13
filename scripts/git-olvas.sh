@@ -27,6 +27,11 @@
 #     no GIT_EXTERNAL_DIFF, no GIT_PAGER from the caller, no optional index locks.
 #   - belt and braces on the command line: core.hooksPath=/dev/null, core.fsmonitor=false,
 #     submodule recursion off; --no-ext-diff/--no-textconv forced on diff, show, log, grep.
+#   - SIGNATURES: with no config at all git still runs a program, the DEFAULT `gpg` from
+#     PATH, for --format=%G?/%GS/%GK/%GF/%GG/%GP on a signed commit (and every merged
+#     GitHub commit is signed). /usr/bin/gpg exists on the fleet host. So gpg.program,
+#     gpg.ssh.program and gpg.x509.program are /bin/false: the placeholders answer, no
+#     verifier runs (barracuda, review of #69; measured with a fake gpg on PATH).
 # A private git dir also skips git's ownership check (safe.directory), which only guards
 # repository DISCOVERY: that is why the reviewer no longer needs to look at it.
 #
@@ -219,5 +224,6 @@ env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$G" \
   GIT_PAGER=cat PAGER=cat GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 \
   "$GIT_BIN" --no-pager \
     -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.pager=cat \
+    -c gpg.program=/bin/false -c gpg.ssh.program=/bin/false -c gpg.x509.program=/bin/false \
     -c submodule.recurse=false -c diff.ignoreSubmodules=all \
     "$SUB" "${FORCED[@]}" "$@"
