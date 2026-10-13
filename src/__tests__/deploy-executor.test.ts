@@ -707,13 +707,18 @@ describe('the state file stays bounded (barracuda, #51 review 2)', () => {
     expect(readFileSync(join(config.stateDir, 'audit.log'), 'utf8')).toContain('"event":"pruned"')
   })
 
-  it('a young R is never pruned, open or used', async () => {
+  it('a young R is never pruned, open or used and finished', async () => {
     const open = await req()
     const used = await approvedRequest()
-    await ex.execute({ r: used.rec.r, requestMessageId: used.msg.id })
+    const out = await ex.execute({ r: used.rec.r, requestMessageId: used.msg.id })
+    // finished, so only its age can keep it
+    cool.deployments.get(out.deploymentUuid!)!.status = 'finished'
+    await Promise.all(ex.following)
+    expect(ex.status(used.rec.r)!.outcome).toBe('finished_verified')
     clock += 29 * 86_400_000
     expect(ex.prune()).toEqual([])
     expect(ex.status(open.r)).not.toBeNull()
+    expect(ex.status(used.rec.r)).not.toBeNull()
   })
 })
 
