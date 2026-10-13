@@ -634,3 +634,96 @@ describe('TC-Lite L1: the timeline and busy', () => {
     ])
   })
 })
+
+/*
+  THE COORDINATION WINDOW (koord-munkamenet, acrobot msg 29883). What turns these red:
+  the channel session's calls between its coord_open and coord_close not assigned to the
+  task while a dozen other tasks' admin windows are open for the same agent (the reason
+  they were unattributable before); a call outside the marks assigned; the concurrent
+  other tasks not counted or not named; a call in TWO tasks' coord windows assigned.
+*/
+describe('the coord window', () => {
+  it('TASK-USAGE-COORD: the marked span is the task\'s, the concurrent other tasks are said, the rest is not taken', () => {
+    task('masik'); event('masik', 'assigned', 'acrobot', T('08:00:00'))   // a broad admin window, open all day
+    task('koord'); event('koord', 'assigned', 'acrobot', T('08:30:00'))
+    event('koord', 'coord_open', 'acrobot', T('09:00:00'))
+    event('koord', 'coord_close', 'acrobot', T('09:10:00'))
+    call('acrobot', T('08:59:59'), 7)     // before the open: in two tasks' admin windows, not taken
+    call('acrobot', T('09:00:00'), 100)   // in the window
+    call('acrobot', T('09:05:00'), 200)   // in the window
+    call('acrobot', T('09:10:00'), 9)     // the close is exclusive
+    call('murena', T('09:05:00'), 5)      // another agent
+    const u = taskUsage(db, 'koord', NOW)!
+    expect([u.by_capacity.coord.calls, u.by_capacity.coord.cache_read], 'TASK-USAGE-COORD').toEqual([2, 300])
+    expect(u.coordination.concurrent.calls).toBe(2)
+    expect(u.coordination.concurrent_tasks).toEqual(['masik'])
+    expect(u.unassigned.admin.calls).toBe(2)   // 08:59:59 and 09:10:00, in both admin windows
+    expect(u.valid).toBe(true)
+  })
+
+  it('a second open by the same actor reopens after a close; without any other window nothing is concurrent', () => {
+    task('k2')
+    event('k2', 'coord_open', 'acrobot', T('10:00:00')); event('k2', 'coord_close', 'acrobot', T('10:05:00'))
+    event('k2', 'coord_open', 'acrobot', T('11:00:00')); event('k2', 'coord_close', 'acrobot', T('11:05:00'))
+    call('acrobot', T('10:01:00')); call('acrobot', T('10:30:00')); call('acrobot', T('11:01:00'))
+    const u = taskUsage(db, 'k2', NOW)!
+    expect(u.by_capacity.coord.calls).toBe(2)
+    expect(u.coordination.concurrent.calls).toBe(0)
+    expect(u.coordination.concurrent_tasks).toEqual([])
+  })
+
+  it('two coord opens by one actor: the later one ends the earlier, so a call is never in two coord windows', () => {
+    task('ka'); task('kb')
+    event('ka', 'coord_open', 'acrobot', T('12:00:00'))
+    event('kb', 'coord_open', 'acrobot', T('12:01:00'))
+    call('acrobot', T('12:00:30')); call('acrobot', T('12:02:00'))
+    const a = taskUsage(db, 'ka', NOW)!, b = taskUsage(db, 'kb', NOW)!
+    expect([a.by_capacity.coord.calls, b.by_capacity.coord.calls, a.unassigned.admin.calls, b.unassigned.admin.calls]).toEqual([1, 1, 0, 0])
+  })
+
+  it('the same call, asked from the OTHER task with a work window open: not an overlap, not that task\'s', () => {
+    task('fejl'); event('fejl', 'started', 'acrobot', T('14:00:00'))
+    task('k4'); event('k4', 'coord_open', 'acrobot', T('14:10:00')); event('k4', 'coord_close', 'acrobot', T('14:20:00'))
+    call('acrobot', T('14:05:00'), 1); call('acrobot', T('14:15:00'), 2)
+    const f = taskUsage(db, 'fejl', NOW)!
+    expect([f.valid, f.overlaps.length, f.by_capacity.work.calls, f.by_capacity.work.cache_read]).toEqual([true, 0, 1, 1])
+    const k = taskUsage(db, 'k4', NOW)!
+    expect([k.by_capacity.coord.calls, k.coordination.concurrent_tasks]).toEqual([1, ['fejl']])
+    // and the task whose window it was SAYS it (barracuda, review of #74 v2)
+    expect([f.coordination.ceded.calls, f.coordination.ceded.cache_read, f.coordination.ceded_to]).toEqual([1, 2, ['k4']])
+    expect([k.coordination.ceded.calls, k.coordination.ceded_to]).toEqual([0, []])
+  })
+
+  it('a forgotten coord_close: the actor\'s next coord_open, on another task, ends it; the last open one is named', () => {
+    task('k5'); task('k6')
+    event('k5', 'coord_open', 'acrobot', T('15:00:00'))          // never closed
+    event('k6', 'coord_open', 'acrobot', T('15:30:00'))
+    call('acrobot', T('15:10:00')); call('acrobot', T('15:40:00'))
+    const a = taskUsage(db, 'k5', NOW)!, b = taskUsage(db, 'k6', NOW)!
+    expect([a.by_capacity.coord.calls, a.unassigned.admin.calls, a.coordination.open_since]).toEqual([1, 0, null])
+    expect([b.by_capacity.coord.calls, b.unassigned.admin.calls, b.coordination.open_since]).toEqual([1, 0, T('15:30:00')])
+  })
+
+  it('done closes an open coord window', () => {
+    task('k3')
+    event('k3', 'coord_open', 'acrobot', T('13:00:00'))
+    event('k3', 'done', 'acrobot', T('13:10:00'))
+    call('acrobot', T('13:05:00')); call('acrobot', T('13:20:00'))
+    expect(taskUsage(db, 'k3', NOW)!.by_capacity.coord.calls).toBe(1)
+  })
+})
+
+describe('a live task_events table without the coord kinds', () => {
+  it('TASK-EVENTS-REBUILD-COORD: is rebuilt in place, rows kept, and then takes coord_open', () => {
+    const d = new Database(':memory:')
+    const old = ['assigned', 'started', 'review_requested', 'verdict', 'fix_started', 'done', 'merged', 'blocked', 'cancelled', 'failed', 'partial']
+    d.exec(`CREATE TABLE task_events (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN (${old.map((k) => `'${k}'`).join(',')})), actor TEXT NOT NULL, at INTEGER NOT NULL,
+      ref TEXT, created_at INTEGER NOT NULL, data TEXT, idem_key TEXT)`)
+    d.prepare("INSERT INTO task_events (task_id, kind, actor, at, created_at) VALUES ('t', 'started', 'murena', 1, 1)").run()
+    expect(() => d.prepare("INSERT INTO task_events (task_id, kind, actor, at, created_at) VALUES ('t', 'coord_open', 'acrobot', 2, 2)").run()).toThrow()
+    ensureTaskUsageSchema(d)
+    d.prepare("INSERT INTO task_events (task_id, kind, actor, at, created_at) VALUES ('t', 'coord_open', 'acrobot', 2, 2)").run()
+    expect((d.prepare('SELECT kind FROM task_events ORDER BY id').all() as { kind: string }[]).map((r) => r.kind), 'TASK-EVENTS-REBUILD-COORD').toEqual(['started', 'coord_open'])
+  })
+})
