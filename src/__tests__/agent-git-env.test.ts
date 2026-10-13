@@ -8,7 +8,8 @@ import { agentGitEnv } from '../web/agent-process.js'
 // B45 follow-up: the prefix is checked by RUNNING git under it, not by its text.
 // The layout mirrors the fleet: a router repo at the root, agents/ inside it
 // (gitignored there), an agent directory that is not a repo, a clone in it, a
-// symlink to that clone, and a plain directory.
+// symlink to that clone, a directory whose .git is a symlink, and a plain
+// directory.
 describe('agentGitEnv', () => {
   let root: string
   let agents: string
@@ -30,6 +31,9 @@ describe('agentGitEnv', () => {
     execFileSync('git', ['init', '-q', root], { env: isolated })
     execFileSync('git', ['init', '-q', clone], { env: isolated })
     symlinkSync(clone, join(own, 'link'))
+    // a real directory whose .git is a symlink to the clone's .git
+    mkdirSync(join(own, 'gitlink'))
+    symlinkSync(join(clone, '.git'), join(own, 'gitlink', '.git'))
   })
   afterAll(() => rmSync(root, { recursive: true, force: true }))
 

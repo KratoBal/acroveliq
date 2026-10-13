@@ -183,6 +183,12 @@ export function agentUmaskPrefix(runAsUser: string | null | undefined): string {
 //    the router writes, and the router already controls the agent; a repo owned
 //    by another agent is never trusted, so a planted hook or core.fsmonitor in a
 //    peer's clone still cannot run as this agent.
+//    The condition is ownership, the same as git's own model; what actually keeps
+//    the trusted .git/config and .git/hooks safe is the ACL (today: writable by the
+//    router and that agent only, barracuda measured it on the live tree). An ACL
+//    that later gives the fleet group write there makes this trust unsafe without
+//    any change here. The list is built at start: a clone made later is untrusted
+//    until the next start.
 export function agentGitEnv(
   runAsUser: string | null | undefined,
   ownDir: string,
