@@ -12,6 +12,7 @@
 # HASZNALAT:  bash scripts/pr-beolvaszt.sh <PR-szam> [tulajdonos/repo]
 #             bash scripts/pr-beolvaszt.sh --nez <PR-szam> [tulajdonos/repo]
 #             bash scripts/pr-beolvaszt.sh --friss-fej-rendben "megkerdeztem, kesz" <PR-szam>
+#             bash scripts/pr-beolvaszt.sh --kozos-fajl-rendben "a #N kesobb kesz" <PR-szam>
 #
 # === A `--nez` ALAK, ES MIERT NEM KENYELMI KAPCSOLO (sajat meres, 2026-09-08 05:20) ===
 #
@@ -34,6 +35,7 @@ FRISS_OK=""
 BAZIS_OK=""
 SORREND_OK=""
 DUPLA_OK=""
+KOZOS_OK=""
 while :; do
   case "${1:-}" in
     --nez) NEZ=1; shift ;;
@@ -60,6 +62,11 @@ while :; do
       shift ;;
     # A friss fej feloldasa. Az INDOK KOTELEZO es kiirodik: az a mondat, amivel
     # allitod, hogy a szerzo befejezte (megkerdezted, o kerte a beolvasztast, stb.).
+    # A KOZOS FAJLU NYITOTT PR feloldasa (lasd a kaput a beolvasztas elott).
+    --kozos-fajl-rendben)
+      shift
+      KOZOS_OK="${1:?a --kozos-fajl-rendben INDOKOT var: miert mehet ez elobb, mint a kozos fajlu masik PR}"
+      shift ;;
     --friss-fej-rendben)
       shift
       FRISS_OK="${1:?a --friss-fej-rendben INDOKOT var: mibol tudod, hogy a szerzo befejezte}"
@@ -67,7 +74,7 @@ while :; do
     *) break ;;
   esac
 done
-PR="${1:?hasznalat: pr-beolvaszt.sh [--nez] [--friss-fej-rendben \"indok\"] [--elavult-bazis-rendben \"indok\"] [--migracio-sorrend-rendben \"indok\"] <PR-szam> [tulajdonos/repo]}"
+PR="${1:?hasznalat: pr-beolvaszt.sh [--nez] [--friss-fej-rendben \"indok\"] [--elavult-bazis-rendben \"indok\"] [--migracio-sorrend-rendben \"indok\"] [--kozos-fajl-rendben \"indok\"] <PR-szam> [tulajdonos/repo]}"
 # A repo masodik argumentumkent adhato meg. Alapertelmezes az Acropora OS, mert a
 # beolvasztasok tulnyomo resze oda megy -- de a commerce repora is kell, es ott a
 # check-runs vegpont 403-at ad ugyanezzel a tokennel (merve 2026-09-04, murena
@@ -98,7 +105,7 @@ TOK="$(cat /home/marveen/marveen/store/.github-token)"
 #   KratoBal/acropora-commerce#158  # az orzo szeletelese vak, murena javitja
 TARTAS=/home/marveen/marveen/exchange/pr-tartas.txt
 
-python3 - "$PR" "$REPO" "$TOK" "$NEZ" "$TARTAS" "$FRISS_OK" "$BAZIS_OK" "$SORREND_OK" "$DUPLA_OK" << 'PYEOF'
+python3 - "$PR" "$REPO" "$TOK" "$NEZ" "$TARTAS" "$FRISS_OK" "$BAZIS_OK" "$SORREND_OK" "$DUPLA_OK" "$KOZOS_OK" << 'PYEOF'
 import json, os, re as _re, subprocess, sys, time
 pr, repo, tok = sys.argv[1], sys.argv[2], sys.argv[3]
 nez = sys.argv[4] == '1'
@@ -107,6 +114,7 @@ friss_ok = sys.argv[6] if len(sys.argv) > 6 else ''
 bazis_ok = sys.argv[7] if len(sys.argv) > 7 else ''
 sorrend_ok = sys.argv[8] if len(sys.argv) > 8 else ''
 dupla_ok = sys.argv[9] if len(sys.argv) > 9 else ''
+kozos_ok = sys.argv[10] if len(sys.argv) > 10 else ''
 
 # A TARTAS ELOSZOR, MINDEN API-HIVAS ELOTT: egy tartott PR-t meg megnezni sem kell
 # ahhoz, hogy tudjuk, nem megy be.
@@ -778,6 +786,44 @@ if _utkozo:
     print('   (Ez NEM akadaly: egymasra epulo munkanal lehet jogos.)')
     print('   ---')
 
+# === A KOZOS FAJLU NYITOTT PR-EK (sajat hiba, 2026-10-08 19:04) ===
+#
+# A #1640 mar jova volt hagyva, en megis elobb a #1638-at olvasztottam be. A ketto egy
+# fajlon osztozott (docs/FIGMA-MAP.md), tehat a #1640 ujra a fo agra kellett hozni, es
+# a CI-je negyedszer futott. Balazs 19:23-kor rakerdezett, es aznap MASODSZOR csusztunk
+# a sorrenden (11:29). A szabaly ("a korabban kesz megy elobb") addig uzenetben allt.
+#
+# Ezert itt KAPU: ha egy masik nyitott, nem draft PR ugyanazt a fajlt modositja, a
+# beolvasztas megall, es kiirja, melyik PR, melyik fajl. A jovahagyas sorrendjet a
+# GitHub nem tudja (barracuda uzenetben hagy jova), tehat azt csak az indok mondhatja
+# meg: --kozos-fajl-rendben "a #N kesobb kesz / meg nincs jovahagyva".
+if not kozos_ok:
+    _lt, _lk = api('GET', '/pulls?state=open&per_page=50')
+    _sajat = {_f['filename'] for _f in json.loads(_ft)} if _fk == '200' else set()
+    _kozos = []
+    if _lk == '200' and _sajat:
+        for _p in json.loads(_lt):
+            if str(_p['number']) == str(pr) or _p.get('draft'):
+                continue
+            _pt2, _pk2 = api('GET', f"/pulls/{_p['number']}/files?per_page=100")
+            if _pk2 != '200':
+                continue
+            _m = sorted(_sajat & {_f['filename'] for _f in json.loads(_pt2)})
+            if _m:
+                _kozos.append((_p['number'], _m))
+    elif _lk != '200':
+        print(f'NEM OLVASZTOK: a nyitott PR-ek listaja nem jott meg (HTTP {_lk}), a kozos fajlt nem tudom kizarni.')
+        sys.exit(1)
+    if _kozos:
+        print('NEM OLVASZTOK: masik nyitott PR ugyanazt a fajlt modositja, es a beolvasztas')
+        print('ujrafuttatast kenyszerit ra. Ha az a PR korabban lett kesz, az menjen elobb:')
+        for _n, _m in _kozos:
+            print(f"   #{_n}: {', '.join(_m[:5])}{' ...' if len(_m) > 5 else ''}")
+        print('Feloldas: --kozos-fajl-rendben "a #N kesobb kesz / meg nincs jovahagyva"')
+        sys.exit(1)
+else:
+    print(f'   kozos fajl feloldva: {kozos_ok}')
+
 if nez:
     print('CSAK NEZEM (--nez): minden feltetel teljesul, de NEM olvasztok be.')
     sys.exit(0)
@@ -804,6 +850,11 @@ print('HTTP', code, text.strip()[:200])
 # kiprobalja"), es negy oraval kesobb ugyanabban a sessionben megszegtem.
 # Ezert kerult ORZOBE: egy szabaly, ami csak jegyzetben all, a leiroja ellen
 # sem ved.
+#
+# 2026-10-07 06:43 UTC OTA a partner-felulet automatikus telepitese is KI van
+# kapcsolva (Balazs: "kapcsold ki", Eldontendo szal, msg 1557282082898575401,
+# mert ket allatkerti partner mar hasznalja). A felig-kimenes tehat mar nem
+# fenyeget; az orzo marad, mert a beolvasztas utan a kiadas tovabbra is kulon lepes.
 if code == '200':
     # A SZUKITES OKA: AZ ELSO ALAKOM ZAJT ADOTT (merve 2026-09-22, a #978-on).
     # Az a PR EGYETLEN fajlt vitt az apps/api ala, egy `.spec.ts`-t, 24 hozzaadott
@@ -832,8 +883,8 @@ if code == '200':
     if _api_fajlok:
         print('   ---')
         print('   EZ A PR A HATTERSZOLGALTATAST IS ERINTI (%d fajl az apps/api ala).' % len(_api_fajlok))
-        print('   AZ `acropora-api` NEM TELEPUL MAGATOL. A partner-felulet igen, tehat')
-        print('   a valtozas FELIG megy ki, es kivulrol keszen fog kinezni.')
+        print('   AZ `acropora-api` NEM TELEPUL MAGATOL (2026-10-07 ota a partner-felulet')
+        print('   sem): a valtozas csak a te kiadasoddal megy ki, es addig bent van, de nem el.')
         print('   A telepites KIFEJEZETT ENGEDELYT igenyel a gazdatol -- kerd el, es')
         print('   mondd meg, MI menne ki. Ne hagyd a beolvasztast telepites nelkul')
         print('   ugy, hogy nem szoltal rola.')
