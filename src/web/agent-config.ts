@@ -409,6 +409,25 @@ export function osUserExistsFromPasswd(passwd: string): (user: string) => boolea
   return (user: string) => names.has(user)
 }
 
+// B45 B2-6: the private group that lets ONLY the agent and the router read the
+// agent's own config files (agent-<name>-cfg, members: agent-<name> and marveen).
+// Created by root; until it exists, group-shared writes are refused (fail closed).
+export function agentConfigGroupName(name: string): string {
+  return `agent-${name}-cfg`
+}
+
+export function gidFromGroupFile(groupFile: string, group: string): number | null {
+  for (const line of groupFile.split('\n')) {
+    const f = line.split(':')
+    if (f[0] === group && f.length >= 3 && /^\d+$/.test(f[2])) return Number(f[2])
+  }
+  return null
+}
+
+export function readAgentConfigGroupGid(name: string): number | null {
+  return gidFromGroupFile(readFileOr('/etc/group', ''), agentConfigGroupName(name))
+}
+
 export function readAgentRunIdentity(name: string): { ok: true } | { ok: false; error: string } {
   const configPath = join(agentDir(name), 'agent-config.json')
   return checkAgentRunIdentity(name, readFileOr(configPath, '{}'), osUserExistsFromPasswd(readFileOr('/etc/passwd', '')))
