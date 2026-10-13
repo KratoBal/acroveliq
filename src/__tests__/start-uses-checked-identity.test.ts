@@ -58,7 +58,8 @@ describe('the start runs as the CHECKED identity, not a second read of the confi
     await startAgentProcess(AGENT)
     const ns = calls.filter((c) => c.includes('new-session'))
     expect(ns).toHaveLength(1)
-    expect(ns[0]).toContain(CHECKED)
+    // the session NAME is agent-<name> too, so only the sudo form proves the user
+    expect(ns[0].slice(0, 4)).toEqual(['sudo', '-n', '-u', CHECKED])
     expect(ns[0].join(' ')).not.toContain('agent-masik-agens')
     // the launch command itself: the per-user umask and the #62 git environment come
     // from the same checked value (both are empty for the router's user)
