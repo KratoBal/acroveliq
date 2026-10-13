@@ -293,7 +293,11 @@ except ValueError:
     body={}
 print("FAIL http=%s: %s" % (code, body.get("error","")))
 for field in body.get("missing",[]):
-    print("  hianyzik: %s" % field)' "${CODE:-?}"
+    print("  hianyzik: %s" % field)
+if body.get("required"):
+    print("  a rekord kotelezo mezoi:")
+    for field in body["required"]:
+        print("    %s" % field)' "${CODE:-?}"
     exit 1
     ;;
   handoff-read)
