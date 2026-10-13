@@ -114,10 +114,16 @@ def build():
         has_default = "default:" in acl
         L.append("# %s" % d)
         L.append("chown -R agent-%s:fleet '%s' 2>/dev/null || true" % (name, d))
-        L.append("chmod -R g+rwX '%s'" % d)
         L.append("find '%s' -type d -exec chmod g+s {} +" % d)
+        # B45 (2026-10-13): no group write. `fleet` is every agent's PRIMARY group, so
+        # `g:fleet:rwX` let all six agents write this one's tree. The group reads, the
+        # router (marveen) writes through a named entry. Only entries the group can
+        # already read get an ACL: a 0600 file (.claude.json, .credentials.json) must
+        # not gain group read from a `g::rX`.
+        L.append("find '%s' ! -type l \\( -type d -o -perm -g=r \\) "
+                 "-exec setfacl -m u:marveen:rwX,g::rX,g:fleet:rX {} +" % d)
         if has_default:
-            L.append("setfacl -R -m g:fleet:rwX -m d:g:fleet:rwX '%s'" % d)
+            L.append("setfacl -R -d -m u:marveen:rwX,u:agent-%s:rwX,g::rX,g:fleet:rX '%s'" % (name, d))
         else:
             L.append("# (ezen a konyvtaron ma nincs default ACL)")
         L.append("")
