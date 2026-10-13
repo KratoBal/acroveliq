@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # ANSWERS: Hogyan adok at egy PR-t barracudanak atnezesre ugy, hogy a diff tenyleg nala legyen?
 #
-# review-csomag.sh <os|commerce> <PR> [cimke]
+# review-csomag.sh <os|commerce> <PR> <task_id> [cimke]
 #   -> review-csomagok/pr-<PR> (os) vagy pr-c<PR> (commerce): diff.patch + README.md
-#      (fej, merge-base, origin/main). Ha a mappa mar letezik, diff-vN.patch-et ir,
+#      (task_id, fej, merge-base, origin/main). Ha a mappa mar letezik, diff-vN.patch-et ir,
 #      a kovetkezo szabad N-nel, a README-hez egy sort fuz.
+#   A task_id KOTELEZO (TC-Lite L4): barracuda a verdict esemenyt erre irja, es eddig
+#   visszakerdezett, ha a kerdesben nem allt.
 #
 # WHY: 2026-10-07 este negyszer kertem reviewt csomag nelkul (#529, #1586 v3, #1592),
 # es barracuda mindegyiknel egy korbe kerult, hogy jelezze: nincs nala a diff.
@@ -30,11 +32,16 @@ set -uo pipefail
 case "${1:-}" in
   os) DEFAULT_REPO=/home/marveen/work/acropora-os; PFX="pr-" ;;
   commerce) DEFAULT_REPO=/home/marveen/work/acropora-commerce; PFX="pr-c" ;;
-  *) echo "usage: [REVIEW_CSOMAG_REPO=<sajat klon>] review-csomag.sh <os|commerce> <PR> [cimke]" >&2; exit 2 ;;
+  *) echo "usage: [REVIEW_CSOMAG_REPO=<sajat klon>] review-csomag.sh <os|commerce> <PR> <task_id> [cimke]" >&2; exit 2 ;;
 esac
 REPO="${REVIEW_CSOMAG_REPO:-$DEFAULT_REPO}"
-PR="${2:?PR szam}"; LABEL="${3:-}"
+PR="${2:?PR szam}"; TASK="${3:-}"; LABEL="${4:-}"
 case "$PR" in ''|*[!0-9]*) echo "FAIL: a PR szam csak szamjegy lehet: $PR" >&2; exit 2 ;; esac
+if ! [[ "$TASK" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then
+  echo "FAIL: a harmadik hely a task_id (kotelezo, feladat-azonosito), ez erkezett: '${TASK}'" >&2
+  echo "  usage: [REVIEW_CSOMAG_REPO=<sajat klon>] review-csomag.sh <os|commerce> <PR> <task_id> [cimke]" >&2
+  exit 2
+fi
 ZONA="${REVIEW_CSOMAG_DIR:-/home/marveen/marveen/review-csomagok}"
 D="$ZONA/${PFX}${PR}"
 if [ ! -d "$REPO/.git" ] || [ ! -w "$REPO/.git" ]; then
@@ -65,10 +72,10 @@ H=$(git rev-parse "pr-$PR"); M=$(git rev-parse origin/main); B=$(git merge-base 
 if [ -e "$D/diff.patch" ]; then
   n=2; while [ -e "$D/diff-v$n.patch" ]; do n=$((n + 1)); done
   OUT="$D/diff-v$n.patch"
-  printf "v%s: fej %s, merge-base %s, origin/main %s %s\n" "$n" "$H" "$B" "$M" "$LABEL" >> "$D/README.md"
+  printf "v%s: task_id %s, fej %s, merge-base %s, origin/main %s %s\n" "$n" "$TASK" "$H" "$B" "$M" "$LABEL" >> "$D/README.md"
 else
   OUT="$D/diff.patch"
-  printf "%s PR %s %s\nfej: %s\nmerge-base: %s\norigin/main: %s\n" "$1" "$PR" "$LABEL" "$H" "$B" "$M" > "$D/README.md"
+  printf "%s PR %s %s\ntask_id: %s\nfej: %s\nmerge-base: %s\norigin/main: %s\n" "$1" "$PR" "$LABEL" "$TASK" "$H" "$B" "$M" > "$D/README.md"
 fi
 git diff "$B" "$H" > "$OUT"
 echo "$OUT ($(git diff --shortstat "$B" "$H"))"
