@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { buildOpenMatters, DECISION_TAG, OWES_TAG, waitsOn } from '../open-matters.js'
+import { buildOpenMatters, DECISION_TAG, fromBalazs, OWES_TAG, waitsOn } from '../open-matters.js'
 import { ensureTaskHandoffSchema, insertTaskHandoff, validateHandoffRecord } from '../task-handoff.js'
 import { addTaskEvent, ensureTaskUsageSchema, upsertTask } from '../task-usage.js'
 
@@ -11,7 +11,9 @@ import { addTaskEvent, ensureTaskUsageSchema, upsertTask } from '../task-usage.j
   waits on; a question of the latest handoff missing; an untagged hot memory, another
   agent's memory or a near-miss tag counted as waiting on a decision; an archived or
   non-waiting card listed; a hot memory tagged `acrobot-tartozik` missing, listed twice,
-  or listed after the tasks; and, Balazs's condition, an item that is neither in the text
+  or listed after the tasks; `items` (the AcrovelIQ Dontéseim view) missing a tagged
+  memory or a question whose `from` is Balazs, or carrying a question that waits on
+  someone else; and, Balazs's condition, an item that is neither in the text
   nor in the omitted list once the budget runs out.
 */
 
@@ -194,5 +196,51 @@ describe('the budget loses nothing (Balazs, 18:45:34 UTC)', () => {
     const out = buildOpenMatters(db, { now: NOW, budgetChars: 6000 })
     expect(out.omitted.tasks.length).toBeGreaterThan(0)
     expect(out.text.length).toBeLessThanOrEqual(6000)
+  })
+})
+
+describe('items: the three groups of the Dontéseim view, in full (task acroveliq-donteseim)', () => {
+  it('fromBalazs: case and accents do not matter, nothing else may stand there', () => {
+    for (const f of ['Balazs', 'Balázs', ' BALÁZS ', 'balazs']) expect(fromBalazs(f), f).toBe(true)
+    for (const f of ['acrobot', '?', 'koord-pr81', 'Balazs dontese', 'Balazs, acrobot', '']) expect(fromBalazs(f), f).toBe(false)
+  })
+
+  it('owes and decision memories in full, and only the questions whose from is Balazs', () => {
+    task('koord'); ev('koord', 'started')
+    task('dev'); ev('dev', 'started')
+    task('zart'); ev('zart', 'done')
+    const coord = (id: string, qs: { from: string; what: string }[]) => {
+      const r = validateHandoffRecord({
+        task: { id, goal: 'g', brief: 'b' }, kind: 'coordination', status: 'in_progress',
+        state: { phase: 'reszben', summary: 'a koordinacio folyik, valaszra var' }, decisions: [], prohibitions: [], code: null, files: [],
+        next_steps: [{ what: 'x', who: 'acrobot' }], open_questions: qs,
+      })
+      if (!r.ok) throw new Error(r.missing.join(','))
+      return r.record
+    }
+    const long = 'hosszu dontes '.repeat(40)
+    insertTaskHandoff(db, 'acrobot', coord('koord', [
+      { from: 'acrobot', what: 'belso kerdes' }, { from: 'Balázs', what: 'mehet-e elesbe' },
+    ]), NOW - 50)
+    insertTaskHandoff(db, 'acrobot', coord('zart', [{ from: 'Balazs', what: 'lezart feladat kerdese' }]), NOW - 50)
+    const dev = validateHandoffRecord({ task: { id: 'dev', goal: 'g', brief: 'b' }, status: 'in_progress', decisions: [],
+      prohibitions: [], code: null, files: [], next_step: 'x', open_questions: ['fejlesztoi kerdes'] })
+    if (!dev.ok) throw new Error(dev.missing.join(','))
+    insertTaskHandoff(db, 'murena', dev.record, NOW - 50)
+    const ins = db.prepare('INSERT INTO memories VALUES (?,?,?,?,?,?)')
+    ins.run(21, 'acrobot', 'hot', DECISION_TAG, long, NOW - 10)
+    ins.run(22, 'acrobot', 'hot', OWES_TAG, 'osszefoglalo jar', NOW - 20)
+    ins.run(23, 'acrobot', 'hot', 'mas', 'nem cimkezett', NOW - 30)
+
+    // a budget that cuts the text: items stay whole
+    const out = buildOpenMatters(db, { now: NOW, budgetChars: 700 })
+    expect(out.omitted.decisions).toEqual([21])
+    expect(out.items.decisions).toEqual([{ id: 21, content: long, created_at: NOW - 10 }])
+    expect(out.items.owes).toEqual([{ id: 22, content: 'osszefoglalo jar', created_at: NOW - 20 }])
+    expect(out.items.balazs_questions).toHaveLength(1)
+    expect(out.items.balazs_questions[0]).toMatchObject({ task: 'koord', index: 1, from: 'Balázs', what: 'mehet-e elesbe' })
+    expect(out.items.balazs_questions[0]!.handoff).toBeGreaterThan(0)
+    // the other questions stay in the text's count, not in the view
+    expect(out.counts.questions).toBe(3)
   })
 })
