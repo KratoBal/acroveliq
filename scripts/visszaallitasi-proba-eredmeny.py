@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # ANSWERS: Mit mondott a host-oldali visszaallitasi proba (OS, Commerce, docstore), es eleg friss-e?
 #
-# visszaallitasi-proba-eredmeny.py <result.json> <os|commerce|docstore> [max_age_h]
+# visszaallitasi-proba-eredmeny.py <result.json> <os|commerce|docstore> [max_age_h] [expected_script_sha256]
+#
+# expected_script_sha256: the sha256 of scripts/host/acropora-restore-probe.sh in the fleet's own
+# tree. The result carries the hash of the script that produced it, so an outdated or edited
+# installation shows up as a FAIL instead of a PASS of a different program (barracuda, #92).
 #
 # The OS, Commerce and document-store backups are 0600 on the NAS and the fleet does not get
 # to read them (Balazs, 2026-10-13 17:07:37 UTC, Token thread: the fleet's rights do not grow).
@@ -20,7 +24,7 @@ DB_KEYS = ("file", "age_h", "restore_rc", "tables_restored", "tables_live", "tab
 DOCSTORE_KEYS = ("remote_files", "live_files", "checked", "missing_or_differing")
 
 
-def check(doc, kind, max_age_h, now):
+def check(doc, kind, max_age_h, now, want_sha=None):
     """Returns (summary lines, list of problems)."""
     if doc.get("probe") != "acropora-restore-probe" or doc.get("version") != 1:
         return [], ["ismeretlen eredmeny-formatum"]
@@ -33,6 +37,9 @@ def check(doc, kind, max_age_h, now):
     lines.append("eredmeny: %s, %d oras, host %s" % (doc["finished"], age, doc.get("host", "?")))
     if age > max_age_h:
         bad.append("az eredmeny %d oras (hatar %d): a host-oldali proba leallhatott" % (age, max_age_h))
+    if want_sha is not None and doc.get("script_sha256") != want_sha:
+        bad.append("a host-szkript lenyomata %s, a flotta faje %s: a telepites elavult vagy atirt"
+                   % (str(doc.get("script_sha256"))[:12], want_sha[:12]))
     sec = doc.get("kinds", {}).get(kind)
     if not isinstance(sec, dict):
         return lines, bad + ["nincs '%s' szakasz az eredmenyben" % kind]
@@ -58,10 +65,14 @@ def check(doc, kind, max_age_h, now):
 
 
 def main(argv):
-    if len(argv) not in (3, 4) or argv[2] not in ("os", "commerce", "docstore"):
-        print("usage: visszaallitasi-proba-eredmeny.py <result.json> <os|commerce|docstore> [max_age_h]", file=sys.stderr)
+    if len(argv) not in (3, 4, 5) or argv[2] not in ("os", "commerce", "docstore"):
+        print("usage: visszaallitasi-proba-eredmeny.py <result.json> <os|commerce|docstore> [max_age_h] [expected_script_sha256]", file=sys.stderr)
         return 2
-    max_age_h = int(argv[3]) if len(argv) == 4 else 192
+    max_age_h = int(argv[3]) if len(argv) >= 4 else 192
+    want_sha = argv[4] if len(argv) == 5 else None
+    if want_sha is not None and (len(want_sha) != 64 or any(c not in "0123456789abcdef" for c in want_sha)):
+        print("FAIL[%s]: a vart lenyomat nem sha256: %r" % (argv[2], want_sha))
+        return 1
     try:
         with open(argv[1], encoding="utf-8") as f:
             doc = json.load(f)
@@ -69,7 +80,7 @@ def main(argv):
         print("FAIL[%s]: az eredmeny nem olvashato: %s" % (argv[2], e.__class__.__name__))
         return 1
     try:
-        lines, bad = check(doc, argv[2], max_age_h, datetime.now(timezone.utc))
+        lines, bad = check(doc, argv[2], max_age_h, datetime.now(timezone.utc), want_sha)
     except (TypeError, AttributeError):
         lines, bad = [], ["hibas mezotipus az eredmenyben"]
     for line in lines:

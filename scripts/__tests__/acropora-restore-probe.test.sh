@@ -77,6 +77,9 @@ case "\$1" in
        [ -e "$W/containers/\$name" ] && { echo "Conflict. The container name is already in use" >&2; exit 125; }
        touch "$W/containers/\$name"; echo id ;;
   rm) for a in "\$@"; do rm -f "$W/containers/\$a"; done ;;
+  cp) c="\${3%%:*}"; [ -e "$W/containers/\$c" ] || exit 1
+      [ "\${3#*:}" = /tmp/restore.dump ] || exit 1
+      cp "\$2" "$W/restore-input-\${c#acropora-restore-probe-}" ;;
   exec)
     shift; [ "\$1" = -i ] && shift
     [ "\$1" = -e ] && shift 2
@@ -86,7 +89,7 @@ case "\$1" in
         kind="\${c#acropora-restore-probe-}"
         case "\$1" in
           pg_isready) exit 0 ;;
-          pg_restore) cat > "$W/restore-input-\$kind"
+          pg_restore) [ "\${!#}" = /tmp/restore.dump ] || { echo "pg_restore: nem fajlbol" >&2; exit 1; }
             if [ "\${FAKE_RESTORE_FAIL:-}" = "\$kind" ]; then echo "pg_restore: error: could not execute query: ERROR: x" >&2; exit 1; fi ;;
           psql) cat > /dev/null; cat "$W/counts/restored-\$kind" ;;
         esac ;;
@@ -131,10 +134,15 @@ check "nem maradt munkakonyvtar" '[ ! -e "$W/tmp/acropora-restore-probe" ]'
 check "elo kontenerre CSAK csak-olvaso psql ment" '! grep -E "docker exec .*($OS_LIVE|$COM_LIVE)" "$W/calls.log" | grep -v -q "PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=600000 -c lock_timeout=10000 [^ ]* psql "'
 check "elo kontenerre volt psql (a szamlalas futott)" 'grep -q "docker exec -i -e PGOPTIONS=.* $OS_LIVE psql" "$W/calls.log"'
 check "proba-kontener halozat nelkul, kep letoltese nelkul" 'grep "docker run" "$W/calls.log" | grep -q -- "--network none .*--pull never"'
+check "proba-kontener: no-new-privileges, minden kepesseg elveve, csak az entrypointe vissza" 'grep "docker run" "$W/calls.log" | grep -q -- "--security-opt no-new-privileges --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add DAC_OVERRIDE --cap-add FOWNER "'
+check "a pg_restore fajlbol olvas, nem stdin-rol" 'grep -q "docker exec acropora-restore-probe-os pg_restore .* /tmp/restore.dump" "$W/calls.log"'
 check "nincs adat az eredmenyben (a dump tartalma nem szerepel)" '! grep -q OSDUMP "$RESULT"'
+SHA=$(sha256sum "$PROBE" | cut -d' ' -f1)
 for k in os commerce docstore; do
-  check "olvaso: $k elfogadva" 'python3 "$READER" "$UP" '"$k"' > /dev/null'
+  check "olvaso: $k elfogadva, a szkript lenyomataval" 'python3 "$READER" "$UP" '"$k"' 192 "$SHA" > /dev/null'
 done
+check "olvaso: mas szkript lenyomata elutasitva" '! python3 "$READER" "$UP" os 192 "$(printf "%064d" 0)" > /dev/null'
+check "olvaso: nem sha256 alaku vart lenyomat elutasitva" '! python3 "$READER" "$UP" os 192 missing > /dev/null'
 
 # ---- 2. failed restore ----------------------------------------------------------------
 world; run_probe FAKE_RESTORE_FAIL=os os commerce
@@ -179,6 +187,8 @@ world; run_probe FAKE_UPLOAD_LIST_EMPTY=1 commerce
 check "a feltoltott eredmeny nem latszik a NAS-on: exit 1" '[ "$RC" -eq 1 ] && grep -q "merete elter" "$W/out.txt"'
 world; exec 8>"$W/state/lock"; flock -n 8; run_probe os; exec 8>&-
 check "fogott zar: exit 75" '[ "$RC" -eq 75 ]'
+world; mkdir -p "$W/elsewhere"; ln -s "$W/elsewhere" "$W/tmp/acropora-restore-probe"; run_probe os
+check "symlink munkakonyvtar: exit 2, a cel erintetlen" '[ "$RC" -eq 2 ] && [ -z "$(ls -A "$W/elsewhere")" ] && [ -L "$W/tmp/acropora-restore-probe" ]'
 world; run_probe PROBE_WORK=/ os
 check "rossz PROBE_WORK: exit 2" '[ "$RC" -eq 2 ]'
 
@@ -209,6 +219,37 @@ printf '{"probe": "acropora-restore-probe", "version": 1, "fin' > "$R"
 check "olvaso: csonka JSON elutasitva" '! python3 "$READER" "$R" os > /dev/null'
 printf '[1]' > "$R"
 check "olvaso: nem objektum elutasitva" '! python3 "$READER" "$R" os > /dev/null'
+
+# ---- 8. the fleet side: scripts/visszaallitasi-proba.sh host, with a fake sftp ----------------
+# The folder lines are the REAL sftp shape, copied from acrobot's listing of 2026-10-13 23:37
+# (exchange/biztonsag/baseline/b8-zaro/nas-ls-2026-10-13.txt): the name carries the
+# "Acropora_Backup/" prefix.
+F8=$(mktemp -d "$ROOT/fleet-XXXX"); mkdir -p "$F8/root/scripts/host" "$F8/bin" "$F8/nas"
+cp "$READER" "$F8/root/scripts/"; cp "$PROBE" "$F8/root/scripts/host/"
+sed "s#^ROOT=/home/marveen/marveen#ROOT=$F8/root#; s#^KEY=.*#KEY=/dev/null#" scripts/visszaallitasi-proba.sh > "$F8/root/scripts/v.sh"
+cp "$UP" "$F8/nas/"
+printf '%s\n' '#!/bin/bash' 'read -r cmd a b c' \
+  'case "$cmd $a" in' \
+  "  \"ls -ln\") cat \"$F8/dirline\" ;;" \
+  "  \"ls -1\")  ls -1 \"$F8/nas\" ;;" \
+  "  get*)     cp \"$F8/nas/\$(basename \"\$a\")\" \"\$b\" ;;" \
+  'esac' > "$F8/bin/sftp"
+chmod +x "$F8/bin/sftp"
+fleet() { printf '%s\n' 'drwxrwxrwx    ? 1033     100          7194 Oct 13 18:54 Acropora_Backup/acrobot-fleet' "$@" > "$F8/dirline"
+  PATH="$F8/bin:$PATH" bash "$F8/root/scripts/v.sh" host > "$F8/out" 2>&1; FRC=$?; }
+GOOD='drwxr-xr-x    ? 1032     100          1008 Oct 14 04:40 Acropora_Backup/acropora-restore-probe'
+fleet "$GOOD"
+check "flotta: jo mappa, jo lenyomat -> KESZ" '[ "$FRC" -eq 0 ] && grep -q "^KESZ" "$F8/out"'
+fleet
+check "flotta: van eredmeny, de a mappa sora hianyzik -> FAIL, nem kihagyas" '[ "$FRC" -eq 1 ] && grep -q "nem merheto" "$F8/out"'
+fleet 'drwxr-xr-x    ? 1033     100          1008 Oct 14 04:40 Acropora_Backup/acropora-restore-probe'
+check "flotta: AcroBot tulajdonu mappa -> FAIL" '[ "$FRC" -eq 1 ] && grep -q "1033 100" "$F8/out"'
+fleet 'drwxrwxr-x    ? 1032     100          1008 Oct 14 04:40 Acropora_Backup/acropora-restore-probe'
+check "flotta: csoport-irhato mappa -> FAIL" '[ "$FRC" -eq 1 ]'
+echo '# atirt' >> "$F8/root/scripts/host/acropora-restore-probe.sh"; fleet "$GOOD"
+check "flotta: a fa host-szkriptje mas -> FAIL" '[ "$FRC" -eq 1 ] && grep -q "elavult vagy atirt" "$F8/out"'
+rm "$F8/nas/"*.json; fleet
+check "flotta: nincs eredmeny -> FAIL a valodi okkal" '[ "$FRC" -eq 1 ] && grep -q "nem fut" "$F8/out"'
 
 echo "# pass $PASS"
 echo "# fail $FAIL"
