@@ -9,6 +9,7 @@ import {
   VERIFICATION_PROFILES,
   addTaskEvent,
   addTaskSession,
+  allTasks,
   assigneeTasks,
   doneGuard,
   githubMergeProbe,
@@ -33,6 +34,8 @@ import type { RouteContext } from './types.js'
 //                                         title?, goal?, acceptance?, assignee?, reviewer?, authorization_ref?,
 //                                         verification_profile?, kanban_card_id?}
 //   GET  /api/tasks?assignee=<a>[&busy=1] an agent's tasks; with busy=1 only those that keep it busy
+//   GET  /api/tasks                       every task with its last event (the AcrovelIQ list); an unknown
+//                                         query parameter is 400, not the whole list
 //   POST /api/tasks/<task>/events         an event: {kind, actor, at?, ref?, data?, idem_key?} (at: seconds or
 //                                         ISO, default now; the key also as an Idempotency-Key header)
 //   POST /api/tasks/<task>/sessions       a session of the task: {agent, session_id}
@@ -98,9 +101,20 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
 
   if (path === '/api/tasks' && method === 'GET') {
+    // a misspelt filter (`agent`, `assignee_id`) must not answer with the whole
+    // list: a caller would read every task as its own (the /api/messages rule)
+    const unknown = [...url.searchParams.keys()].filter((k) => k !== 'assignee' && k !== 'busy')
+    if (unknown.length) {
+      json(res, { error: 'unknown query parameter', unknown, known: ['assignee', 'busy'] }, 400)
+      return true
+    }
     const assignee = text(url.searchParams.get('assignee'))
     if (!assignee) {
-      json(res, { error: 'assignee required' }, 400)
+      if (url.searchParams.has('assignee') || url.searchParams.has('busy')) {
+        json(res, { error: 'assignee required' }, 400)
+        return true
+      }
+      json(res, allTasks(getDb()))
       return true
     }
     const tasks = assigneeTasks(getDb(), assignee)
