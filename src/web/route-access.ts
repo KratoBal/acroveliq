@@ -222,10 +222,11 @@ const GROUPS: Group[] = [
     why: 'profiles, autonomy, settings, updates, migration, vault, security, connectors, federation: only the session (plan 3)',
   },
   {
-    name: 'shared-token-handout',
+    name: 'voice-directive-self',
     match: is('GET', '/api/voice/directive'),
-    grants: g('yes', 'no', 'no', 'no', 'no'),
-    why: 'it returns the SHARED dashboard token: any other caller would get every door with it (barracuda, #20)',
+    grants: g('yes', 'own', 'own', 'no', 'no'),
+    owner: { from: 'query', name: 'agent' },
+    why: "an agent's own voice message: the transcript of its own channel's file and its reply directive, which carries no token (the reply reads the caller's own); it used to return the SHARED token (barracuda, #20), so the session only, and the agents' own hook got 403",
   },
 ]
 

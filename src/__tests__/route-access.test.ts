@@ -95,8 +95,13 @@ describe('the access matrix', () => {
       // lifecycle: the session and the main agent
       ['POST', '/api/agents/murena/restart', A, undefined, true],
       ['POST', '/api/agents/murena/restart', G, 'murena', false],
-      // the shared-token handout: the session only
-      ['GET', '/api/voice/directive', A, undefined, false],
+      // an agent's own voice directive (it no longer hands out the shared token)
+      ['GET', '/api/voice/directive', A, 'acrobot', true],
+      ['GET', '/api/voice/directive', A, 'murena', false],
+      ['GET', '/api/voice/directive', G, 'murena', true],
+      ['GET', '/api/voice/directive', G, 'nautilus', false],
+      ['GET', '/api/voice/directive', L, undefined, false],
+      ['GET', '/api/voice/directive', D, undefined, false],
       // reads and telemetry: everyone
       ['GET', '/api/agents/activity', G, undefined, true],
       ['POST', '/api/token-usage/collect', G, undefined, true],
