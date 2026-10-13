@@ -12,7 +12,7 @@ import { discordTransportFromEnv, startApprovalDiscordPoller } from './web/appro
 import { actorOf, recordRequestActor } from './web/auth-principals.js'
 import { accessGate, parseAccessMode, scheduleAgentFrom } from './web/access-enforcement.js'
 import { SCHEDULED_TASKS_DIR } from './web/scheduled-tasks-io.js'
-import { getDb } from './db.js'
+import { getDb, pruneToolCallLog } from './db.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
 import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-origin.js'
@@ -511,6 +511,20 @@ export function startWebServer(port = 3420): http.Server {
     }
   }, 60 * 60 * 1000)
 
+  // The tool-call log keeps a day (acrovelIQ P0-1, step sheet L6 point 8). The
+  // agents' PostToolUse hook used to prune it on ~1% of calls, through a route
+  // the access matrix gives only to the session and the main agent: under
+  // enforcement every one of those was a silent 403, and the preflight never
+  // emptied. The server prunes it itself, hourly, on any instance (a cheap
+  // indexed delete on the shared DB, like the session sweep above).
+  const toolLogPruneInterval = setInterval(() => {
+    try {
+      pruneToolCallLog()
+    } catch (err) {
+      logger.warn({ err }, 'Tool-call log prune failed')
+    }
+  }, 60 * 60 * 1000)
+
   const tokenCollectInterval = webOnly ? undefined : setInterval(() => {
     collectTokenUsage().catch(err => logger.warn({ err }, 'Periodic token usage collection failed'))
   }, 60 * 60 * 1000)
@@ -661,6 +675,7 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(approvalTimeoutInterval)
     if (approvalDiscordInterval) clearInterval(approvalDiscordInterval)
     clearInterval(authSessionSweepInterval)
+    clearInterval(toolLogPruneInterval)
     clearInterval(updateCheckerInterval)
     if (federationPollerInterval) clearInterval(federationPollerInterval)
     if (capabilityRunnerInterval) clearInterval(capabilityRunnerInterval)
