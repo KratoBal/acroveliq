@@ -86,7 +86,8 @@ check 'show -> 0' 0 "$(run t show HEAD:a.txt)"
 check 'grep -> 0' 0 "$(run t grep -n hello)"
 TMPDIR="$T/tmp" script -qec "bash '$S' t log -1" /dev/null >/dev/null 2>&1
 check 'log on a terminal (where the pager would run) -> 0' 0 "$?"
-# (%GT is left out: git 2.39.5 aborts on it, exit 134, with or without the script)
+# (%GT is left out: on this malformed test signature git 2.39.5 itself aborts, exit 134,
+# plain git too, with and without gpg.program=/bin/false; measured 2026-10-13)
 for f in '%G?' '%GS' '%GK' '%GF' '%GG' '%GP'; do
   check "log --format=$f on a signed commit -> 0" 0 "$(run t log -1 "--format=$f" "$SIGNED")"
 done
