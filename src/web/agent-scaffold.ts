@@ -1105,13 +1105,13 @@ export function scaffoldAgentDir(name: string) {
 
   // Initialize empty files if they don't exist
   const memoryMd = join(dir, 'memory', 'MEMORY.md')
-  if (!existsSync(memoryMd)) writeFileSync(memoryMd, '')
+  if (!existsSync(memoryMd)) atomicWriteFileSync(memoryMd, '')
   const mcpJson = join(dir, '.mcp.json')
   if (!existsSync(mcpJson)) {
     // Copy shared MCP config so agents get access to common tools (e.g. aiam-blog)
     const sharedMcp = join(PROJECT_ROOT, '.mcp.json')
     if (existsSync(sharedMcp)) {
-      copyFileSync(sharedMcp, mcpJson)
+      atomicWriteFileSync(mcpJson, readFileSync(sharedMcp))
     } else {
       // Valid empty shape -- `claude /doctor` rejects plain "{}"
       atomicWriteFileSync(mcpJson, JSON.stringify({ mcpServers: {} }, null, 2))

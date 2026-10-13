@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -447,9 +447,9 @@ function writeJsonAtomic(path: string, value: unknown, opts: { groupShared?: boo
   let mode = opts.groupShared ? 0o660 : 0o600
   try { mode = statSync(path).mode & 0o777 } catch { /* new file -> see above */ }
   if (opts.groupShared) mode |= 0o060
-  const tmp = `${path}.tmp-${process.pid}`
-  writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { mode })
-  renameSync(tmp, path)
+  // B45 B2-3: through atomicWriteFileSync, which keeps a write into an agent's tree
+  // inside that tree (a symlinked .claude-config must not redirect it).
+  atomicWriteFileSync(path, JSON.stringify(value, null, 2) + '\n', { mode })
 }
 
 // Fill mcpServers gaps in an ALREADY provisioned isolated .claude.json from the
@@ -669,7 +669,7 @@ function provisionIsolatedConfigDir(
     }
     const sharedKnown = join(sharedPlugins, 'known_marketplaces.json')
     if (existsSync(sharedKnown)) {
-      writeFileSync(join(pluginsDir, 'known_marketplaces.json'), readFileSync(sharedKnown, 'utf-8'))
+      atomicWriteFileSync(join(pluginsDir, 'known_marketplaces.json'), readFileSync(sharedKnown, 'utf-8'))
     }
     // Seed installed_plugins.json with every project-scoped install re-pointed at
     // THIS agent's cwd, so the channel plugin is registered for this project from
@@ -685,7 +685,7 @@ function provisionIsolatedConfigDir(
             if (e.scope === 'project') e.projectPath = cwd
           }
         }
-        writeFileSync(join(pluginsDir, 'installed_plugins.json'), JSON.stringify(inst, null, 2) + '\n')
+        atomicWriteFileSync(join(pluginsDir, 'installed_plugins.json'), JSON.stringify(inst, null, 2) + '\n')
       } catch (err) {
         logger.warn({ err, name }, 'isolated-config: failed to seed installed_plugins.json')
       }
@@ -1259,7 +1259,10 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         const next = current !== undefined
           ? raw.replace(/^TEAMS_BOT_DISPLAY_NAME=.*$/m, line)
           : (raw === '' || raw.endsWith('\n') ? raw + line + '\n' : raw + '\n' + line + '\n')
-        writeFileSync(envPath, next)
+        // B45 B2-3: atomic and tree-checked; keep the .env's own mode (it holds a token).
+        let envMode = 0o600
+        try { envMode = statSync(envPath).mode & 0o777 } catch { /* new file */ }
+        atomicWriteFileSync(envPath, next, { mode: envMode })
       }
     } catch { /* best-effort name-sync; never block launch */ }
   }

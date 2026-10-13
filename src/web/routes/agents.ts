@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, renameSync } from 'node:fs'
 import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
@@ -1512,7 +1512,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // contract (the channel server polls approved/ to send the "Paired!"
       // confirmation; current server keys off the filename, the chatId
       // contents keep us aligned with the documented format).
-      writeFileSync(join(approvedDir, entry.senderId), String(entry.chatId ?? ''))
+      atomicWriteFileSync(join(approvedDir, entry.senderId), String(entry.chatId ?? ''))
 
       logger.info({ name, provider, senderId: entry.senderId, code }, 'Channel pairing approved')
       json(res, { ok: true, senderId: entry.senderId })
