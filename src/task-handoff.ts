@@ -423,9 +423,12 @@ async function checkDeployed(
 }
 
 /**
- * git patch-id's idea on GitHub's file list: the change without line numbers. Like
- * patch-id, it does not measure the POSITION: the same hunk with the same three lines of
- * context at another place in the file gives the same value.
+ * The change on GitHub's file list, per file: only the removed and added lines, in order.
+ * It does not measure the POSITION or the SURROUNDINGS: the hunk headers and the context
+ * lines are left out, so the same change on a branch whose neighbouring lines differ (a
+ * cherry-pick onto tc-release next to an import main does not have) gives the same value.
+ * Measured on the real case (handoff-read-kontextus): e81d9bd and 3288ec59 differ in one
+ * context line of src/web.ts only; with the context they gave two values.
  */
 export function changeFingerprint(files: { filename: string; status: string; patch?: string; sha?: string; previous_filename?: string }[]): string {
   return JSON.stringify(
@@ -435,8 +438,22 @@ export function changeFingerprint(files: { filename: string; status: string; pat
         // a binary or very large file has no patch: its blob sha is the identity of the
         // file's NEW content, not of the change (a cherry-pick onto a branch with other
         // changes in that file then differs: the safe direction)
-        f.patch !== undefined ? f.patch.replace(/^@@[^\n]*@@.*$/gm, '@@') : `blob:${f.sha ?? '?'}`]),
+        f.patch !== undefined ? changedLines(f.patch) : `blob:${f.sha ?? '?'}`]),
   )
+}
+
+function changedLines(patch: string): string[] {
+  const kept: string[] = []
+  let afterChange = false
+  for (const line of patch.split('\n')) {
+    const mark = line[0]
+    if (mark === '+' || mark === '-') { kept.push(line); afterChange = true }
+    // "\ No newline at end of file" belongs to the line before it: kept only after a
+    // changed line, since after a context line it is the surroundings again
+    else if (mark === '\\') { if (afterChange) kept.push(line); afterChange = false }
+    else afterChange = false
+  }
+  return kept
 }
 
 /**

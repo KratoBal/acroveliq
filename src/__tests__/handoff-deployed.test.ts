@@ -16,7 +16,8 @@ import {
   stopped with a mismatch although the change was the PR's. What turns these red: a
   `code.deployed` commit that carries the PR's change and sits on its branch still being a
   mismatch; one that carries ANOTHER change, sits off the branch, or cannot be measured
-  passing; the fingerprint depending on line numbers, or not on content.
+  passing; the fingerprint depending on line numbers or context lines, or not on the
+  changed lines (handoff-read-kontextus: e81d9bd and 3288ec59, one context line apart).
   Measured on the real case before writing this: 2dc6145 (the #57 merge) and 0b6783d (its
   cherry-pick on tc-release) give the same fingerprint, and 0b6783d is 3 behind tc-release.
 */
@@ -79,6 +80,32 @@ describe('the change fingerprint', () => {
     const p2 = '@@ -40,3 +41,4 @@ fn\n a\n+b\n c'
     expect(changeFingerprint(f(p1))).toBe(changeFingerprint(f(p2)))
     expect(changeFingerprint(f(p1))).not.toBe(changeFingerprint(f('@@ -10,3 +10,4 @@ fn\n a\n+X\n c')))
+  })
+  // handoff-read-kontextus: e81d9bd (tc-release) and 3288ec59 (main, #71) carry the same
+  // added lines; main has an approval-discord import next to them, tc-release does not
+  it('ignores the context lines: the same change next to other lines is the same', () => {
+    const tc = "@@ -1,4 +1,5 @@\n import { a } from './a.js'\n+import { b } from './b.js'\n import { c } from './c.js'\n-import { d } from './d.js'\n+import { e } from './e.js'"
+    const main = "@@ -3,4 +3,5 @@\n import { a } from './a.js'\n+import { b } from './b.js'\n import { discord } from './approval-discord.js'\n-import { d } from './d.js'\n+import { e } from './e.js'"
+    expect(changeFingerprint(f(tc))).toBe(changeFingerprint(f(main)))
+  })
+  it('another added or removed line is still another change', () => {
+    const base = '@@ -1,3 +1,3 @@\n a\n-old\n+new\n c'
+    expect(changeFingerprint(f(base))).not.toBe(changeFingerprint(f('@@ -1,3 +1,3 @@\n a\n-old\n+NEW\n c')))
+    expect(changeFingerprint(f(base))).not.toBe(changeFingerprint(f('@@ -1,3 +1,3 @@\n a\n-OLD\n+new\n c')))
+    expect(changeFingerprint(f(base))).not.toBe(changeFingerprint(f('@@ -1,2 +1,3 @@\n a\n+new\n c')))
+    // the same lines in another file: another change
+    expect(changeFingerprint(f(base))).not.toBe(changeFingerprint(f(base, { filename: 'b.ts' })))
+  })
+  it('one hunk or two (the context decides where git splits) gives the same value', () => {
+    const one = '@@ -1,7 +1,9 @@\n a\n+x\n b\n c\n d\n e\n+y\n f'
+    const two = '@@ -1,3 +1,4 @@\n a\n+x\n b\n@@ -8,3 +9,4 @@\n e\n+y\n f'
+    expect(changeFingerprint(f(one))).toBe(changeFingerprint(f(two)))
+  })
+  it('the missing-newline marker counts after a changed line, not after a context line', () => {
+    const changed = '@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+a'
+    expect(changeFingerprint(f(changed))).not.toBe(changeFingerprint(f('@@ -1 +1 @@\n-a\n+a')))
+    const ctxA = '@@ -1,2 +1,3 @@\n+x\n z\n\\ No newline at end of file'
+    expect(changeFingerprint(f(ctxA))).toBe(changeFingerprint(f('@@ -1,2 +1,3 @@\n+x\n z\n w')))
   })
   it('a file without a patch (binary) stands by its blob', () => {
     expect(changeFingerprint([{ filename: 'p.png', status: 'added', sha: 'aaa' }])).not.toBe(changeFingerprint([{ filename: 'p.png', status: 'added', sha: 'bbb' }]))
