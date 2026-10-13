@@ -118,6 +118,16 @@ uid, gid, flags, new, newd = acl.transform(
     TREE + '/key.env', St(stat.S_IFREG | 0o640, 1000), plain, None, ROUTER, OWNERS)
 check('640 ACL nelkul: a csoport olvas, nem ir', eff_for(new, gid, other_agent) == 4)
 
+open_private = [(UO, 0, 6), (GO, 0, 7), (G, FLEET, 7), (M, 0, 6), (O, 0, 0)]
+uid, gid, flags, new, newd = acl.transform(
+    TREE + '/.claude-config/.claude.json', St(stat.S_IFREG | 0o660, 1000), open_private, None, ROUTER, OWNERS)
+check('.claude.json 660 fleet: a masik agens nem olvas', eff_for(new, gid, other_agent) == 0)
+check('.claude.json 660 fleet: a router sem kap bejegyzest', not ents(new, U))
+check('.claude.json 660 fleet: a maszk ---', ents(new, M) == [(M, 0, 0)])
+uid, gid, flags, new, newd = acl.transform(
+    TREE + '/.claude-config/.credentials.json', St(stat.S_IFREG | 0o640, 1004), None, None, ROUTER, OWNERS)
+check('.credentials.json 640 ACL nelkul: csoport 0', ents(new, GO) == [(GO, 0, 0)])
+
 print('2. uj default ACL sehol')
 uid, gid, flags, new, newd = acl.transform(
     '/home/agent-murena/.npm', St(stat.S_IFDIR | 0o775, 1004), None, None, ROUTER, OWNERS)

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, mkdirSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { OLLAMA_URL } from '../config.js'
@@ -25,11 +25,11 @@ import {
   detectsFeedbackOptOutPrompt,
   type FirstRunGateKind,
 } from '../pane-state.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentRunIdentity, readAgentMemoryIsolation, resolveRunAsUser } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentRunIdentity, readAgentMemoryIsolation, resolveRunAsUser, readAgentConfigGroupGid, agentConfigGroupName } from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
-import { atomicWriteFileSync, atomicWriteInTree } from './atomic-write.js'
+import { atomicWriteFileSync, atomicWriteInTree, atomicWriteGroupPrivate, agentTreeRootOf } from './atomic-write.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
 import {
   buildTmuxInvocation,
@@ -452,7 +452,7 @@ export function resolveMainAgentConfigDir(): string | null {
 // this reconcile is exactly the path that starts rewriting the file regularly.
 // Fall back to 0600 (not the umask) when the target does not exist yet, since
 // the content class is the same either way.
-function writeJsonAtomic(path: string, value: unknown, opts: { groupShared?: boolean } = {}): void {
+function writeJsonAtomic(path: string, value: unknown, opts: { groupShared?: boolean; agent?: string } = {}): void {
   // A per-user agent's config is written by the ROUTER but read by the AGENT, and
   // they are different OS users. An atomic write hands the new file to whoever ran
   // it, so a plain 0600 silently locks the agent out of its own config -- Claude
@@ -460,12 +460,39 @@ function writeJsonAtomic(path: string, value: unknown, opts: { groupShared?: boo
   // consent flags are gone. Measured 2026-08-19 on korall: three restarts, three
   // fresh 8-key profiles, and the login picker every time with a valid token in
   // the environment. Group-shared writes keep both sides able to read and write.
-  let mode = opts.groupShared ? 0o660 : 0o600
-  try { mode = statSync(path).mode & 0o777 } catch { /* new file -> see above */ }
-  if (opts.groupShared) mode |= 0o060
+  //
+  // B45 B2-6: "group-shared" used to mean the inherited group, `fleet`, which is the
+  // primary group of ALL six agents -- so every agent could read and write every
+  // other agent's .claude.json (user-scope mcpServers, tokens in env). Measured
+  // 2026-10-13: picasso's and polip's were 0660 fleet with mcpServers in them.
+  // Now it means the agent's PRIVATE group (agent-<name>-cfg: the agent and the
+  // router), and no group at all when that group does not exist yet.
+  const data = JSON.stringify(value, null, 2) + '\n'
+  if (opts.groupShared) {
+    writeAgentPrivateConfig(path, data, opts.agent)
+    return
+  }
+  let mode = 0o600
+  try { mode = statSync(path).mode & 0o777 } catch { /* new file -> 0600 */ }
   // B45 B2-3: through atomicWriteFileSync, which keeps a write into an agent's tree
   // inside that tree (a symlinked .claude-config must not redirect it).
-  atomicWriteFileSync(path, JSON.stringify(value, null, 2) + '\n', { mode })
+  atomicWriteFileSync(path, data, { mode })
+}
+
+// B45 B2-6: write a per-user agent's private config file (its .claude.json) so that
+// only the agent and the router can read it. Refuses (throws) when the agent's
+// private group is missing: a group-shared write without it would fall back to
+// `fleet`, i.e. to all six agents. The callers log and carry on, as they did for
+// any other write failure.
+function writeAgentPrivateConfig(path: string, data: string, agent?: string): void {
+  const root = agentTreeRootOf(path)
+  const name = agent ?? (root ? basename(root) : undefined)
+  if (!root || !name) throw new Error(`B45 B2-6: ${path} is not inside an agent tree`)
+  const gid = readAgentConfigGroupGid(name)
+  if (gid == null) {
+    throw new Error(`B45 B2-6: no private config group ${agentConfigGroupName(name)}; refusing a group-shared write of ${path} (root: groupadd ${agentConfigGroupName(name)} && usermod -aG ${agentConfigGroupName(name)} agent-${name} && usermod -aG ${agentConfigGroupName(name)} marveen)`)
+  }
+  atomicWriteGroupPrivate(root, path, data, gid, join(STORE_DIR, '.agent-cfg-stage'))
 }
 
 // Fill mcpServers gaps in an ALREADY provisioned isolated .claude.json from the
@@ -733,7 +760,7 @@ function provisionIsolatedConfigDir(
           try { seed = JSON.parse(readFileSync(sharedDot, 'utf-8')) as Record<string, unknown> } catch { /* keep minimal */ }
         }
         seed.hasCompletedOnboarding = true
-        writeJsonAtomic(dotClaude, seed, { groupShared: perUser })
+        writeJsonAtomic(dotClaude, seed, { groupShared: perUser, agent: name })
       } else {
         try {
           const cur = JSON.parse(readFileSync(dotClaude, 'utf-8')) as Record<string, unknown>
@@ -743,7 +770,7 @@ function provisionIsolatedConfigDir(
             dirty = true
           }
           if (reconcileMcpServers(cur, sharedDot, name)) dirty = true
-          if (dirty) writeJsonAtomic(dotClaude, cur, { groupShared: perUser })
+          if (dirty) writeJsonAtomic(dotClaude, cur, { groupShared: perUser, agent: name })
         } catch { /* unparseable -> leave for Claude Code to recreate */ }
       }
     } catch (err) {
@@ -833,6 +860,18 @@ function preservedConfigMode(path: string): number {
   try { return statSync(path).mode & 0o777 } catch { return 0o600 }
 }
 
+// B45 B2-6: a .claude.json inside a per-user agent's tree goes through the private
+// group (see writeAgentPrivateConfig); anything else (the router's own, a
+// router-user agent's) keeps its mode as before.
+function writeDotClaude(dotClaudePath: string, data: string): void {
+  const root = agentTreeRootOf(dotClaudePath)
+  if (root && readAgentRunAsUser(basename(root)) != null) {
+    writeAgentPrivateConfig(dotClaudePath, data, basename(root))
+    return
+  }
+  atomicWriteFileSync(dotClaudePath, data, { mode: preservedConfigMode(dotClaudePath) })
+}
+
 export function stampProjectTrustForDir(dotClaudePath: string, projectDir: string): boolean {
   try {
     let data: Record<string, unknown> = {}
@@ -865,7 +904,7 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
     }
     if (!changed) return false
     data.projects = projects
-    atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: preservedConfigMode(dotClaudePath) })
+    writeDotClaude(dotClaudePath, JSON.stringify(data, null, 2) + '\n')
     logger.info({ dotClaudePath, projectDir }, 'project-trust: stamped folder-trust consent for agent dir')
     return true
   } catch (err) {
@@ -913,7 +952,7 @@ export function stampFableOverageConsent(dotClaudePath: string): boolean {
       : {}
     if (consent[key] === true) return false
     data.fableOverageConsentV2 = { ...consent, [key]: true }
-    atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: preservedConfigMode(dotClaudePath) })
+    writeDotClaude(dotClaudePath, JSON.stringify(data, null, 2) + '\n')
     logger.info({ dotClaudePath }, 'fable-consent: pre-stamped fableOverageConsentV2 (prevents the usage-credit model-switch dialog)')
     return true
   } catch (err) {
