@@ -458,9 +458,13 @@ export function assignCalls(input: {
       continue
     }
     if (own.length === 0) continue
-    if (own.some((w) => w.role === 'coord')) {
-      const otherCoord = hits.some((w) => w.role === 'coord' && w.task_id !== input.taskId)
-      if (otherCoord) { unassigned.push({ call, role: 'admin' }); continue }
+    // A coord window decides the call for EVERY task, not only for its own: queried from
+    // another task with a work window open at the same time, the call is the coord
+    // task's, not an overlap that would make that other task invalid.
+    const coordTasks = new Set(hits.filter((w) => w.role === 'coord').map((w) => w.task_id))
+    if (coordTasks.size > 1) { unassigned.push({ call, role: 'admin' }); continue }
+    if (coordTasks.size === 1) {
+      if (!coordTasks.has(input.taskId)) continue
       assigned.push({ call, mode: 'window', role: 'coord' })
       const others = [...new Set(hits.filter((w) => w.task_id !== input.taskId).map((w) => w.task_id))].sort()
       if (others.length) concurrent.push({ call, tasks: others })

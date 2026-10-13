@@ -681,6 +681,16 @@ describe('the coord window', () => {
     expect([a.by_capacity.coord.calls, a.unassigned.admin.calls]).toEqual([0, 1])
   })
 
+  it('the same call, asked from the OTHER task with a work window open: not an overlap, not that task\'s', () => {
+    task('fejl'); event('fejl', 'started', 'acrobot', T('14:00:00'))
+    task('k4'); event('k4', 'coord_open', 'acrobot', T('14:10:00')); event('k4', 'coord_close', 'acrobot', T('14:20:00'))
+    call('acrobot', T('14:05:00'), 1); call('acrobot', T('14:15:00'), 2)
+    const f = taskUsage(db, 'fejl', NOW)!
+    expect([f.valid, f.overlaps.length, f.by_capacity.work.calls, f.by_capacity.work.cache_read]).toEqual([true, 0, 1, 1])
+    const k = taskUsage(db, 'k4', NOW)!
+    expect([k.by_capacity.coord.calls, k.coordination.concurrent_tasks]).toEqual([1, ['fejl']])
+  })
+
   it('done closes an open coord window', () => {
     task('k3')
     event('k3', 'coord_open', 'acrobot', T('13:00:00'))
