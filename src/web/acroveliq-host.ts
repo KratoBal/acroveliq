@@ -49,6 +49,17 @@ export function parseAcroveliqPort(setting: string | undefined, dashboardPort: n
   return { port: n }
 }
 
+/**
+ * The address the AcrovelIQ listener binds: ACROVELIQ_BIND, or WEB_HOST when
+ * unset. Its own setting so the public proxy in ANOTHER container can reach the
+ * AcrovelIQ port (e.g. 0.0.0.0) while the main dashboard port stays on loopback
+ * (WEB_HOST=127.0.0.1); barracuda, #70 review.
+ */
+export function acroveliqBindAddress(setting: string | undefined, webHost: string): string {
+  const raw = (setting ?? '').trim()
+  return raw || webHost
+}
+
 /** The configured AcrovelIQ host, normalized; '' means the filter is off. */
 export function parseAcroveliqHost(setting: string | undefined): string {
   return normalizeHost(setting)

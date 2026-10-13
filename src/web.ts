@@ -4,8 +4,8 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
-import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, ACCESS_MODE_SETTING, ACROVELIQ_HOST, ACROVELIQ_PORT_SETTING } from './config.js'
-import { acroveliqAllows, isAcroveliqRequest, parseAcroveliqHost, parseAcroveliqPort } from './web/acroveliq-host.js'
+import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, ACCESS_MODE_SETTING, ACROVELIQ_HOST, ACROVELIQ_PORT_SETTING, ACROVELIQ_BIND_SETTING } from './config.js'
+import { acroveliqAllows, acroveliqBindAddress, isAcroveliqRequest, parseAcroveliqHost, parseAcroveliqPort } from './web/acroveliq-host.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
 import { discordTransportFromEnv, startApprovalDiscordPoller } from './web/approval-discord.js'
@@ -348,9 +348,10 @@ export function startWebServer(port = 3420): http.Server {
   // proxy then reaches nothing, which is the closed direction.
   if (acroveliqListener.port !== null) {
     const aqPort = acroveliqListener.port
+    const aqBind = acroveliqBindAddress(ACROVELIQ_BIND_SETTING, WEB_HOST)
     const acroveliqServer = http.createServer((req, res) => { void handleRequest(req, res, true) })
-    acroveliqServer.on('error', (err) => logger.error({ err, port: aqPort }, 'AcrovelIQ listener failed'))
-    acroveliqServer.listen(aqPort, WEB_HOST, () => logger.info({ port: aqPort }, 'AcrovelIQ listener: positive list on every request'))
+    acroveliqServer.on('error', (err) => logger.error({ err, port: aqPort, bind: aqBind }, 'AcrovelIQ listener failed'))
+    acroveliqServer.listen(aqPort, aqBind, () => logger.info({ port: aqPort, bind: aqBind }, 'AcrovelIQ listener: positive list on every request'))
   }
 
   // Self-heal a SILENT listener failure. Under launchd, a `kickstart -k` can

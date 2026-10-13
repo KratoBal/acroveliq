@@ -21,6 +21,7 @@ import {
   acroveliqActivityView,
   acroveliqAgentsView,
   acroveliqAllows,
+  acroveliqBindAddress,
   isAcroveliqRequest,
   normalizeHost,
   parseAcroveliqHost,
@@ -97,6 +98,15 @@ describe('parseAcroveliqPort', () => {
     for (const bad of ['0', '65536', '34x', '-1', '3421.5', 'abc'])
       expect(parseAcroveliqPort(bad, 3420), bad).toMatchObject({ port: null, problem: expect.stringContaining('ACROVELIQ_PORT') })
     expect(parseAcroveliqPort('3420', 3420)).toMatchObject({ port: null, problem: expect.stringContaining('dashboard port') })
+  })
+})
+
+describe('acroveliqBindAddress', () => {
+  it('ACROVELIQ_BIND when set, WEB_HOST otherwise', () => {
+    expect(acroveliqBindAddress('0.0.0.0', '127.0.0.1')).toBe('0.0.0.0')
+    expect(acroveliqBindAddress(' 10.0.1.5 ', '127.0.0.1')).toBe('10.0.1.5')
+    expect(acroveliqBindAddress(undefined, '127.0.0.1')).toBe('127.0.0.1')
+    expect(acroveliqBindAddress('  ', '127.0.0.1')).toBe('127.0.0.1')
   })
 })
 
@@ -233,7 +243,11 @@ describe('wiring', () => {
     expect(SERVER).toContain('http.createServer((req, res) => { void handleRequest(req, res, true) })')
     expect(SERVER).toContain('http.createServer((req, res) => { void handleRequest(req, res, false) })')
     expect(SERVER.match(/handleRequest\(req, res, true\)/g)).toHaveLength(1)
-    expect(SERVER).toContain('acroveliqServer.listen(aqPort, WEB_HOST,')
+    // its own bind address: the main port keeps WEB_HOST, the AcrovelIQ port may be opened alone
+    expect(SERVER).toContain('const aqBind = acroveliqBindAddress(ACROVELIQ_BIND_SETTING, WEB_HOST)')
+    expect(SERVER).toContain('acroveliqServer.listen(aqPort, aqBind,')
+    expect(SERVER).not.toContain('acroveliqServer.listen(aqPort, WEB_HOST')
+    expect(SERVER).toContain('server.listen(port, WEB_HOST, () => {')
   })
 
   it('src/web.ts runs the filter first: before CORS, the preflight, the auth gate and the routes', () => {
