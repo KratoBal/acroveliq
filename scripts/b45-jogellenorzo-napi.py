@@ -107,6 +107,11 @@ def load_baseline(fname, root):
                 continue
             if not line.startswith('/') or not safe_path(line):
                 raise BaselineError(f'a vart vakfolt-halmaz {n}. sora nem abszolut ut')
+            # `/home/agent-x/../..` passes a component count, so only the normal form is
+            # accepted (barracuda, #64 review): the check reports normalized paths anyway.
+            body = line[:-3] if line.endswith('/**') else line
+            if os.path.normpath(body) != body.rstrip('/') or body.startswith('//'):
+                raise BaselineError(f'a vart vakfolt-halmaz {n}. sora nem normal alaku ut: {adat(line)}')
             if line.endswith('/**'):
                 prefix = line[:-3].rstrip('/') + '/'
                 if not baseline_scope_ok(prefix, root):
