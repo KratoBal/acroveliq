@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, mkdirSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { OLLAMA_URL } from '../config.js'
 import { makeLazyBinResolver } from '../platform.js'
 import { logger } from '../logger.js'
@@ -1242,19 +1242,31 @@ export function launchSessionFlag(o: { hasPriorSession: boolean; fresh?: boolean
 
 // The CLI's own help decides whether `--session-id` exists. Cached per binary,
 // and only a positive answer: a probe that timed out once must not switch the
-// feature off until the next dashboard restart.
+// feature off until the next dashboard restart. The probe is asynchronous: a
+// synchronous one held the dashboard's event loop for up to its 15 s timeout on
+// the first id launch and after every failed probe (barracuda, #56 review).
+// Launches that arrive while a probe runs wait for that same probe.
 let sessionIdSupported: string | null = null
-let claudeHelpProbe: (bin: string) => string = (bin) =>
-  execFileSync(bin, ['--help'], { encoding: 'utf-8', timeout: 15_000, stdio: ['ignore', 'pipe', 'ignore'] })
+let probeInFlight: { bin: string; answer: Promise<boolean> } | null = null
+const defaultClaudeHelpProbe = (bin: string): Promise<string> =>
+  new Promise((resolve, reject) => {
+    execFile(bin, ['--help'], { encoding: 'utf-8', timeout: 15_000 }, (err, stdout) => {
+      if (err) reject(err)
+      else resolve(stdout)
+    })
+  })
+let claudeHelpProbe: (bin: string) => Promise<string> = defaultClaudeHelpProbe
 let claudeBinForProbe: () => string = () => claudeBin()
 
-export function setClaudeHelpProbeForTests(probe: (bin: string) => string, bin = 'claude-test-bin'): void {
-  claudeHelpProbe = probe
+/** `probe: null` restores the real (execFile) probe; the binary stays the test one. */
+export function setClaudeHelpProbeForTests(probe: ((bin: string) => string | Promise<string>) | null, bin = 'claude-test-bin'): void {
+  claudeHelpProbe = probe ? async (b) => probe(b) : defaultClaudeHelpProbe
   claudeBinForProbe = () => bin
   sessionIdSupported = null
+  probeInFlight = null
 }
 
-export function claudeSupportsSessionId(): boolean {
+export async function claudeSupportsSessionId(): Promise<boolean> {
   let bin: string
   try {
     bin = claudeBinForProbe()
@@ -1263,15 +1275,25 @@ export function claudeSupportsSessionId(): boolean {
     return false
   }
   if (sessionIdSupported === bin) return true
-  try {
-    if (/^\s*--session-id\b/m.test(claudeHelpProbe(bin))) {
-      sessionIdSupported = bin
-      return true
-    }
-  } catch {
-    // not cached: the next launch asks again
+  if (probeInFlight?.bin !== bin) {
+    const answer = (async () => {
+      try {
+        if (/^\s*--session-id\b/m.test(await claudeHelpProbe(bin))) {
+          sessionIdSupported = bin
+          return true
+        }
+      } catch {
+        // not cached: the next launch asks again
+      }
+      return false
+    })()
+    const entry = { bin, answer }
+    probeInFlight = entry
+    void answer.finally(() => {
+      if (probeInFlight === entry) probeInFlight = null
+    })
   }
-  return false
+  return probeInFlight!.answer
 }
 
 /**
@@ -1279,13 +1301,13 @@ export function claudeSupportsSessionId(): boolean {
  * anything is stopped, provisioned or sent to tmux: a session id the CLI
  * rejects would kill the agent inside tmux, where nobody sees it.
  */
-export function sessionIdLaunchError(name: string, opts: LaunchOpts): string | null {
+export async function sessionIdLaunchError(name: string, opts: LaunchOpts): Promise<string | null> {
   if (opts.sessionId === undefined) return null
   if (typeof opts.sessionId !== 'string' || !SESSION_ID_RE.test(opts.sessionId)) return 'sessionId must be a lowercase UUID'
   if (!opts.fresh) return 'sessionId needs fresh: a resumed (--continue) session keeps its own id'
   const remote = readAgentRemoteConfig(name)
   if (remote.host && remote.workdir) return 'sessionId is not supported for remote agents'
-  if (!claudeSupportsSessionId()) return 'this claude CLI has no --session-id flag; refusing instead of starting an agent that would exit silently'
+  if (!(await claudeSupportsSessionId())) return 'this claude CLI has no --session-id flag; refusing instead of starting an agent that would exit silently'
   return null
 }
 
@@ -1293,7 +1315,7 @@ export async function startAgentProcess(name: string, opts: LaunchOpts = {}): Pr
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
 
-  const sessionIdError = sessionIdLaunchError(name, opts)
+  const sessionIdError = await sessionIdLaunchError(name, opts)
   if (sessionIdError) return { ok: false, error: sessionIdError }
 
   // B45 B2-2: refuse BEFORE any provisioning or the remote branch when the run
@@ -1795,7 +1817,7 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
 
 export async function restartAgentProcess(name: string, opts: LaunchOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   // before the stop: a refused session id must not leave the agent stopped
-  const sessionIdError = sessionIdLaunchError(name, opts)
+  const sessionIdError = await sessionIdLaunchError(name, opts)
   if (sessionIdError) return { ok: false, error: sessionIdError }
   if (isAgentRunning(name)) {
     const stopResult = await stopAgentProcess(name)
