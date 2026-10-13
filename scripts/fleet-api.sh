@@ -36,7 +36,10 @@
 #         (a lejarat a KATEGORIABOL jon, nem adhato meg hivaskor -- lasd a parancsnal)
 #   bash scripts/fleet-api.sh approval-get <id>
 #   bash scripts/fleet-api.sh task-new <task_id> [projekt] [szulo] [valtozat] [brief]
-#   bash scripts/fleet-api.sh task-event <task_id> <fajta> <szereplo> [ido] [hivatkozas]
+#   bash scripts/fleet-api.sh task-new <task_id> - < feladat.json   # cim, cel, felelos, profil...
+#   bash scripts/fleet-api.sh task-event <task_id> <fajta> <szereplo> [ido] [hivatkozas] [--data - < adat.json]
+#   bash scripts/fleet-api.sh task-timeline <task_id>
+#   bash scripts/fleet-api.sh task-busy <agens>     # a feladatai, amik foglalva tartjak
 #   bash scripts/fleet-api.sh task-session <task_id> <agens> <session_id>
 #   bash scripts/fleet-api.sh task-usage <task_id> [variants]   # 3: atfedo ablak, ervenytelen
 #
@@ -316,6 +319,25 @@ sys.exit(3)'
     # FELADATONKENTI TOKENMERES (acrovelIQ token-brief, 1. pont). Egy feladat
     # (a kanban kartya id-je, vagy egy kiserleti valtozat sajat id-je). A szulo
     # es a valtozat a kiserlet V1/V2/V3 aganak egymas melle tetelehez kell.
+    # A TC-Lite mezok (title, goal, acceptance, assignee, reviewer, authorization_ref,
+    # verification_profile, kanban_card_id) FAJLBOL jonnek: `task-new <task_id> - < feladat.json`,
+    # egy JSON objektum. A szoveg igy nem megy at a shellen.
+    if [ "${2:-}" = "-" ]; then
+      argc_max 2 "$#" "fleet-api.sh task-new <task_id> - < feladat.json"
+      TASK="${1:?task id required}"
+      BODY="$(python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+except ValueError as e:
+    sys.exit("FAIL: a STDIN nem JSON: %s" % e)
+if not isinstance(d, dict):
+    sys.exit("FAIL: a STDIN egy JSON objektum legyen")
+d["id"]=sys.argv[1]
+print(json.dumps(d))' "$TASK")" || exit 1
+      post /tasks "$BODY"
+      exit $?
+    fi
     argc_max 5 "$#" "fleet-api.sh task-new <task_id> [projekt] [szulo_feladat] [valtozat] [brief_hivatkozas]"
     TASK="${1:?task id required}"
     post /tasks "$(json_obj id "$TASK" project "${2:-}" parent_task "${3:-}" variant "${4:-}" brief_ref "${5:-}")"
@@ -324,14 +346,79 @@ sys.exit(3)'
     # Egy esemeny: assigned|started|review_requested|verdict|fix_started|done|merged.
     # Az ido masodperc vagy ISO (2026-10-12T07:03:00Z); hianyaban MOST. A besorolas
     # ezekbol vezetodik le, a hivasokra semmi nem irodik.
-    argc_max 5 "$#" "fleet-api.sh task-event <task_id> <fajta> <szereplo> [ido] [hivatkozas]"
+    # Zaro fajtak a done mellett: blocked|cancelled|failed|partial.
+    # `--data -` a VEGEN: egy JSON objektum STDIN-rol (fajlbol, atiranyitassal), pl. a merged
+    # esemeny {"repo":"KratoBal/marveen","pr":41,"merge_sha":"<40 jegy>"} adata.
+    # IDEMPOTENCIA: a futas EGY kulcsot general, es halozati hibanal vagy 5xx-nel UGYANAZZAL
+    # probalja ujra, tehat egy elveszett valasz utan sem lesz ket sor. Ket kulon FUTAS ket
+    # kulon kulcs: a masodik javitasi kor fix_started-je nem nyelodik el (barracuda, review 1).
+    DATA_STDIN=0
+    if [ "$#" -ge 2 ] && [ "${*: -2:1}" = "--data" ]; then
+      [ "${*: -1}" = "-" ] || { echo "FAIL: a --data utan csak - allhat (JSON STDIN-rol)"; exit 1; }
+      DATA_STDIN=1; set -- "${@:1:$(($# - 2))}"
+    fi
+    argc_max 5 "$#" "fleet-api.sh task-event <task_id> <fajta> <szereplo> [ido] [hivatkozas] [--data - < adat.json]"
     TASK="${1:?task id required}"; KIND="${2:?kind required}"; ACTOR="${3:?actor required}"
     TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
-    if [ -n "${4:-}" ]; then
-      post "/tasks/${TASK_URL}/events" "$(json_obj kind "$KIND" actor "$ACTOR" at "$4" ref "${5:-}")"
-    else
-      post "/tasks/${TASK_URL}/events" "$(json_obj kind "$KIND" actor "$ACTOR" ref "${5:-}")"
-    fi
+    BODY="$(python3 -c '
+import json,sys
+kind,actor,at,ref,with_data=sys.argv[1:6]
+d={"kind":kind,"actor":actor,"ref":ref}
+if at: d["at"]=at
+if with_data=="1":
+    try:
+        data=json.load(sys.stdin)
+    except ValueError as e:
+        sys.exit("FAIL: a --data STDIN-je nem JSON: %s" % e)
+    if not isinstance(data, dict):
+        sys.exit("FAIL: a --data egy JSON objektum legyen")
+    d["data"]=data
+print(json.dumps(d))' "$KIND" "$ACTOR" "${4:-}" "${5:-}" "$DATA_STDIN")" || exit 1
+    KEY="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+    for attempt in 1 2 3; do
+      RESP="$(curl -s -X POST "${API}/tasks/${TASK_URL}/events" \
+        -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: $KEY" \
+        -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
+      CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
+      case "$CODE" in
+        200|201) printf '%s\n' "$JSON"; exit 0 ;;
+        000|5??) [ "$attempt" -lt 3 ] && sleep "$attempt" ;;
+        *) break ;;
+      esac
+    done
+    echo "FAIL http=${CODE:-?} path=/tasks/${TASK_URL}/events kulcs=${KEY} resp=$(printf '%s' "$JSON" | head -c 300)"
+    exit 1
+    ;;
+  task-timeline)
+    # Egy feladat minden nyoma idorendben: esemenyek, atado rekordok, regisztralt sessionok.
+    argc_max 1 "$#" "fleet-api.sh task-timeline <task_id>"
+    TASK="${1:?task id required}"
+    TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
+    RESP="$(curl -s -H "Authorization: Bearer $TOKEN" "${API}/tasks/${TASK_URL}/timeline" -w $'\n%{http_code}' 2>/dev/null || true)"
+    CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
+    [ "$CODE" = "200" ] || { echo "FAIL http=${CODE:-?} $(printf '%s' "$JSON" | head -c 200)"; exit 1; }
+    printf '%s' "$JSON" | python3 -c '
+import json,sys,time
+d=json.load(sys.stdin)
+for i in d["items"]:
+    t=time.strftime("%Y-%m-%d %H:%M:%S%z", time.localtime(i["at"]))
+    if i["source"]=="event":
+        extra=" "+json.dumps(i["data"], ensure_ascii=False) if i.get("data") else ""
+        print("%s  esemeny  %-16s %-10s %s%s" % (t, i["kind"], i["actor"], i.get("ref") or "", extra))
+    elif i["source"]=="handoff":
+        print("%s  atadas   rekord %-9s %-10s %s" % (t, i["id"], i["agent"], i["status"]))
+    else:
+        print("%s  session  %-16s %-10s" % (t, i["session_id"], i["agent"]))
+print("-- %d tetel, %s" % (len(d["items"]), d["task"]))'
+    exit $?
+    ;;
+  task-busy)
+    # Egy agens feladatai, amik FOGLALVA tartjak: az utolso esemeny assigned, started vagy
+    # fix_started. A review_requested utan mar nem foglalt.
+    argc_max 1 "$#" "fleet-api.sh task-busy <agens>"
+    AGENT="${1:?agent required}"
+    A_ENC="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$AGENT")"
+    get "/tasks?assignee=${A_ENC}&busy=1"
     ;;
   task-session)
     # Egy munkamenet a feladate (a V3 eset): akkor minden hivasa a feladathoz megy.

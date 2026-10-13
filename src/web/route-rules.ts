@@ -346,4 +346,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'GET', path: '/api/tasks/:id/usage', module: 'task-usage', class: 'OLVASO' },
   { method: 'POST', path: '/api/tasks/:id/events', module: 'task-usage', class: 'ERZEKENY' },
   { method: 'POST', path: '/api/tasks/:id/sessions', module: 'task-usage', class: 'ERZEKENY' },
+  // after the inventory: TC-Lite L1 (2026-10-13), two reads
+  { method: 'GET', path: '/api/tasks', module: 'task-usage', class: 'OLVASO', note: '?assignee=<a>[&busy=1]: an agent\'s tasks' },
+  { method: 'GET', path: '/api/tasks/:id/timeline', module: 'task-usage', class: 'OLVASO' },
 ]

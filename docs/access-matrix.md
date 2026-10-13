@@ -352,6 +352,8 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | GET | `/api/tasks/:id/usage` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | POST | `/api/tasks/:id/events` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
 | POST | `/api/tasks/:id/sessions` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
+| GET | `/api/tasks` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
+| GET | `/api/tasks/:id/timeline` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 
 ## A csoportok indoka
 
