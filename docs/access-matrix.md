@@ -208,7 +208,7 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | POST | `/api/onboarding/identity` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | administration |  |
 | POST | `/api/onboarding/claude-auth` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | administration |  |
 | POST | `/api/onboarding/launch` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | administration |  |
-| GET | `/api/voice/directive` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | shared-token-handout |  |
+| GET | `/api/voice/directive` | ERZEKENY | ✓ | saját | saját | ✗ | ✗ | voice-directive-self | query: agent |
 | GET | `/api/voice/modality` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | POST | `/api/voice/modality/set` | ERZEKENY | ✓ | ✗ | ✗ | ✗ | ✗ | administration |  |
 | GET | `/api/voice/status` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
@@ -380,7 +380,7 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 - **daily-log-write**: an agent writes its own daily log (plan 3)
 - **kanban-card-change**: an agent changes the cards assigned to it (plan 3); it hands one on only to the main agent, the escalation the dispatch asks for (assigning is the main agent's job, acrobot 28671); creating a card and commenting stay open
 - **administration**: profiles, autonomy, settings, updates, migration, vault, security, connectors, federation: only the session (plan 3)
-- **shared-token-handout**: it returns the SHARED dashboard token: any other caller would get every door with it (barracuda, #20)
+- **voice-directive-self**: an agent's own voice message: the transcript of its own channel's file and its reply directive, which carries no token (the reply reads the caller's own); it used to return the SHARED token (barracuda, #20), so the session only, and the agents' own hook got 403
 - **class:NYILVANOS** (ha egy csoport sem illik): no authentication at all
 - **class:OLVASO** (ha egy csoport sem illik): reads, no secret
 - **class:ERZEKENY** (ha egy csoport sem illik): shared state, no owner
