@@ -59,6 +59,9 @@ function world(host: string) {
   *" find /data/document-store -type f") find "${store}/document-store" -type f ;;
   "exec ${API}-120000 env") printf '%s\\n' MEDUSA_ADMIN_URL=https://admin.example SECRET_KEY=titkos-ertek MEDUSA_PROJECTION_SCHEDULE_ENABLED=true ;;
   *" psql -X -q "*) cat > "${sql}"; echo sor ;;
+  # the initdb's temporary server answers on the socket only: there the probe
+  # looks ready at once, over TCP it is down on the first ask and up on the next
+  *" pg_isready -h 127.0.0.1 "*) n=$(cat "${dir}/isready-tcp" 2>/dev/null || echo 0); echo $((n + 1)) > "${dir}/isready-tcp"; [ "$n" -ge 1 ] ;;
   *" pg_isready "*) exit 0 ;;
   *" -Atc "*) echo "conversations=1 messages=2 answer_ratings=3" ;;
   "run -d "*|"rm -f "*|"system df"*|"builder prune -f"|"image prune -a -f --filter until=2h") echo ok ;;
@@ -267,6 +270,17 @@ describe('fleet-gate: what passes', () => {
       'GATE-RESTORE-PROBE',
     ).toEqual([0, 'conversations=1 messages=2 answer_ratings=3', '[ps] [-a]', true, '[rm] [-f]', [true, true, true, true]])
   })
+
+  it('GATE-RESTORE-PROBE-TCP: the restore waits for postgres over TCP, not for the initdb socket server', () => {
+    const r = world(STAGE).run('restore-probe', 'DUMP')
+    const docker = r.calls.filter((c) => c.startsWith('docker [exec]'))
+    const restoreAt = docker.findIndex((c) => c.includes('[pg_restore]'))
+    const asked = docker.slice(0, restoreAt).filter((c) => c.includes('[pg_isready]'))
+    expect(
+      [r.code, restoreAt > 0, asked.length, asked.every((c) => c.includes('[pg_isready] [-h] [127.0.0.1]'))],
+      'GATE-RESTORE-PROBE-TCP',
+    ).toEqual([0, true, 2, true])
+  }, 15_000)
 
   it('GATE-BACKUP: backup-db and backup-docstore write and verify; get hands out a listed backup; put stores once, under tavoli/', () => {
     const p = world(PROD)
