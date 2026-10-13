@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { EventEmitter } from 'node:events'
@@ -138,7 +138,7 @@ describe('agent-msg.sh --task', () => {
     mkdirSync(join(base, 'scripts', 'lib'), { recursive: true })
     mkdirSync(join(base, 'store'))
     const repo = join(__dirname, '..', '..', 'scripts')
-    for (const f of ['agent-msg.sh', 'local-now.sh', 'lib/dashboard-token.sh']) cpSync(join(repo, f), join(base, 'scripts', f))
+    for (const f of ['agent-msg.sh', 'local-now.sh', 'lib/dashboard-token.sh']) if (existsSync(join(repo, f))) cpSync(join(repo, f), join(base, 'scripts', f))
     writeFileSync(join(base, 'store', '.dashboard-token'), 'proba-token\n', { mode: 0o600 })
     server = createServer((req, res) => {
       let body = ''
