@@ -4,6 +4,7 @@ import { getDb, initDatabase } from '../db.js'
 import { validateHandoffRecord } from '../task-handoff.js'
 import { upsertTask } from '../task-usage.js'
 import { tryHandleTaskHandoffs } from '../web/routes/task-handoffs.js'
+import { tryHandleTaskUsage } from '../web/routes/task-usage.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 /*
@@ -124,5 +125,26 @@ describe('the obligation is bound to the TASK, not to the writer (barracuda, rev
     void kind; void state; void next_steps
     const r = await post(id, { ...dev, task: { ...dev.task, id }, next_step: 'review', open_questions: [] })
     expect(r.status).toBe(201)
+  })
+})
+
+function postTask(body: unknown): Promise<{ status: number; body: any }> {
+  const out: { status: number; body: any } = { status: 0, body: null }
+  const res: any = { writeHead(status: number) { out.status = status; return res }, end(chunk?: string) { if (chunk) out.body = JSON.parse(chunk) }, setHeader() {} }
+  const raw = JSON.stringify(body)
+  const req: any = { headers: {}, on(event: string, h: (arg?: unknown) => void) { if (event === 'data') h(Buffer.from(raw)); if (event === 'end') h(); return req } }
+  const url = new URL('http://localhost:3420/api/tasks')
+  return tryHandleTaskUsage({ req, res, path: '/api/tasks', method: 'POST', url, auth: { kind: 'token', actor: 'acrobot' }, accessMode: 'naplo' } as unknown as RouteContext).then(() => out)
+}
+
+describe('a coordination task cannot lose its type on an update', () => {
+  beforeAll(() => { initDatabase(':memory:') })
+  it('an update without type is refused (it would clear the obligation); one with it passes', async () => {
+    const id = `koord-tipus-${Date.now()}`
+    expect((await postTask({ id, type: 'coordination', title: 'a' })).status).toBeLessThan(300)
+    const cleared = await postTask({ id, title: 'uj cim' })
+    expect(cleared.status).toBe(409)
+    expect((getDb().prepare('SELECT type FROM tasks WHERE id = ?').get(id) as { type: string }).type).toBe('coordination')
+    expect((await postTask({ id, type: 'coordination', title: 'uj cim' })).status).toBeLessThan(300)
   })
 })
