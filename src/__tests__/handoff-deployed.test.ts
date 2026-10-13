@@ -101,6 +101,12 @@ describe('the change fingerprint', () => {
     const two = '@@ -1,3 +1,4 @@\n a\n+x\n b\n@@ -8,3 +9,4 @@\n e\n+y\n f'
     expect(changeFingerprint(f(one))).toBe(changeFingerprint(f(two)))
   })
+  // barracuda, review of #79: a conflict resolution that pushes two blocks together
+  it('two changes with context between them, and the same two changes touching: another change', () => {
+    const apart = '@@ -1,5 +1,7 @@\n a\n+x\n b\n c\n d\n+y\n e'
+    const touching = '@@ -1,2 +1,4 @@\n a\n+x\n+y\n b'
+    expect(changeFingerprint(f(apart))).not.toBe(changeFingerprint(f(touching)))
+  })
   it('the missing-newline marker counts after a changed line, not after a context line', () => {
     const changed = '@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+a'
     expect(changeFingerprint(f(changed))).not.toBe(changeFingerprint(f('@@ -1 +1 @@\n-a\n+a')))

@@ -423,12 +423,16 @@ async function checkDeployed(
 }
 
 /**
- * The change on GitHub's file list, per file: only the removed and added lines, in order.
- * It does not measure the POSITION or the SURROUNDINGS: the hunk headers and the context
- * lines are left out, so the same change on a branch whose neighbouring lines differ (a
- * cherry-pick onto tc-release next to an import main does not have) gives the same value.
- * Measured on the real case (handoff-read-kontextus): e81d9bd and 3288ec59 differ in one
- * context line of src/web.ts only; with the context they gave two values.
+ * The change on GitHub's file list, per file: its RUNS of removed and added lines, in order.
+ * A run is an unbroken sequence of -/+ lines; a context line or a hunk header ends it. The
+ * context lines' CONTENT and the line numbers are left out, so the same change on a branch
+ * whose neighbouring lines differ (a cherry-pick onto tc-release next to an import main does
+ * not have) gives the same value. Measured on the real case (handoff-read-kontextus):
+ * e81d9bd and 3288ec59 differ in one context line of src/web.ts only; with the context
+ * they gave two values. The run boundaries stay: two changes that touch, and the same two
+ * changes with context between them, differ (barracuda, review of #79: a conflict
+ * resolution that pushes two blocks together is another change).
+ * Not measured, like git patch-id: a run MOVED within the file with the same content.
  */
 export function changeFingerprint(files: { filename: string; status: string; patch?: string; sha?: string; previous_filename?: string }[]): string {
   return JSON.stringify(
@@ -438,22 +442,27 @@ export function changeFingerprint(files: { filename: string; status: string; pat
         // a binary or very large file has no patch: its blob sha is the identity of the
         // file's NEW content, not of the change (a cherry-pick onto a branch with other
         // changes in that file then differs: the safe direction)
-        f.patch !== undefined ? changedLines(f.patch) : `blob:${f.sha ?? '?'}`]),
+        f.patch !== undefined ? changedRuns(f.patch) : `blob:${f.sha ?? '?'}`]),
   )
 }
 
-function changedLines(patch: string): string[] {
-  const kept: string[] = []
+function changedRuns(patch: string): string[][] {
+  const runs: string[][] = []
+  let run: string[] | null = null
   let afterChange = false
   for (const line of patch.split('\n')) {
     const mark = line[0]
-    if (mark === '+' || mark === '-') { kept.push(line); afterChange = true }
-    // "\ No newline at end of file" belongs to the line before it: kept only after a
-    // changed line, since after a context line it is the surroundings again
-    else if (mark === '\\') { if (afterChange) kept.push(line); afterChange = false }
-    else afterChange = false
+    if (mark === '+' || mark === '-') {
+      if (!run) runs.push((run = []))
+      run.push(line)
+      afterChange = true
+    }
+    // "\ No newline at end of file" belongs to the line before it: kept (and the run goes
+    // on) only after a changed line; after a context line the run has already ended
+    else if (mark === '\\') { if (afterChange && run) run.push(line); afterChange = false }
+    else { run = null; afterChange = false }
   }
-  return kept
+  return runs
 }
 
 /**
