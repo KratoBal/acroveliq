@@ -28,6 +28,21 @@ export class Refusal extends Error {
   }
 }
 
+/** Too many calls: the HTTP door answers 429 (barracuda, #49 review 3). */
+export class RateLimited extends Refusal {}
+
+/**
+ * The door is not authenticated (the right to deploy is the owner's answer),
+ * so a flood must not fill the disk with Rs or spend the GitHub token's hourly
+ * budget: each request costs two GitHub calls and a Coolify read, each
+ * execution Discord reads besides.
+ */
+export const MAX_OPEN_REQUESTS = 10
+export const REQUESTS_PER_MINUTE = 6
+export const EXECUTIONS_PER_MINUTE = 12
+/** a deployment Coolify recorded this long before usedAt still counts (clock skew) */
+export const RECOVER_SKEW_MS = 60_000
+
 export interface ExecutorDeps {
   config: ExecutorConfig
   store: RequestStore
@@ -82,6 +97,7 @@ export class DeployExecutor {
   private readonly sleep: (ms: number) => Promise<void>
   private readonly pickInt: (n: number) => number
   private chain: Promise<unknown> = Promise.resolve()
+  private readonly calls = { request: [] as number[], execute: [] as number[] }
   /** follow-ups still running; tests await them */
   readonly following = new Set<Promise<void>>()
 
@@ -107,27 +123,79 @@ export class DeployExecutor {
   }
 
   /**
-   * After a restart (barracuda, #48 review): an R left 'calling' is spent
-   * with no known result, and says so; a 'queued' one is followed again,
-   * since the follow-up of the previous process died with it.
+   * After a restart (barracuda, #48 and #50 reviews). An R left 'calling' is
+   * spent and its answer was lost: Coolify's own list of the app's
+   * deployments is read back, and exactly one commit-pinned rollback of this
+   * sha, made after the R was spent and not claimed by any other R, is taken
+   * as its deployment and followed. Anything else (none, more than one, an
+   * unreadable list) stays 'interrupted': spent, result unknown. A 'queued'
+   * R is followed again, since the previous process's follow-up died with it.
    */
-  recover(): { interrupted: string[]; following: string[] } {
+  async recover(): Promise<{ interrupted: string[]; recovered: string[]; following: string[] }> {
     const { store } = this.deps
     const interrupted: string[] = []
+    const recovered: string[] = []
     const following: string[] = []
+    const claimed = new Set(store.ids().map((id) => store.get(id)!.deploymentUuid).filter((u): u is string => Boolean(u)))
     for (const id of store.ids()) {
       const rec = store.get(id)!
       if (rec.outcome === 'calling') {
-        rec.outcome = 'interrupted'
-        store.put(rec)
-        store.audit('interrupted', { r: id })
-        interrupted.push(id)
+        const found = await this.findLostDeployment(rec, claimed)
+        if (found.uuid) {
+          rec.outcome = 'queued'
+          rec.deploymentUuid = found.uuid
+          claimed.add(found.uuid)
+          store.put(rec)
+          store.audit('recovered_queued', { r: id, deploymentUuid: found.uuid })
+          this.startFollow(id)
+          recovered.push(id)
+        } else {
+          rec.outcome = 'interrupted'
+          store.put(rec)
+          store.audit('interrupted', { r: id, reason: found.why })
+          interrupted.push(id)
+        }
       } else if (rec.outcome === 'queued' && rec.deploymentUuid) {
         this.startFollow(id)
         following.push(id)
       }
     }
-    return { interrupted, following }
+    return { interrupted, recovered, following }
+  }
+
+  private async findLostDeployment(rec: RequestRecord, claimed: ReadonlySet<string>): Promise<{ uuid: string | null; why: string }> {
+    if (rec.usedAt === undefined) return { uuid: null, why: 'no usedAt' }
+    const since = rec.usedAt * 1000 - RECOVER_SKEW_MS
+    let list
+    try {
+      list = await this.deps.coolify.listAppDeployments(rec.coolifyHost, rec.coolifyUuid, 20)
+    } catch {
+      return { uuid: null, why: 'deployment list unreadable' }
+    }
+    const matches = list.filter(
+      (d) =>
+        d.rollback === true &&
+        d.commit === rec.sha &&
+        d.pullRequestId === 0 &&
+        typeof d.deploymentUuid === 'string' &&
+        !claimed.has(d.deploymentUuid) &&
+        typeof d.createdAtMs === 'number' &&
+        d.createdAtMs >= since,
+    )
+    if (matches.length === 1) return { uuid: matches[0]!.deploymentUuid!, why: '' }
+    return { uuid: null, why: matches.length === 0 ? 'no matching rollback' : 'more than one matching rollback' }
+  }
+
+  /** A sliding one-minute window per operation; checked before any outside call. */
+  private throttle(op: 'request' | 'execute', perMinute: number): void {
+    const now = this.now()
+    const recent = this.calls[op].filter((t) => t > now - 60_000)
+    if (recent.length >= perMinute) {
+      this.calls[op] = recent
+      throw new RateLimited(`too many ${op} calls, at most ${perMinute} a minute`)
+    }
+    recent.push(now)
+    this.calls[op] = recent
   }
 
   status(r: unknown): PublicRecord | null {
@@ -138,6 +206,13 @@ export class DeployExecutor {
 
   private async doRequest(input: { env?: unknown; app?: unknown; action?: unknown; sha?: unknown; requester?: unknown }): Promise<PublicRecord> {
     const { config, store } = this.deps
+    this.throttle('request', REQUESTS_PER_MINUTE)
+    const nowSec = Math.floor(this.now() / 1000)
+    const open = store.ids().filter((id) => {
+      const r = store.get(id)!
+      return r.status === 'open' && r.expiresAt > nowSec
+    }).length
+    if (open >= MAX_OPEN_REQUESTS) throw new RateLimited(`too many open requests (${open}), wait for one to expire or be used`)
     const { env, app, action, sha, requester } = input
     if (typeof env !== 'string' || typeof app !== 'string' || typeof action !== 'string') throw new Refusal('env, app and action are required')
     if (typeof sha !== 'string' || !SHA.test(sha)) throw new Refusal('sha must be a full 40-character lowercase commit')
@@ -175,6 +250,7 @@ export class DeployExecutor {
 
   private async doExecute(input: { r?: unknown; requestMessageId?: unknown }): Promise<PublicRecord> {
     const { config, store, discord, coolify } = this.deps
+    this.throttle('execute', EXECUTIONS_PER_MINUTE)
     const { r, requestMessageId } = input
     if (typeof r !== 'string' || typeof requestMessageId !== 'string' || !SNOWFLAKE.test(requestMessageId)) {
       throw new Refusal('r and requestMessageId are required')

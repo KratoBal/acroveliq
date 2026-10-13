@@ -104,6 +104,13 @@ describe('the HTTP door', () => {
     expect((await fetch(`${base}/requests/ABCDEFGH`)).status).toBe(404)
   })
 
+  it('a flood is 429, not 403', async () => {
+    const body = { env: 'prod', app: 'acropora-api', action: 'deploy', sha: SHA, requester: 'acrobot' }
+    const codes: number[] = []
+    for (let i = 0; i < 8; i++) codes.push((await post('/requests', body)).status)
+    expect(codes).toEqual([201, 201, 201, 201, 201, 201, 429, 429])
+  })
+
   it('an outside failure is 502 with a fixed text, not what the outside system said', async () => {
     githubFails = true
     const resp = await post('/requests', { env: 'prod', app: 'acropora-api', action: 'deploy', sha: SHA, requester: 'acrobot' })

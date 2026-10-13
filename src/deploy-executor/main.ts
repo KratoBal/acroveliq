@@ -14,7 +14,7 @@ import { RequestStore } from './store.js'
 import { coolifyRest, discordRest, githubRest, readSecretFile } from './transports.js'
 import { assertHungarianDates } from './verify-approval.js'
 
-function main(): void {
+async function main(): Promise<void> {
   assertHungarianDates()
   const config = parseExecutorConfig(JSON.parse(readFileSync(process.env['VEGREHAJTO_CONFIG'] ?? '/etc/vegrehajto/config.json', 'utf8')))
   const hosts = Object.fromEntries(
@@ -27,7 +27,7 @@ function main(): void {
     github: githubRest(readSecretFile(config.github.tokenFile)),
     coolify: coolifyRest(hosts),
   })
-  const recovered = executor.recover()
+  const recovered = await executor.recover()
   process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), event: 'recovered', ...recovered })}\n`)
   const port = Number(process.env['VEGREHAJTO_PORT'] ?? '8787')
   createExecutorServer(executor).listen(port, '0.0.0.0', () => {
@@ -35,4 +35,7 @@ function main(): void {
   })
 }
 
-main()
+main().catch((err: unknown) => {
+  process.stderr.write(`${JSON.stringify({ event: 'start_failed', error: err instanceof Error ? err.message : 'unknown' })}\n`)
+  process.exit(1)
+})

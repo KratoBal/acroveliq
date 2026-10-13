@@ -6,7 +6,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { canonicalLine } from '../deploy-executor/canonical.js'
 import { parseExecutorConfig, type ExecutorConfig } from '../deploy-executor/config.js'
-import { DeployExecutor, Refusal } from '../deploy-executor/executor.js'
+import {
+  DeployExecutor,
+  EXECUTIONS_PER_MINUTE,
+  MAX_OPEN_REQUESTS,
+  RateLimited,
+  Refusal,
+  REQUESTS_PER_MINUTE,
+} from '../deploy-executor/executor.js'
 import { RequestStore } from '../deploy-executor/store.js'
 import {
   coolifyRest,
@@ -98,6 +105,8 @@ function fakeCoolify() {
     rollbacks,
     deployments,
     failList: false,
+    /** what Coolify lists before the fixed history, newest first */
+    extra: [] as CoolifyDeployment[],
     rollbackResult: 'queue' as 'queue' | 'skip' | 'throw',
     async rollback(host: string, app: string, commit: string) {
       rollbacks.push({ host, app, commit })
@@ -114,6 +123,7 @@ function fakeCoolify() {
     async listAppDeployments(_env: string, app: string) {
       if (c.failList) throw new Error('Coolify API 403')
       return [
+        ...c.extra,
         { commit: 'b'.repeat(40), status: 'failed', pullRequestId: 0 },
         { commit: 'c'.repeat(40), status: 'finished', pullRequestId: 7 },
         { commit: running[app] ?? null, status: 'finished', pullRequestId: 0 },
@@ -501,16 +511,70 @@ describe('one-time use and the commit actually deployed', () => {
     await new Promise((res) => setTimeout(res, 50))
     expect(ex.status(rec.r)).toMatchObject({ status: 'used', outcome: 'calling' })
     makeExecutor()
-    expect(ex.recover()).toEqual({ interrupted: [rec.r], following: [] })
+    expect(await ex.recover()).toEqual({ interrupted: [rec.r], recovered: [], following: [] })
     expect(ex.status(rec.r)).toMatchObject({ status: 'used', outcome: 'interrupted' })
     await refusedWith(ex.execute({ r: rec.r, requestMessageId: msg.id }), 'already used')
+  })
+
+  describe('a lost answer read back from Coolify (barracuda, #50 review)', () => {
+    async function lostCall() {
+      const { rec, msg } = await approvedRequest()
+      const usedAtMs = clock
+      cool.rollback = async () => new Promise<never>(() => {})
+      void ex.execute({ r: rec.r, requestMessageId: msg.id })
+      await new Promise((res) => setTimeout(res, 50))
+      makeExecutor()
+      return { rec, usedAtMs }
+    }
+    const rollbackOf = (sha: string, uuid: string, atMs: number, over: Partial<CoolifyDeployment> = {}): CoolifyDeployment => ({
+      commit: sha, status: 'finished', pullRequestId: 0, deploymentUuid: uuid, rollback: true, createdAtMs: atMs, ...over,
+    })
+
+    it('exactly one rollback of this sha after the R was spent is its deployment, and it is followed', async () => {
+      const { rec, usedAtMs } = await lostCall()
+      cool.extra = [rollbackOf(MAIN[4]!, 'lost1', usedAtMs + 2000)]
+      cool.deployments.set('lost1', { commit: MAIN[4]!, status: 'finished', pullRequestId: 0 })
+      expect(await ex.recover()).toEqual({ interrupted: [], recovered: [rec.r], following: [] })
+      await Promise.all(ex.following)
+      expect(ex.status(rec.r)).toMatchObject({ status: 'used', deploymentUuid: 'lost1', outcome: 'finished_verified' })
+    })
+
+    it.each([
+      ['no rollback at all', () => [], 'no matching rollback'],
+      ['a plain deploy of the sha, not a rollback', (t: number) => [rollbackOf(MAIN[4]!, 'u1', t + 2000, { rollback: false })], 'no matching rollback'],
+      ['a rollback of another sha', (t: number) => [rollbackOf(MAIN[3]!, 'u1', t + 2000)], 'no matching rollback'],
+      ['a rollback of the sha from before the R was spent', (t: number) => [rollbackOf(MAIN[4]!, 'u1', t - 120_000)], 'no matching rollback'],
+      ['a rollback whose time Coolify did not give with a zone', (t: number) => [rollbackOf(MAIN[4]!, 'u1', t + 2000, { createdAtMs: null })], 'no matching rollback'],
+      ['two rollbacks of the sha', (t: number) => [rollbackOf(MAIN[4]!, 'u1', t + 2000), rollbackOf(MAIN[4]!, 'u2', t + 3000)], 'more than one'],
+    ])('%s stays interrupted', async (_name, list, why) => {
+      const { rec, usedAtMs } = await lostCall()
+      cool.extra = list(usedAtMs)
+      expect(await ex.recover()).toEqual({ interrupted: [rec.r], recovered: [], following: [] })
+      expect(readFileSync(join(config.stateDir, 'audit.log'), 'utf8')).toContain(why)
+    })
+
+    it('an unreadable list stays interrupted', async () => {
+      const { rec } = await lostCall()
+      cool.failList = true
+      expect((await ex.recover()).interrupted).toEqual([rec.r])
+    })
+
+    it('a deployment another R already holds is not taken', async () => {
+      const first = await approvedRequest()
+      const out = await ex.execute({ r: first.rec.r, requestMessageId: first.msg.id })
+      const { rec, usedAtMs } = await lostCall()
+      cool.extra = [rollbackOf(MAIN[4]!, out.deploymentUuid!, usedAtMs + 2000)]
+      const r = await ex.recover()
+      expect(r.interrupted).toEqual([rec.r])
+      expect(ex.status(rec.r)!.deploymentUuid).toBeNull()
+    })
   })
 
   it('a deployment queued before a restart is followed again after it', async () => {
     const { rec, msg } = await approvedRequest()
     const out = await ex.execute({ r: rec.r, requestMessageId: msg.id })
     makeExecutor()
-    expect(ex.recover()).toEqual({ interrupted: [], following: [rec.r] })
+    expect(await ex.recover()).toEqual({ interrupted: [], recovered: [], following: [rec.r] })
     cool.deployments.get(out.deploymentUuid!)!.status = 'finished'
     await Promise.all(ex.following)
     expect(ex.status(rec.r)!.outcome).toBe('finished_verified')
@@ -562,6 +626,46 @@ describe('one-time use and the commit actually deployed', () => {
   })
 })
 
+describe('a flood is cut off before any outside call (barracuda, #49 review 3)', () => {
+  it(`at most ${REQUESTS_PER_MINUTE} requests a minute, refused ones included, then 429-class refusals with no GitHub call`, async () => {
+    for (let i = 0; i < REQUESTS_PER_MINUTE; i++) await req({ sha: i % 2 ? MAIN[4] : SIDE }).catch(() => null)
+    const before = gh.calls
+    const err = await req().catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(RateLimited)
+    expect(gh.calls).toBe(before)
+    clock += 61_000
+    await expect(req()).resolves.toMatchObject({ status: 'open' })
+  })
+
+  it(`at most ${MAX_OPEN_REQUESTS} open Rs; an expired one no longer counts`, async () => {
+    for (let i = 0; i < MAX_OPEN_REQUESTS; i++) {
+      await req()
+      clock += 11_000
+    }
+    await refusedWith(req(), 'too many open requests')
+    clock += 31 * 60_000
+    await expect(req()).resolves.toMatchObject({ status: 'open' })
+  })
+
+  it(`at most ${EXECUTIONS_PER_MINUTE} executions a minute, before any Discord read`, async () => {
+    let reads = 0
+    const get = dc.getMessage
+    dc.getMessage = async (c, id) => {
+      reads++
+      return get(c, id)
+    }
+    // a real R and its request message, never answered: every execution reads Discord, then refuses
+    const rec = await req()
+    tick(5000)
+    const msg = postRequest(rec)
+    for (let i = 0; i < EXECUTIONS_PER_MINUTE; i++) await refusedWith(ex.execute({ r: rec.r, requestMessageId: msg.id }), 'no decision')
+    expect(reads).toBe(EXECUTIONS_PER_MINUTE)
+    const err = await ex.execute({ r: rec.r, requestMessageId: msg.id }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(RateLimited)
+    expect(reads).toBe(EXECUTIONS_PER_MINUTE)
+  })
+})
+
 describe('nothing secret leaves the executor', () => {
   it('neither the answer, the status nor the audit log carries what Coolify sent besides commit and status', async () => {
     const { rec, msg } = await approvedRequest()
@@ -591,6 +695,22 @@ describe('nothing secret leaves the executor', () => {
     expect(calls[0]!.init!.method).toBe('POST')
     expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({ commit: MAIN[1] })
     expect(calls[3]!.url).toBe(`https://api.github.com/repos/KratoBal/acropora-os/compare/${MAIN[1]}...main`)
+  })
+
+  it('a listed deployment keeps its uuid, rollback flag and a zoned time; a bare time is not guessed', async () => {
+    const body = {
+      count: 2,
+      deployments: [
+        { deployment_uuid: 'd1', commit: MAIN[1], status: 'finished', pull_request_id: 0, rollback: true, created_at: '2026-10-13T10:00:00.000000Z', logs: SECRET },
+        { deployment_uuid: 'd2', commit: MAIN[1], status: 'finished', pull_request_id: 0, rollback: false, created_at: '2026-10-13 10:00:00' },
+      ],
+    }
+    const fetchImpl = (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof fetch
+    const list = await coolifyRest({ 'prod-gep': { coolifyApiUrl: 'https://prod.example/api/v1', token: SECRET } }, fetchImpl).listAppDeployments('prod-gep', 'prodapi0001', 20)
+    expect(list).toEqual([
+      { commit: MAIN[1], status: 'finished', pullRequestId: 0, deploymentUuid: 'd1', rollback: true, createdAtMs: Date.parse('2026-10-13T10:00:00Z') },
+      { commit: MAIN[1], status: 'finished', pullRequestId: 0, deploymentUuid: 'd2', rollback: false, createdAtMs: null },
+    ])
   })
 
   it('a Coolify answer without a deployment uuid (queue skipped) is not a deployment', async () => {

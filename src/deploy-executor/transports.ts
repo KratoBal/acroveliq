@@ -35,7 +35,14 @@ export interface CoolifyDeployment {
   commit: string | null
   status: string | null
   pullRequestId: number
+  /** the fields recover() matches a lost answer by; null when Coolify did not send them */
+  deploymentUuid?: string | null
+  rollback?: boolean
+  /** ms; only from a timestamp with an explicit zone, a bare one would be read as local time */
+  createdAtMs?: number | null
 }
+
+const ZONED = /(Z|[+-]\d{2}:\d{2})$/
 
 export interface CoolifyClient {
   rollback(host: string, appUuid: string, commit: string): Promise<{ deploymentUuid: string | null }>
@@ -104,12 +111,23 @@ export function githubRest(token: string, fetchImpl: typeof fetch = fetch): GitH
 }
 
 function toDeployment(raw: unknown): CoolifyDeployment {
-  const o = (raw ?? {}) as { commit?: unknown; status?: unknown; pull_request_id?: unknown }
-  // copy three fields and nothing else: the record may carry logs
+  const o = (raw ?? {}) as {
+    commit?: unknown
+    status?: unknown
+    pull_request_id?: unknown
+    deployment_uuid?: unknown
+    rollback?: unknown
+    created_at?: unknown
+  }
+  const created = typeof o.created_at === 'string' && ZONED.test(o.created_at) ? Date.parse(o.created_at) : NaN
+  // copy these fields and nothing else: the record may carry logs
   return {
     commit: typeof o.commit === 'string' ? o.commit : null,
     status: typeof o.status === 'string' ? o.status : null,
     pullRequestId: typeof o.pull_request_id === 'number' ? o.pull_request_id : 0,
+    deploymentUuid: typeof o.deployment_uuid === 'string' && o.deployment_uuid ? o.deployment_uuid : null,
+    rollback: o.rollback === true,
+    createdAtMs: Number.isFinite(created) ? created : null,
   }
 }
 
