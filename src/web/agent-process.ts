@@ -25,7 +25,7 @@ import {
   detectsFeedbackOptOutPrompt,
   type FirstRunGateKind,
 } from '../pane-state.js'
-import { AGENTS_BASE_DIR, agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentRunIdentity, readAgentMemoryIsolation, resolveRunAsUser, readAgentConfigGroupGid, agentConfigGroupName } from './agent-config.js'
+import { AGENTS_BASE_DIR, agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentConfiguredRunAsUser, readAgentRunIdentity, readAgentMemoryIsolation, resolveRunAsUser, readAgentConfigGroupGid, agentConfigGroupName } from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
@@ -811,7 +811,7 @@ function provisionIsolatedConfigDir(
     try {
       // Does this agent run as its own OS user? Then everything the router writes
       // into its config dir has to stay readable AND writable for that user.
-      const perUser = readAgentRunAsUser(name) != null
+      const perUser = readAgentConfiguredRunAsUser(name) != null
       const dotClaude = join(cfg, '.claude.json')
       const sharedDot = join(homedir(), '.claude.json')
       if (!existsSync(dotClaude)) {
@@ -925,7 +925,7 @@ function preservedConfigMode(path: string): number {
 // router-user agent's) keeps its mode as before.
 function writeDotClaude(dotClaudePath: string, data: string): void {
   const root = agentTreeRootOf(dotClaudePath)
-  if (root && readAgentRunAsUser(basename(root)) != null) {
+  if (root && readAgentConfiguredRunAsUser(basename(root)) != null) {
     writeAgentPrivateConfig(dotClaudePath, data, basename(root))
     return
   }

@@ -354,8 +354,18 @@ export function resolveRunAsUser(rawConfigJson: string): string | null {
 }
 
 export function readAgentRunAsUser(name: string): string | null {
+  return runAsUserForPanel(name, readAgentConfiguredRunAsUser(name))
+}
+
+// The configured value, UNFILTERED. The router's own writes into an agent's tree (B45
+// B2-6: is this .claude.json written through the private group?) decide from this, not
+// from the panel's filtered value: an agent that writes another user into its own
+// config must not turn its tree's writes back into plain, fleet-readable ones. The two
+// questions differ: "which tmux server do I talk to" may fall back to the router's,
+// "is this a per-user tree" must not fall back to "no" (rebase of #57 onto #54).
+export function readAgentConfiguredRunAsUser(name: string): string | null {
   const configPath = join(agentDir(name), 'agent-config.json')
-  return runAsUserForPanel(name, resolveRunAsUser(readFileOr(configPath, '{}')))
+  return resolveRunAsUser(readFileOr(configPath, '{}'))
 }
 
 // B45 B2-2 follow-up (barracuda, review of #45): the START is checked against the
