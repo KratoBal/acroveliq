@@ -16,6 +16,9 @@ let T: string
 let tree: string
 let stage: string
 const myGid = process.getgid ? process.getgid() : 0
+// A SUPPLEMENTARY group of this process, if any: the tmp file is born with the
+// primary gid anyway, so only a different group shows that the chown happened.
+const otherGid = (process.getgroups ? process.getgroups() : []).find(g => g !== myGid) ?? myGid
 beforeEach(() => {
   T = mkdtempSync(join(tmpdir(), 'b45-priv-'))
   tree = join(T, 'agents', 'polip')
@@ -28,10 +31,10 @@ afterEach(() => rmSync(T, { recursive: true, force: true }))
 describe('atomicWriteGroupPrivate', () => {
   it('writes 0660 with the given group, and leaves nothing in the stage dir', () => {
     const p = join(tree, '.claude-config', '.claude.json')
-    atomicWriteGroupPrivate(tree, p, '{"a":1}', myGid, stage)
+    atomicWriteGroupPrivate(tree, p, '{"a":1}', otherGid, stage)
     const st = statSync(p)
     expect(st.mode & 0o777).toBe(0o660)
-    expect(st.gid).toBe(myGid)
+    expect(st.gid).toBe(otherGid)
     expect(readFileSync(p, 'utf-8')).toBe('{"a":1}')
     expect(readdirSync(stage)).toEqual([])
     expect(statSync(stage).mode & 0o777).toBe(0o700)
