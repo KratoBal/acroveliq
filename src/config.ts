@@ -345,6 +345,10 @@ export const ACROVELIQ_HOST = env['ACROVELIQ_HOST'] ?? ''
 // this port only; it stays on the container network, not a published host port.
 // Empty (the default): no second listener.
 export const ACROVELIQ_PORT_SETTING = env['ACROVELIQ_PORT']
+// The AcrovelIQ listener's bind address (same file); empty: WEB_HOST. Lets the
+// proxy container reach the AcrovelIQ port while WEB_HOST keeps the main
+// dashboard port on loopback.
+export const ACROVELIQ_BIND_SETTING = env['ACROVELIQ_BIND']
 
 // Kanban swimlanes: which field the board groups by on first load. Invalid
 // values silently fall back to 'none' (flat board) rather than breaking the
