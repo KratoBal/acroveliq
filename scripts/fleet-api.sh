@@ -698,6 +698,7 @@ for u in rows:
         if v["calls"]: print("  %s: nem rendelheto, %d hivas az atfedo ablakban (cache-olv %s)" % (k,v["calls"],M(v["cache_read"])))
     c=u.get("coordination") or {}
     cc=c.get("concurrent") or {}
+    if c.get("open_since"): print("  coord: LEZARATLAN ablak %s ota (nincs coord_close): a lekerdezes pillanataig fut" % c["open_since"])
     if cc.get("calls"): print("  coord: ebbol %d hivas idejen mas feladat ablaka is nyitva volt (%s): a csatorna-munkamenet mast is csinalhatott, szet nem valaszthato" % (cc["calls"], ", ".join(c.get("concurrent_tasks") or [])))
     for o in u["overlaps"]:
         bad=True

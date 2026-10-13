@@ -397,6 +397,25 @@ export function taskWindows(events: readonly TaskEvent[]): TaskWindow[] {
   return windows
 }
 
+/**
+ * A coord window its actor never closed would run on and take every later call of that
+ * actor, and make each later coord window of theirs an overlap. A NEW coord_open by the
+ * same actor, on any task, ends the previous one (barracuda, review of #74). A window
+ * still open after this is the actor's last, and the report names it.
+ */
+export function closeSupersededCoord(windows: TaskWindow[]): TaskWindow[] {
+  const byAgent = new Map<string, TaskWindow[]>()
+  for (const w of windows) if (w.role === 'coord') byAgent.set(w.agent, [...(byAgent.get(w.agent) ?? []), w])
+  for (const list of byAgent.values()) {
+    list.sort((a, b) => a.from - b.from)
+    for (let i = 0; i + 1 < list.length; i++) {
+      const next = list[i + 1]!.from
+      if (list[i]!.to === null || list[i]!.to! > next) list[i]!.to = next
+    }
+  }
+  return windows
+}
+
 export interface UsageCall {
   id: number
   agent: string
@@ -557,8 +576,9 @@ export interface TaskUsage {
    * The channel session's coord windows (coord_open -> coord_close): their calls are in
    * `by_capacity.coord`; `concurrent` counts those of them made while another task's
    * window was open too, and `concurrent_tasks` names those tasks. Not separable, only said.
+   * `open_since`: a coord window of this task that was never closed (it runs to now).
    */
-  coordination: { concurrent: TokenTotals; concurrent_tasks: string[] }
+  coordination: { concurrent: TokenTotals; concurrent_tasks: string[]; open_since: number | null }
   totals: TokenTotals
   by_capacity: Record<CapacityKind, TokenTotals>
   by_agent: Record<string, TokenTotals>
@@ -576,7 +596,7 @@ export function taskUsage(db: Database.Database, taskId: string, now: number): T
   const events = loadEvents(db)
   const byTask = new Map<string, TaskEvent[]>()
   for (const event of events) byTask.set(event.task_id, [...(byTask.get(event.task_id) ?? []), event])
-  const windows = [...byTask.values()].flatMap(taskWindows)
+  const windows = closeSupersededCoord([...byTask.values()].flatMap(taskWindows))
   const own = windows.filter((w) => w.task_id === taskId)
   const sessionRows = db.prepare('SELECT agent, session_id, task_id FROM task_sessions').all() as {
     agent: string
@@ -645,7 +665,12 @@ export function taskUsage(db: Database.Database, taskId: string, now: number): T
     valid: overlaps.length === 0,
     overlaps,
     unassigned: unassignedTotals,
-    coordination: { concurrent: concurrentTotals, concurrent_tasks: [...new Set(concurrent.flatMap((c) => c.tasks))].sort() },
+    coordination: {
+      concurrent: concurrentTotals,
+      concurrent_tasks: [...new Set(concurrent.flatMap((c) => c.tasks))].sort(),
+      // a coord window of this task with no close: it runs to the query time
+      open_since: own.find((w) => w.role === 'coord' && w.to === null)?.from ?? null,
+    },
     totals,
     by_capacity: byCapacity,
     by_agent: byAgent,

@@ -672,13 +672,13 @@ describe('the coord window', () => {
     expect(u.coordination.concurrent_tasks).toEqual([])
   })
 
-  it('two tasks\' coord windows at once: the call is not guessed, it stays unassigned', () => {
+  it('two coord opens by one actor: the later one ends the earlier, so a call is never in two coord windows', () => {
     task('ka'); task('kb')
     event('ka', 'coord_open', 'acrobot', T('12:00:00'))
     event('kb', 'coord_open', 'acrobot', T('12:01:00'))
-    call('acrobot', T('12:02:00'))
-    const a = taskUsage(db, 'ka', NOW)!
-    expect([a.by_capacity.coord.calls, a.unassigned.admin.calls]).toEqual([0, 1])
+    call('acrobot', T('12:00:30')); call('acrobot', T('12:02:00'))
+    const a = taskUsage(db, 'ka', NOW)!, b = taskUsage(db, 'kb', NOW)!
+    expect([a.by_capacity.coord.calls, b.by_capacity.coord.calls, a.unassigned.admin.calls, b.unassigned.admin.calls]).toEqual([1, 1, 0, 0])
   })
 
   it('the same call, asked from the OTHER task with a work window open: not an overlap, not that task\'s', () => {
@@ -689,6 +689,16 @@ describe('the coord window', () => {
     expect([f.valid, f.overlaps.length, f.by_capacity.work.calls, f.by_capacity.work.cache_read]).toEqual([true, 0, 1, 1])
     const k = taskUsage(db, 'k4', NOW)!
     expect([k.by_capacity.coord.calls, k.coordination.concurrent_tasks]).toEqual([1, ['fejl']])
+  })
+
+  it('a forgotten coord_close: the actor\'s next coord_open, on another task, ends it; the last open one is named', () => {
+    task('k5'); task('k6')
+    event('k5', 'coord_open', 'acrobot', T('15:00:00'))          // never closed
+    event('k6', 'coord_open', 'acrobot', T('15:30:00'))
+    call('acrobot', T('15:10:00')); call('acrobot', T('15:40:00'))
+    const a = taskUsage(db, 'k5', NOW)!, b = taskUsage(db, 'k6', NOW)!
+    expect([a.by_capacity.coord.calls, a.unassigned.admin.calls, a.coordination.open_since]).toEqual([1, 0, null])
+    expect([b.by_capacity.coord.calls, b.unassigned.admin.calls, b.coordination.open_since]).toEqual([1, 0, T('15:30:00')])
   })
 
   it('done closes an open coord window', () => {
