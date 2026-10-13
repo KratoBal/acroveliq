@@ -384,6 +384,25 @@ for pair in $AGENTS; do
     echo "TOO WIDE: $user also allows /usr/bin/cat, the rule is not tmux-only" >&2; rc=1
   fi
 done
+# B45 B2-4: the last daily write check (scripts/b45-jogellenorzo-napi.py, as marveen). A
+# JELZES fails this step: a recreate is exactly when a lost ACL or a wrong owner comes back.
+# It is DATA, read with the router's rights, never a script run as root (the file and the
+# scripts/ tree are the router's), and a missing or stale result is said, not hidden.
+B45_LAST="$ROOT/store/b45/jogellenorzo-napi.last"
+if (( AS_ROOT )); then b45_line="$(runuser -u "$ROUTER_USER" -- head -c 512 -- "$B45_LAST" 2>/dev/null)"
+else b45_line="$(head -c 512 -- "$B45_LAST" 2>/dev/null)"; fi
+read -r b45_ts b45_verdict b45_rest <<< "${b45_line%%$'\n'*}"
+if [[ ! "${b45_ts:-}" =~ ^[0-9]+$ ]]; then
+  echo "NOTE: B45 daily write check has no result ($B45_LAST)" >&2
+elif [[ "$b45_verdict" == JELZES ]]; then
+  echo "B45 REGRESSION: the daily write check reports: $b45_rest" >&2; rc=1
+elif [[ "$b45_verdict" != RENDBEN ]]; then
+  echo "NOTE: B45 daily write check result is unreadable ($B45_LAST)" >&2
+elif (( $(date +%s) - b45_ts > 172800 )); then
+  echo "STALE: B45 daily write check last ran $(( ($(date +%s) - b45_ts) / 3600 ))h ago" >&2
+else
+  echo "ok: B45 daily write check: $b45_rest"
+fi
 echo
 if (( rc == 0 )); then
   echo "OK: users, group and sudo rules are in place."

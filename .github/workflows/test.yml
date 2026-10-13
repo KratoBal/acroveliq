@@ -50,3 +50,5 @@ jobs:
       # B45: the agent-tree ACL target and the write check. Pure logic, no fleet
       # user needed; a guard that only runs by hand rots like the one above.
       - run: python3 -B scripts/__tests__/b45-acl.test.py
+      # B45 B2-4: the daily run of that check and the bootstrap line reading its result.
+      - run: python3 -B scripts/__tests__/b45-jogellenorzo-napi.test.py
