@@ -634,3 +634,58 @@ describe('TC-Lite L1: the timeline and busy', () => {
     ])
   })
 })
+
+/*
+  THE COORDINATION WINDOW (koord-munkamenet, acrobot msg 29883). What turns these red:
+  the channel session's calls between its coord_open and coord_close not assigned to the
+  task while a dozen other tasks' admin windows are open for the same agent (the reason
+  they were unattributable before); a call outside the marks assigned; the concurrent
+  other tasks not counted or not named; a call in TWO tasks' coord windows assigned.
+*/
+describe('the coord window', () => {
+  it('TASK-USAGE-COORD: the marked span is the task\'s, the concurrent other tasks are said, the rest is not taken', () => {
+    task('masik'); event('masik', 'assigned', 'acrobot', T('08:00:00'))   // a broad admin window, open all day
+    task('koord'); event('koord', 'assigned', 'acrobot', T('08:30:00'))
+    event('koord', 'coord_open', 'acrobot', T('09:00:00'))
+    event('koord', 'coord_close', 'acrobot', T('09:10:00'))
+    call('acrobot', T('08:59:59'), 7)     // before the open: in two tasks' admin windows, not taken
+    call('acrobot', T('09:00:00'), 100)   // in the window
+    call('acrobot', T('09:05:00'), 200)   // in the window
+    call('acrobot', T('09:10:00'), 9)     // the close is exclusive
+    call('murena', T('09:05:00'), 5)      // another agent
+    const u = taskUsage(db, 'koord', NOW)!
+    expect([u.by_capacity.coord.calls, u.by_capacity.coord.cache_read], 'TASK-USAGE-COORD').toEqual([2, 300])
+    expect(u.coordination.concurrent.calls).toBe(2)
+    expect(u.coordination.concurrent_tasks).toEqual(['masik'])
+    expect(u.unassigned.admin.calls).toBe(2)   // 08:59:59 and 09:10:00, in both admin windows
+    expect(u.valid).toBe(true)
+  })
+
+  it('a second open by the same actor reopens after a close; without any other window nothing is concurrent', () => {
+    task('k2')
+    event('k2', 'coord_open', 'acrobot', T('10:00:00')); event('k2', 'coord_close', 'acrobot', T('10:05:00'))
+    event('k2', 'coord_open', 'acrobot', T('11:00:00')); event('k2', 'coord_close', 'acrobot', T('11:05:00'))
+    call('acrobot', T('10:01:00')); call('acrobot', T('10:30:00')); call('acrobot', T('11:01:00'))
+    const u = taskUsage(db, 'k2', NOW)!
+    expect(u.by_capacity.coord.calls).toBe(2)
+    expect(u.coordination.concurrent.calls).toBe(0)
+    expect(u.coordination.concurrent_tasks).toEqual([])
+  })
+
+  it('two tasks\' coord windows at once: the call is not guessed, it stays unassigned', () => {
+    task('ka'); task('kb')
+    event('ka', 'coord_open', 'acrobot', T('12:00:00'))
+    event('kb', 'coord_open', 'acrobot', T('12:01:00'))
+    call('acrobot', T('12:02:00'))
+    const a = taskUsage(db, 'ka', NOW)!
+    expect([a.by_capacity.coord.calls, a.unassigned.admin.calls]).toEqual([0, 1])
+  })
+
+  it('done closes an open coord window', () => {
+    task('k3')
+    event('k3', 'coord_open', 'acrobot', T('13:00:00'))
+    event('k3', 'done', 'acrobot', T('13:10:00'))
+    call('acrobot', T('13:05:00')); call('acrobot', T('13:20:00'))
+    expect(taskUsage(db, 'k3', NOW)!.by_capacity.coord.calls).toBe(1)
+  })
+})

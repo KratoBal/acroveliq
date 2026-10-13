@@ -357,7 +357,8 @@ print(json.dumps(d))' "$TASK")" || exit 1
     post /tasks "$(json_obj id "$TASK" project "${2:-}" parent_task "${3:-}" variant "${4:-}" brief_ref "${5:-}")"
     ;;
   task-event)
-    # Egy esemeny: assigned|started|review_requested|verdict|fix_started|done|merged.
+    # Egy esemeny: assigned|started|review_requested|verdict|fix_started|done|merged,
+    # es a koordinacios egyseg kezdo es zaro jele: coord_open|coord_close (a csatorna-munkamenete).
     # Az ido masodperc vagy ISO (2026-10-12T07:03:00Z); hianyaban MOST. A besorolas
     # ezekbol vezetodik le, a hivasokra semmi nem irodik.
     # Zaro fajtak a done mellett: blocked|cancelled|failed|partial.
@@ -667,6 +668,9 @@ print(d.get("session_id","") if d.get("ok") is True and d.get("registered") is n
     # A KIADO admin-hivasai (az assigned esemeny admin-ablakot nyit a szereplojenek a done
     # vagy merged esemenyig) FELADATONKENT JELZO ERTEKEK: parhuzamos kiadasoknal az ablakok
     # szandekosan atfednek, ezert feladatok kozott NEM ADHATOK OSSZE (acrobot dontese, #60).
+    # A KOORDINACIOS ABLAK (koord-munkamenet): a csatorna-munkamenet a kiadas es az atvetel
+    # idejere coord_open / coord_close esemenyt ir a feladatra; a ketto kozotti hivasai a
+    # coord sorba kerulnek. Ha kozben mas feladat ablaka is nyitva volt, kulon sor mondja ki.
     argc_max 2 "$#" "fleet-api.sh task-usage <task_id> [variants]"
     TASK="${1:?task id required}"
     TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
@@ -692,6 +696,9 @@ for u in rows:
     if u["repeated_of"]: print("  ismetelt munka, elozmeny: %s" % u["repeated_of"])
     for k,v in u["unassigned"].items():
         if v["calls"]: print("  %s: nem rendelheto, %d hivas az atfedo ablakban (cache-olv %s)" % (k,v["calls"],M(v["cache_read"])))
+    c=u.get("coordination") or {}
+    cc=c.get("concurrent") or {}
+    if cc.get("calls"): print("  coord: ebbol %d hivas idejen mas feladat ablaka is nyitva volt (%s): a csatorna-munkamenet mast is csinalhatott, szet nem valaszthato" % (cc["calls"], ", ".join(c.get("concurrent_tasks") or [])))
     for o in u["overlaps"]:
         bad=True
         print("  ATFEDES: %s hivasa (%s) egyszerre ezekhez: %s" % (o["agent"],o["timestamp"],", ".join(o["tasks"])))
