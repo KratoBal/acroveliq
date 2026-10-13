@@ -31,8 +31,8 @@ describe('checkAgentRunIdentity: an agent WITH its own OS user', () => {
     expect(checkAgentRunIdentity('barracuda', cfg({ runAsUser: 'marveen' }), exists).ok).toBe(false)
     expect(checkAgentRunIdentity('barracuda', cfg({ runAsUser: 'root' }), exists).ok).toBe(false)
   })
-  it('a remoteHost: refused (the router would launch it over ssh, outside the uid)', () => {
-    expect(checkAgentRunIdentity('barracuda', cfg({ runAsUser: 'agent-barracuda', remoteHost: 'h.example' }), exists).ok).toBe(false)
+  it('a remote host (the router registry): refused (the router would launch it over ssh, outside the uid)', () => {
+    expect(checkAgentRunIdentity('barracuda', cfg({ runAsUser: 'agent-barracuda' }), exists, 'h.example').ok).toBe(false)
   })
   it('unparseable config: refused, not defaulted', () => {
     expect(checkAgentRunIdentity('barracuda', '{not json', exists).ok).toBe(false)

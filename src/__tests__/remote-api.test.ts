@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { writeAgentRemoteConfig, readAgentRemoteConfig, agentDir } from '../web/agent-config.js'
+import { writeAgentRemoteConfig, readAgentRemoteConfig, agentDir, setAgentRemoteHostsFileForTests } from '../web/agent-config.js'
 
 // Exercises the persistence layer that backs `PUT /api/agents/:name/remote`.
 // The HTTP handler itself imports db.js (better-sqlite3, ABI-mismatched in this
@@ -9,11 +10,14 @@ import { writeAgentRemoteConfig, readAgentRemoteConfig, agentDir } from '../web/
 // of its validate-and-persist logic.
 
 const TEST_AGENT = 'zz-remote-api-test-tmp'
+// the remote host lives in the router's registry (b77e2688); a private one per run
+const REG_DIR = mkdtempSync(join(tmpdir(), 'remote-api-reg-'))
+setAgentRemoteHostsFileForTests(join(REG_DIR, 'agent-remote-hosts.json'))
 
 describe('writeAgentRemoteConfig (PUT /remote backing logic)', () => {
   beforeEach(() => {
     mkdirSync(agentDir(TEST_AGENT), { recursive: true })
-    // Seed an existing config to prove the remote write MERGES, not clobbers.
+    // Seed an existing config to prove the remote write leaves it alone.
     writeFileSync(
       join(agentDir(TEST_AGENT), 'agent-config.json'),
       JSON.stringify({ model: 'claude-sonnet-5', displayName: 'Tmp' }, null, 2),
@@ -21,6 +25,7 @@ describe('writeAgentRemoteConfig (PUT /remote backing logic)', () => {
   })
   afterEach(() => {
     rmSync(agentDir(TEST_AGENT), { recursive: true, force: true })
+    rmSync(join(REG_DIR, 'agent-remote-hosts.json'), { force: true })
   })
 
   it('persists a valid host + workdir and preserves other config keys', () => {

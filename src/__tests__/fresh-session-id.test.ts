@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -24,7 +25,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 const asyncProbeCalls: string[][] = []
 const asyncHelp = { text: '' }
 
-import { agentDir } from '../web/agent-config.js'
+import { agentDir, setAgentRemoteHostsFileForTests, writeAgentRemoteConfig } from '../web/agent-config.js'
 import {
   claudeSupportsSessionId,
   launchSessionFlag,
@@ -46,6 +47,7 @@ import {
 
 const AGENT = 'tcl-l2-proba-local'
 const REMOTE = 'tcl-l2-proba-remote'
+const REG_DIR = mkdtempSync(join(tmpdir(), 'tcl-l2-remote-reg-'))
 const UUID = '0f8fad5b-d9cb-469f-a165-70867728950e'
 const HELP_WITH = '  -c, --continue   Continue\n  --session-id <uuid>   Use a specific session ID\n'
 const HELP_WITHOUT = '  -c, --continue   Continue\n  --resume   Resume\n'
@@ -54,11 +56,15 @@ beforeAll(() => {
   mkdirSync(agentDir(AGENT), { recursive: true })
   writeFileSync(join(agentDir(AGENT), 'agent-config.json'), '{}')
   mkdirSync(agentDir(REMOTE), { recursive: true })
-  writeFileSync(join(agentDir(REMOTE), 'agent-config.json'), JSON.stringify({ remoteHost: 'laptop.example', remoteWorkdir: '/home/user/proj' }))
+  writeFileSync(join(agentDir(REMOTE), 'agent-config.json'), '{}')
+  // the remote host comes from the router's registry (b77e2688), not the agent config
+  setAgentRemoteHostsFileForTests(join(REG_DIR, 'agent-remote-hosts.json'))
+  writeAgentRemoteConfig(REMOTE, 'laptop.example', '/home/user/proj')
 })
 afterAll(() => {
   rmSync(agentDir(AGENT), { recursive: true, force: true })
   rmSync(agentDir(REMOTE), { recursive: true, force: true })
+  rmSync(REG_DIR, { recursive: true, force: true })
 })
 beforeEach(() => {
   subprocessCalls.length = 0
