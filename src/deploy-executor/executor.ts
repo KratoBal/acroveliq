@@ -42,6 +42,8 @@ export const REQUESTS_PER_MINUTE = 6
 export const EXECUTIONS_PER_MINUTE = 12
 /** a deployment Coolify recorded this long before usedAt still counts (clock skew) */
 export const RECOVER_SKEW_MS = 60_000
+/** finished Rs older than this leave the state file (the audit log keeps them) */
+export const PRUNE_AFTER_DAYS = 30
 
 export interface ExecutorDeps {
   config: ExecutorConfig
@@ -114,12 +116,47 @@ export class DeployExecutor {
     return run
   }
 
+  // The window is checked BEFORE the serial chain (barracuda, #51 review 1):
+  // inside it, a flood would queue every call first and refuse it only on its
+  // turn, holding memory and connections the whole time.
   request(input: { env?: unknown; app?: unknown; action?: unknown; sha?: unknown; requester?: unknown }): Promise<PublicRecord> {
+    try {
+      this.throttle('request', REQUESTS_PER_MINUTE)
+    } catch (err) {
+      return Promise.reject(err)
+    }
     return this.serial(() => this.doRequest(input))
   }
 
   execute(input: { r?: unknown; requestMessageId?: unknown }): Promise<PublicRecord> {
+    try {
+      this.throttle('execute', EXECUTIONS_PER_MINUTE)
+    } catch (err) {
+      return Promise.reject(err)
+    }
     return this.serial(() => this.doExecute(input))
+  }
+
+  /**
+   * Forget finished Rs older than PRUNE_AFTER_DAYS (barracuda, #51 review 2):
+   * used ones whose follow-up is over, and open ones long expired. A used R
+   * still 'calling' or 'queued' is kept, whatever its age. The audit log keeps
+   * every R's history; this only bounds the state file.
+   */
+  prune(): string[] {
+    const { store } = this.deps
+    const before = Math.floor(this.now() / 1000) - PRUNE_AFTER_DAYS * 86_400
+    const gone = store.ids().filter((id) => {
+      const r = store.get(id)!
+      if (r.createdAt >= before) return false
+      if (r.status === 'open') return r.expiresAt < before
+      return r.outcome !== 'calling' && r.outcome !== 'queued'
+    })
+    if (gone.length) {
+      store.remove(gone)
+      store.audit('pruned', { count: gone.length, before })
+    }
+    return gone
   }
 
   /**
@@ -206,7 +243,7 @@ export class DeployExecutor {
 
   private async doRequest(input: { env?: unknown; app?: unknown; action?: unknown; sha?: unknown; requester?: unknown }): Promise<PublicRecord> {
     const { config, store } = this.deps
-    this.throttle('request', REQUESTS_PER_MINUTE)
+    this.prune()
     const nowSec = Math.floor(this.now() / 1000)
     const open = store.ids().filter((id) => {
       const r = store.get(id)!
@@ -250,7 +287,6 @@ export class DeployExecutor {
 
   private async doExecute(input: { r?: unknown; requestMessageId?: unknown }): Promise<PublicRecord> {
     const { config, store, discord, coolify } = this.deps
-    this.throttle('execute', EXECUTIONS_PER_MINUTE)
     const { r, requestMessageId } = input
     if (typeof r !== 'string' || typeof requestMessageId !== 'string' || !SNOWFLAKE.test(requestMessageId)) {
       throw new Refusal('r and requestMessageId are required')

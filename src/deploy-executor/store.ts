@@ -100,6 +100,15 @@ export class RequestStore {
     this.data = next
   }
 
+  /** Drop these records, durably, in one write. */
+  remove(ids: readonly string[]): void {
+    const requests = { ...this.data.requests }
+    for (const id of ids) delete requests[id]
+    const next: StoreFile = { version: 1, requests }
+    this.write(next)
+    this.data = next
+  }
+
   /** Append-only audit trail: ids, shas, statuses, reasons; never a secret. */
   audit(event: string, fields: Record<string, string | number | boolean | null | undefined>): void {
     appendFileSync(this.auditFile, `${JSON.stringify({ at: new Date().toISOString(), event, ...fields })}\n`, { mode: 0o600 })
