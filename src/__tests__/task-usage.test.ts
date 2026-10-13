@@ -1,4 +1,5 @@
-// Per-task token measurement (acrovelIQ token brief, item 1). WHAT TURNS THIS RED:
+// Per-task token measurement (acrovelIQ token brief, item 1), and the task
+// record of TC-Lite L1. WHAT TURNS THIS RED:
 //   - the M1 window (#1657, murena, 07:03-07:18 UTC) does not give its 43 calls
 //     and their cache read, or takes a call from the window's edge or another agent;
 //   - a call in two tasks' windows is assigned to either, or the tasks still read
@@ -8,21 +9,40 @@
 //   - work, fix, review, admin and repeated work are not told apart by the events;
 //   - a kanban move by someone other than the card's assignee opens a window;
 //   - the variants are not side by side;
-//   - the route accepts an unknown event kind or an event of an unknown task.
-import { describe, it, expect, beforeEach } from 'vitest'
+//   - the route accepts an unknown event kind or an event of an unknown task;
+//   - L1: the rebuild of an old task_events loses or changes a row, an id or the
+//     AUTOINCREMENT counter, leaves foreign_keys changed, or does anything on a
+//     second run; a new closing kind is refused;
+//   - L1: a repeated key gives a second row, or two different keys (two fix
+//     rounds) or two keyless events give one;
+//   - L1: a `done` without the evidence its profile asks for is accepted
+//     unmarked (naplo) or accepted at all (kenyszerit); a merge sha that is not
+//     on main, or that belongs to another PR, passes;
+//   - L1: a task's verification profile can be replaced (code_app -> docs) and
+//     its `done` then skips the re-measure (barracuda, #46);
+//   - L1: the timeline is out of order, or an agent stays busy after it asked
+//     for review.
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 
 import {
   addTaskEvent,
   addTaskSession,
+  assigneeTasks,
+  doneGuard,
   ensureTaskUsageSchema,
+  loadTaskEvents,
+  parseTaskCoreMode,
+  taskTimeline,
   taskUsage,
   taskUsageWithVariants,
   upsertTask,
+  type MergeProbe,
   type TaskEventKind,
 } from '../task-usage.js'
+import { ensureTaskHandoffSchema } from '../task-handoff.js'
 import { getDb, initDatabase } from '../db.js'
-import { eventTime, tryHandleTaskUsage } from '../web/routes/task-usage.js'
+import { eventTime, taskCoreSettings, tryHandleTaskUsage } from '../web/routes/task-usage.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 const T = (hhmmss: string) => Math.floor(Date.parse(`2026-10-12T${hhmmss}Z`) / 1000)
@@ -255,7 +275,7 @@ describe('variants', () => {
   })
 })
 
-function fakeCtx(path: string, method: string, body?: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
+function fakeCtx(path: string, method: string, body?: unknown, headers: Record<string, string> = {}): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
@@ -263,6 +283,7 @@ function fakeCtx(path: string, method: string, body?: unknown): { ctx: RouteCont
   }
   const raw = body === undefined ? '' : JSON.stringify(body)
   const req: any = {
+    headers,
     on(e: string, handler: (arg?: unknown) => void) {
       if (e === 'data' && raw) handler(Buffer.from(raw))
       if (e === 'end') handler()
@@ -296,6 +317,279 @@ describe('the route', () => {
     expect([eventTime(undefined, 5), eventTime(1760252580, 5), eventTime('1760252580', 5),
       eventTime('2026-10-12T07:03:00Z', 5), eventTime('tegnap', 5), eventTime(-3, 5)]).toEqual([
       5, 1760252580, 1760252580, T('07:03:00'), null, null,
+    ])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// TC-Lite L1
+// ---------------------------------------------------------------------------
+
+const OLD_TASK_EVENTS = `
+  CREATE TABLE tasks (
+    id TEXT PRIMARY KEY, project TEXT NOT NULL DEFAULT 'acropora', type TEXT, parent_task TEXT,
+    variant TEXT, brief_ref TEXT, created_at INTEGER NOT NULL
+  );
+  CREATE TABLE task_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('assigned','started','review_requested','verdict','fix_started','done','merged')),
+    actor TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    ref TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_task_events_task ON task_events(task_id, at);
+`
+
+describe('TC-Lite L1: the schema', () => {
+  it('TCL-REBUILD: an old task_events keeps every row, id and the counter; a new kind fits; the second run does nothing', () => {
+    const d = new Database(':memory:')
+    d.pragma('foreign_keys = ON')
+    d.exec(OLD_TASK_EVENTS)
+    const ins = d.prepare('INSERT INTO task_events (task_id, kind, actor, at, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    ins.run('t1', 'started', 'murena', 100, null, 100)
+    ins.run('t1', 'started', 'murena', 100, null, 100) // the live duplicate `started`
+    ins.run('t1', 'review_requested', 'murena', 200, 'PR #5', 200)
+    ins.run('t2', 'assigned', 'acrobot', 50, null, 50)
+    ins.run('t2', 'done', 'acrobot', 60, null, 60)
+    d.exec('DELETE FROM task_events WHERE id = 5') // the counter now stands above the highest id
+    const rows = () => d.prepare('SELECT id, task_id, kind, actor, at, ref, created_at FROM task_events ORDER BY id').all()
+    const seq = () => (d.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'task_events'").get() as { seq: number }).seq
+    const before = rows()
+
+    ensureTaskUsageSchema(d)
+    const after = rows()
+    const seqAfter = seq()
+    const fk = d.pragma('foreign_keys', { simple: true })
+    const indexes = (d.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'task_events' ORDER BY name").all() as { name: string }[]).map((r) => r.name)
+    const keys = d.prepare('SELECT count(*) AS n FROM task_events WHERE idem_key IS NULL AND data IS NULL').get() as { n: number }
+    const newKind = addTaskEvent(d, { task_id: 't1', kind: 'blocked', actor: 'murena', at: 300, ref: null }, 300)
+    const taskColumns = (d.prepare('PRAGMA table_info(tasks)').all() as { name: string }[]).map((c) => c.name)
+
+    const schemaBefore = d.prepare('SELECT type, name, sql FROM sqlite_master ORDER BY name').all()
+    ensureTaskUsageSchema(d)
+    const schemaAgain = d.prepare('SELECT type, name, sql FROM sqlite_master ORDER BY name').all()
+
+    expect([after, seqAfter, fk, indexes, keys.n, newKind, rows().length,
+      ['title', 'goal', 'acceptance', 'assignee', 'reviewer', 'authorization_ref', 'verification_profile', 'kanban_card_id', 'updated_at'].every((c) => taskColumns.includes(c)),
+      schemaAgain], 'TCL-REBUILD').toEqual([
+      before, 5, 1, ['idx_task_events_idem', 'idx_task_events_task'], 4,
+      // the new row takes 6, not 5: the counter survived the rebuild
+      { id: 6, created: true }, 5, true, schemaBefore,
+    ])
+  })
+
+  it('a fresh database gets the new shape directly, and the task fields keep what a later write leaves out', () => {
+    task('t')
+    upsertTask(db, { id: 't', type: null, parent_task: null, variant: null, brief_ref: null, title: 'Cím', verification_profile: 'code_fleet' }, 2)
+    upsertTask(db, { id: 't', type: null, parent_task: null, variant: null, brief_ref: null, assignee: 'murena' }, 3)
+    expect(db.prepare('SELECT title, verification_profile, assignee, updated_at FROM tasks WHERE id = ?').get('t')).toEqual({
+      title: 'Cím', verification_profile: 'code_fleet', assignee: 'murena', updated_at: 3,
+    })
+  })
+})
+
+describe('TC-Lite L1: idempotency', () => {
+  it('TCL-IDEM: one key one row; two keys two rows, even when the events are byte-identical; no key, no deduplication', () => {
+    task('t')
+    const started = { task_id: 't', kind: 'started' as const, actor: 'murena', at: 100, ref: null }
+    const first = addTaskEvent(db, { ...started, idem_key: 'kulcs-0001' }, 100)
+    const again = addTaskEvent(db, { ...started, idem_key: 'kulcs-0001' }, 101)
+    const other = addTaskEvent(db, { ...started, kind: 'done', idem_key: 'kulcs-0001' }, 102)
+    // a second fix round is the same bytes as the first (barracuda, review 1)
+    const fix = { task_id: 't', kind: 'fix_started' as const, actor: 'murena', at: 200, ref: 'PR #5', data: { round: 'x' } }
+    addTaskEvent(db, { ...fix, idem_key: 'fix-kor-1' }, 200)
+    addTaskEvent(db, { ...fix, idem_key: 'fix-kor-2' }, 200)
+    addTaskEvent(db, { ...started, at: 300 }, 300)
+    addTaskEvent(db, { ...started, at: 300 }, 300)
+    const count = (kind: string) => (db.prepare('SELECT count(*) AS n FROM task_events WHERE kind = ?').get(kind) as { n: number }).n
+    expect([first, again, other, count('fix_started'), count('started'), count('done')], 'TCL-IDEM').toEqual([
+      { id: 1, created: true }, { id: 1, created: false, same: true }, { id: 1, created: false, same: false }, 2, 3, 0,
+    ])
+  })
+
+  it('TCL-IDEM-ROUTE: the header or the field; a repeat is 200 with the old id, a different event on the same key 409', async () => {
+    initDatabase(':memory:')
+    const id = 'idem-' + Date.now()
+    const send = async (body: unknown, headers: Record<string, string> = {}) => {
+      const { ctx, out } = fakeCtx(`/api/tasks/${id}/events`, 'POST', body, headers)
+      await tryHandleTaskUsage(ctx)
+      return out
+    }
+    const make = fakeCtx('/api/tasks', 'POST', { id })
+    await tryHandleTaskUsage(make.ctx)
+    const a = await send({ kind: 'started', actor: 'murena' }, { 'idempotency-key': 'futas-0001' })
+    const b = await send({ kind: 'started', actor: 'murena' }, { 'idempotency-key': 'futas-0001' })
+    const c = await send({ kind: 'started', actor: 'murena', idem_key: 'futas-0001' })
+    const d = await send({ kind: 'review_requested', actor: 'murena' }, { 'idempotency-key': 'futas-0001' })
+    const e = await send({ kind: 'started', actor: 'murena', idem_key: 'rovid' })
+    const f = await send({ kind: 'started', actor: 'murena', data: [1, 2] })
+    const rows = getDb().prepare('SELECT count(*) AS n FROM task_events WHERE task_id = ?').get(id) as { n: number }
+    expect([a.status, b.status, b.body.id === a.body.id, c.status, d.status, e.status, f.status, rows.n], 'TCL-IDEM-ROUTE').toEqual([
+      201, 200, true, 200, 409, 400, 400, 1,
+    ])
+  })
+})
+
+const SHA_A = 'a'.repeat(40)
+const SHA_B = 'b'.repeat(40)
+
+function fakeProbe(prs: Record<number, { merged: boolean; mergeCommitSha: string | null } | null | undefined>, main: string[] | undefined): MergeProbe {
+  return {
+    pullRequest: async (_repo, pr) => prs[pr],
+    onMain: async (_repo, sha) => (main === undefined ? undefined : main.includes(sha)),
+  }
+}
+
+describe('TC-Lite L1: the done guard', () => {
+  const saved = { ...taskCoreSettings }
+  afterEach(() => Object.assign(taskCoreSettings, saved))
+
+  /** A task with a profile and, when given, a `merged` event; then a `done`. */
+  async function done(mode: 'off' | 'naplo' | 'kenyszerit', profile: string | null, merged: Record<string, unknown> | null, probe = fakeProbe({}, [])) {
+    initDatabase(':memory:')
+    taskCoreSettings.mode = mode
+    taskCoreSettings.probe = () => probe
+    const id = `done-${Math.random().toString(36).slice(2)}`
+    const post = async (path: string, body: unknown) => {
+      const { ctx, out } = fakeCtx(path, 'POST', body)
+      await tryHandleTaskUsage(ctx)
+      return out
+    }
+    await post('/api/tasks', { id, ...(profile ? { verification_profile: profile } : {}) })
+    if (merged) await post(`/api/tasks/${id}/events`, { kind: 'merged', actor: 'acrobot', data: merged })
+    const out = await post(`/api/tasks/${id}/events`, { kind: 'done', actor: 'acrobot' })
+    const stored = getDb().prepare("SELECT data FROM task_events WHERE task_id = ? AND kind = 'done'").get(id) as { data: string | null } | undefined
+    return { status: out.status, wouldReject: out.body?.would_reject === true, reason: String(out.body?.reason ?? ''), stored: stored ? JSON.parse(stored.data ?? 'null') : 'nincs sor' }
+  }
+  const claim = (pr: number, sha: string) => ({ repo: 'KratoBal/marveen', pr, merge_sha: sha })
+
+  it('TCL-DONE-MODES: code profile without merged: naplo marks, kenyszerit refuses, off is the old behaviour; docs passes', async () => {
+    const naplo = await done('naplo', 'code_app', null)
+    const enforce = await done('kenyszerit', 'code_app', null)
+    const off = await done('off', 'code_app', null)
+    const docs = await done('kenyszerit', 'docs', null)
+    const noProfile = await done('kenyszerit', null, null)
+    expect([naplo.status, naplo.wouldReject, naplo.stored?.would_reject, enforce.status, enforce.stored,
+      off.status, off.wouldReject, off.stored, docs.status, docs.wouldReject, noProfile.status], 'TCL-DONE-MODES').toEqual([
+      201, true, true, 409, 'nincs sor', 201, false, null, 201, false, 409,
+    ])
+  })
+
+  it('TCL-DONE-VERIFY: a sha not on main, and a real on-main sha of ANOTHER PR, are both refused; the right one passes', async () => {
+    // PR 41 merged as SHA_A; SHA_B is real and on main, but it is PR 40's merge
+    const prs = { 41: { merged: true, mergeCommitSha: SHA_A }, 40: { merged: true, mergeCommitSha: SHA_B } }
+    const notOnMain = await done('kenyszerit', 'code_fleet', claim(41, SHA_A), fakeProbe(prs, [SHA_B]))
+    const otherPr = await done('kenyszerit', 'code_fleet', claim(41, SHA_B), fakeProbe(prs, [SHA_A, SHA_B]))
+    const right = await done('kenyszerit', 'code_fleet', claim(41, SHA_A), fakeProbe(prs, [SHA_A, SHA_B]))
+    const unmerged = await done('kenyszerit', 'code_fleet', claim(41, SHA_A), fakeProbe({ 41: { merged: false, mergeCommitSha: null } }, [SHA_A]))
+    const badData = await done('kenyszerit', 'code_fleet', { repo: 'KratoBal/marveen', pr: 41 }, fakeProbe(prs, [SHA_A]))
+    expect([notOnMain.status, /nincs a KratoBal\/marveen fő ágán/.test(notOnMain.reason), otherPr.status, /nem ennek a PR-nek/.test(otherPr.reason),
+      right.status, right.wouldReject, unmerged.status, badData.status, /merge_sha/.test(badData.reason)], 'TCL-DONE-VERIFY').toEqual([
+      409, true, 409, true, 201, false, 409, 409, true,
+    ])
+  })
+
+  it('TCL-PROFILE-FIXED: a written profile cannot be swapped for docs before the done; the guard still measures', async () => {
+    initDatabase(':memory:')
+    taskCoreSettings.mode = 'kenyszerit'
+    taskCoreSettings.probe = () => fakeProbe({}, [])
+    const id = `profil-${Math.random().toString(36).slice(2)}`
+    const post = async (path: string, body: unknown) => {
+      const { ctx, out } = fakeCtx(path, 'POST', body)
+      await tryHandleTaskUsage(ctx)
+      return out
+    }
+    await post('/api/tasks', { id, verification_profile: 'code_app' })
+    const swap = await post('/api/tasks', { id, verification_profile: 'docs' })
+    const same = await post('/api/tasks', { id, verification_profile: 'code_app', title: 'Cím' })
+    const omitted = await post('/api/tasks', { id, assignee: 'murena' })
+    // the function itself keeps it too, whoever calls it
+    upsertTask(getDb(), { id, type: null, parent_task: null, variant: null, brief_ref: null, verification_profile: 'docs' }, 9)
+    const profile = (getDb().prepare('SELECT verification_profile FROM tasks WHERE id = ?').get(id) as { verification_profile: string }).verification_profile
+    const finish = await post(`/api/tasks/${id}/events`, { kind: 'done', actor: 'murena' })
+    expect([swap.status, same.status, omitted.status, profile, finish.status], 'TCL-PROFILE-FIXED').toEqual([409, 201, 201, 'code_app', 409])
+  })
+
+  it('TCL-DONE-UNMEASURABLE: GitHub out of reach: kenyszerit 409 "nem mérhető", naplo accepts and marks', async () => {
+    const unreachable = fakeProbe({ 41: undefined }, undefined)
+    const enforce = await done('kenyszerit', 'migration', claim(41, SHA_A), unreachable)
+    const naplo = await done('naplo', 'migration', claim(41, SHA_A), unreachable)
+    expect([enforce.status, /^nem mérhető/.test(enforce.reason), naplo.status, naplo.wouldReject, /^nem mérhető/.test(naplo.stored?.would_reject_reason)], 'TCL-DONE-UNMEASURABLE').toEqual([
+      409, true, 201, true, true,
+    ])
+  })
+
+  it('the setting: empty is naplo, the three words are themselves, anything else the strictest, loudly', () => {
+    expect(['', 'off', 'NAPLO', 'kenyszerit', 'ki'].map((v) => parseTaskCoreMode(v))).toEqual([
+      { mode: 'naplo', problem: null }, { mode: 'off', problem: null }, { mode: 'naplo', problem: null },
+      { mode: 'kenyszerit', problem: null }, { mode: 'kenyszerit', problem: expect.stringContaining('the strictest') },
+    ])
+  })
+
+  it('doneGuard reads the LATEST merged event', () => {
+    task('t')
+    event('t', 'merged', 'acrobot', 10)
+    addTaskEvent(db, { task_id: 't', kind: 'merged', actor: 'acrobot', at: 20, ref: null, data: claim(7, SHA_A) }, 20)
+    expect(doneGuard(loadTaskEvents(db, 't'), 'code_app')).toEqual({ need: 'verify', claim: claim(7, SHA_A) })
+  })
+})
+
+describe('TC-Lite L1: the timeline and busy', () => {
+  it('TCL-TIMELINE: events, handoffs and sessions in time order; same second: session, event, handoff', () => {
+    ensureTaskHandoffSchema(db)
+    upsertTask(db, { id: 't', type: null, parent_task: null, variant: null, brief_ref: null, assignee: 'murena' }, 1)
+    event('t', 'review_requested', 'murena', 200)
+    db.prepare(
+      "INSERT INTO task_handoffs (task_id, agent, status, record, created_at) VALUES ('t', 'murena', 'in_progress', ?, 150)",
+    ).run(JSON.stringify({ next_step: 'teszt' }))
+    event('t', 'started', 'murena', 100)
+    addTaskSession(db, 't', 'murena', 'sess-1', 100)
+    event('t', 'assigned', 'acrobot', 50)
+    db.prepare(
+      "INSERT INTO task_handoffs (task_id, agent, status, record, created_at) VALUES ('t', 'murena', 'done', '{}', 100)",
+    ).run()
+    const items = taskTimeline(db, 't').map((i) => `${i.at}:${i.source}:${'kind' in i ? i.kind : 'status' in i ? i.status : i.session_id}`)
+    expect(items, 'TCL-TIMELINE').toEqual([
+      '50:event:assigned', '100:session:sess-1', '100:event:started', '100:handoff:done', '150:handoff:in_progress', '200:event:review_requested',
+    ])
+  })
+
+  it('TCL-BUSY: assigned and started keep an agent busy, review_requested frees it, fix_started takes it again', () => {
+    upsertTask(db, { id: 'a', type: null, parent_task: null, variant: null, brief_ref: null, assignee: 'murena' }, 1)
+    upsertTask(db, { id: 'b', type: null, parent_task: null, variant: null, brief_ref: null, assignee: 'murena' }, 2)
+    upsertTask(db, { id: 'c', type: null, parent_task: null, variant: null, brief_ref: null, assignee: 'nautilus' }, 3)
+    event('a', 'started', 'murena', 10)
+    event('b', 'assigned', 'acrobot', 10)
+    event('c', 'started', 'nautilus', 10)
+    const busy = () => assigneeTasks(db, 'murena').filter((t) => t.busy).map((t) => t.id)
+    const atStart = busy()
+    event('a', 'review_requested', 'murena', 20)
+    const afterReview = busy()
+    event('a', 'fix_started', 'murena', 30)
+    expect([atStart, afterReview, busy()], 'TCL-BUSY').toEqual([['a', 'b'], ['b'], ['a', 'b']])
+  })
+
+  it('the two reads on the route: ?assignee&busy=1 and the timeline; an unknown task is 404', async () => {
+    initDatabase(':memory:')
+    const id = 'tl-' + Date.now()
+    const call = async (path: string, method: string, body?: unknown) => {
+      const { ctx, out } = fakeCtx(path, method, body)
+      const handled = await tryHandleTaskUsage(ctx)
+      return { handled, ...out }
+    }
+    await call('/api/tasks', 'POST', { id, assignee: 'polip-' + id, title: 'Cím', acceptance: ['zöld kapu'] })
+    await call(`/api/tasks/${id}/events`, 'POST', { kind: 'started', actor: 'polip' })
+    const busy = await call(`/api/tasks?assignee=polip-${id}&busy=1`, 'GET')
+    const timeline = await call(`/api/tasks/${id}/timeline`, 'GET')
+    const unknown = await call('/api/tasks/nincs-ilyen/timeline', 'GET')
+    const noAssignee = await call('/api/tasks', 'GET')
+    const badProfile = await call('/api/tasks', 'POST', { id, verification_profile: 'kod' })
+    const acceptance = getDb().prepare('SELECT acceptance FROM tasks WHERE id = ?').get(id) as { acceptance: string }
+    expect([busy.status, busy.body.map((t: { id: string }) => t.id), timeline.status, timeline.body.items.length, unknown.status,
+      noAssignee.status, badProfile.status, JSON.parse(acceptance.acceptance)]).toEqual([
+      200, [id], 200, 1, 404, 400, 400, ['zöld kapu'],
     ])
   })
 })

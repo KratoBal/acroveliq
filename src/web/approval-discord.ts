@@ -28,8 +28,6 @@
 //
 // Off unless the channel, the users and the decider are all set: merging this
 // changes nothing on a running install.
-import { randomInt } from 'node:crypto'
-
 import {
   APPROVAL_DISCORD_CHANNEL_ID,
   APPROVAL_DISCORD_DECIDER,
@@ -50,6 +48,33 @@ import {
 import { readEnvFile } from '../env.js'
 import { logger } from '../logger.js'
 import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
+import {
+  buildDiscordApprovalText,
+  matchDecisions,
+  newApprovalCode,
+  snowflakeAt,
+  type DiscordMessage,
+  type MatchedDecision,
+} from './approval-discord-core.js'
+
+// The pure half lives in approval-discord-core.ts (the deploy executor reads
+// Discord back with the same code); re-exported so no caller changes.
+export {
+  buildDiscordApprovalText,
+  CODE_ALPHABET,
+  CODE_LENGTH,
+  DESCRIPTION_MAX,
+  formatApprovalExpiry,
+  matchDecisions,
+  neutralDescription,
+  newApprovalCode,
+  parseDecision,
+  snowflakeAt,
+  snowflakeMs,
+  type DiscordMessage,
+  type MatchedDecision,
+  type ParsedDecision,
+} from './approval-discord-core.js'
 
 export interface ApprovalDiscordConfig {
   channelId: string
@@ -76,123 +101,6 @@ export function approvalDiscordConfig(): ApprovalDiscordConfig {
 /** On only when all three are set; a half setting must not decide anything. */
 export function approvalDiscordEnabled(cfg: ApprovalDiscordConfig): boolean {
   return Boolean(cfg.channelId && cfg.userIds.length && cfg.decider)
-}
-
-// No 0/O, 1/I/L: a code read off a phone must not be ambiguous.
-const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
-export const CODE_LENGTH = 4
-
-export function newApprovalCode(taken: ReadonlySet<string>, pick: (n: number) => number = randomInt): string {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    let code = ''
-    for (let i = 0; i < CODE_LENGTH; i++) code += CODE_ALPHABET[pick(CODE_ALPHABET.length)]
-    if (!taken.has(code)) return code
-  }
-  throw new Error('no free approval code after 100 attempts')
-}
-
-export interface ParsedDecision {
-  status: 'approved' | 'rejected'
-  code: string
-}
-
-/**
- * The whole message must be `<yes|no> <code>`, nothing else: a sentence that
- * happens to contain the word and a code does not decide. Case and the
- * surrounding whitespace do not matter.
- */
-export function parseDecision(text: string, cfg: Pick<ApprovalDiscordConfig, 'yes' | 'no'>): ParsedDecision | null {
-  const parts = text.trim().split(/\s+/)
-  if (parts.length !== 2) return null
-  const [word, rawCode] = [parts[0]!.toLowerCase(), parts[1]!.toUpperCase()]
-  if (rawCode.length !== CODE_LENGTH || [...rawCode].some((c) => !CODE_ALPHABET.includes(c))) return null
-  if (word === cfg.yes) return { status: 'approved', code: rawCode }
-  if (word === cfg.no) return { status: 'rejected', code: rawCode }
-  return null
-}
-
-export interface DiscordMessage {
-  id: string
-  content: string
-  author: { id: string; bot?: boolean }
-  /** set when the message is a Discord reply */
-  message_reference?: { message_id?: string } | null
-}
-
-export interface MatchedDecision {
-  approvalId: string
-  status: 'approved' | 'rejected'
-  messageId: string
-  authorId: string
-}
-
-/**
- * Which messages decide which approval. Pure. Oldest first, and one decision
- * per approval: a second reply to the same code finds the row decided.
- */
-export function matchDecisions(
-  messages: readonly DiscordMessage[],
-  pending: readonly Pick<Approval, 'id' | 'discord_code' | 'timeout_at' | 'requested_at' | 'discord_message_id'>[],
-  cfg: Pick<ApprovalDiscordConfig, 'userIds' | 'yes' | 'no' | 'requireReply'>,
-  nowSeconds: number,
-): MatchedDecision[] {
-  const byCode = new Map(
-    pending.filter((a) => a.discord_code).map((a) => [a.discord_code!.toUpperCase(), a]),
-  )
-  const byMessage = new Map(
-    pending.filter((a) => a.discord_message_id).map((a) => [a.discord_message_id!, a]),
-  )
-  const decided = new Set<string>()
-  const out: MatchedDecision[] = []
-  const oldestFirst = [...messages].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
-  for (const m of oldestFirst) {
-    if (m.author.bot || !cfg.userIds.includes(m.author.id)) continue
-    const parsed = parseDecision(m.content, cfg)
-    if (!parsed) continue
-    // with replies required, the request is the one REPLIED TO, and the code
-    // must be that request's own: a code copied from elsewhere does not match
-    const approval = cfg.requireReply
-      ? byMessage.get(m.message_reference?.message_id ?? '')
-      : byCode.get(parsed.code)
-    if (!approval || decided.has(approval.id)) continue
-    if ((approval.discord_code ?? '').toUpperCase() !== parsed.code) continue
-    if (snowflakeMs(m.id) <= approval.requested_at * 1000) continue
-    if (approval.timeout_at != null && approval.timeout_at <= nowSeconds) continue
-    decided.add(approval.id)
-    out.push({ approvalId: approval.id, status: parsed.status, messageId: m.id, authorId: m.author.id })
-  }
-  return out
-}
-
-export const DESCRIPTION_MAX = 500
-
-/**
- * The requesting agent's words, made inert: one line, no markdown characters,
- * cut to a limit, quoted. Any agent may create a request, so its text must
- * not be able to look like our instructions (barracuda #33).
- */
-export function neutralDescription(text: string): string {
-  const flat = text.replace(/[`>#*_~|]/g, ' ').replace(/\s+/g, ' ').trim()
-  const cut = flat.length > DESCRIPTION_MAX ? `${flat.slice(0, DESCRIPTION_MAX)}...` : flat
-  return `> ${cut}`
-}
-
-/** The request as the owner reads it on Discord: our instruction first, the agent's words last, quoted. */
-export function buildDiscordApprovalText(
-  approval: Approval,
-  code: string,
-  cfg: Pick<ApprovalDiscordConfig, 'yes' | 'no' | 'requireReply'>,
-): string {
-  const expires = approval.timeout_at
-    ? new Date(approval.timeout_at * 1000).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
-    : 'nincs'
-  const how = cfg.requireReply ? 'Erre az üzenetre válaszolva' : 'Válaszként'
-  return [
-    `**JÓVÁHAGYÁS KELL, kód: ${code}**`,
-    `${how}: \`${cfg.yes} ${code}\` vagy \`${cfg.no} ${code}\` (csak ez a két alak dönt). Lejárat: ${expires}`,
-    `Kérő: ${approval.agent_id} | ${approval.category.replace(/[^\w.-]/g, '')}`,
-    neutralDescription(approval.action_description),
-  ].join('\n')
 }
 
 export interface DiscordTransport {
@@ -231,17 +139,6 @@ export function restTransport(token: string, fetchImpl: typeof fetch = fetch): D
 export function discordTransportFromEnv(): DiscordTransport | null {
   const token = (readEnvFile()['DISCORD_BOT_TOKEN'] ?? '').trim()
   return token ? restTransport(token) : null
-}
-
-/** When a Discord id (snowflake) was made, in ms. */
-export function snowflakeMs(id: string): number {
-  return Number((BigInt(id) >> 22n) + 1420070400000n)
-}
-
-/** A Discord snowflake for a moment: the poll starts this far back. */
-export function snowflakeAt(ms: number): string {
-  const DISCORD_EPOCH = 1420070400000n
-  return ((BigInt(ms) - DISCORD_EPOCH) << 22n).toString()
 }
 
 /**

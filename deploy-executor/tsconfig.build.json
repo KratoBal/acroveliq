@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../src",
+    "outDir": "../out"
+  },
+  "include": ["../src/deploy-executor/*.ts", "../src/web/approval-discord-core.ts"],
+  "exclude": []
+}

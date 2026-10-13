@@ -1,0 +1,88 @@
+{
+  "stateDir": "/var/lib/vegrehajto",
+  "discord": {
+    "channelId": "000000000000000000",
+    "requestBotUserId": "000000000000000001",
+    "deciderUserIds": [
+      "000000000000000002"
+    ],
+    "yes": "igen",
+    "no": "nem",
+    "tokenFile": "/run/secrets/discord-olvaso"
+  },
+  "github": {
+    "tokenFile": "/run/secrets/github-olvaso"
+  },
+  "coolifyHosts": {
+    "prod-gep": {
+      "coolifyApiUrl": "https://coolify.prod.example/api/v1",
+      "coolifyTokenFile": "/run/secrets/coolify-prod-deploy"
+    },
+    "ai-gep": {
+      "coolifyApiUrl": "https://coolify.ai.example/api/v1",
+      "coolifyTokenFile": "/run/secrets/coolify-ai-deploy"
+    }
+  },
+  "apps": [
+    {
+      "env": "prod",
+      "name": "acropora-api",
+      "coolifyHost": "prod-gep",
+      "coolifyUuid": "replacewithuuid1",
+      "repo": "KratoBal/acropora-os",
+      "branch": "main",
+      "actions": [
+        "deploy"
+      ],
+      "approvalMinutes": 30
+    },
+    {
+      "env": "prod",
+      "name": "acropora-web",
+      "coolifyHost": "prod-gep",
+      "coolifyUuid": "replacewithuuid2",
+      "repo": "KratoBal/acropora-os",
+      "branch": "main",
+      "actions": [
+        "deploy"
+      ],
+      "approvalMinutes": 30
+    },
+    {
+      "env": "prod",
+      "name": "acropora-partner",
+      "coolifyHost": "prod-gep",
+      "coolifyUuid": "replacewithuuid3",
+      "repo": "KratoBal/acropora-os",
+      "branch": "main",
+      "actions": [
+        "deploy"
+      ],
+      "approvalMinutes": 30
+    },
+    {
+      "env": "prod",
+      "name": "acropora-ai-api",
+      "coolifyHost": "ai-gep",
+      "coolifyUuid": "replacewithuuid4",
+      "repo": "KratoBal/replace-with-ai-repo",
+      "branch": "main",
+      "actions": [
+        "deploy"
+      ],
+      "approvalMinutes": 30
+    },
+    {
+      "env": "stage",
+      "name": "acropora-stage-api",
+      "coolifyHost": "ai-gep",
+      "coolifyUuid": "replacewithuuid5",
+      "repo": "KratoBal/acropora-os",
+      "branch": "main",
+      "actions": [
+        "deploy"
+      ],
+      "approvalMinutes": 30
+    }
+  ]
+}

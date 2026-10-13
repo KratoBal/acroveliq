@@ -41,8 +41,86 @@ export const TASK_EVENT_KINDS = [
   'fix_started',
   'done',
   'merged',
+  // TC-Lite L1: a task can end without `done`
+  'blocked',
+  'cancelled',
+  'failed',
+  'partial',
 ] as const
 export type TaskEventKind = (typeof TASK_EVENT_KINDS)[number]
+
+/** How a task's `done` is verified (TC-Lite L1). */
+export const VERIFICATION_PROFILES = ['docs', 'code_fleet', 'code_app', 'migration', 'prod_data_write', 'ops'] as const
+export type VerificationProfile = (typeof VERIFICATION_PROFILES)[number]
+/** The profiles whose `done` needs a merged, re-measured PR. */
+export const CODE_PROFILES: ReadonlySet<string> = new Set(['code_fleet', 'code_app', 'migration'])
+
+/** The task fields added by TC-Lite L1, in the order of the schema. */
+const TASK_FIELDS = [
+  'title',
+  'goal',
+  'acceptance',
+  'assignee',
+  'reviewer',
+  'authorization_ref',
+  'verification_profile',
+  'kanban_card_id',
+] as const
+type TaskField = (typeof TASK_FIELDS)[number]
+
+const taskEventsTable = (name: string) => `
+  CREATE TABLE ${name} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN (${TASK_EVENT_KINDS.map((k) => `'${k}'`).join(',')})),
+    actor TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    ref TEXT,
+    created_at INTEGER NOT NULL,
+    data TEXT,
+    idem_key TEXT
+  )`
+
+const columns = (db: Database.Database, table: string): string[] =>
+  (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name)
+
+/**
+ * A CHECK constraint cannot be altered in SQLite: a table whose `kind` list
+ * lacks a kind is rebuilt, in one transaction, keeping every row and id and
+ * the AUTOINCREMENT counter. Nothing happens when the list is already whole.
+ * Returns whether it rebuilt.
+ */
+export function rebuildTaskEventsIfNeeded(db: Database.Database): boolean {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'task_events'")
+    .get() as { sql: string } | undefined
+  if (!row || TASK_EVENT_KINDS.every((k) => row.sql.includes(`'${k}'`))) return false
+  const keep = columns(db, 'task_events').filter((c) =>
+    ['id', 'task_id', 'kind', 'actor', 'at', 'ref', 'created_at', 'data', 'idem_key'].includes(c),
+  )
+  const list = keep.join(', ')
+  // foreign_keys cannot change inside a transaction; nothing references this
+  // table, but the setting is put back as it was either way
+  const foreignKeys = db.pragma('foreign_keys', { simple: true }) as number
+  if (foreignKeys) db.pragma('foreign_keys = OFF')
+  try {
+    db.transaction(() => {
+      const seq = (
+        db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'task_events'").get() as { seq: number } | undefined
+      )?.seq
+      db.exec(taskEventsTable('task_events__rebuild'))
+      db.exec(`INSERT INTO task_events__rebuild (${list}) SELECT ${list} FROM task_events`)
+      db.exec('DROP TABLE task_events')
+      db.exec('ALTER TABLE task_events__rebuild RENAME TO task_events')
+      // the copy sets the counter to the highest id; a deleted last row had a higher one
+      if (seq !== undefined)
+        db.prepare("UPDATE sqlite_sequence SET seq = max(seq, ?) WHERE name = 'task_events'").run(seq)
+    })()
+  } finally {
+    if (foreignKeys) db.pragma('foreign_keys = ON')
+  }
+  return true
+}
 
 export const CAPACITY_KINDS = ['work', 'review', 'fix', 'admin', 'repeat'] as const
 export type CapacityKind = (typeof CAPACITY_KINDS)[number]
@@ -59,19 +137,20 @@ export function ensureTaskUsageSchema(db: Database.Database): void {
       created_at INTEGER NOT NULL
     )
   `)
+  // TC-Lite L1: added, never rebuilt; the old code reads none of them
+  const taskColumns = columns(db, 'tasks')
+  for (const field of [...TASK_FIELDS, 'updated_at'])
+    if (!taskColumns.includes(field))
+      db.exec(`ALTER TABLE tasks ADD COLUMN ${field} ${field === 'updated_at' ? 'INTEGER' : 'TEXT'}`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task)`)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS task_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      task_id TEXT NOT NULL,
-      kind TEXT NOT NULL CHECK(kind IN (${TASK_EVENT_KINDS.map((k) => `'${k}'`).join(',')})),
-      actor TEXT NOT NULL,
-      at INTEGER NOT NULL,
-      ref TEXT,
-      created_at INTEGER NOT NULL
-    )
-  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee)`)
+  if (!rebuildTaskEventsIfNeeded(db)) db.exec(taskEventsTable('IF NOT EXISTS task_events'))
+  const eventColumns = columns(db, 'task_events')
+  for (const field of ['data', 'idem_key'])
+    if (!eventColumns.includes(field)) db.exec(`ALTER TABLE task_events ADD COLUMN ${field} TEXT`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, at)`)
+  // a NULL key never collides with another NULL: an event without a key is not deduplicated
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_task_events_idem ON task_events(idem_key)`)
   // a session belongs to one task at most: the primary key says so
   db.exec(`
     CREATE TABLE IF NOT EXISTS task_sessions (
@@ -92,6 +171,16 @@ export interface TaskRow {
   variant: string | null
   brief_ref: string | null
   created_at: number
+  title?: string | null
+  goal?: string | null
+  /** JSON text. */
+  acceptance?: string | null
+  assignee?: string | null
+  reviewer?: string | null
+  authorization_ref?: string | null
+  verification_profile?: string | null
+  kanban_card_id?: string | null
+  updated_at?: number | null
 }
 
 export interface TaskEvent {
@@ -103,27 +192,73 @@ export interface TaskEvent {
   ref: string | null
 }
 
-export function upsertTask(
-  db: Database.Database,
-  task: Omit<TaskRow, 'created_at' | 'project'> & { project?: string },
-  now: number,
-): void {
+export type TaskInput = Pick<TaskRow, 'id' | 'type' | 'parent_task' | 'variant' | 'brief_ref'> & {
+  project?: string
+} & Partial<Record<TaskField, string | null>>
+
+/**
+ * A task, created or updated. The original fields are written as given (an
+ * update without them clears them, as before L1); an L1 field left out keeps
+ * its stored value, so a later partial write does not erase a title. The
+ * verification profile is written once and never replaced here: a `code_app`
+ * task turned `docs` before its `done` would skip the GitHub re-measure.
+ */
+export function upsertTask(db: Database.Database, task: TaskInput, now: number): void {
+  const fields = Object.fromEntries(TASK_FIELDS.map((f) => [f, task[f] ?? null]))
   db.prepare(
-    `INSERT INTO tasks (id, project, type, parent_task, variant, brief_ref, created_at)
-     VALUES (@id, @project, @type, @parent_task, @variant, @brief_ref, @now)
+    `INSERT INTO tasks (id, project, type, parent_task, variant, brief_ref, created_at, updated_at,
+                        ${TASK_FIELDS.join(', ')})
+     VALUES (@id, @project, @type, @parent_task, @variant, @brief_ref, @now, @now,
+             ${TASK_FIELDS.map((f) => `@${f}`).join(', ')})
      ON CONFLICT(id) DO UPDATE SET
        project = excluded.project, type = excluded.type, parent_task = excluded.parent_task,
-       variant = excluded.variant, brief_ref = excluded.brief_ref`,
-  ).run({ ...task, project: task.project?.trim() || DEFAULT_PROJECT, now })
+       variant = excluded.variant, brief_ref = excluded.brief_ref, updated_at = excluded.updated_at,
+       ${TASK_FIELDS.map((f) =>
+         // the profile decides what `done` must prove: once written it stays (barracuda, #46)
+         f === 'verification_profile' ? `${f} = coalesce(tasks.${f}, excluded.${f})` : `${f} = coalesce(excluded.${f}, tasks.${f})`,
+       ).join(', ')}`,
+  ).run({
+    id: task.id,
+    type: task.type,
+    parent_task: task.parent_task,
+    variant: task.variant,
+    brief_ref: task.brief_ref,
+    ...fields,
+    project: task.project?.trim() || DEFAULT_PROJECT,
+    now,
+  })
 }
 
-export function addTaskEvent(db: Database.Database, event: TaskEvent, now: number): number {
+export interface NewTaskEvent extends TaskEvent {
+  /** Stored as JSON text. */
+  data?: Record<string, unknown> | null
+  /** The CALLER's key (barracuda, review 1): without one, no deduplication. */
+  idem_key?: string | null
+}
+
+export type AddedEvent =
+  | { id: number; created: true }
+  /** The key was used before: the earlier event, and whether it is the same event. */
+  | { id: number; created: false; same: boolean }
+
+export function addTaskEvent(db: Database.Database, event: NewTaskEvent, now: number): AddedEvent {
+  const key = event.idem_key ?? null
   const result = db
     .prepare(
-      'INSERT INTO task_events (task_id, kind, actor, at, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      `INSERT INTO task_events (task_id, kind, actor, at, ref, created_at, data, idem_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(idem_key) DO NOTHING`,
     )
-    .run(event.task_id, event.kind, event.actor, event.at, event.ref, now)
-  return Number(result.lastInsertRowid)
+    .run(event.task_id, event.kind, event.actor, event.at, event.ref, now,
+      event.data == null ? null : JSON.stringify(event.data), key)
+  if (result.changes === 1) return { id: Number(result.lastInsertRowid), created: true }
+  const earlier = db
+    .prepare('SELECT id, task_id, kind, actor FROM task_events WHERE idem_key = ?')
+    .get(key) as { id: number; task_id: string; kind: string; actor: string }
+  return {
+    id: earlier.id,
+    created: false,
+    same: earlier.task_id === event.task_id && earlier.kind === event.kind && earlier.actor === event.actor,
+  }
 }
 
 /** A session to a task. A session already registered to ANOTHER task is refused. */
@@ -486,4 +621,241 @@ export function taskUsageWithVariants(
       return usage ? [usage] : []
     }),
   }
+}
+
+// ---------------------------------------------------------------------------
+// TC-Lite L1: the `done` guard, the busy query and the timeline.
+// ---------------------------------------------------------------------------
+
+/** The setting of the `done` guard: off is the behaviour before L1. */
+export const TASK_CORE_MODES = ['off', 'naplo', 'kenyszerit'] as const
+export type TaskCoreMode = (typeof TASK_CORE_MODES)[number]
+
+/** Like the access setting: empty is `naplo`, an unknown value the strictest. */
+export function parseTaskCoreMode(raw: string | undefined): { mode: TaskCoreMode; problem: string | null } {
+  const value = raw?.trim().toLowerCase() ?? ''
+  if (!value) return { mode: 'naplo', problem: null }
+  if ((TASK_CORE_MODES as readonly string[]).includes(value)) return { mode: value as TaskCoreMode, problem: null }
+  return {
+    mode: 'kenyszerit',
+    problem: `TASK_CORE_MODE=${JSON.stringify(value)} is none of ${TASK_CORE_MODES.join(', ')}: enforcing, the strictest`,
+  }
+}
+
+export interface StoredTaskEvent extends TaskEvent {
+  id: number
+  data: Record<string, unknown> | null
+}
+
+/** One task's own events, in time order (ties by id), with their data. */
+export function loadTaskEvents(db: Database.Database, taskId: string): StoredTaskEvent[] {
+  const rows = db
+    .prepare('SELECT id, task_id, kind, actor, at, ref, data FROM task_events WHERE task_id = ? ORDER BY at, id')
+    .all(taskId) as (Omit<StoredTaskEvent, 'data'> & { data: string | null })[]
+  return rows.map((row) => {
+    let data: Record<string, unknown> | null = null
+    try {
+      const parsed: unknown = row.data === null ? null : JSON.parse(row.data)
+      data = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null
+    } catch {
+      data = null
+    }
+    return { ...row, data }
+  })
+}
+
+/** What a `merged` event must carry for its merge to be measured. */
+export interface MergeClaim {
+  repo: string
+  pr: number
+  merge_sha: string
+}
+
+export type DoneCheck =
+  /** The profile asks for no evidence. */
+  | { need: 'none' }
+  /** Evidence is missing or malformed: the reason, in one sentence. */
+  | { need: 'missing'; reason: string }
+  /** The latest `merged` event's claim, to be re-measured on GitHub. */
+  | { need: 'verify'; claim: MergeClaim }
+
+const REPO = /^(?!.*\.\.)[\w.-]+\/[\w.-]+$/
+
+/**
+ * THE `done` GUARD, the pure half. A code profile needs an earlier `merged`
+ * event, and its data must name the repo, the PR and the merge commit, because
+ * the claim is re-measured, never believed: any agent may write a `merged`
+ * row (barracuda, review 2). A task without a profile cannot say what it
+ * needs, so it is refused as missing, not let through.
+ */
+export function doneGuard(events: readonly StoredTaskEvent[], profile: string | null | undefined): DoneCheck {
+  if (!profile) return { need: 'missing', reason: 'a feladatnak nincs verification_profile mezője, tehát nem mondja meg, mi kell a lezáráshoz' }
+  if (!CODE_PROFILES.has(profile)) return { need: 'none' }
+  const merged = [...events].reverse().find((e) => e.kind === 'merged')
+  if (!merged) return { need: 'missing', reason: `${profile} profilnál a done előtt merged esemény kell` }
+  const d = merged.data ?? {}
+  const repo = typeof d.repo === 'string' && REPO.test(d.repo) ? d.repo : null
+  const pr = typeof d.pr === 'number' && Number.isInteger(d.pr) && d.pr > 0 ? d.pr : typeof d.pr === 'string' && /^\d+$/.test(d.pr) ? Number(d.pr) : null
+  const sha = typeof d.merge_sha === 'string' && /^[0-9a-f]{40}$/i.test(d.merge_sha) ? d.merge_sha.toLowerCase() : null
+  if (!repo || !pr || !sha)
+    return {
+      need: 'missing',
+      reason: `a merged esemény (${merged.id}) adatából hiányzik: ${[!repo && 'repo (owner/name)', !pr && 'pr', !sha && 'merge_sha (40 jegy)'].filter(Boolean).join(', ')}`,
+    }
+  return { need: 'verify', claim: { repo, pr, merge_sha: sha } }
+}
+
+/**
+ * GitHub, as the guard asks it. Each answer is `undefined` when it could not
+ * be measured: that is its own outcome, never agreement.
+ */
+export interface MergeProbe {
+  pullRequest(repo: string, pr: number): Promise<{ merged: boolean; mergeCommitSha: string | null } | null | undefined>
+  /** Whether the commit is on the main branch (`compare main...sha`: identical or behind). */
+  onMain(repo: string, sha: string): Promise<boolean | null | undefined>
+}
+
+export type MergeVerdict = { ok: true } | { ok: false; measurable: boolean; reason: string }
+
+/**
+ * The claim re-measured, two ways (barracuda, round 2): the PR is merged AND
+ * its merge commit is this sha (so a real sha of ANOTHER PR does not pass),
+ * and the sha is on main (because `merged: true` alone can lie, which
+ * pr-beolvaszt.sh measures too).
+ */
+export async function verifyMerge(claim: MergeClaim, probe: MergeProbe): Promise<MergeVerdict> {
+  const pr = await probe.pullRequest(claim.repo, claim.pr)
+  if (pr === undefined) return { ok: false, measurable: false, reason: `a ${claim.repo} #${claim.pr} állapota nem mérhető most` }
+  if (pr === null) return { ok: false, measurable: true, reason: `a ${claim.repo} #${claim.pr} PR nem létezik` }
+  if (!pr.merged) return { ok: false, measurable: true, reason: `a ${claim.repo} #${claim.pr} nincs beolvasztva` }
+  if ((pr.mergeCommitSha ?? '').toLowerCase() !== claim.merge_sha)
+    return {
+      ok: false,
+      measurable: true,
+      reason: `a #${claim.pr} beolvasztó commitja ${(pr.mergeCommitSha ?? '-').slice(0, 8)}, az eseményé ${claim.merge_sha.slice(0, 8)}: nem ennek a PR-nek a beolvasztása`,
+    }
+  const onMain = await probe.onMain(claim.repo, claim.merge_sha)
+  if (onMain === undefined) return { ok: false, measurable: false, reason: `a ${claim.merge_sha.slice(0, 8)} fő ági tagsága nem mérhető most` }
+  if (!onMain) return { ok: false, measurable: true, reason: `a ${claim.merge_sha.slice(0, 8)} nincs a ${claim.repo} fő ágán` }
+  return { ok: true }
+}
+
+/** The real probe: GitHub's REST API with the fleet's token, as task-handoff.ts's githubProbe. */
+export function githubMergeProbe(token: string | null, fetchImpl: typeof fetch = fetch): MergeProbe {
+  const call = async (path: string): Promise<any | null | undefined> => {
+    if (!token) return undefined
+    try {
+      const response = await fetchImpl(`https://api.github.com${path}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+        signal: AbortSignal.timeout(10_000),
+      })
+      if (response.status === 404) return null
+      if (!response.ok) return undefined
+      return await response.json()
+    } catch {
+      return undefined
+    }
+  }
+  return {
+    async pullRequest(repo, pr) {
+      const body = await call(`/repos/${repo}/pulls/${pr}`)
+      return body === undefined || body === null
+        ? body
+        : { merged: body.merged === true, mergeCommitSha: typeof body.merge_commit_sha === 'string' ? body.merge_commit_sha : null }
+    },
+    async onMain(repo, sha) {
+      const body = await call(`/repos/${repo}/compare/main...${sha}`)
+      if (body === undefined) return undefined
+      // a sha GitHub does not know is not on main
+      if (body === null) return false
+      return body.status === 'identical' || body.status === 'behind'
+    },
+  }
+}
+
+const BUSY_KINDS: ReadonlySet<string> = new Set(['assigned', 'started', 'fix_started'])
+
+export interface AssigneeTask {
+  id: string
+  title: string | null
+  last_kind: string | null
+  last_at: number | null
+  busy: boolean
+}
+
+/**
+ * An agent's tasks, and which of them keep it busy: those whose LAST event is
+ * `assigned`, `started` or `fix_started`. After `review_requested` the agent
+ * is free for the next task.
+ */
+export function assigneeTasks(db: Database.Database, agent: string): AssigneeTask[] {
+  const rows = db
+    .prepare(
+      `SELECT t.id, t.title,
+              (SELECT kind FROM task_events e WHERE e.task_id = t.id ORDER BY at DESC, id DESC LIMIT 1) AS last_kind,
+              (SELECT at FROM task_events e WHERE e.task_id = t.id ORDER BY at DESC, id DESC LIMIT 1) AS last_at
+       FROM tasks t WHERE t.assignee = ? ORDER BY t.created_at, t.id`,
+    )
+    .all(agent) as Omit<AssigneeTask, 'busy'>[]
+  return rows.map((r) => ({ ...r, busy: r.last_kind !== null && BUSY_KINDS.has(r.last_kind) }))
+}
+
+export const busyTasks = (db: Database.Database, agent: string): AssigneeTask[] =>
+  assigneeTasks(db, agent).filter((t) => t.busy)
+
+export type TimelineItem =
+  | { at: number; source: 'event'; id: number; kind: string; actor: string; ref: string | null; data: Record<string, unknown> | null }
+  | { at: number; source: 'handoff'; id: number; agent: string; status: string; next_step: string | null }
+  | { at: number; source: 'session'; agent: string; session_id: string }
+  | { at: number; source: 'message'; id: number; from: string; to: string; status: string }
+
+const SOURCE_ORDER = { session: 0, event: 1, handoff: 2, message: 3 } as const
+
+/** agent_messages has task_id since TC-Lite L3; an older database has no such column. */
+const messagesHaveTaskId = (db: Database.Database) =>
+  tableExists(db, 'agent_messages') &&
+  (db.prepare('PRAGMA table_info(agent_messages)').all() as { name: string }[]).some((c) => c.name === 'task_id')
+
+const tableExists = (db: Database.Database, name: string) =>
+  Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name))
+
+/**
+ * Everything recorded about a task, in time order: its events, its handoff
+ * records, its registered sessions and the messages linked to it (TC-Lite L3:
+ * ids, sender, recipient and state; the text stays in the message itself).
+ * Same second: a session first (it is registered before its work), then the
+ * event, then the handoff written after, then a message about it.
+ */
+export function taskTimeline(db: Database.Database, taskId: string): TimelineItem[] {
+  const items: TimelineItem[] = loadTaskEvents(db, taskId).map((e) => ({
+    at: e.at, source: 'event' as const, id: e.id, kind: e.kind, actor: e.actor, ref: e.ref, data: e.data,
+  }))
+  if (tableExists(db, 'task_handoffs'))
+    for (const h of db
+      .prepare('SELECT id, agent, status, record, created_at FROM task_handoffs WHERE task_id = ?')
+      .all(taskId) as { id: number; agent: string; status: string; record: string; created_at: number }[]) {
+      let nextStep: string | null = null
+      try {
+        const step: unknown = JSON.parse(h.record)?.next_step
+        nextStep = typeof step === 'string' ? step : null
+      } catch {
+        nextStep = null
+      }
+      items.push({ at: h.created_at, source: 'handoff', id: h.id, agent: h.agent, status: h.status, next_step: nextStep })
+    }
+  for (const s of db
+    .prepare('SELECT agent, session_id, created_at FROM task_sessions WHERE task_id = ?')
+    .all(taskId) as { agent: string; session_id: string; created_at: number }[])
+    items.push({ at: s.created_at, source: 'session', agent: s.agent, session_id: s.session_id })
+  if (messagesHaveTaskId(db))
+    for (const m of db
+      .prepare('SELECT id, from_agent, to_agent, status, created_at FROM agent_messages WHERE task_id = ?')
+      .all(taskId) as { id: number; from_agent: string; to_agent: string; status: string; created_at: number }[])
+      items.push({ at: m.created_at, source: 'message', id: m.id, from: m.from_agent, to: m.to_agent, status: m.status })
+  return items.sort(
+    (a, b) =>
+      a.at - b.at ||
+      SOURCE_ORDER[a.source] - SOURCE_ORDER[b.source] ||
+      ('id' in a && 'id' in b ? a.id - b.id : 0),
+  )
 }

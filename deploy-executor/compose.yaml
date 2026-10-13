@@ -1,0 +1,72 @@
+# The separate deploy executor (SB1). Its own compose project on the host:
+#   /opt/vegrehajto/compose.yaml      (this file, root-owned)
+#   /opt/vegrehajto/src               (root-owned clone at a reviewed commit)
+#   /opt/vegrehajto/config.json       (root-owned, the allowlist and settings)
+#   /opt/vegrehajto/titkok/           (root 700; the four token files, 10001 400)
+# NOT under /opt/marveen-docker: that tree is mounted writable into the fleet.
+# No docker socket, no host port, no host path of the fleet.
+name: vegrehajto
+
+services:
+  vegrehajto:
+    build:
+      context: /opt/vegrehajto/src
+      dockerfile: deploy-executor/Dockerfile
+      args:
+        # set in /opt/vegrehajto/.env as <image>@sha256:<digest>; no value, no build
+        NODE_IMAGE: ${VEGREHAJTO_NODE_IMAGE:?set VEGREHAJTO_NODE_IMAGE in /opt/vegrehajto/.env to node:22-bookworm-slim@sha256:<digest>}
+    image: vegrehajto:local
+    container_name: vegrehajto
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    environment:
+      VEGREHAJTO_CONFIG: /etc/vegrehajto/config.json
+      VEGREHAJTO_PORT: "8787"
+    volumes:
+      - type: bind
+        source: /opt/vegrehajto/config.json
+        target: /etc/vegrehajto/config.json
+        read_only: true
+      - type: volume
+        source: allapot
+        target: /var/lib/vegrehajto
+    secrets:
+      - coolify-prod-deploy
+      - coolify-ai-deploy
+      - discord-olvaso
+      - github-olvaso
+    networks:
+      - hivas
+      - ki
+
+networks:
+  # the fleet's container joins this one (docker network connect); nothing else
+  hivas:
+    name: vegrehajto-hivas
+    internal: true
+  # outward only: Discord, GitHub, the two Coolify APIs
+  ki:
+    name: vegrehajto-ki
+
+volumes:
+  allapot:
+    name: vegrehajto-allapot
+
+secrets:
+  coolify-prod-deploy:
+    file: /opt/vegrehajto/titkok/coolify-prod-deploy
+  coolify-ai-deploy:
+    file: /opt/vegrehajto/titkok/coolify-ai-deploy
+  discord-olvaso:
+    file: /opt/vegrehajto/titkok/discord-olvaso
+  github-olvaso:
+    file: /opt/vegrehajto/titkok/github-olvaso
