@@ -1,4 +1,5 @@
-import { writeFileSync, chmodSync, renameSync } from 'node:fs'
+import { writeFileSync, chmodSync, renameSync, lstatSync } from 'node:fs'
+import { resolve, relative, dirname, join, sep, isAbsolute } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
 // Atomic write: write to a sibling tmp file and rename over the target, so a
@@ -23,4 +24,39 @@ export function atomicWriteFileSync(
     try { chmodSync(tmp, opts.mode) } catch { /* best-effort */ }
   }
   renameSync(tmp, path)
+}
+
+// B45 B2-3 (Security Baseline, 2026-10-13): a write by the router INTO an agent's
+// tree must not follow a symlink the agent planted there. The agent owns its tree,
+// so it can replace `.mcp.json`, `.claude/settings.json` or a whole `.claude/agents`
+// directory with a symlink into ANOTHER agent's tree, which the router can still
+// write after the B45 ACL fix (it keeps a named entry everywhere). A plain
+// writeFileSync/copyFileSync then writes through the link.
+//  - a symlink as the FINAL component: the rename replaces the link itself, never
+//    its target (atomicWriteFileSync), so it is race-free;
+//  - a symlink as an INTERMEDIATE directory: the rename would follow it too, so every
+//    directory from `root` down to the parent is lstat-ed and must be a plain
+//    directory. This narrows, but does not close, a swap between the check and the
+//    rename (node has no openat); the B45 regression check reports such a tree.
+export function atomicWriteInTree(
+  root: string,
+  path: string,
+  data: string | Buffer,
+  opts: { mode?: number } = {},
+): void {
+  const r = resolve(root)
+  const p = resolve(path)
+  const rel = relative(r, p)
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error(`atomicWriteInTree: ${p} is not inside ${r}`)
+  }
+  let cur = r
+  for (const part of ['', ...relative(r, dirname(p)).split(sep).filter(Boolean)]) {
+    cur = part ? join(cur, part) : cur
+    const st = lstatSync(cur)
+    if (st.isSymbolicLink() || !st.isDirectory()) {
+      throw new Error(`atomicWriteInTree: ${cur} is not a plain directory (symlink or file)`)
+    }
+  }
+  atomicWriteFileSync(p, data, opts)
 }

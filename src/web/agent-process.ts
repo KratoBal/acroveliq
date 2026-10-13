@@ -29,7 +29,7 @@ import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, rea
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
-import { atomicWriteFileSync } from './atomic-write.js'
+import { atomicWriteFileSync, atomicWriteInTree } from './atomic-write.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
 import {
   buildTmuxInvocation,
@@ -1400,7 +1400,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
             'plugin:telegram:telegram': buildTelegramMcpServerConfig(bunBin, pluginDir, agentChannelDir),
           },
         }
-        writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
+        atomicWriteInTree(agentDir(name), mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
         useMcpJsonForChannel = true
         logger.info({ name, pluginVersion, pluginDir }, 'Wrote per-agent mcp.json for telegram plugin')
       } catch (err) {
@@ -1424,7 +1424,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
           scopeProvider,
           s.enabledPlugins as Record<string, boolean> | undefined,
         )
-        writeFileSync(settingsPath, JSON.stringify(s, null, 2))
+        atomicWriteInTree(agentDir(name), settingsPath, JSON.stringify(s, null, 2))
       } catch (err) {
         logger.warn({ err, name }, 'Could not scope channel plugins for sub-agent')
       }
