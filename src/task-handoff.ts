@@ -422,13 +422,19 @@ async function checkDeployed(
     mismatches.push(`${label} nem ugyanazt a változást hordozza, mint a #${code.pr} PR beolvasztó commitja (${mergeSha.slice(0, 8)}).`)
 }
 
-/** git patch-id's idea on GitHub's file list: the change without line numbers. */
+/**
+ * git patch-id's idea on GitHub's file list: the change without line numbers. Like
+ * patch-id, it does not measure the POSITION: the same hunk with the same three lines of
+ * context at another place in the file gives the same value.
+ */
 export function changeFingerprint(files: { filename: string; status: string; patch?: string; sha?: string; previous_filename?: string }[]): string {
   return JSON.stringify(
     [...files]
       .sort((a, b) => (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0))
       .map((f) => [f.filename, f.status, f.previous_filename ?? null,
-        // a binary or very large file has no patch: its blob identity stands for it
+        // a binary or very large file has no patch: its blob sha is the identity of the
+        // file's NEW content, not of the change (a cherry-pick onto a branch with other
+        // changes in that file then differs: the safe direction)
         f.patch !== undefined ? f.patch.replace(/^@@[^\n]*@@.*$/gm, '@@') : `blob:${f.sha ?? '?'}`]),
   )
 }
@@ -470,8 +476,11 @@ export function githubProbe(token: string | null, fetchImpl: typeof fetch = fetc
       const body = await call(`/repos/${repo}/commits/${encodeURIComponent(sha)}`)
       if (body === undefined || body === null) return body
       const files = Array.isArray(body.files) ? body.files : null
-      // GitHub lists at most 300 files: a longer change is not measurable this way
-      if (!files || files.length >= 300) return undefined
+      // not measurable, never "the same": GitHub lists at most 300 files; an empty list
+      // would make any two empty commits equal; a merge commit (two parents) carries the
+      // COMBINED diff, typically empty, not its change (barracuda, review of #75)
+      if (!files || files.length === 0 || files.length >= 300) return undefined
+      if (Array.isArray(body.parents) && body.parents.length > 1) return undefined
       return changeFingerprint(files)
     },
     async onBranch(repo, sha, branch) {

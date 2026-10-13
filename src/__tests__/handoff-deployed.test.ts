@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   changeFingerprint,
+  githubProbe,
   handoffRequiredFields,
   validateHandoffRecord,
   verifyCodeState,
@@ -90,5 +91,27 @@ describe('the required fields, named up front', () => {
     for (const s of ['task {id, goal, brief}', 'status (', 'code {repo, branch, head', 'next_step']) expect(dev).toContain(s)
     const co = handoffRequiredFields(true).join(' | ')
     for (const s of ["kind: 'coordination'", 'state {phase', 'next_steps [{what, who}]', 'open_questions [{from, what}]', 'quote']) expect(co).toContain(s)
+  })
+})
+
+describe('the real probe: nothing measured is never "the same" (barracuda, review of #75)', () => {
+  const answer = (body: unknown) => (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof fetch
+  it('an empty file list is not measurable', async () => {
+    expect(await githubProbe('t', answer({ files: [], parents: [{}] })).changeOf!('o/r', 'abc1234')).toBeUndefined()
+  })
+  it('a merge commit (two parents) is not measurable: its list is the combined diff', async () => {
+    const files = [{ filename: 'a.ts', status: 'modified', patch: '@@ -1 +1 @@\n-a\n+b' }]
+    expect(await githubProbe('t', answer({ files, parents: [{}, {}] })).changeOf!('o/r', 'abc1234')).toBeUndefined()
+    expect(await githubProbe('t', answer({ files, parents: [{}] })).changeOf!('o/r', 'abc1234')).toBe(changeFingerprint(files))
+  })
+  it('so two empty commits make a mismatch, not agreement', async () => {
+    const empty = githubProbe('t', (async (url: string) => {
+      if (String(url).includes('/pulls/')) return new Response(JSON.stringify({ state: 'closed', merged: true, head: { sha: PR_HEAD }, merge_commit_sha: MERGE }), { status: 200 })
+      if (String(url).includes('/compare/')) return new Response(JSON.stringify({ status: 'ahead' }), { status: 200 })
+      return new Response(JSON.stringify({ files: [], parents: [{}] }), { status: 200 })
+    }) as unknown as typeof fetch)
+    const c = await verifyCodeState(merged({ deployed: { branch: 'tc-release', head: CP } }), empty)
+    expect(c.ok).toBe(false)
+    expect(c.mismatches.join(' ')).toMatch(/nem vethető össze/)
   })
 })
