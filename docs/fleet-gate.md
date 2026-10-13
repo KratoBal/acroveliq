@@ -92,7 +92,19 @@ docker exec "$C" psql -U acropora -d acropora -Atc 'show server_version'        
 #   docker exec "$C" psql -U acropora -d acropora -c 'REVOKE CREATE ON SCHEMA public FROM PUBLIC;'
 # Az alkalmazás saját felhasználóját nem érinti (tulajdonos vagy superuser). 15-től ez az alapállapot.
 # SZŰK, táblánkénti és oszloponkénti jog (Balázs, 2026-10-13 13:04:44 UTC): a pg_read_all_data
-# NEM használható. Egy tranzakcióban (-1): egy elírt név az egészet visszagördíti.
+# NEM használható. ELŐTTE (csak olvas): se PUBLIC által futtatható SECURITY DEFINER függvény, se
+# PUBLIC által olvasható tábla vagy nézet ne legyen, mert azokon át a szerep a listán kívül olvasna,
+# és ezt a lenti column_privileges-számlálás nem látja (barracuda, a lépéslap v8). Várt: nincs sor;
+# ha van: állj meg.
+docker exec -i "$C" psql -U acropora -d acropora -At <<'SQL'
+select 'secdef', n.nspname || '.' || p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where p.prosecdef and n.nspname not in ('pg_catalog', 'information_schema') and has_function_privilege('public', p.oid, 'execute');
+select 'public-tabla', n.nspname || '.' || c.relname from pg_class c
+ join pg_namespace n on n.oid = c.relnamespace
+ where n.nspname not in ('pg_catalog', 'information_schema') and c.relkind in ('r','v','m','f','p')
+   and (has_table_privilege('public', c.oid, 'select') or has_any_column_privilege('public', c.oid, 'select'));
+SQL
+# Egy tranzakcióban (-1): egy elírt név az egészet visszagördíti.
 docker exec -i "$C" psql -U acropora -d acropora -v ON_ERROR_STOP=1 -1 <<'SQL'
 CREATE ROLE fleet_ro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
 ALTER ROLE fleet_ro SET default_transaction_read_only = on;
@@ -107,7 +119,7 @@ GRANT SELECT (name, "contactPersonName", email, "contactPersonEmail") ON "Suppli
 GRANT SELECT ("contactPersonName", "organizationalUnitName") ON "Contract" TO fleet_ro;
 GRANT SELECT ("signerName") ON "WorksheetVersionSignature" TO fleet_ro;
 GRANT SELECT (exposure, resolution, status, "latencyMs", "respondedModel", "errorCode", "createdAt") ON "DecisionRun" TO fleet_ro;
-GRANT SELECT (migration_name, started_at, finished_at, rolled_back_at, applied_steps_count, logs) ON _prisma_migrations TO fleet_ro;
+GRANT SELECT (migration_name, started_at, finished_at, rolled_back_at, applied_steps_count) ON _prisma_migrations TO fleet_ro;
 SQL
 # a stage-en (acropora_ai, superuser acropora_ai) a GRANT sorok helyett csak a három számlálásé:
 #   GRANT SELECT (id) ON conversations, messages, answer_ratings TO fleet_ro;
@@ -116,10 +128,10 @@ select current_user, pg_has_role(current_user, 'pg_execute_server_program', 'mem
 SQL
                                              # fleet_ro|f
 docker exec "$C" psql -U acropora -d acropora -Atc "select count(*) from information_schema.column_privileges where grantee = 'fleet_ro'"
-                                             # éles 34, stage 3
+                                             # éles 33, stage 3
 ```
 
-Ki mit olvas ezzel, és mi nem fér bele: a B8 lépéslap (változat 7) 1.4 szakasza. Ha egy flotta-hívó
+Ki mit olvas ezzel, és mi nem fér bele: a B8 lépéslap (változat 9) 1.4 szakasza. Ha egy flotta-hívó
 `permission denied`-et kap, az nem biztonsági hiba, hanem a lista szűk: a bővítés döntés, nem javítás.
 
 A szerepnek **nincs jelszava, és nem is kap**: a kapu `docker exec`-kel, a konténeren BELÜL, a
@@ -343,7 +355,9 @@ elutasítást kap). A megfeleltetés:
   shellt. A szerepet a kapu listája adja, a hívó nem választhat másikat. A `PGOPTIONS` és a
   backslash-tilalom (a psql `\!` meta-parancsa) ezen felül marad.
 - **Amit a szerep NEM zár: a mentési utat.** A `fleet_ro` csak a flotta lekérdezéseinek oszlopait
-  látja (a jelszó-hasheket, a tárolt titkokat és a listán kívüli táblákat nem), de a `pg-dump` és a
+  látja (a jelszó-hasheket, a tárolt titkokat és a listán kívüli táblákat nem, AMÍG nincs `PUBLIC`
+  által olvasható tábla vagy nézet és futtatható `SECURITY DEFINER` függvény: ezt a telepítés előtti
+  ellenőrzés méri, és egy későbbi migráció újra behozhatja), de a `pg-dump` és a
   `backup-get` a teljes adatbázist adja a flottának. A szűkítés tehát a kézi és a véletlen olvasás
   ellen véd, egy kompromittált munkamenet ellen nem; a titkosított mentés külön feladat. A lista
   személyes adatot is tartalmaz (a JEV névszűrőjéhez), de csak azt, ami ahhoz kell.
