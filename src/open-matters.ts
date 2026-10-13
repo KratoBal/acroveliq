@@ -141,7 +141,7 @@ export function buildOpenMatters(db: Database.Database, opts: OpenMattersOptions
   put('')
   put(`## Nyitott feladatok (${tasks.length})`)
   for (const t of tasks) {
-    const line = `- [${t.id}] ${oneLine(t.title ?? t.goal, 90)} | utolso: ${t.last_kind ?? 'nincs esemeny'}` +
+    const line = `- [${t.id}] ${oneLine(t.title ?? t.goal, 90) || '(nincs cim)'} | utolso: ${t.last_kind ?? 'nincs esemeny'}` +
       `${t.last_ref ? ` (${oneLine(t.last_ref, 50)})` : ''}, ${at(t.last_at ?? t.created_at)} | var: ${waitsOn(t)}`
     if (room(line)) put(line); else omitted.tasks.push(t.id)
   }

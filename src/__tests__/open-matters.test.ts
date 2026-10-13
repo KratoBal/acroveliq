@@ -73,6 +73,8 @@ describe('the four sources', () => {
     expect(out.text).toContain('[nyitott]')
     expect(out.text).toMatch(/\[nyitott\].*var: barracuda/)
     expect(out.text).toContain('[esemeny-nelkul]')
+    db.prepare("UPDATE tasks SET title = NULL, goal = NULL WHERE id = 'esemeny-nelkul'").run()
+    expect(buildOpenMatters(db, { now: NOW }).text).toContain('[esemeny-nelkul] (nincs cim) |')
     expect(out.text).not.toContain('[lezart]')
     expect(out.text).toMatch(/\[nyitott, atadas \d+\] Balazs: mehet-e elesbe/)
     expect(out.text).toContain('[emlek 1]')
