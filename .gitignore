@@ -179,3 +179,6 @@ scripts/sudoers-is-paired
 # data, masked but still project data: `*.log` alone would leave the
 # .summary.json files stageable.
 logs/
+
+# deploy executor build output (deploy-executor/tsconfig.build.json)
+/out/

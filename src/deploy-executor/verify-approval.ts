@@ -105,3 +105,13 @@ export function verifyDiscordApproval(input: {
   if (snowflakeMs(first.messageId) > Math.min(displayedExpiry, r.expiresAt) * 1000) return no('the decision came after the expiry')
   return { ok: true, code, decisionMessageId: first.messageId, deciderId: first.authorId, displayedExpiry }
 }
+
+/**
+ * The executor compares the request's expiry letter for letter with #33's
+ * rendering, which needs the same ICU data as the dashboard's node. A runtime
+ * without it would refuse every approval quietly; refuse to start instead.
+ */
+export function assertHungarianDates(): void {
+  const got = formatApprovalExpiry(1791886537)
+  if (got !== '2026. 10. 13. 12:15:37') throw new Error(`this runtime renders Hungarian dates differently (${JSON.stringify(got)}); refusing to start`)
+}
