@@ -2,9 +2,12 @@
 # ANSWERS: Mi van egy review-csomagban, egy hivasban?
 #
 # review-olvas.sh <csomag>
-#   csomag: a mappa neve a pr- utan: 1650 (os), c512 (commerce), marveen68 (a flotta repoja)
+#   csomag: a mappa neve a pr- utan: 1650 (os), c512 (commerce), marveen68 (a flotta repoja),
+#      vagy egy dokumentum-csomag teljes neve: doc-<task_id> (review-csomag.sh docs)
 #   -> a README teljes szovege, majd minden .patch fajlra: tulajdonos, meret, ido, es a
-#      valtozott fajlok listaja soronkent (+ - ut), a vegen az osszesites.
+#      valtozott fajlok listaja soronkent (+ - ut), a vegen az osszesites. Dokumentum-
+#      csomagnal a masolatok (vN-<nev>): tulajdonos, meret, sorok, sha256 es a teljes ut,
+#      amit olvasni kell (task review-docs-verdict).
 #
 # WHY (reviewer-profil, 2026-10-13): reading a packet took barracuda three to five piped
 # calls per review (cat, grep '^diff --git', a count), and every pipe or `$(...)` is a
@@ -26,10 +29,13 @@ set -f
 ZONA=/home/marveen/marveen/review-csomagok
 GIT_BIN=/usr/bin/git
 
-[ "$#" -eq 1 ] || { echo "usage: review-olvas.sh <csomag>   (pl. 1650, c512, marveen68)" >&2; exit 2; }
+[ "$#" -eq 1 ] || { echo "usage: review-olvas.sh <csomag>   (pl. 1650, c512, marveen68, doc-<task_id>)" >&2; exit 2; }
 C="$1"
-[[ "$C" =~ ^(c|marveen)?[0-9]{1,6}$ ]] || { echo "FAIL: a csomag neve szam, c<szam> vagy marveen<szam>: '$C'" >&2; exit 2; }
-D="$ZONA/pr-$C"
+DOCS=0
+if [[ "$C" =~ ^doc-[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then DOCS=1; D="$ZONA/$C"
+elif [[ "$C" =~ ^(c|marveen)?[0-9]{1,6}$ ]]; then D="$ZONA/pr-$C"
+else echo "FAIL: a csomag neve szam, c<szam>, marveen<szam> vagy doc-<task_id>: '$C'" >&2; exit 2
+fi
 [ -L "$D" ] && { echo "FAIL: $D symlink, nem olvasom: valaki mas tette oda" >&2; exit 1; }
 [ -d "$D" ] || { echo "FAIL: nincs ilyen csomag: $D" >&2; exit 1; }
 
@@ -44,6 +50,23 @@ for r in README.md README; do
   found=1
 done
 [ "$found" = 1 ] || echo "!! nincs README a csomagban"
+
+if [ "$DOCS" = 1 ]; then
+  n_doc=0
+  set +f; shopt -s nullglob; COPIES=("$D"/v[0-9]*-*); shopt -u nullglob; set -f
+  for f in "${COPIES[@]}"; do
+    b="${f##*/}"
+    if [ -L "$f" ] || [ ! -f "$f" ]; then echo "!! $b: symlink vagy nem fajl, kihagyva"; continue; fi
+    n_doc=$((n_doc + 1))
+    h="$(sha256sum < "$f")"
+    echo
+    echo "== $b (tulajdonos: $(stat -c %U "$f"), $(stat -c %s "$f") bajt, $(wc -l < "$f") sor, $(date -d "@$(stat -c %Y "$f")" '+%Y-%m-%d %H:%M:%S%z'))"
+    echo "   sha256 ${h%% *}"
+    echo "   olvasd: $f"
+  done
+  [ "$n_doc" -gt 0 ] || { echo "!! nincs olvashato masolat a csomagban"; exit 1; }
+  exit 0
+fi
 
 T="$(mktemp -d)" || exit 1
 trap 'rm -rf "$T"' EXIT
