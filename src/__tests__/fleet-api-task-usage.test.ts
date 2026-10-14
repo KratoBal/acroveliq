@@ -266,7 +266,7 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
     const assigned = requests.find((r) => r.path === '/api/tasks/t5/events')?.body
     requests = []
     const second = await run(['kiadas', 't5', 'nautilus'])
-    expect([first.code, firstWrites, restartBody, msg?.task_id, msg?.from, msg?.to, /handoff-read t5/.test(msg?.content ?? ''), assigned,
+    expect([first.code, firstWrites, restartBody, msg?.task_id, msg?.from, msg?.to, /^Uj feladat: t5\. .*handoff-read t5/.test(msg?.content ?? ''), assigned,
       /KIADVA: t5 -> nautilus/.test(first.out), second.code, writes(), /4 kihagyva/.test(second.out), /5 kihagyva/.test(second.out), /6 kihagyva/.test(second.out)],
     'FLEET-KIADAS-OK').toEqual([
       0, ['/api/tasks/t5/events', '/api/agents/nautilus/restart', '/api/messages'], { fresh: true, task_id: 't5' }, 't5', 'acrobot', 'nautilus', true,
@@ -326,7 +326,7 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
   // A new stage of the same task, handed out to the same agent (acrobot 30669; measured 2026-10-14 15:28: the
   // dashboard showed no active task, the hand-out skipped assigned, and acrobot wrote it by hand, event 819).
   // The rule is the server's busy flag (barracuda #132), not a list in the script.
-  it('FLEET-KIADAS-REFREE: a task that no longer keeps its agent busy is claimed again; one that does is not', async () => {
+  it('FLEET-KIADAS-REFREE: a task that no longer keeps its agent busy is claimed again, with a new start message; one that does is not', async () => {
     const before: Item[] = [
       { at: 1, source: 'event', id: 1, kind: 'assigned', actor: 'acrobot', ref: 'nautilus', data: { agent: 'nautilus' } },
       { at: 2, source: 'session', agent: 'nautilus', session_id: 'sess-old' },
@@ -338,10 +338,13 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
       install(fake({ items: [...before, ...tail], ...over }))
       const r = await run(['kiadas', 't5', 'nautilus'])
       const assigned = requests.find((q) => q.path === '/api/tasks/t5/events')?.body as Record<string, unknown> | undefined
-      return [r.code, writes(), assigned?.kind ?? null, /4 ujra foglal/.test(r.out), /5 kihagyva/.test(r.out), /6 kihagyva/.test(r.out)]
+      const msg = requests.find((q) => q.path === '/api/messages')?.body as Record<string, string> | undefined
+      return [r.code, writes(), assigned?.kind ?? null, /4 ujra foglal/.test(r.out), /5 kihagyva/.test(r.out), /6 kihagyva/.test(r.out),
+        msg ? [msg.task_id, msg.to, /^Uj szakasz ugyanezen a feladaton: t5\. .*handoff-read t5/.test(msg.content)] : null]
     }
-    const claimed = [0, ['/api/tasks/t5/events'], 'assigned', true, true, true]
-    const kept = [0, [], null, false, true, true]
+    // a new stage: assigned again AND a new start message naming the task (acrobot 30677); no restart (step 5 unchanged)
+    const claimed = [0, ['/api/tasks/t5/events', '/api/messages'], 'assigned', true, true, false, ['t5', 'nautilus', true]]
+    const kept = [0, [], null, false, true, true, null]
     expect([
       await outcome([ev(3, 'review_requested')]),
       await outcome([ev(3, 'review_requested'), ev(4, 'verdict', 'barracuda')]),
@@ -353,21 +356,37 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
     expect([
       await outcome([]), // last state: started
       await outcome([ev(3, 'review_requested'), ev(4, 'fix_started')]),
-      await outcome([ev(3, 'merged', 'acrobot'), { ...ev(4, 'assigned', 'acrobot'), ref: 'nautilus', data: { agent: 'nautilus' } }]),
-    ], 'FLEET-KIADAS-REFREE kept').toEqual([kept, kept, kept])
+    ], 'FLEET-KIADAS-REFREE kept').toEqual([kept, kept])
+    // an assigned already re-written (by hand, as event 819 was) but no message after it: no second
+    // assigned, the message goes, and it says new stage (barracuda #133: one message per assigned)
+    expect(await outcome([ev(3, 'merged', 'acrobot'), { ...ev(4, 'assigned', 'acrobot'), ref: 'nautilus', data: { agent: 'nautilus' } }]),
+      'FLEET-KIADAS-REFREE message only').toEqual([0, ['/api/messages'], null, false, true, false, ['t5', 'nautilus', true]])
     // the server decides, not the timeline: the same review_requested history the server still counts as
     // busy is skipped, and a started history it counts as free is claimed
     expect([
       await outcome([ev(3, 'review_requested')], { busy: [{ id: 't5', last_kind: 'review_requested', busy: true }] }),
       await outcome([], { serverSaysFree: true }),
     ], 'FLEET-KIADAS-REFREE server').toEqual([kept, claimed])
+    // the re-claim's message fails (exit 7); the rerun sends it, without a second assigned or a restart (barracuda #133)
+    install(fake({ items: [...before, ev(3, 'review_requested')], message: [500, { error: 'queue down' }] }))
+    const failed = await run(['kiadas', 't5', 'nautilus'])
+    const failedWrites = writes()
+    f.message = [200, { id: 78, status: 'pending' }]
+    requests = []
+    const rerun = await run(['kiadas', 't5', 'nautilus'])
+    const rerunMsg = requests.find((q) => q.path === '/api/messages')?.body as Record<string, string> | undefined
+    // (agent-msg.sh retries a refused send itself, so the failed run holds one or more message posts)
+    expect([failed.code, [failedWrites[0], failedWrites.length > 1 && failedWrites.slice(1).every((w) => w === '/api/messages')], rerun.code, writes(), /4 kihagyva/.test(rerun.out), /5 kihagyva/.test(rerun.out), restartCalls(),
+      /^Uj szakasz ugyanezen a feladaton: t5\. /.test(rerunMsg?.content ?? '')], 'FLEET-KIADAS-REFREE rerun').toEqual([
+      7, ['/api/tasks/t5/events', true], 0, ['/api/messages'], true, true, 0, true,
+    ])
     // the hand-out's second run after the re-claim writes nothing (the claim is the last state event now)
     install(fake({ items: [...before, ev(3, 'review_requested')] }))
     await run(['kiadas', 't5', 'nautilus'])
     requests = []
     const again = await run(['kiadas', 't5', 'nautilus'])
     expect([again.code, writes()], 'FLEET-KIADAS-REFREE repeat').toEqual([0, []])
-  })
+  }, 30000) // fifteen hand-outs in one test
 
   it('FLEET-KIADAS-REPEAT-CLOSED: an unreadable timeline item stops with 1 before any write (no second assigned, restart, message)', async () => {
     install(fake({ items: [{ at: 1, kind: 'assigned' }] }))
