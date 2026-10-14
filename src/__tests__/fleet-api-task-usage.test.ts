@@ -13,6 +13,7 @@ import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, 
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { AddressInfo } from 'node:net'
+import { NON_STATE_KINDS } from '../task-usage.js'
 
 
 const root = mkdtempSync(join(tmpdir(), 'fleet-api-task-usage-'))
@@ -311,6 +312,52 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
       /Atiras: fleet-api\.sh task-new t5 - < feladat\.json, benne "assignee": "nautilus"/.test(other.out), otherWrites,
       garbled.code, /nem olvashato JSON objektum/.test(garbled.out), writes()],
     'FLEET-KIADAS-1').toEqual([4, true, 4, true, true, 4, true, true, [], 1, true, []])
+  })
+
+  // A new stage of the same task, handed out to the same agent (acrobot 30669; measured 2026-10-14 15:28: the
+  // dashboard showed no active task, the hand-out skipped assigned, and acrobot wrote it by hand, event 819)
+  it('FLEET-KIADAS-REFREE: a task whose last state event is review_requested, verdict or merged is claimed again; assigned, started or fix_started is not', async () => {
+    const before: Item[] = [
+      { at: 1, source: 'event', id: 1, kind: 'assigned', actor: 'acrobot', ref: 'nautilus', data: { agent: 'nautilus' } },
+      { at: 2, source: 'session', agent: 'nautilus', session_id: 'sess-old' },
+      { at: 3, source: 'message', id: 70, from: 'acrobot', to: 'nautilus', status: 'delivered' },
+      { at: 4, source: 'event', id: 2, kind: 'started', actor: 'nautilus', ref: '', data: null },
+    ]
+    const ev = (id: number, kind: string, actor = 'nautilus'): Item => ({ at: 4 + id, source: 'event', id, kind, actor, ref: '', data: null })
+    const outcome = async (tail: Item[]) => {
+      install(fake({ items: [...before, ...tail] }))
+      const r = await run(['kiadas', 't5', 'nautilus'])
+      const assigned = requests.find((q) => q.path === '/api/tasks/t5/events')?.body as Record<string, unknown> | undefined
+      return [r.code, writes(), assigned?.kind ?? null, /4 ujra foglal/.test(r.out), /5 kihagyva/.test(r.out), /6 kihagyva/.test(r.out)]
+    }
+    const claimed = [0, ['/api/tasks/t5/events'], 'assigned', true, true, true]
+    const kept = [0, [], null, false, true, true]
+    expect([
+      await outcome([ev(3, 'review_requested')]),
+      await outcome([ev(3, 'review_requested'), ev(4, 'verdict', 'barracuda')]),
+      await outcome([ev(3, 'merged', 'acrobot')]),
+      // a non-state event after the free one does not hide it (task-usage.ts NON_STATE_KINDS)
+      await outcome([ev(3, 'review_requested'), ev(4, 'decision', 'acrobot'), ev(5, 'project_changed', 'acrobot')]),
+    ], 'FLEET-KIADAS-REFREE claimed').toEqual([claimed, claimed, claimed, claimed])
+    expect([
+      await outcome([]), // last state: started
+      await outcome([ev(3, 'review_requested'), ev(4, 'fix_started')]),
+      await outcome([ev(3, 'merged', 'acrobot'), ev(4, 'assigned', 'acrobot')].map((i) => (i.kind === 'assigned' ? { ...i, ref: 'nautilus', data: { agent: 'nautilus' } } : i))),
+      await outcome([ev(3, 'merged', 'acrobot'), ev(4, 'started')]),
+    ], 'FLEET-KIADAS-REFREE kept').toEqual([kept, kept, kept, kept])
+    // the hand-out's second run after the re-claim writes nothing (the claim is the last state event now)
+    install(fake({ items: [...before, ev(3, 'review_requested')] }))
+    await run(['kiadas', 't5', 'nautilus'])
+    requests = []
+    const again = await run(['kiadas', 't5', 'nautilus'])
+    expect([again.code, writes()], 'FLEET-KIADAS-REFREE repeat').toEqual([0, []])
+  })
+
+  it('FLEET-KIADAS-REFREE-KINDS: the hand-out\'s non-state list is task-usage.ts NON_STATE_KINDS (a new kind cannot drift)', () => {
+    const src = readFileSync(join(process.cwd(), 'scripts', 'fleet-api.sh'), 'utf-8')
+    const m = src.match(/^NON_STATE=\(([^)]*)\)$/m)
+    const listed = m ? [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]) : null
+    expect(listed, 'FLEET-KIADAS-REFREE-KINDS').toEqual([...NON_STATE_KINDS])
   })
 
   it('FLEET-KIADAS-REPEAT-CLOSED: an unreadable timeline item stops with 1 before any write (no second assigned, restart, message)', async () => {
