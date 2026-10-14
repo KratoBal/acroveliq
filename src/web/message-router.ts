@@ -21,6 +21,7 @@ import { readAgentRemoteHost, readAgentVoiceConfig } from './agent-config.js'
 import {
   agentSessionName,
   isSessionReadyForPrompt,
+  isSessionReadyForQueuedPrompt,
   clearStaleParkedInput,
   sendPromptToSession,
   sessionExistsOnHost,
@@ -638,7 +639,16 @@ export async function runMessageRouterTick(): Promise<void> {
         continue
       }
 
-      if (!(await isSessionReadyForPrompt(session, host))) {
+      // QUEUED DELIVERY (task kezbesites-busy-panelre): a pane that is not idle may still take
+      // the message when it is in a running turn with a free input box -- Claude Code queues
+      // the line and hands it over at the turn's end. Without this an agent in long,
+      // back-to-back turns got nothing for many minutes (2026-10-14: nautilus 39 min, 7
+      // waiting) and the dashboard called it "undelivered". paneAcceptsQueuedPrompt names
+      // what still blocks: a permission question, a menu, a placeholder, typed or parked
+      // text, a saturated context.
+      let queueDelivery = false
+      const ready = await isSessionReadyForPrompt(session, host)
+      if (!ready) {
         // A self-drafted feedback modal ("Bug report drafted ... 0 to dismiss")
         // holds the pane in a not-ready state, and the pre-flight dismissal in
         // sendPromptToSession never runs because this gate short-circuits
@@ -652,6 +662,9 @@ export async function runMessageRouterTick(): Promise<void> {
           routerLoggedMisses.delete(msg.id)
           continue // cleared; deliver on the next tick
         }
+        queueDelivery = await isSessionReadyForQueuedPrompt(session, host)
+      }
+      if (!ready && !queueDelivery) {
         // ---- session-stuck detection (card 2922e380 thread a) ----
         // Track how long this session has been continuously not-ready.
         const stuckStart = agentStuckSince.get(msg.to_agent)
@@ -713,7 +726,7 @@ export async function runMessageRouterTick(): Promise<void> {
         continue
       }
 
-      // Session is ready — clear stuck tracking.
+      // Session is ready (idle, or a running turn that queues) — clear stuck tracking.
       agentStuckSince.delete(msg.to_agent)
 
       // Classify (channel-inbound / trusted-peer / untrusted) + reject an empty
@@ -783,7 +796,16 @@ export async function runMessageRouterTick(): Promise<void> {
         const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id, msg.origin_note)
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
-        await sendPromptToSession(session, prefix + wrapped, host)
+        // Into a running turn: no idle wait (it would only burn the budget, then send anyway),
+        // and the landing check that knows 'busy' is not proof (busyTarget).
+        const sent = queueDelivery
+          ? await sendPromptToSession(session, prefix + wrapped, host, { waitForIdle: false, busyTarget: true })
+          : await sendPromptToSession(session, prefix + wrapped, host)
+        // delivered = the keystrokes went into the pane; a send that typed nothing stays pending
+        if (sent !== 'sent') {
+          logger.info({ id: msg.id, to: msg.to_agent, sent }, 'Agent message not typed into the pane; stays pending')
+          continue
+        }
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
         }
@@ -794,7 +816,7 @@ export async function runMessageRouterTick(): Promise<void> {
         }
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
-        logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, category, traceId: traceCtx?.trace_id }, 'Agent message delivered')
+        logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, category, traceId: traceCtx?.trace_id, queued: queueDelivery }, 'Agent message delivered')
       } catch (err) {
         // An inject throw is usually transient (pane un-ready at the instant of
         // send-keys). Retry across ticks instead of the old silent instant-fail;
