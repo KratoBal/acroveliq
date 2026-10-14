@@ -16944,7 +16944,7 @@ const AQ_GROUP = {
 const AQ_GROUP_LABEL = { all: 'Mind', active: 'Folyamatban', review: 'Ellenőrzés', blocked: 'Blokkolt', closed: 'Lezárt', none: 'Nincs esemény' }
 const AQ_GROUP_TONE = { active: 'orange', review: 'blue', blocked: 'red', closed: 'green', none: 'grey' }
 
-const aqState = { view: 'overview', filter: 'all', detail: null, data: null, loading: false }
+const aqState = { view: 'overview', filter: 'all', detail: null, data: null, loading: false, decision: null, decBusy: null, decMsg: null }
 
 const aqEsc = (v) => escapeHtml(v === null || v === undefined ? '' : String(v))
 
@@ -17306,8 +17306,89 @@ function aqQuestionItem(q) {
     <div class="aq-stall-why aq-dec-text">${aqEsc(q.what)}</div></div>`
 }
 
-// Three groups from /api/open-matters (task acroveliq-donteseim), each with its source;
-// an empty group says so, an unreachable source says that instead of an empty list.
+// THE THREE ACTIONS on a decision row (Dontéseim V1, Balázs's decision B, 2026-10-14
+// 08:52:26 UTC, msg 1559851364950220852): the one write this page sends, on both
+// surfaces. The server takes the configured owner's session only (POST /api/decisions/:id,
+// src/web/routes/decisions.ts); a "Megbeszélést kérek" is not an approval and starts nothing.
+const AQ_DECISION_ACTIONS = { approve: 'Jóváhagyom', reject: 'Elutasítom', discuss: 'Megbeszélést kérek' }
+
+async function aqDecide(id, action) {
+  if (!Object.prototype.hasOwnProperty.call(AQ_DECISION_ACTIONS, action)) return { ok: false, error: 'ismeretlen művelet' }
+  try {
+    const res = await fetch('/api/decisions/' + encodeURIComponent(id), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }),
+    })
+    let body = null
+    try { body = await res.json() } catch { body = null }
+    if (res.ok) return { ok: true, value: body }
+    return { ok: false, status: res.status, error: (body && body.error) || 'HTTP ' + res.status }
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) }
+  }
+}
+
+const aqNotGiven = (v) => (v === null || v === undefined || String(v).trim() === '' ? 'nincs megadva' : String(v))
+
+// The state of a decision row, as the owner reads it.
+function aqDecisionStatus(d) {
+  if (d.status === 'pending') {
+    if (d.discord_message) return ['Discordon válaszoltál, megerősítésre vár', 'blue']
+    if (d.discuss_requested_at) return ['Megbeszélésre vár', 'orange']
+    return ['Vár rád', 'red']
+  }
+  if (d.status === 'approved') return ['Jóváhagyva', 'green']
+  if (d.status === 'rejected') return ['Elutasítva', 'grey']
+  if (d.status === 'timeout') return ['Lejárt, döntés nélkül', 'grey']
+  return [d.status, 'grey']
+}
+
+function aqDecisionCard(d, selected) {
+  const [label, tone] = aqDecisionStatus(d)
+  return `<button type="button" class="aq-row aq-dec-card${selected ? ' active' : ''}" data-aq-decision="${aqEsc(d.id)}">
+    <span class="aq-row-main"><span class="aq-row-title">${aqEsc(aqNotGiven(d.summary))}</span>
+      <span class="aq-row-sub">${d.task_id ? 'feladat: ' + aqEsc(d.task_id) + ' · ' : ''}kérte: ${aqEsc(d.requested_by)} · ${aqEsc(aqAgo(d.requested_at))}</span>
+      <span class="aq-row-sub">Következő lépés: ${aqEsc(aqNotGiven(d.consequence))}</span></span>
+    ${aqPill(label, tone)}</button>`
+}
+
+function aqDecisionDetail(d) {
+  const [label, tone] = aqDecisionStatus(d)
+  const open = d.status === 'pending'
+  const busy = aqState.decBusy === d.id
+  const button = (action, cls) => `<button type="button" class="aq-dec-btn ${cls}" data-aq-decide="${action}" data-aq-id="${aqEsc(d.id)}"${busy || (action === 'discuss' && d.discuss_requested_at) ? ' disabled' : ''}>${aqEsc(AQ_DECISION_ACTIONS[action])}</button>`
+  const msg = aqState.decMsg && aqState.decMsg.id === d.id ? `<p class="aq-note ${aqState.decMsg.ok ? 'aq-note-ok' : 'aq-note-warn'}">${aqEsc(aqState.decMsg.text)}</p>` : ''
+  return `<section class="aq-card aq-dec-detail">
+    <div class="aq-pills">${aqPill('Döntés', 'blue')} ${aqPill(label, tone)}</div>
+    <h2 class="aq-dec-title">${aqEsc(aqNotGiven(d.summary))}</h2>
+    <div class="aq-label">Miért szükséges?</div>
+    <p class="aq-dec-text">${aqEsc(aqNotGiven(d.reason))}</p>
+    <div class="aq-label">Jóváhagyás előtt ellenőrizendő</div>
+    <ul class="aq-dec-check">
+      <li>Ha jóváhagyod: ${aqEsc(aqNotGiven(d.consequence))}</li>
+      <li>Feladat: ${d.task_id ? `<button type="button" class="aq-link" data-aq-task="${aqEsc(d.task_id)}">${aqEsc(d.task_id)}</button>` : 'nincs megadva'}</li>
+      <li>Kérte: ${aqEsc(d.requested_by)}, ${aqEsc(aqTime(d.requested_at))}</li>
+      ${d.discord_message ? `<li>Discordon válaszoltál: üzenet ${aqEsc(d.discord_message)}</li>` : ''}
+      ${open ? `<li>Lejár: ${aqEsc(aqTime(d.timeout_at))}</li>` : `<li>Eldöntve: ${aqEsc(aqTime(d.resolved_at))}${d.resolved_by ? ', ' + aqEsc(d.resolved_by) : ''}</li>`}
+    </ul>
+    ${open ? `<div class="aq-dec-actions">${button('approve', 'aq-dec-yes')}${button('reject', 'aq-dec-no')}${button('discuss', 'aq-dec-talk')}</div>
+      <p class="aq-muted">A „Megbeszélést kérek” nem jóváhagyás, és nem indít végrehajtást: a döntés nyitva marad, Acrobot a Discord-szálban keres.</p>` : ''}
+    ${msg}
+    <p class="aq-muted">Éles jóváhagyás csak hiteles kapcsolaton át: dönteni csak Balázs bejelentkezett munkamenetével lehet.</p>
+  </section>`
+}
+
+// A handoff decision from Discord (no row): the record and its message, read only.
+function aqHandoffDecision(h) {
+  return `<div class="aq-stall"><div class="aq-stall-head"><button type="button" class="aq-link" data-aq-task="${aqEsc(h.task)}">${aqEsc(h.task)}</button>
+    <span class="aq-row-sub">átadó rekord ${aqEsc(h.handoff)} · ${aqEsc(aqTime(h.at))}${h.discord_messages && h.discord_messages.length ? ' · Discord ' + aqEsc(h.discord_messages.join(', ')) : ''}</span></div>
+    <div class="aq-stall-why aq-dec-text">${aqEsc(h.what)}${h.quote ? '\n„' + aqEsc(h.quote) + '”' : ''}</div></div>`
+}
+
+// Döntéseim (Dontéseim V1, Figma 7:118): the decision rows that wait on Balázs, with
+// their details and the three actions; then what was answered on Discord, what expired
+// and what was decided lately; then the three earlier groups from /api/open-matters as
+// "Egyéb nyitott ügyek", each with its source. An empty group says so, an unreachable
+// source says that instead of an empty list.
 function aqRenderDecisions(data) {
   const src = data.errors.openMatters
   if (!src || !src.ok || !data.items)
@@ -17315,15 +17396,40 @@ function aqRenderDecisions(data) {
       <p class="aq-empty">A nyitott ügyek forrása nem elérhető${src && src.error ? ' (' + aqEsc(src.error) + ')' : ''}, ezért itt nem jelenik meg tétel. Ez nem azt jelenti, hogy nincs döntésre váró ügy.</p></section>`
   const it = data.items
   const list = (rows) => (Array.isArray(rows) ? rows : [])
+  const dt = it.dontes || {}
+  const waiting = [...list(dt.pending), ...list(dt.discuss)]
+  const replied = list(dt.discord_replied)
+  const expired = list(dt.expired)
+  const recent = list(dt.recent)
+  const recentDiscord = list(dt.recent_discord)
+  const all = [...waiting, ...replied, ...expired, ...recent]
+  const selected = all.find((d) => d.id === aqState.decision) || waiting[0] || replied[0] || null
+  const cards = (rows) => rows.map((d) => aqDecisionCard(d, selected && d.id === selected.id)).join('')
+  const block = (title, sub, rows, empty) => `<section class="aq-card aq-decisions"><h2>${aqEsc(title)} · ${rows.length}</h2>
+    <p class="aq-muted">${aqEsc(sub)}</p>${rows.length ? cards(rows) : `<p class="aq-empty">${aqEsc(empty)}</p>`}</section>`
   const group = (title, source, rows, render, empty) => `<section class="aq-card aq-decisions"><h2>${aqEsc(title)} · ${rows.length}</h2>
     <p class="aq-muted">${aqEsc(source)}</p>
     ${rows.length ? rows.map(render).join('') : `<p class="aq-empty">${aqEsc(empty)}</p>`}</section>`
-  return group('Döntésre vár', 'Acrobot hot emlékei, kulcsszó: dontesre-var', list(it.decisions), aqMemoryItem,
+  const head = `<section class="aq-card aq-decisions"><h2>Döntéseim</h2>
+    <div class="aq-pills">${aqPill(waiting.length + ' döntés vár rád', waiting.length ? 'red' : 'green')}${replied.length ? ' ' + aqPill(replied.length + ' Discordon megválaszolt, megerősítésre vár', 'blue') : ''}</div></section>`
+  const left = block('Döntést igénylő ügyek', 'A jóváhagyási sorok közül azok, amelyek rád várnak (dontes kategória)', waiting,
+      'Most egy döntés sem vár rád.') +
+    (replied.length ? block('Discordon válaszoltál, megerősítésre vár', 'A választ Acrobot a sorhoz fűzte; itt egy kattintással erősítheted meg', replied, '') : '') +
+    (expired.length ? block('Lejárt, döntés nélkül', 'Az elmúlt napokban lejárt sorok: Acrobot újra felveszi vagy lezárja őket', expired, '') : '')
+  const right = selected ? aqDecisionDetail(selected)
+    : `<section class="aq-card aq-dec-detail"><h2>Részletek</h2><p class="aq-empty">Nincs kiválasztható döntés.</p></section>`
+  const decided = `<section class="aq-card aq-decisions"><h2>Legutóbbi döntéseid · ${recent.length + recentDiscord.length}</h2>
+    <p class="aq-muted">Az elmúlt napokban eldöntött sorok, és a nyitott feladatok átadóiban rögzített Discord-döntések (egy üzenet egyszer)</p>
+    ${recent.length || recentDiscord.length ? cards(recent) + recentDiscord.map(aqHandoffDecision).join('') : '<p class="aq-empty">Az elmúlt napokban nem született rögzített döntés.</p>'}</section>`
+  const other = `<section class="aq-card aq-decisions"><h2>Egyéb nyitott ügyek</h2>
+    <p class="aq-muted">A régebbi forrásokból, amíg át nem állnak a döntési sorokra. Az automatikusan intézhető ügyek nem ide kerülnek: azokat az ágensek a saját jogkörükben intézik.</p></section>` +
+    group('Döntésre vár', 'Acrobot hot emlékei, kulcsszó: dontesre-var', list(it.decisions), aqMemoryItem,
       'Most egy hot emlék sem visel dontesre-var kulcsszót.') +
     group('Kérdések, amikre tőled várunk választ', 'A nyitott feladatok legutóbbi átadó rekordja, ahol a kérdés címzettje (from) Balázs', list(it.balazs_questions), aqQuestionItem,
       'Egyik nyitott feladat legutóbbi átadó rekordjában sincs olyan kérdés, aminek a címzettje Balázs.') +
     group('Amivel Acrobot tartozik neked', 'Acrobot hot emlékei, kulcsszó: acrobot-tartozik', list(it.owes), aqMemoryItem,
       'Most egy hot emlék sem visel acrobot-tartozik kulcsszót.')
+  return head + `<div class="aq-grid aq-grid-detail"><div>${left}</div><div>${right}</div></div>` + decided + other
 }
 
 let aqRenderSeq = 0
@@ -17360,6 +17466,22 @@ async function loadAcroveliq() {
   }
 }
 
+// One click, one request: the buttons wait while it runs, the answer stays under them,
+// and the list reloads, so the row moves to where its new state puts it.
+async function aqDecideClick(id, action) {
+  if (!id || aqState.decBusy) return
+  aqState.decBusy = id
+  aqState.decision = id
+  aqState.decMsg = null
+  await aqRender()
+  const out = await aqDecide(id, action)
+  aqState.decBusy = null
+  aqState.decMsg = out.ok
+    ? { id, ok: true, text: action === 'discuss' ? 'Rögzítve: megbeszélést kértél, a döntés nyitva marad.' : 'Rögzítve: ' + AQ_DECISION_ACTIONS[action] + '.' }
+    : { id, ok: false, text: out.status === 403 ? 'Dönteni csak Balázs bejelentkezett munkamenetével lehet (' + out.error + ').' : 'A döntés nem ment át: ' + out.error }
+  await loadAcroveliq()
+}
+
 let aqWired = false
 function aqWire() {
   if (aqWired) return
@@ -17373,6 +17495,18 @@ function aqWire() {
     aqRender()
   })
   document.getElementById('aqBody')?.addEventListener('click', (e) => {
+    const decideBtn = e.target.closest('[data-aq-decide]')
+    if (decideBtn) {
+      aqDecideClick(decideBtn.dataset.aqId, decideBtn.dataset.aqDecide)
+      return
+    }
+    const pick = e.target.closest('[data-aq-decision]')
+    if (pick) {
+      aqState.decision = pick.dataset.aqDecision
+      aqState.decMsg = null
+      aqRender()
+      return
+    }
     const task = e.target.closest('[data-aq-task]')
     const agent = e.target.closest('[data-aq-agent]')
     const filter = e.target.closest('[data-aq-filter]')

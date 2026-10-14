@@ -7518,6 +7518,18 @@ body {
 .aq-note-warn { background: var(--aq-orange-soft); color: var(--aq-orange-ink); }
 .aq-dec-text { white-space: pre-wrap; }
 .aq-dec-more summary { cursor: pointer; }
+/* Döntéseim V1 (Figma 7:118): the cards, the detail panel and the three actions */
+.aq-dec-card.active { outline: 2px solid var(--aq-orange); }
+.aq-dec-title { margin: 10px 0 12px; }
+.aq-dec-detail .aq-label { margin-top: 12px; }
+.aq-dec-check { margin: 6px 0 12px 18px; color: var(--aq-ink-2); font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+.aq-dec-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 8px; }
+.aq-dec-btn { border: 0; border-radius: 999px; padding: 9px 16px; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
+.aq-dec-btn:disabled { opacity: 0.5; cursor: default; }
+.aq-dec-yes { background: var(--aq-green-soft); color: var(--aq-green-ink); }
+.aq-dec-no { background: var(--aq-red-soft); color: var(--aq-red-ink); }
+.aq-dec-talk { background: var(--aq-blue-soft); color: var(--aq-blue-ink); }
+.aq-note-ok { background: var(--aq-green-soft); color: var(--aq-green-ink); }
 .aq-tl { list-style: none; margin-top: 8px; }
 .aq-tl-item { display: flex; gap: 14px; padding-bottom: 16px; position: relative; }
 .aq-tl-item:not(:last-child)::before { content: ''; position: absolute; left: 19px; top: 40px; bottom: 2px; width: 1px; background: var(--aq-line); }
