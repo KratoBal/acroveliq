@@ -99,7 +99,9 @@ const at = (sec: number | null): string => (sec ? TIME.format(new Date(sec * 100
  * CHANGES verdict on the assignee, an APPROVE verdict on whoever merges, everything else
  * on the assignee. A guess is marked as one ('?').
  */
-export function waitsOn(t: Pick<ListedTask, 'last_kind' | 'last_ref' | 'assignee' | 'reviewer'>): string {
+export function waitsOn(t: Pick<ListedTask, 'last_kind' | 'last_ref' | 'assignee' | 'reviewer'> & { paused?: boolean }): string {
+  // a paused task waits on the owner whatever its last state (a review may finish during it)
+  if (t.paused) return 'Balazs (szunetel, a folytatas az ove)'
   switch (t.last_kind) {
     case 'review_requested': return t.reviewer ?? '? (nincs reviewer)'
     case 'verdict':

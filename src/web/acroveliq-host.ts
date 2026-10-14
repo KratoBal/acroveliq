@@ -1,8 +1,9 @@
 // The AcrovelIQ host filter (task acroveliq-host-szures). A request that
 // arrives on the configured AcrovelIQ host (ACROVELIQ_HOST, e.g.
-// acroveliq.acropora.hu) may reach only the read-only AcrovelIQ page: the page
-// shell and its static files, the login, and the GET endpoints the page reads.
-// Everything else is a 404 there. Every other host keeps the full dashboard.
+// acroveliq.acropora.hu) may reach only the AcrovelIQ page: the page shell and
+// its static files, the login, the GET endpoints the page reads, and the owner's
+// named writes (the decision and the task actions, session only, each by its own
+// decision of Balázs). Everything else is a 404 there. Every other host keeps the full dashboard.
 //
 // Balázs's decision (18:31:43 UTC, msg 1559634758932242504): the new domain
 // serves the AcrovelIQ page, the authentication it needs, its static resources
@@ -127,11 +128,16 @@ export const ACROVELIQ_ROUTES: readonly AcroveliqRoute[] = [
   // below (acroveliqOpenMattersView), and only Balázs's session (the handler: 403
   // for a device key or any token there)
   { method: 'GET', path: '/api/open-matters', why: 'AcrovelIQ: Döntéseim (picked view)' },
-  // THE ONE WRITE (Balázs's decision B, 2026-10-14 08:52:26 UTC, msg 1559851364950220852):
+  // THE DECISION WRITE (Balázs's decision B, 2026-10-14 08:52:26 UTC, msg 1559851364950220852):
   // the three Dontéseim actions on a decision row, and nothing else. The handler takes the
   // session only and refuses every row that is not a decision; the discord-reply route
   // under it is a longer path and does not match this pattern.
   { method: 'POST', path: '/api/decisions/:id', why: 'AcrovelIQ: Döntéseim, approve / reject / discuss (session only)' },
+  // THE TASK WRITES (Balázs's decision B for Feladatkezelés V1, 2026-10-14 10:12:09 UTC,
+  // msg 1559871429544120323): create a task, and assign / priority / pause / resume on one.
+  // Session only (the handler); no agent start: the hand-out stays acrobot's.
+  { method: 'POST', path: '/api/task-actions', why: 'AcrovelIQ: Feladatkezelés, new task (session only)' },
+  { method: 'POST', path: '/api/task-actions/:id', why: 'AcrovelIQ: Feladatkezelés, assign / priority / pause / resume (session only)' },
 ]
 
 function pathMatches(pattern: string, path: string): boolean {
