@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { STORE_DIR, TASK_CORE_MODE_SETTING } from '../../config.js'
+import { PROJECT_CHECK_MODE_SETTING, STORE_DIR, TASK_CORE_MODE_SETTING } from '../../config.js'
 import { getDb } from '../../db.js'
 import { logger } from '../../logger.js'
 import {
@@ -14,6 +14,9 @@ import {
   allTasks,
   assigneeTasks,
   doneGuard,
+  eventRepo,
+  REPO_KINDS,
+  setTaskProject,
   githubMergeProbe,
   isTaskPaused,
   loadTaskEvents,
@@ -28,6 +31,10 @@ import {
   type TaskEventKind,
 } from '../../task-usage.js'
 import { CLOSED_KINDS, waitsOn } from '../../open-matters.js'
+import { DECISION_OWNER_USER } from '../../config.js'
+import { decisionOwner } from '../../decisions.js'
+import { DEFAULT_PROJECT_ID, listProjects, projectRepos, projectResolver, repoFits } from '../../projects.js'
+import { callerOfContext } from '../field-gate.js'
 import { json, readBody } from '../http-helpers.js'
 import { claimActor } from '../actor-claims.js'
 import type { RouteContext } from './types.js'
@@ -67,7 +74,7 @@ import type { RouteContext } from './types.js'
 // task may name the file. `naplo` marks the event, `kenyszerit` refuses it with
 // 409. Events already stored are not touched. See reviewRefGuard.
 
-const TASK_PATH = /^\/api\/tasks\/([^/]+)\/(events|sessions|usage|timeline)$/
+const TASK_PATH = /^\/api\/tasks\/([^/]+)\/(events|sessions|usage|timeline|project)$/
 
 const IDEM_KEY = /^[\x21-\x7e]{8,200}$/
 const MAX_DATA = 16 * 1024
@@ -84,8 +91,12 @@ const startMode = parseTaskCoreMode(TASK_CORE_MODE_SETTING)
 if (startMode.problem) logger.error(startMode.problem)
 
 /** Replaceable in tests; the route never talks to GitHub in a unit test. */
-export const taskCoreSettings: { mode: TaskCoreMode; probe: () => MergeProbe } = {
+const startProjectMode = parseTaskCoreMode(PROJECT_CHECK_MODE_SETTING)
+if (startProjectMode.problem) logger.error(startProjectMode.problem.replace('TASK_CORE_MODE', 'PROJECT_CHECK_MODE'))
+
+export const taskCoreSettings: { mode: TaskCoreMode; projectMode: TaskCoreMode; probe: () => MergeProbe } = {
   mode: startMode.mode,
+  projectMode: startProjectMode.mode,
   probe: () => githubMergeProbe(readGithubToken()),
 }
 
@@ -124,14 +135,34 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
   const { res, path, method, url } = ctx
   const now = Math.floor(Date.now() / 1000)
 
+  // Projektek V1: the registry, the repos expanded (`acropora` covers every registered repo)
+  if (path === '/api/projects' && method === 'GET') {
+    if ([...url.searchParams.keys()].length) {
+      json(res, { error: 'no query parameters' }, 400)
+      return true
+    }
+    json(res, listProjects(getDb()).map((p) => ({
+      id: p.id, name: p.name, repos: projectRepos(getDb(), p.id), aliases: p.aliases, legacy_mixed: p.legacyMixed,
+    })))
+    return true
+  }
+
   if (path === '/api/tasks' && method === 'GET') {
     // a misspelt filter (`agent`, `assignee_id`) must not answer with the whole
     // list: a caller would read every task as its own (the /api/messages rule)
-    const unknown = [...url.searchParams.keys()].filter((k) => k !== 'assignee' && k !== 'busy')
+    const unknown = [...url.searchParams.keys()].filter((k) => k !== 'assignee' && k !== 'busy' && k !== 'project')
     if (unknown.length) {
-      json(res, { error: 'unknown query parameter', unknown, known: ['assignee', 'busy'] }, 400)
+      json(res, { error: 'unknown query parameter', unknown, known: ['assignee', 'busy', 'project'] }, 400)
       return true
     }
+    // Projektek V1: the server filters, by the registry id, its aliases included; an unknown
+    // id is a 400, not an empty list a page would read as "no tasks"
+    const wantProject = text(url.searchParams.get('project'))
+    if (url.searchParams.has('project') && (!wantProject || !listProjects(getDb()).some((p) => p.id === wantProject))) {
+      json(res, { error: 'unknown project', known: listProjects(getDb()).map((p) => p.id) }, 400)
+      return true
+    }
+    const resolve = projectResolver(getDb())
     const assignee = text(url.searchParams.get('assignee'))
     if (!assignee) {
       if (url.searchParams.has('assignee') || url.searchParams.has('busy')) {
@@ -140,10 +171,19 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       }
       // waits_on and closed: the open-matters reading (one place, not a copy on the page). A task the
       // page shows closed is exactly one open-matters does not list as open (barracuda, #116).
-      json(res, allTasks(getDb()).map((t) => ({ ...t, waits_on: waitsOn(t), closed: t.last_kind !== null && CLOSED_KINDS.has(t.last_kind) })))
+      // project_id: the registry project the stored value means (null: an unknown free value)
+      json(res, allTasks(getDb())
+        .map((t) => ({ ...t, project_id: resolve(t.project), waits_on: waitsOn(t), closed: t.last_kind !== null && CLOSED_KINDS.has(t.last_kind) }))
+        .filter((t) => !wantProject || t.project_id === wantProject))
       return true
     }
+    // the project filter holds here too: a caller asking ?assignee=x&project=os must not get all of
+    // x's tasks and read them as filtered (barracuda, #125); the busy check (kiadas) reads this branch
+    const projectOf = new Map((getDb().prepare('SELECT id, project FROM tasks WHERE assignee = ?').all(assignee) as { id: string; project: string }[])
+      .map((r) => [r.id, resolve(r.project)] as const))
     const tasks = assigneeTasks(getDb(), assignee)
+      .map((t) => ({ ...t, project_id: projectOf.get(t.id) ?? null }))
+      .filter((t) => !wantProject || t.project_id === wantProject)
     json(res, url.searchParams.get('busy') === '1' ? tasks.filter((t) => t.busy) : tasks)
     return true
   }
@@ -172,8 +212,8 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
     }
     // the profile decides what `done` must prove: a different one on an
     // existing task is refused, not ignored (barracuda, #46)
-    const stored = getDb().prepare('SELECT verification_profile, type FROM tasks WHERE id = ?').get(id) as
-      | { verification_profile: string | null; type: string | null }
+    const stored = getDb().prepare('SELECT verification_profile, type, project FROM tasks WHERE id = ?').get(id) as
+      | { verification_profile: string | null; type: string | null; project: string }
       | undefined
     if (profile && stored?.verification_profile && stored.verification_profile !== profile) {
       json(res, { error: `verification_profile is ${stored.verification_profile} and cannot be changed` }, 409)
@@ -186,11 +226,30 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'type is coordination and cannot be changed (send type: coordination with the update)' }, 409)
       return true
     }
+    // PROJEKTEK V1, the project rule (TASK_CORE_MODE: naplo names it, kenyszerit refuses).
+    // A new task names a registry project (an alias is stored as its id); an existing task's
+    // project never changes here: upsertTask keeps it, and a different one is said, not
+    // swallowed (the change is POST /api/tasks/:id/project, with its event).
+    const givenProject = text(b.project)
+    const resolveP = projectResolver(getDb())
+    const projectId = resolveP(givenProject)
+    const known = listProjects(getDb()).map((p) => p.id).join('|')
+    const projectWarning = !stored
+      ? !givenProject
+        ? `project missing: the task goes under ${DEFAULT_PROJECT_ID} (Flotta és közös); name one of ${known}`
+        : !projectId ? `project ${givenProject} is not in the registry (${known})` : null
+      : givenProject && projectId !== resolveP(stored.project)
+        ? `project kept: the task is ${stored.project}; a change is POST /api/tasks/${id}/project`
+        : null
+    if (projectWarning && taskCoreSettings.projectMode === 'kenyszerit') {
+      json(res, { error: 'project refused', reason: projectWarning }, stored ? 409 : 400)
+      return true
+    }
     upsertTask(
       getDb(),
       {
         id,
-        project: text(b.project) ?? undefined,
+        project: projectId ?? givenProject ?? undefined,
         type: text(b.type),
         parent_task: text(b.parent_task),
         variant: text(b.variant),
@@ -208,7 +267,7 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       now,
     )
     const ignored = Object.keys(b).filter((key) => !(TASK_BODY_KEYS as readonly string[]).includes(key))
-    json(res, { id, ignored }, 201)
+    json(res, projectWarning && taskCoreSettings.projectMode !== 'off' ? { id, ignored, project_warning: projectWarning } : { id, ignored }, 201)
     return true
   }
 
@@ -224,8 +283,9 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
     }
     // the fields too: the hand-out (fleet-api.sh kiadas, L5) checks them before it acts
     const fields = getDb()
-      .prepare('SELECT title, goal, assignee, reviewer, authorization_ref, verification_profile, priority FROM tasks WHERE id = ?')
-      .get(taskId)
+      .prepare('SELECT title, goal, assignee, reviewer, authorization_ref, verification_profile, priority, project FROM tasks WHERE id = ?')
+      .get(taskId) as Record<string, unknown>
+    fields.project_id = projectResolver(getDb())(fields.project as string)
     json(res, { task: taskId, fields, paused: isTaskPaused(getDb(), taskId), items: taskTimeline(getDb(), taskId) })
     return true
   }
@@ -248,6 +308,29 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
   const b = await body(ctx)
   if (!b) {
     json(res, { error: 'invalid JSON' }, 400)
+    return true
+  }
+
+  // PROJEKTEK V1, the one way a task's project changes (Balázs: "ne változhasson meg
+  // észrevétlenül"): the main agent's own token, or the owner's session; a registry id only;
+  // the field and a project_changed event in one transaction. Not on the AcrovelIQ host.
+  if (match[2] === 'project') {
+    const caller = callerOfContext(ctx.auth)
+    const owner = decisionOwner(ctx.auth, caller?.column, DECISION_OWNER_USER)
+    if (caller?.column !== 'A' && !owner.ok) {
+      json(res, { error: 'a project is changed by the main agent\'s own token or the owner\'s session only' }, 403)
+      return true
+    }
+    const to = text(b.project)
+    const ids = listProjects(getDb()).map((p) => p.id)
+    if (!to || !ids.includes(to)) {
+      json(res, { error: 'project: a registry id', known: ids }, 400)
+      return true
+    }
+    const reason = text(b.reason)
+    const actor = owner.ok ? owner.user : caller!.name
+    const out = setTaskProject(getDb(), taskId, to, actor, reason, now)
+    json(res, out.changed ? { id: taskId, project: to, from: out.from } : { id: taskId, project: to, repeated: true })
     return true
   }
 
@@ -275,6 +358,10 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
     // as the row's state: from here anyone could put one on a timeline in the owner's name
     if (kind === 'decision') {
       json(res, { error: 'a decision event is written by POST /api/decisions/:id only' }, 403)
+      return true
+    }
+    if (kind === 'project_changed') {
+      json(res, { error: 'a project_changed event is written by POST /api/tasks/:id/project only' }, 403)
       return true
     }
     if (kind === 'paused' || kind === 'resumed' || kind === 'owner_action') {
@@ -327,6 +414,22 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       if (reason) {
         wouldReject = reason
         stored = { ...(stored ?? {}), would_reject: true, would_reject_reason: reason }
+      }
+    }
+    // PROJEKTEK V1, the repo rule: an event that names a repo names one of its task's project.
+    // The wide `acropora` project covers every registered repo, so today's tasks are not marked;
+    // the rule bites on os, commerce and reefclub (barracuda, 30541). naplo marks, kenyszerit refuses.
+    if (REPO_KINDS.has(kind!) && taskCoreSettings.projectMode !== 'off') {
+      const task = db.prepare('SELECT project FROM tasks WHERE id = ?').get(taskId) as { project: string }
+      const repo = eventRepo(text(b.ref), data as Record<string, unknown> | null)
+      const reason = repo ? repoFits(db, task.project, repo) : null
+      if (reason && taskCoreSettings.projectMode === 'kenyszerit') {
+        json(res, { error: `${kind} refused`, reason }, 409)
+        return true
+      }
+      if (reason) {
+        wouldReject = wouldReject ? `${wouldReject}; ${reason}` : reason
+        stored = { ...(stored ?? {}), would_reject: true, would_reject_reason: wouldReject }
       }
     }
     const added = addTaskEvent(

@@ -40,6 +40,7 @@ import type Database from 'better-sqlite3'
 import { decisionItems, type DecisionItems } from './decisions.js'
 import { allTasks, type ListedTask } from './task-usage.js'
 import { latestTaskHandoff } from './task-handoff.js'
+import { DEFAULT_PROJECT_ID, projectResolver } from './projects.js'
 
 /** Last-event kinds after which a task is not open any more. */
 export const CLOSED_KINDS = new Set(['done', 'merged', 'deployed', 'cancelled', 'failed', 'partial'])
@@ -60,6 +61,8 @@ export const DEFAULT_BUDGET_CHARS = 12000
 
 export interface OpenMattersOptions {
   now: number
+  /** Projektek V1: only this registry project's tasks, questions and decision rows (aliases included). */
+  project?: string
   budgetChars?: number
   /** Whose hot memories are read; the channel session is the main agent's. */
   memoryAgent?: string
@@ -136,8 +139,18 @@ export function buildOpenMatters(db: Database.Database, opts: OpenMattersOptions
   const budget = opts.budgetChars ?? DEFAULT_BUDGET_CHARS
   const memoryAgent = opts.memoryAgent ?? 'acrobot'
 
+  const resolveP = projectResolver(db)
+  const inProject = (projectValue: string | null | undefined) => !opts.project || resolveP(projectValue) === opts.project
+  // a decision row has a task (the dontes payload requires it): its project is the task's
+  const taskProject = new Map(tableExists(db, 'tasks') ? allTasks(db).map((t) => [t.id, t.project] as const) : [])
+  const dontesOfProject = (items: DecisionItems): DecisionItems => {
+    if (!opts.project) return items
+    const keep = <T extends { task_id: string | null }>(rows: T[]) => rows.filter((r) => !!r.task_id && inProject(taskProject.get(r.task_id)))
+    return { ...items, pending: keep(items.pending), discuss: keep(items.discuss), discord_replied: keep(items.discord_replied),
+      expired: keep(items.expired), recent: keep(items.recent) }
+  }
   const tasks = tableExists(db, 'tasks')
-    ? allTasks(db).filter((t) => t.last_kind === null || !CLOSED_KINDS.has(t.last_kind))
+    ? allTasks(db).filter((t) => (t.last_kind === null || !CLOSED_KINDS.has(t.last_kind)) && inProject(t.project))
     : []
   const questions = tasks.flatMap((t) => questionsOf(db, t.id))
   const hasMemories = tableExists(db, 'memories') && columnExists(db, 'memories', 'keywords')
@@ -150,10 +163,13 @@ export function buildOpenMatters(db: Database.Database, opts: OpenMattersOptions
         )
         .all(memoryAgent, `%,${tag},%`) as OpenMattersMemory[])
     : []
-  const owes = taggedHot(OWES_TAG)
+  // memories and kanban cards carry no project: with a project filter they belong to the wide
+  // "Flotta és közös" (which also holds the older, mixed matters), not to os, commerce or reefclub
+  const noProjectRows = !opts.project || opts.project === DEFAULT_PROJECT_ID
+  const owes = noProjectRows ? taggedHot(OWES_TAG) : []
   const owedIds = new Set(owes.map((m) => m.id))
-  const decisions = taggedHot(DECISION_TAG).filter((d) => !owedIds.has(d.id))
-  const cards = tableExists(db, 'kanban_cards')
+  const decisions = noProjectRows ? taggedHot(DECISION_TAG).filter((d) => !owedIds.has(d.id)) : []
+  const cards = noProjectRows && tableExists(db, 'kanban_cards')
     ? (db
         .prepare(
           `SELECT id, title, assignee, priority, updated_at FROM kanban_cards
@@ -240,7 +256,7 @@ export function buildOpenMatters(db: Database.Database, opts: OpenMattersOptions
     items: {
       owes, decisions, balazs_questions: questions.filter((q) => fromBalazs(q.from)),
       dontes: tableExists(db, 'approvals')
-        ? decisionItems(db, opts.now, tasks.map((t) => t.id))
+        ? dontesOfProject(decisionItems(db, opts.now, tasks.map((t) => t.id)))
         : { pending: [], discuss: [], discord_replied: [], expired: [], recent: [], recent_discord: [] },
     },
   }

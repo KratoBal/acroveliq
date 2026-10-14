@@ -44,6 +44,8 @@
 
 import type Database from 'better-sqlite3'
 
+import { ensureProjectsSchema } from './projects.js'
+
 export const DEFAULT_PROJECT = 'acropora'
 
 export const TASK_EVENT_KINDS = [
@@ -75,6 +77,9 @@ export const TASK_EVENT_KINDS = [
   // `fleet-api.sh deployed` after it measured it (the live fleet tree's HEAD, or the
   // production image tag); the done guard does not ask for it (a separate decision).
   'deployed',
+  // Projektek V1: a task's project changed, the one way it may (POST /api/tasks/:id/project,
+  // or the owner's task action). Written by the server only; not a state.
+  'project_changed',
 ] as const
 export type TaskEventKind = (typeof TASK_EVENT_KINDS)[number]
 
@@ -160,6 +165,7 @@ export const CAPACITY_KINDS = ['work', 'review', 'fix', 'admin', 'repeat', 'coor
 export type CapacityKind = (typeof CAPACITY_KINDS)[number]
 
 export function ensureTaskUsageSchema(db: Database.Database): void {
+  ensureProjectsSchema(db)
   db.exec(`
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY,
@@ -246,7 +252,9 @@ export function upsertTask(db: Database.Database, task: TaskInput, now: number):
      VALUES (@id, @project, @type, @parent_task, @variant, @brief_ref, @now, @now,
              ${TASK_FIELDS.map((f) => `@${f}`).join(', ')})
      ON CONFLICT(id) DO UPDATE SET
-       project = excluded.project, type = excluded.type, parent_task = excluded.parent_task,
+       -- the project is durable (Projektek V1): an update never changes it, silently or not;
+       -- a change is setTaskProject, with its event (acrobot's measured overwrite, msg 30539)
+       project = tasks.project, type = excluded.type, parent_task = excluded.parent_task,
        variant = excluded.variant, brief_ref = excluded.brief_ref, updated_at = excluded.updated_at,
        ${TASK_FIELDS.map((f) =>
          // the profile decides what `done` must prove: once written it stays (barracuda, #46)
@@ -854,6 +862,38 @@ export const REVIEW_REF_KINDS: ReadonlySet<string> = new Set(['review_requested'
 /** Profiles whose review may be of a file, not a PR. */
 const FILE_REF_PROFILES: ReadonlySet<string> = new Set(['docs', 'ops'])
 const REF_PR = /(?<![\w./-])((?!\S*\.\.)[\w.-]+\/[\w.-]+)#(\d+)(?!\w)/
+
+/** The repo an event names: owner/repo#N in its ref, or data.repo. Null when it names none. */
+export function eventRepo(ref: string | null, data: Record<string, unknown> | null): string | null {
+  const m = REF_PR.exec(ref ?? '')
+  if (m) return m[1]!
+  const d = data ?? {}
+  return typeof d.repo === 'string' && REPO.test(d.repo) ? d.repo : null
+}
+
+/** The events that name a repo, and are checked against the task's project (Projektek V1). */
+export const REPO_KINDS: ReadonlySet<string> = new Set(['review_requested', 'verdict', 'merged', 'deployed'])
+
+/**
+ * A task's project changed: the one way it may (Projektek V1, Balázs: "ne változhasson meg
+ * észrevétlenül"). The field and its event in one transaction. `to` must already be a
+ * registry id; the caller checks who may do it.
+ */
+export function setTaskProject(
+  db: Database.Database, taskId: string, to: string, actor: string, reason: string | null, now: number,
+): { changed: boolean; from: string | null } {
+  return db.transaction(() => {
+    const row = db.prepare('SELECT project FROM tasks WHERE id = ?').get(taskId) as { project: string } | undefined
+    if (!row) throw new Error(`no task ${taskId}`)
+    if (row.project === to) return { changed: false, from: row.project }
+    db.prepare('UPDATE tasks SET project = ?, updated_at = ? WHERE id = ?').run(to, now, taskId)
+    addTaskEvent(db, {
+      task_id: taskId, kind: 'project_changed', actor, at: now,
+      ref: `project ${row.project} -> ${to}`, data: { from: row.project, to, reason },
+    }, now)
+    return { changed: true, from: row.project }
+  })()
+}
 const REF_PATH = /(?<![\w./-])[\w.-]+(?:\/[\w.-]+)+(?![\w#])/
 
 /**
@@ -964,7 +1004,7 @@ const BUSY_KINDS: ReadonlySet<string> = new Set(['assigned', 'started', 'fix_sta
   is therefore the latest STATE event; a task with no state event at all (a coordination
   unit, only coord marks) keeps its latest event, so what it shows does not change.
 */
-export const NON_STATE_KINDS: readonly TaskEventKind[] = ['decision', 'coord_open', 'coord_close', 'owner_action']
+export const NON_STATE_KINDS: readonly TaskEventKind[] = ['decision', 'coord_open', 'coord_close', 'owner_action', 'project_changed']
 /** Every other kind, named: a new kind must be put in one of the two lists (a test holds it; barracuda, #110 and #113). */
 export const STATE_KINDS: readonly TaskEventKind[] = [
   'assigned', 'started', 'review_requested', 'verdict', 'fix_started', 'done', 'merged',
