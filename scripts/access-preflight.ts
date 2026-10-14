@@ -44,8 +44,12 @@ const rows = getDb()
   .all(since) as Row[]
 
 // The daily run reads this, not the text: a text format is for a person and may change.
+// `database` and `newest` are the heartbeat (barracuda, #102): access_decisions holds only
+// denials, so an empty list alone cannot tell "nothing denied" from "nothing logged" (the
+// check off, or another database: a missing file is created empty by the open).
 if (process.argv.includes('--json')) {
-  console.log(JSON.stringify({ mode, since, rows }))
+  const newest = (getDb().prepare('SELECT MAX(last_seen) AS t FROM access_decisions').get() as { t: number | null }).t
+  console.log(JSON.stringify({ mode, since, rows, database: getDb().name, newest }))
   process.exit(rows.length === 0 ? 0 : 1)
 }
 if (rows.length === 0) {
