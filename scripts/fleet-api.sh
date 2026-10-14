@@ -753,7 +753,9 @@ import json,os
 data={"target":os.environ["T"],"repo":os.environ["M_REPO"],"pr":int(os.environ["M_PR"]),"merge_sha":os.environ["M_SHA"],
       "deployed_sha":os.environ["D"],"evidence":os.environ["E"]}
 if os.environ["A"]: data["app"]=os.environ["A"]
-ref="%s#%s kint %s %s%s" % (os.environ["M_REPO"],os.environ["M_PR"],os.environ["T"],os.environ["D"][:12],(" "+os.environ["A"]) if os.environ["A"] else "")
+# marveen-live: az elo fa HEAD-je, ami meg nem biztos, hogy fut (a dist nincs merve): nem "kint" (barracuda, #121)
+where="az elo fan" if os.environ["T"]=="marveen-live" else "eles kepben"
+ref="%s#%s %s %s %s%s" % (os.environ["M_REPO"],os.environ["M_PR"],where,os.environ["T"],os.environ["D"][:12],(" "+os.environ["A"]) if os.environ["A"] else "")
 print(json.dumps({"kind":"deployed","actor":"acrobot","ref":ref,"data":data}))')"
       if [ "$NEZ" = "1" ]; then echo "NEZ (nem irok): $body"; return 0; fi
       for attempt in 1 2 3; do
@@ -805,16 +807,23 @@ print(json.dumps({"kind":"deployed","actor":"acrobot","ref":ref,"data":data}))')
         *) echo "FAIL: ismeretlen app: $app (api, web, partner, commerce)"; exit 1 ;;
       esac
       [ "$repo" = "$M_REPO" ] || { echo "FAIL 4: a(z) $app a $repo repoe, a merged esemeny a $M_REPO repoe"; exit 4; }
-      line="$(printf '%s\n' "$PS_OUT" | grep -F "$uuid" | head -1)"
-      [ -n "$line" ] || { echo "FAIL 5: a(z) $app nem fut (nincs kontener ezzel az azonositoval)"; exit 5; }
-      img="$(printf '%s' "$line" | cut -d'|' -f2)"; isha="${img##*:}"
-      [[ "$isha" =~ ^[0-9a-f]{7,40}$ ]] || { echo "FAIL 5: a(z) $app kep-cimkeje nem commit: $img"; exit 5; }
+      # MINDEN egyezo kontener: telepites kozben a regi es az uj egyszerre fut ugyanazzal az
+      # azonositoval, es amig a regi is el, a valtozas nem mondhato kintnek (barracuda, #121)
+      lines="$(printf '%s\n' "$PS_OUT" | grep -F "$uuid")"
+      [ -n "$lines" ] || { echo "FAIL 5: a(z) $app nem fut (nincs kontener ezzel az azonositoval)"; exit 5; }
       git -C "$clone" fetch -q origin main 2>/dev/null || true
-      full="$(git -C "$clone" rev-parse --verify -q "${isha}^{commit}")" || { echo "FAIL 3: a(z) $app kep-commitja (${isha:0:12}) nincs a $clone klonban"; exit 3; }
       git -C "$clone" cat-file -e "${M_SHA}^{commit}" 2>/dev/null || { echo "FAIL 3: a merge commit (${M_SHA:0:12}) nincs a $clone klonban"; exit 3; }
-      git -C "$clone" merge-base --is-ancestor "$M_SHA" "$full" \
-        || { echo "FAIL 5: a(z) $app kepe (${full:0:12}) NEM tartalmazza a ${M_SHA:0:12}-t: meg nincs kint"; exit 5; }
-      echo "MERT: a(z) $app kepe (${full:0:12}) tartalmazza a ${M_SHA:0:12}-t"
+      full=""
+      while IFS= read -r line || [ -n "$line" ]; do
+        [ -n "$line" ] || continue
+        img="$(printf '%s' "$line" | cut -d'|' -f2)"; isha="${img##*:}"
+        [[ "$isha" =~ ^[0-9a-f]{7,40}$ ]] || { echo "FAIL 5: a(z) $app kep-cimkeje nem commit: $img"; exit 5; }
+        one="$(git -C "$clone" rev-parse --verify -q "${isha}^{commit}")" || { echo "FAIL 3: a(z) $app kep-commitja (${isha:0:12}) nincs a $clone klonban"; exit 3; }
+        git -C "$clone" merge-base --is-ancestor "$M_SHA" "$one" \
+          || { echo "FAIL 5: a(z) $app egyik kepe (${one:0:12}) NEM tartalmazza a ${M_SHA:0:12}-t: meg nincs (teljesen) kint"; exit 5; }
+        full="$one"
+      done <<< "$lines"
+      echo "MERT: a(z) $app minden kepe tartalmazza a ${M_SHA:0:12}-t (utolso: ${full:0:12})"
       OUT_T+=("acropora-prod"); OUT_S+=("$full"); OUT_A+=("$app")
     done
     # csak ha MIND kint van, akkor ir: egy reszleges telepites nem kerul fel felig

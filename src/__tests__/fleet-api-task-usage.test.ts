@@ -417,8 +417,9 @@ describe('fleet-api.sh deployed (TC-03 minimum)', () => {
     fakeTimeline([merged()])
     const r = await run(['deployed', 'marveen', 't9'], undefined, live('main'))
     const body = posts()[0]?.body as { kind: string; data: Record<string, unknown> } | undefined
-    expect([r.code, posts().length, body?.kind, body?.data.evidence, body?.data.deployed_sha, body?.data.merge_sha, posts()[0]?.key],
-      `DEPLOYED-ANCESTOR ${r.out}`).toEqual([0, 1, 'deployed', 'ancestor', MAIN, MERGE, `deployed:t9:marveen-live:${MAIN}`])
+    expect([r.code, posts().length, body?.kind, body?.data.evidence, body?.data.deployed_sha, body?.data.merge_sha, posts()[0]?.key,
+      (body as { ref?: string } | undefined)?.ref?.includes('az elo fan')],
+      `DEPLOYED-ANCESTOR ${r.out}`).toEqual([0, 1, 'deployed', 'ancestor', MAIN, MERGE, `deployed:t9:marveen-live:${MAIN}`, true])
   })
 
   it('DEPLOYED-CHERRY-PICK: on a release branch only a --commit whose patch-id is the merge\'s passes', async () => {
@@ -479,5 +480,26 @@ describe('fleet-api.sh deployed (TC-03 minimum)', () => {
     const wrongRepo = await run(['deployed', 'acropora', 't9', '--app', 'api'], undefined, env)
     expect([both.code, bothApps.map((d) => `${d.app}:${d.evidence}`), partial.code, partialWrites, /web.*NEM tartalmazza/.test(partial.out), wrongRepo.code, posts().length],
       `DEPLOYED-IMAGE ${both.out}`).toEqual([0, ['api:image-tag', 'web:image-tag'], 5, 0, true, 4, 0])
+  })
+
+  it('DEPLOYED-OVERLAP: during a deployment the old and the new container run under one app id; while the old one lives, nothing is written', async () => {
+    // barracuda, #121: the first matching line could be the NEW container before it took the traffic
+    const lines = (...imgs: string[]) => {
+      const out = imgs.map((sha, i) => `t9gxx94ecwekwruxngps5i6v-${i}|t9gxx94ecwekwruxngps5i6v:${sha}|Up`).join("' '")
+      writeFileSync(join(bin, 'ssh'), `#!/bin/bash\nprintf '%s\\n' '${out}'\n`)
+      chmodSync(join(bin, 'ssh'), 0o755)
+    }
+    const env = { PATH: `${bin}:${process.env.PATH}`, DEPLOYED_OS_CLONE: repo, ELES_KEY: '/dev/null' }
+    const os = merged({ repo: 'KratoBal/acropora-os' })
+    lines(MAIN, BASE) // the new one first, the old one still up
+    fakeTimeline([os])
+    const overlap = await run(['deployed', 'acropora', 't9', '--app', 'api'], undefined, env)
+    const overlapWrites = posts().length
+    lines(MAIN, MAIN) // both carry the merge
+    fakeTimeline([os])
+    const done = await run(['deployed', 'acropora', 't9', '--app', 'api'], undefined, env)
+    const ref = (posts()[0]?.body as { ref: string } | undefined)?.ref
+    expect([overlap.code, overlapWrites, done.code, posts().length, ref?.includes('eles kepben')], `DEPLOYED-OVERLAP ${overlap.out}`)
+      .toEqual([5, 0, 0, 1, true])
   })
 })
