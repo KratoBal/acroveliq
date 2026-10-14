@@ -67,10 +67,16 @@ export function checkCaps(status) {
 }
 
 /** F2: readable regular files outside the system prefixes, or with a fleet marker anywhere. */
-export function classifyReadable(paths) {
-  const outside = paths.filter((p) => !SYSTEM_EXACT.includes(p) && !SYSTEM_PREFIXES.some((pre) => p.startsWith(pre)))
+export function classifyReadable(paths, ownHome = null) {
+  // the runner's OWN home is a category of its own (counted and named, not FAIL): Codex leaves its
+  // temp files there (the second live run: /home/gpt/.codex/tmp/arg0/.../.lock). Only off-system
+  // AND off-home is "outside"; the marker check still covers the home, so an auth.json (or any
+  // fleet-marked name) there is FAIL until the login PR names it (acrobot, 30805)
+  const home = ownHome && ownHome !== '/' ? ownHome.replace(/\/+$/, '') + '/' : null
+  const own = home ? paths.filter((p) => p.startsWith(home)) : []
+  const outside = paths.filter((p) => !SYSTEM_EXACT.includes(p) && !SYSTEM_PREFIXES.some((pre) => p.startsWith(pre)) && !(home && p.startsWith(home)))
   const marked = paths.filter((p) => FLEET_MARKERS.test(p) && !p.startsWith('/proc/') && !p.startsWith('/sys/') && !p.startsWith('/usr/') && !p.startsWith('/app/'))
-  return { outside, marked }
+  return { outside, marked, own }
 }
 
 /** N1: the negative network tests count only when the control reached the outside. */
@@ -173,10 +179,11 @@ export async function main() {
   const found = []
   walkReadable(root, found, ['/proc', '/sys', '/dev'])
   rmSync(canary, { force: true })
-  const { outside, marked } = classifyReadable(found)
+  const { outside, marked, own } = classifyReadable(found, process.env.HOME || null)
+  const ownNote = `sajat home (${process.env.HOME || '-'}): ${own.length} fajl${own.length ? ` (pl. ${own.slice(0, 3).join(', ')})` : ''}`
   if (!found.includes(canary)) say('F2', 'NEM_MERHETO', 'a bejaras a sajat kanarijat sem talalta meg')
-  else if (outside.length || marked.length) say('F2', 'FAIL', `rendszeren kivul ${outside.length}, flotta-jelzesu ${marked.length}: ${[...outside, ...marked].slice(0, 8).join(', ')}`)
-  else say('F2', 'OK', `${found.length} olvashato fajl, mind rendszer-utvonalon; a kanarit megtalalta`)
+  else if (outside.length || marked.length) say('F2', 'FAIL', `rendszeren kivul ${outside.length}, flotta-jelzesu ${marked.length}: ${[...outside, ...marked].slice(0, 8).join(', ')}; ${ownNote}`)
+  else say('F2', 'OK', `${found.length} olvashato fajl, rendszer-utvonalon vagy a sajat home-ban; ${ownNote}; a kanarit megtalalta`)
 
   // H1: no credential of any kind (Balázs: none until his separate approval)
   const secretEnv = Object.keys(process.env).filter((k) => /TOKEN|SECRET|KEY|PASS|AUTH/i.test(k))
