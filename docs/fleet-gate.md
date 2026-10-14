@@ -208,6 +208,10 @@ docker exec "$C" psql -U "$U" -d acropora_staging -Atc "select count(*) from inf
                                              # 14
 docker exec "$C" psql -U "$U" -d acropora_staging -Atc "select pg_get_userbyid(c.relowner), has_column_privilege('fleet_ro', '\"UnasProductSnapshot\"', 'rawPayload', 'select') from pg_class c where c.relname = 'fleet_ro_unas_termek'"
                                              # a superuser neve|f
+# a JSON-útvonal valódi adaton itt fut először: ha a kulcs vagy a típus más, minden sor NULL (csendes nulla, nem hiba)
+docker exec "$C" psql -U "$U" -d acropora_staging -Atc "select count(*), count(alap_statusz), count(inquire) from fleet_ro_unas_termek"
+                                             # a második és a harmadik szám közel az elsőhöz; ha a második 0, az
+                                             # útvonalat igazítani kell, mielőtt bárki mérésre használja (barracuda, #119)
 ```
 
 **Miért nézet, és nem a `rawPayload` oszlop** (acrobot mérése, 2026-10-14 14:3x, az élő UNAS-ból, 1898 termék;
