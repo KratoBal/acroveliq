@@ -82,6 +82,31 @@ The expected `docker inspect` values:
 - `Memory`: 536870912, `PidsLimit`: 128, `NanoCpus`: 1000000000;
 - `Networks`: only `gpt-futtato-ki`.
 
+## The host firewall (after the first live run)
+
+**The first live run** (2026-10-14 17:50 UTC, commit 710b1e01): `ok=8 fail=2 nem_merheto=3`. The two FAILs:
+
+- **F2: `/.dockerenv`.** This is Docker's own empty marker file, a false hit. It is now allowed by exact path (`SYSTEM_EXACT`), not as a prefix.
+- **N1: `10.0.5.1:8000` answered.** That address is the gateway of `gpt-futtato-ki`, which is the host itself. **A bridge network alone does not close the host's services**, and that is a real gap against conditions 1 and 3.
+
+**The fix, on the host** (`host/`):
+- `compose.yaml`: the network gets a fixed bridge name, `gptki0`, so the rules apply to a stable interface.
+- `host/tuzfal.sh` (root, idempotent): everything from `gptki0` to the host (INPUT, every address and port of the host) is DROPped. Everything from `gptki0` to the private ranges is DROPped too, in DOCKER-USER. That second rule matters because a published port is DNAT-ed to a container address, so INPUT never sees it. The ranges: 10/8, 172.16/12, 192.168/16, the tailnet 100.64/10, and link-local 169.254/16 (cloud metadata). Outward traffic to public addresses is untouched.
+- `host/gpt-futtato-tuzfal.service`: it runs the script at boot (`multi-user.target`) and on every docker start and restart (`WantedBy`/`PartOf=docker.service`). Balázs's standing order (2026-10-13): no step is repeated by hand.
+- The probe: N1 now tests, on every address, the dashboard ports, the databases, Coolify and the executor, plus 22, 80 and 443 (`HOST_PORTS`). The addresses are the gateway, the host's own addresses (`GPT_FUTTATO_GEP_CIMEK`) and the fleet's. The control (api.openai.com:443, by name) must still answer.
+
+**The owner runs this, as root, after `git -C /opt/gpt-futtato/src fetch && git -C /opt/gpt-futtato/src checkout <the approved commit>`:**
+
+```
+/opt/gpt-futtato/src/gpt-runner/host/telepit-tuzfal.sh
+```
+
+**What the installer does:**
+1. It installs the script and the unit, and enables and starts them.
+2. **It measures persistence:** it removes our rules, restarts the unit, and the rules must be back. It also prints the unit's `WantedBy`, `PartOf` and `After`. **It does not restart docker**, because that would restart the fleet's container. A real reboot is not part of the measurement; the unit's enablement and its docker binding stand for it.
+3. It writes the host's IPv4 addresses into `.env`, re-creates the network (`docker compose down` + `up`) and runs the probe once.
+4. **If N1 comes out NEM_MERHETO** (the control or name resolution broke under the rules), it prints `STOP` and the two commands that take the rules back off.
+
 ## Before the login step (not this PR)
 
 - **The activation condition (barracuda, #138 review):** the exit code is 1 only on FAIL; NEM_MERHETO exits 0. So before activation, **V2 and V3 must not stay NEM_MERHETO**, unless Balázs accepts that explicitly, in writing, for those lines.

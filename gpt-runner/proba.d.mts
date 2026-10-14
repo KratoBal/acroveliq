@@ -7,6 +7,8 @@ export type Run = (cmd: string, args: string[]) => RunResult
 export const FLEET_IDS: number[]
 export const RUNNER_ID: number
 export const CLOSED_PORTS: number[]
+export const HOST_PORTS: number[]
+export const SYSTEM_EXACT: string[]
 export const PINNED_CODEX: string
 export const SYSTEM_PREFIXES: string[]
 export const FLEET_MARKERS: RegExp
@@ -23,6 +25,7 @@ export function judgeNetwork(
   control: { host: string; port: number; open: boolean },
 ): [Verdict, string]
 export function judgeSandboxRun(r: RunResult): 'usage' | 'never-started' | 'allowed' | 'blocked'
+export function networkTargets(gateway: string | null, hostAddrs: string[], fleetAddrs: string[]): Array<{ host: string; port: number }>
 export function summarize(lines: Array<[string, string, string]>): { ok: number; fail: number; nem: number }
 export function codexSandboxChecks(say: Say, run: Run): Promise<void>
 export function main(): Promise<void>
