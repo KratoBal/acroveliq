@@ -156,6 +156,8 @@ chmod 600 /opt/gpt-futtato/proba-teljes.log
 ip -br link show "$BRIDGE" || echo "FIGYELEM: a $BRIDGE bridge nem letezik, a szabalyok nem hatnak"
 echo "== a proba"
 grep -E "^(PROBA |OSSZESITES)" /opt/gpt-futtato/proba-teljes.log || echo "NINCS PROBA SOR: a teljes naplo /opt/gpt-futtato/proba-teljes.log"
+# F2's full list (every flagged path), whenever there is one (acrobot 30889)
+grep -E "^PROBA-NAPLO f2 " /opt/gpt-futtato/proba-teljes.log || true
 
 # 5. the stop rule (acrobot): if the control or name resolution broke under the rules, say so
 if grep -qE "^PROBA N1 NEM_MERHETO" /opt/gpt-futtato/proba-teljes.log; then

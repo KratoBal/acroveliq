@@ -11,7 +11,7 @@
 // tools-off flags is not provable from the 0.159.3 source, so there is no session (acrobot 30864).
 import { readFileSync } from 'node:fs'
 import type { Debate, DebateDeps, GptAnswer } from './debates.js'
-import { FINAL_MARK, type GptPackage } from './gpt-package.js'
+import { FINAL_MARK, GptOutputBlocked, type GptPackage } from './gpt-package.js'
 
 /** The package sent out, and the check of what comes back (src/gpt-package.ts gives both). */
 export interface GptFilters {
@@ -87,7 +87,7 @@ export function makeRunGpt(o: RunnerClientOptions): DebateDeps['runGpt'] {
     const body = (await res.json()) as unknown
     const text = body && typeof body === 'object' && typeof (body as { text?: unknown }).text === 'string' ? (body as { text: string }).text : null
     if (text == null || !text.trim()) throw new Error('a futtato valasza nem tartalmaz szoveget')
-    if (!filters.allowOutput(text)) throw new Error('a valasz a kimeneti szuron fennakadt')
+    if (!filters.allowOutput(text)) throw new GptOutputBlocked('a valasz a kimeneti titok-szuron fennakadt')
     return { ...readFinal(text), ...(pkg.notice ? { notice: pkg.notice } : {}) }
   }
 }

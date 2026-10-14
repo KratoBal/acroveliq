@@ -14,7 +14,7 @@ docker compose up --no-color > "$LOG" 2>&1 || true
 docker logs gpt-futtato >> "$LOG" 2>&1 || true
 chmod 600 "$LOG"
 echo "== a proba a belepes utan"
-grep -E "^(PROBA |PROBA-NAPLO v3|OSSZESITES)" "$LOG" || { echo "NINCS PROBA SOR: a teljes naplo $LOG"; exit 1; }
+grep -E "^(PROBA |PROBA-NAPLO v3|PROBA-NAPLO f2 |OSSZESITES)" "$LOG" || { echo "NINCS PROBA SOR: a teljes naplo $LOG"; exit 1; }
 
 # a missing line is "nincs", not a silent pipefail stop
 v3=$( { grep -E "^PROBA V3 " "$LOG" || true; } | awk '{print $3}' | tail -1)

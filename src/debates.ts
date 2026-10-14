@@ -26,7 +26,7 @@
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { resolveProject } from './projects.js'
-import { FINAL_MARK, GptBlocked } from './gpt-package.js'
+import { FINAL_MARK, GptBlocked, GptOutputBlocked } from './gpt-package.js'
 import { wrapUntrusted } from './prompt-safety.js'
 
 export const MAX_ROUNDS = 3
@@ -356,8 +356,11 @@ async function gptTurn(db: Database.Database, deps: DebateDeps, cfg: DebateConfi
       if (running(db, debate.id)) await say(db, deps, debate, '[vezérlő]', err.publicMessage)
       return null
     }
-    settle('failed', 'a futtató hibát adott')
-    if (running(db, debate.id)) await say(db, deps, debate, '[vezérlő]', 'GPT most nem szólhat: a futtató hibát adott (a naplóban).')
+    // the output filter stopped the answer: the runner WAS called (an attempt), and the thread is
+    // told what happened, not "the runner failed" (barracuda, #149)
+    const out = err instanceof GptOutputBlocked
+    settle('failed', out ? 'a kimeneti titok-szűrőn fennakadt' : 'a futtató hibát adott')
+    if (running(db, debate.id)) await say(db, deps, debate, '[vezérlő]', out ? err.publicMessage : 'GPT most nem szólhat: a futtató hibát adott (a naplóban).')
     return null
   }
   // stopped (or timed out) while GPT was thinking: its answer does not go out (barracuda #137)
