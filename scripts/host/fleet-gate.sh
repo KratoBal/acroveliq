@@ -94,7 +94,9 @@ host_config() {
       # NOT coolify-db: who writes the Coolify database decides what Coolify
       # deploys, with which mounts; that is root on the host (barracuda, #28).
       # Its two reads are named operations with the SQL built here.
-      PSQL_TARGETS="cpnjvtte02yakzs9vb0jffky:acropora_ai:fleet_ro"
+      # the stage OS database (a copy of real data) too, for reading product data: the same
+      # fleet_ro, its own per-column grants in that cluster (docs/fleet-gate.md, "1b")
+      PSQL_TARGETS="cpnjvtte02yakzs9vb0jffky:acropora_ai:fleet_ro dbpcyjbsbl2gfwtpn1ppw4vc:acropora_staging:fleet_ro"
       DUMP_TARGETS="cpnjvtte02yakzs9vb0jffky:acropora_ai:acropora_ai"
       RESTORE_LIST_KEYS="cpnjvtte02yakzs9vb0jffky"
       BACKUP_GET="dump:acropora_ai"

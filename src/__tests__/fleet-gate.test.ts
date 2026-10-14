@@ -32,6 +32,8 @@ const PROD = 'acropora-prod-01'
 const STAGE = 'acropora-ai-stage-01'
 const OS_DB = 'iwm34jaqp9xmwb72qkrqkwhy'
 const AI_DB = 'cpnjvtte02yakzs9vb0jffky'
+// the stage OS database (a copy of real data), a psql-ro target since fleet-ro-olvaso-ut
+const STAGE_OS_DB = 'dbpcyjbsbl2gfwtpn1ppw4vc'
 const API = 't9gxx94ecwekwruxngps5i6v'
 const WEB = 'dnt6jzza68wnuamvi93whn28'
 const PARTNER = 'iknrqjk9xeyydc5fibrk5tbp'
@@ -63,7 +65,7 @@ function world(host: string) {
   const docker = stub(
     'docker',
     `case "$*" in
-  "ps --format {{.Names}}") printf '%s\\n' ${OS_DB}-163020 ${AI_DB}-091011 ${API}-120000 coolify-db xdfswedgxuehokvymhjotpfs-1 ${WEB}-120100 ;;
+  "ps --format {{.Names}}") printf '%s\\n' ${OS_DB}-163020 ${AI_DB}-091011 ${STAGE_OS_DB}-200500 ${API}-120000 coolify-db xdfswedgxuehokvymhjotpfs-1 ${WEB}-120100 ;;
   "ps -a --format {{.Names}}") printf '%s\\n' restore-proba-ai-old coolify-db ;;
   "ps --format {{.Names}}|{{.Image}}|{{.Status}}") echo "${OS_DB}-163020|img|Up" ;;
   *" pg_dump "*) printf 'DUMPDATA' ;;
@@ -174,6 +176,12 @@ describe('fleet-gate: what passes', () => {
     const sentSql = readFileSync(p.sql, 'utf-8')
     const spaced = p.run(`psql-ro ${OS_DB} acropora tuples-spaced-pipe`, 'select 1;')
     const call = (r: { calls: string[] }) => r.calls.find((c) => c.startsWith('docker [exec]'))
+    // the stage OS database: the same fleet_ro, the gate's role, its own database name
+    const stageOs = s.run(`psql-ro ${STAGE_OS_DB} acropora_staging tuples`, 'select 1;')
+    expect([stageOs.code, call(stageOs)], 'GATE-PSQL-RO stage OS').toEqual([
+      0,
+      `docker [exec] [-i] [-e] [PGOPTIONS=-c default_transaction_read_only=on] [${STAGE_OS_DB}-200500] [psql] [-X] [-q] [-v] [ON_ERROR_STOP=1] [-U] [fleet_ro] [-d] [acropora_staging] [-tA]`,
+    ])
     expect([plain.code, plain.out.trim(), sentSql, call(plain), call(spaced), s.run('psql-ro coolify-db coolify tuples', 'select 1;').code], 'GATE-PSQL-RO').toEqual([
       0,
       'sor',
@@ -436,6 +444,12 @@ describe('fleet-gate: what does not pass', () => {
       [p, 'psql-ro idegen-kontener acropora', 'select 1;'],
       [p, `psql-ro ${OS_DB} acropora html`, 'select 1;'],
       [p, `psql-ro ${OS_DB} acropora tuples extra`, 'select 1;'], // a word too many
+      // the stage OS target: only its own database, only on the stage host
+      [s, `psql-ro ${STAGE_OS_DB} acropora`, 'select 1;'],
+      [s, `psql-ro ${STAGE_OS_DB} acropora_ai`, 'select 1;'],
+      [s, `psql-ro ${STAGE_OS_DB} postgres`, 'select 1;'],
+      [p, `psql-ro ${STAGE_OS_DB} acropora_staging`, 'select 1;'],
+      [s, `pg-dump ${STAGE_OS_DB} acropora_staging fleet_ro`],
       [p, `psql-ro ${OS_DB} acropora`, '\\! id'],
       [p, `psql-ro ${OS_DB} acropora`, 'select 1 \\g /tmp/x'],
       [p, `pg-dump ${OS_DB} acropora postgres`],
