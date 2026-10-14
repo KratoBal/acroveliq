@@ -589,7 +589,8 @@ print(json.dumps(b))')"
     #   4b a panel tetlen (idle vagy stopped) ES nincs neki szolo fuggo uzenet -> 8, restart nincs
     #   5  friss inditas a feladat munkamenet-azonositojaval, ha nincs --continue
     #      es a feladaton meg nincs az agensnek munkamenete                    -> 6
-    #   6  indito uzenet --task-kal, ha a feladaton meg nincs neki szolo uzenet -> 7
+    #   6  indito uzenet --task-kal, ha a feladaton meg nincs neki szolo uzenet, VAGY a 4. lepes
+    #      ujra foglalta (uj szakasz: a regi uzenet az elozo szakaszrol szolt)  -> 7
     # SZUNET (Feladatkezeles V1): szuneteltetett feladatot az 1. lepes nem ad ki (4-es kod), es
     # a 4., 5. es 6. lepes CSAK az utolso paused UTANI tetelekbol dont, kulonben a folytatas
     # utani ujrakiadas mindharmat kihagyna (a szunet elotti assigned, munkamenet es uzenet miatt).
@@ -706,10 +707,11 @@ print(int(to_me), int(session), int(message))' "$AGENT")
     # busy: after review_requested, verdict, merged, deployed, blocked ... it reads as free (busy
     # check and dashboard), and the next stage must claim it again (acrobot, 2026-10-14 15:28,
     # the dashboard showed no active task; manual assigned 819; barracuda #132).
+    REFREE=0
     if [ "${HAS_ASSIGNED:-0}" = "1" ] && [ "$THIS_BUSY" = "1" ]; then
       echo "4 kihagyva: a feladat mar ki van adva $AGENT agensnek"
     else
-      [ "${HAS_ASSIGNED:-0}" = "1" ] && echo "4 ujra foglal: a feladat $AGENT agensnel van, de a szerver szerint nem foglalja (az utolso allapot-esemenye nem assigned, started vagy fix_started)"
+      [ "${HAS_ASSIGNED:-0}" = "1" ] && REFREE=1 && echo "4 ujra foglal: a feladat $AGENT agensnel van, de a szerver szerint nem foglalja (az utolso allapot-esemenye nem assigned, started vagy fix_started)"
       DATA="$(AGENT="$AGENT" PARALLEL="$PARALLEL" python3 -c 'import json,os
 d={"agent":os.environ["AGENT"]}
 if os.environ["PARALLEL"]: d["parallel"]=os.environ["PARALLEL"]
@@ -760,11 +762,17 @@ print(d.get("session_id","") if d.get("ok") is True and d.get("registered") is n
       fi
       echo "5 rendben: $AGENT frissen indult, munkamenet $SID"
     fi
-    # 6. indito uzenet
-    if [ "${HAS_MESSAGE:-0}" = "1" ]; then
+    # 6. indito uzenet. A re-claimed task (a new stage, step 4) gets one again: the old message was
+    # about the previous stage, and without a new one the agent heard nothing (acrobot 30677).
+    # A repeat stays silent: after the claim the task is busy, so step 4 does not re-claim twice.
+    if [ "${HAS_MESSAGE:-0}" = "1" ] && [ "${REFREE:-0}" != "1" ]; then
       echo "6 kihagyva: a feladathoz mar van $AGENT agensnek szolo uzenet"
     else
-      MSG="Uj feladat: ${TASK}. Az elso lepes az atado rekord: bash ${BASE}/scripts/fleet-api.sh handoff-read ${TASK}"
+      if [ "${REFREE:-0}" = "1" ]; then
+        MSG="Uj szakasz ugyanezen a feladaton: ${TASK}. Az elso lepes az atado rekord: bash ${BASE}/scripts/fleet-api.sh handoff-read ${TASK}"
+      else
+        MSG="Uj feladat: ${TASK}. Az elso lepes az atado rekord: bash ${BASE}/scripts/fleet-api.sh handoff-read ${TASK}"
+      fi
       MSG_OUT="$(printf '%s' "$MSG" | bash "$BASE/scripts/agent-msg.sh" --task "$TASK" "$KIADO" "$AGENT" - 2>&1)"
       MSG_ID="$(printf '%s\n' "$MSG_OUT" | sed -n 's/^OK id=\([0-9][0-9]*\).*/\1/p' | head -n 1)"
       if [ -z "$MSG_ID" ]; then

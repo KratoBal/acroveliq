@@ -266,7 +266,7 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
     const assigned = requests.find((r) => r.path === '/api/tasks/t5/events')?.body
     requests = []
     const second = await run(['kiadas', 't5', 'nautilus'])
-    expect([first.code, firstWrites, restartBody, msg?.task_id, msg?.from, msg?.to, /handoff-read t5/.test(msg?.content ?? ''), assigned,
+    expect([first.code, firstWrites, restartBody, msg?.task_id, msg?.from, msg?.to, /^Uj feladat: t5\. .*handoff-read t5/.test(msg?.content ?? ''), assigned,
       /KIADVA: t5 -> nautilus/.test(first.out), second.code, writes(), /4 kihagyva/.test(second.out), /5 kihagyva/.test(second.out), /6 kihagyva/.test(second.out)],
     'FLEET-KIADAS-OK').toEqual([
       0, ['/api/tasks/t5/events', '/api/agents/nautilus/restart', '/api/messages'], { fresh: true, task_id: 't5' }, 't5', 'acrobot', 'nautilus', true,
@@ -326,7 +326,7 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
   // A new stage of the same task, handed out to the same agent (acrobot 30669; measured 2026-10-14 15:28: the
   // dashboard showed no active task, the hand-out skipped assigned, and acrobot wrote it by hand, event 819).
   // The rule is the server's busy flag (barracuda #132), not a list in the script.
-  it('FLEET-KIADAS-REFREE: a task that no longer keeps its agent busy is claimed again; one that does is not', async () => {
+  it('FLEET-KIADAS-REFREE: a task that no longer keeps its agent busy is claimed again, with a new start message; one that does is not', async () => {
     const before: Item[] = [
       { at: 1, source: 'event', id: 1, kind: 'assigned', actor: 'acrobot', ref: 'nautilus', data: { agent: 'nautilus' } },
       { at: 2, source: 'session', agent: 'nautilus', session_id: 'sess-old' },
@@ -338,10 +338,13 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
       install(fake({ items: [...before, ...tail], ...over }))
       const r = await run(['kiadas', 't5', 'nautilus'])
       const assigned = requests.find((q) => q.path === '/api/tasks/t5/events')?.body as Record<string, unknown> | undefined
-      return [r.code, writes(), assigned?.kind ?? null, /4 ujra foglal/.test(r.out), /5 kihagyva/.test(r.out), /6 kihagyva/.test(r.out)]
+      const msg = requests.find((q) => q.path === '/api/messages')?.body as Record<string, string> | undefined
+      return [r.code, writes(), assigned?.kind ?? null, /4 ujra foglal/.test(r.out), /5 kihagyva/.test(r.out), /6 kihagyva/.test(r.out),
+        msg ? [msg.task_id, msg.to, /^Uj szakasz ugyanezen a feladaton: t5\. .*handoff-read t5/.test(msg.content)] : null]
     }
-    const claimed = [0, ['/api/tasks/t5/events'], 'assigned', true, true, true]
-    const kept = [0, [], null, false, true, true]
+    // a new stage: assigned again AND a new start message naming the task (acrobot 30677); no restart (step 5 unchanged)
+    const claimed = [0, ['/api/tasks/t5/events', '/api/messages'], 'assigned', true, true, false, ['t5', 'nautilus', true]]
+    const kept = [0, [], null, false, true, true, null]
     expect([
       await outcome([ev(3, 'review_requested')]),
       await outcome([ev(3, 'review_requested'), ev(4, 'verdict', 'barracuda')]),
