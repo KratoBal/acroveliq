@@ -63,8 +63,8 @@ describe('access preflight', () => {
     const empty = preflight(database([]), '--mode', 'legacy-szukitett', '--json')
     const parsed = JSON.parse(full.out.trim().split('\n').at(-1)!)
     expect(
-      [full.code, parsed.mode, parsed.rows.map((r: { actor: string; path: string; count: number }) => [r.actor, r.path, r.count]), empty.code, JSON.parse(empty.out.trim().split('\n').at(-1)!).rows],
+      [full.code, parsed.mode, parsed.rows.map((r: { actor: string; path: string; count: number }) => [r.actor, r.path, r.count]), parsed.database, typeof parsed.newest, empty.code, JSON.parse(empty.out.trim().split('\n').at(-1)!).rows, JSON.parse(empty.out.trim().split('\n').at(-1)!).newest],
       'ACCESS-PREFLIGHT-JSON',
-    ).toEqual([1, 'kikenyszerit', [['legacy', '/api/schedules', 2], ['murena', '/api/approvals/:id', 2]], 0, []])
+    ).toEqual([1, 'kikenyszerit', [['legacy', '/api/schedules', 2], ['murena', '/api/approvals/:id', 2]], db, 'number', 0, [], null])
   })
 })
