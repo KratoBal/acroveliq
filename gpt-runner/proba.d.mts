@@ -26,6 +26,8 @@ export function judgeNetwork(
 ): [Verdict, string]
 export function judgeSandboxRun(r: RunResult): 'usage' | 'never-started' | 'allowed' | 'blocked'
 export function networkTargets(gateway: string | null, hostAddrs: string[], fleetAddrs: string[]): Array<{ host: string; port: number }>
+export function globalIpv6(ifInet6: string): string[]
+export function checkIpv6(ifInet6: string): [Verdict, string]
 export function summarize(lines: Array<[string, string, string]>): { ok: number; fail: number; nem: number }
 export function codexSandboxChecks(say: Say, run: Run): Promise<void>
 export function main(): Promise<void>

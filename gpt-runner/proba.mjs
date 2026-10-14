@@ -88,6 +88,17 @@ export function networkTargets(gateway, hostAddrs, fleetAddrs) {
   return hosts.flatMap((host) => HOST_PORTS.map((port) => ({ host, port })))
 }
 
+/** IPV6: global (scope 00) IPv6 addresses of the container, from /proc/net/if_inet6. The host
+ *  rules are iptables (IPv4) only, so a later enable_ipv6 would open a silent path (barracuda). */
+export function globalIpv6(ifInet6) {
+  return ifInet6.split('\n').map((l) => l.trim().split(/\s+/)).filter((f) => f.length >= 6 && f[3] === '00' && f[5] !== 'lo').map((f) => `${f[5]}:${f[0]}`)
+}
+
+export function checkIpv6(ifInet6) {
+  const g6 = globalIpv6(ifInet6)
+  return g6.length ? ['FAIL', `globalis IPv6 cim (a host-szabalyok csak IPv4-esek): ${g6.join(', ')}`] : ['OK', 'nincs globalis IPv6 cim; a host-tuzfal IPv4-es szabalyai lefedik a kimeno utat']
+}
+
 export function summarize(lines) {
   const n = (s) => lines.filter((l) => l[1] === s).length
   return { ok: n('OK'), fail: n('FAIL'), nem: n('NEM_MERHETO') }
@@ -175,6 +186,9 @@ export async function main() {
   // V1: no way to drive the fleet: no sudo, no control sockets (F1 covers docker/supervisor)
   const sudo = run('sh', ['-c', 'command -v sudo || true']).out.trim()
   const tmux = readdirSync('/tmp').filter((e) => e.startsWith('tmux-'))
+  let v6 = ''
+  try { v6 = readFileSync('/proc/net/if_inet6', 'utf8') } catch { /* no IPv6 at all: fine */ }
+  say('IPV6', ...checkIpv6(v6))
   say('V1', sudo || tmux.length ? 'FAIL' : 'OK', sudo || tmux.length ? `sudo: ${sudo || '-'}; tmux: ${tmux.join(',') || '-'}` : 'nincs sudo, nincs tmux-socket')
 
   // PROBA_CSAK_HELYI=1 (tests): no network and no Codex, only the local checks
