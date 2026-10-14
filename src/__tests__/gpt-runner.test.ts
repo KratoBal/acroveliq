@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
-  checkIds, checkCaps, classifyReadable, judgeNetwork, judgeSandboxRun, codexSandboxChecks,
+  HOST_PORTS, SYSTEM_EXACT, networkTargets, checkIds, checkCaps, classifyReadable, judgeNetwork, judgeSandboxRun, codexSandboxChecks,
   idsFromStatus, summarize, PINNED_CODEX, FLEET_IDS,
 } from '../../gpt-runner/proba.mjs'
 
@@ -61,6 +61,22 @@ describe('gpt-runner probe: the pure checks', () => {
     expect(r.outside).toEqual(['/home/marveen/marveen/store/x', '/opt/acropora-commerce-stage/backend/apps/backend/.env'])
     expect(r.marked).toEqual(expect.arrayContaining(['/home/marveen/marveen/store/x', '/opt/acropora-commerce-stage/backend/apps/backend/.env']))
     expect(classifyReadable(['/usr/bin/node', '/etc/passwd', '/tmp/kanari-proba.txt'])).toEqual({ outside: [], marked: [] })
+  })
+
+  it("F2-DOCKERENV: Docker's own /.dockerenv is allowed by EXACT path only (the first live run's false hit)", () => {
+    expect(SYSTEM_EXACT).toEqual(['/.dockerenv'])
+    expect(classifyReadable(['/.dockerenv']).outside).toEqual([])
+    expect(classifyReadable(['/.dockerenv.bak', '/.dockerenvx/a', '/.dockerinit']).outside).toEqual(['/.dockerenv.bak', '/.dockerenvx/a', '/.dockerinit'])
+  })
+
+  it('N1-HOST-PORTS: on the host the public ports are tested too (the first live run reached 10.0.5.1:8000)', () => {
+    expect(HOST_PORTS).toEqual(expect.arrayContaining([3420, 3425, 8000, 22, 80, 443]))
+    // every address gets every port, the gateway, the host's own and the fleet's; no address twice
+    const t = networkTargets('10.0.5.1', ['203.0.113.7', '10.0.5.1'], ['10.0.2.4'])
+    const key = (x: { host: string; port: number }) => `${x.host}:${x.port}`
+    expect(t.length).toBe(3 * HOST_PORTS.length)
+    expect(['10.0.5.1:8000', '10.0.5.1:22', '203.0.113.7:443', '10.0.2.4:3420', '10.0.2.4:80'].every((k) => t.map(key).includes(k))).toBe(true)
+    expect(networkTargets(null, [], []).length).toBe(0)
   })
 
   it('N1: an answering port is FAIL; all closed counts as OK only when the control answered', () => {
@@ -143,6 +159,9 @@ describe('gpt-runner container definition', () => {
     }
     const nets = code.split(/^networks:/m)[1]!.split(/^volumes:/m)[0]!
     expect(nets.match(/^ {2}\w[\w-]*:/gm)).toEqual(['  ki:'])
+    // a fixed bridge name: the host firewall (host/tuzfal.sh) is written for it
+    expect(nets).toMatch(/com\.docker\.network\.bridge\.name: gptki0/)
+    expect(code).toMatch(/PROBA_GEP_CIMEK: \$\{GPT_FUTTATO_GEP_CIMEK:-\}/)
   })
 
   it('PINS: the base image must be a digest; one Codex version in package.json, the lockfile and the probe', () => {
@@ -172,5 +191,85 @@ describe('gpt-runner probe: a live run here, in the fleet container, must come o
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('gpt-runner host firewall (host/tuzfal.sh) against a stateful fake iptables', () => {
+  // the fake keeps "<chain>|<rule>" lines in a file: -N (fails if it exists), -F, -A, -I, -C, -D, -S
+  const FAKE = `#!/bin/bash
+S="$FAKE_STATE"; touch "$S"
+op="$1"; chain="$2"; shift 2
+case "$op" in
+  -N) grep -qx "N|$chain" "$S" && exit 1; echo "N|$chain" >> "$S" ;;
+  -F) grep -vx "R|$chain|.*" "$S" > "$S.t" || true; grep -v "^R|$chain|" "$S" > "$S.t" || true; mv "$S.t" "$S" ;;
+  -A) echo "R|$chain|$*" >> "$S" ;;
+  -I) shift; { grep -v "^R|$chain|" "$S" || true; echo "R|$chain|$*"; grep "^R|$chain|" "$S" || true; } > "$S.t"; mv "$S.t" "$S" ;;
+  -C) grep -qxF "R|$chain|$*" "$S" ;;
+  -D) grep -vxF "R|$chain|$*" "$S" > "$S.t" || true; mv "$S.t" "$S" ;;
+  -S) grep "^R|$chain|" "$S" | cut -d'|' -f3- ;;
+esac
+`
+  const setup = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gpt-fw-'))
+    writeFileSync(join(dir, 'iptables'), FAKE, { mode: 0o755 })
+    return dir
+  }
+  const fw = (dir: string) => spawnSync('bash', [join(__dirname, '..', '..', 'gpt-runner', 'host', 'tuzfal.sh')], {
+    env: { PATH: `${dir}:/usr/bin:/bin`, FAKE_STATE: join(dir, 'state'), IPTABLES: join(dir, 'iptables') }, encoding: 'utf8', timeout: 20_000,
+  })
+  const rules = (dir: string) => readFileSync(join(dir, 'state'), 'utf8').split('\n').filter((l) => l.startsWith('R|'))
+
+  it('FW-RULES: the host is closed to the bridge (INPUT), the private ranges too (DOCKER-USER), outward untouched', () => {
+    const dir = setup()
+    try {
+      const r = fw(dir)
+      expect([r.status, r.stderr]).toEqual([0, ''])
+      expect(rules(dir).sort()).toEqual([
+        'R|DOCKER-USER|-i gptki0 -j GPTF-PRIVAT',
+        'R|GPTF-GEP|-j DROP',
+        'R|GPTF-PRIVAT|-d 10.0.0.0/8 -j DROP',
+        'R|GPTF-PRIVAT|-d 100.64.0.0/10 -j DROP',
+        'R|GPTF-PRIVAT|-d 169.254.0.0/16 -j DROP',
+        'R|GPTF-PRIVAT|-d 172.16.0.0/12 -j DROP',
+        'R|GPTF-PRIVAT|-d 192.168.0.0/16 -j DROP',
+        'R|INPUT|-i gptki0 -j GPTF-GEP',
+      ])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('FW-IDEMPOTENT: a second and a third run (boot, docker restart) leave exactly the same rules', () => {
+    const dir = setup()
+    try {
+      // per chain, in order (iptables keeps the order WITHIN a chain; the chains are independent)
+      const byChain = (rs: string[]) => [...rs].sort((a, b) => a.split('|')[1]!.localeCompare(b.split('|')[1]!))
+      fw(dir)
+      const first = byChain(rules(dir))
+      fw(dir); fw(dir)
+      expect(byChain(rules(dir))).toEqual(first)
+      expect(first.length).toBe(8)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('FW-JUMP-FIRST: the jumps go to the TOP of INPUT and DOCKER-USER, before rules already there', () => {
+    const dir = setup()
+    try {
+      writeFileSync(join(dir, 'state'), 'R|INPUT|-i eth0 -j ACCEPT\nR|DOCKER-USER|-j RETURN\n')
+      fw(dir)
+      const r = rules(dir)
+      expect([r.filter((l) => l.startsWith('R|INPUT|'))[0], r.filter((l) => l.startsWith('R|DOCKER-USER|'))[0]]).toEqual(['R|INPUT|-i gptki0 -j GPTF-GEP', 'R|DOCKER-USER|-i gptki0 -j GPTF-PRIVAT'])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('FW-UNIT: the unit runs the script at boot and after every docker (re)start', () => {
+    const unit = R('host/gpt-futtato-tuzfal.service')
+    expect([/^After=docker\.service$/m.test(unit), /^PartOf=docker\.service$/m.test(unit), /^WantedBy=.*docker\.service.*multi-user\.target/m.test(unit), /^ExecStart=\/opt\/gpt-futtato\/tuzfal\.sh$/m.test(unit), /^RemainAfterExit=yes$/m.test(unit)]).toEqual([true, true, true, true, true])
+  })
+
+  it('FW-INSTALL: the installer measures persistence (rules removed, unit restores them) and never restarts docker', () => {
+    const inst = R('host/telepit-tuzfal.sh')
+    expect(inst).toMatch(/iptables -D INPUT -i "\$BRIDGE" -j GPTF-GEP[\s\S]*systemctl restart gpt-futtato-tuzfal\.service[\s\S]*grep -F GPTF-GEP \|\| \{ echo "STOP/)
+    expect(inst).toMatch(/systemctl enable --now gpt-futtato-tuzfal\.service/)
+    expect(/systemctl (restart|stop) docker/.test(inst)).toBe(false)
+    expect(inst).toMatch(/\^PROBA N1 NEM_MERHETO[\s\S]*STOP/)
   })
 })

@@ -27,9 +27,16 @@ export const RUNNER_ID = 10002
 /** Ports that must NOT answer from the runner: the dashboard, its second port, the usual
  *  databases, Coolify, the deploy executor. 22/80/443 on the gateway are public anyway. */
 export const CLOSED_PORTS = [3420, 3425, 5432, 6379, 8000, 8080, 8787]
+/** On the HOST (the gateway and the host's own addresses) the public ones must be closed too:
+ *  the first live run (2026-10-14 17:50 UTC) reached 10.0.5.1:8000, the host itself; from the
+ *  runner the host is not "the internet", and ssh and Traefik are the host's services. */
+export const HOST_PORTS = [...CLOSED_PORTS, 22, 80, 443]
 export const PINNED_CODEX = process.env.PROBA_CODEX_VERSION || '0.159.3'
 /** Where a stranger may legitimately find readable files in this image. */
 export const SYSTEM_PREFIXES = ['/usr/', '/lib/', '/lib32/', '/lib64/', '/libx32/', '/bin/', '/sbin/', '/etc/', '/proc/', '/sys/', '/dev/', '/run/', '/var/', '/app/', '/opt/yarn-', '/home/node/', '/tmp/']
+/** Single files allowed by EXACT path, not as a prefix: Docker's own empty marker (the first live
+ *  run's only F2 hit). A prefix here would let /.dockerenv-anything through. */
+export const SYSTEM_EXACT = ['/.dockerenv']
 /** Names that mean fleet data reached the container. */
 export const FLEET_MARKERS = /marveen|acropora|agents\/|store\/|\.env(\.|$)|token|secret|auth\.json|id_(rsa|ed25519)/i
 
@@ -61,7 +68,7 @@ export function checkCaps(status) {
 
 /** F2: readable regular files outside the system prefixes, or with a fleet marker anywhere. */
 export function classifyReadable(paths) {
-  const outside = paths.filter((p) => !SYSTEM_PREFIXES.some((pre) => p.startsWith(pre)))
+  const outside = paths.filter((p) => !SYSTEM_EXACT.includes(p) && !SYSTEM_PREFIXES.some((pre) => p.startsWith(pre)))
   const marked = paths.filter((p) => FLEET_MARKERS.test(p) && !p.startsWith('/proc/') && !p.startsWith('/sys/') && !p.startsWith('/usr/') && !p.startsWith('/app/'))
   return { outside, marked }
 }
@@ -72,6 +79,13 @@ export function judgeNetwork(results, control) {
   if (answered.length) return ['FAIL', `valaszolt: ${answered.map((r) => `${r.host}:${r.port}`).join(', ')}`]
   if (!control.open) return ['NEM_MERHETO', `a kontroll (${control.host}:${control.port}) sem ert ki, igy a negativ probak nem bizonyitanak`]
   return ['OK', `${results.length} probalt cim:port egyike sem valaszolt; a kontroll (${control.host}:${control.port}) kiert`]
+}
+
+/** N1's targets: every host-side address (gateway, the host's own) and every fleet address,
+ *  each with HOST_PORTS; the same address only once. */
+export function networkTargets(gateway, hostAddrs, fleetAddrs) {
+  const hosts = [...new Set([...(gateway ? [gateway] : []), ...hostAddrs, ...fleetAddrs])]
+  return hosts.flatMap((host) => HOST_PORTS.map((port) => ({ host, port })))
 }
 
 export function summarize(lines) {
@@ -178,11 +192,12 @@ export async function main() {
   const names = (process.env.PROBA_FLOTTA_NEVEK || 'marveen,vegrehajto,host.docker.internal').split(',').map((s) => s.trim()).filter(Boolean)
   const resolved = []
   for (const n of names) { try { resolved.push(...(await dns.lookup(n, { all: true })).map((a) => a.address)) } catch { /* not resolvable: that is the point */ } }
-  const hosts = [...new Set([...(gw ? [gw] : []), ...fleetHosts, ...resolved])]
-  const tries = await Promise.all(hosts.flatMap((h) => CLOSED_PORTS.map((p) => tcpOpen(h, p))))
+  // the host's own addresses (public, tailnet), for the host-side firewall (PROBA_GEP_CIMEK)
+  const hostAddrs = (process.env.PROBA_GEP_CIMEK || '').split(',').map((s) => s.trim()).filter(Boolean)
+  const tries = await Promise.all(networkTargets(gw, hostAddrs, [...fleetHosts, ...resolved]).map((t) => tcpOpen(t.host, t.port)))
   const control = await tcpOpen('api.openai.com', 443, 5000)
   say('N1', ...judgeNetwork(tries, control))
-  say('N1-CIMEK', 'OK', `atjaro ${gw || '-'}; flotta-cimek ${fleetHosts.join(',') || '- (PROBA_FLOTTA_CIMEK ures)'}; nevfeloldas: ${resolved.join(',') || 'egyik nev sem oldodott fel'}`)
+  say('N1-CIMEK', 'OK', `atjaro ${gw || '-'}; gep-cimek ${hostAddrs.join(',') || '- (PROBA_GEP_CIMEK ures)'}; portok ${HOST_PORTS.join(',')}; flotta-cimek ${fleetHosts.join(',') || '- (PROBA_FLOTTA_CIMEK ures)'}; nevfeloldas: ${resolved.join(',') || 'egyik nev sem oldodott fel'}`)
   if (!fleetHosts.length) say('N1-FLOTTA', 'NEM_MERHETO', 'a flotta konteneranak cimei nincsenek megadva (PROBA_FLOTTA_CIMEK), csak az atjarot es a neveket probaltam')
 
   // VER: the installed Codex is the pinned one

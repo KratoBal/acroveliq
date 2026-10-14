@@ -35,6 +35,8 @@ services:
     environment:
       # the fleet container's addresses, for the negative network test (N1); see README
       PROBA_FLOTTA_CIMEK: ${GPT_FUTTATO_FLOTTA_CIMEK:-}
+      # the host's own addresses (public, tailnet), closed by the host firewall (host/tuzfal.sh)
+      PROBA_GEP_CIMEK: ${GPT_FUTTATO_GEP_CIMEK:-}
     volumes:
       - type: volume
         source: codex-home
@@ -43,9 +45,13 @@ services:
       - ki
 
 networks:
-  # outward only; no fleet container joins it
+  # outward only; no fleet container joins it. A FIXED bridge name: the host firewall
+  # (host/tuzfal.sh) closes the host and the private ranges to traffic from this interface
   ki:
     name: gpt-futtato-ki
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: gptki0
 
 volumes:
   # empty: the Codex login (~/.codex) lands here only after Balázs's separate approval

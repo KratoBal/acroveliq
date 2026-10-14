@@ -1,0 +1,17 @@
+# The GPT runner's host firewall (gpt-runner/host/tuzfal.sh), at boot and after every docker
+# (re)start: Balázs's standing order (2026-10-13), no step that has to be repeated by hand.
+#   WantedBy=docker.service  started whenever docker starts (boot, or a docker restart)
+#   PartOf=docker.service    a docker restart restarts this unit too, so the rules run again
+#   After=docker.service     after Docker has set up its own chains (DOCKER-USER)
+[Unit]
+Description=GPT-futtato: a gptki0 bridge forgalma a gep es a privat tartomanyok fele tiltva
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/gpt-futtato/tuzfal.sh
+
+[Install]
+WantedBy=docker.service multi-user.target
