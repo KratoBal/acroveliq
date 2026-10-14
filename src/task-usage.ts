@@ -907,6 +907,24 @@ export function githubMergeProbe(token: string | null, fetchImpl: typeof fetch =
 
 const BUSY_KINDS: ReadonlySet<string> = new Set(['assigned', 'started', 'fix_started'])
 
+/*
+  THE KINDS THAT ARE NOT A STATE OF THE TASK. A decision on a decision row, and the
+  channel session's coord_open/coord_close marks, can land on a task someone is working
+  on; they say something ABOUT the task, not where its work stands. Read as the "last
+  event" they freed the working agent: measured 2026-10-14 on the built functions,
+  `started` then `decision` gave busy=false, so the hand-out's busy check would have put
+  a second task next to the running one, and the AcrovelIQ list moved the task to "no
+  event" (survey feladatkezeles-v1, section 3; task task-busy-decision). The last event
+  is therefore the latest STATE event; a task with no state event at all (a coordination
+  unit, only coord marks) keeps its latest event, so what it shows does not change.
+*/
+export const NON_STATE_KINDS: readonly TaskEventKind[] = ['decision', 'coord_open', 'coord_close']
+const NON_STATE_SQL = NON_STATE_KINDS.map((k) => `'${k}'`).join(', ')
+/** The task's last event as the busy check and the list read it (see NON_STATE_KINDS). */
+const LAST_STATE_EVENT = (alias: string) =>
+  `SELECT id FROM task_events ${alias} WHERE ${alias}.task_id = t.id
+   ORDER BY (${alias}.kind IN (${NON_STATE_SQL})), ${alias}.at DESC, ${alias}.id DESC LIMIT 1`
+
 export interface AssigneeTask {
   id: string
   title: string | null
@@ -916,17 +934,17 @@ export interface AssigneeTask {
 }
 
 /**
- * An agent's tasks, and which of them keep it busy: those whose LAST event is
- * `assigned`, `started` or `fix_started`. After `review_requested` the agent
- * is free for the next task.
+ * An agent's tasks, and which of them keep it busy: those whose LAST STATE event
+ * (NON_STATE_KINDS left out) is `assigned`, `started` or `fix_started`. After
+ * `review_requested` the agent is free for the next task.
  */
 export function assigneeTasks(db: Database.Database, agent: string): AssigneeTask[] {
   const rows = db
     .prepare(
-      `SELECT t.id, t.title,
-              (SELECT kind FROM task_events e WHERE e.task_id = t.id ORDER BY at DESC, id DESC LIMIT 1) AS last_kind,
-              (SELECT at FROM task_events e WHERE e.task_id = t.id ORDER BY at DESC, id DESC LIMIT 1) AS last_at
-       FROM tasks t WHERE t.assignee = ? ORDER BY t.created_at, t.id`,
+      `SELECT t.id, t.title, e.kind AS last_kind, e.at AS last_at
+       FROM tasks t
+       LEFT JOIN task_events e ON e.id = (${LAST_STATE_EVENT('x')})
+       WHERE t.assignee = ? ORDER BY t.created_at, t.id`,
     )
     .all(agent) as Omit<AssigneeTask, 'busy'>[]
   return rows.map((r) => ({ ...r, busy: r.last_kind !== null && BUSY_KINDS.has(r.last_kind) }))
@@ -950,9 +968,10 @@ export interface ListedTask extends AssigneeTask {
 }
 
 /**
- * Every task, with its last event: the read-only list of the AcrovelIQ page
- * (acroveliq-vp-v1). Newest activity first; a task with no event yet sorts by
- * its creation. `busy` means the same as in assigneeTasks.
+ * Every task, with its last STATE event (NON_STATE_KINDS left out): the read-only
+ * list of the AcrovelIQ page (acroveliq-vp-v1). Newest activity first, by ANY event,
+ * so a decision still brings its task up; a task with no event yet sorts by its
+ * creation. `busy` means the same as in assigneeTasks.
  */
 export function allTasks(db: Database.Database): ListedTask[] {
   const rows = db
@@ -962,9 +981,8 @@ export function allTasks(db: Database.Database): ListedTask[] {
               e.kind AS last_kind, e.at AS last_at, e.actor AS last_actor, e.ref AS last_ref,
               (SELECT count(*) FROM task_events c WHERE c.task_id = t.id) AS events
        FROM tasks t
-       LEFT JOIN task_events e ON e.id = (
-         SELECT id FROM task_events x WHERE x.task_id = t.id ORDER BY at DESC, id DESC LIMIT 1)
-       ORDER BY coalesce(e.at, t.created_at) DESC, t.id`,
+       LEFT JOIN task_events e ON e.id = (${LAST_STATE_EVENT('x')})
+       ORDER BY coalesce((SELECT max(a.at) FROM task_events a WHERE a.task_id = t.id), t.created_at) DESC, t.id`,
     )
     .all() as Omit<ListedTask, 'busy'>[]
   return rows.map((r) => ({ ...r, busy: r.last_kind !== null && BUSY_KINDS.has(r.last_kind) }))

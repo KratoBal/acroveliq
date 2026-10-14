@@ -637,6 +637,44 @@ describe('TC-Lite L1: the timeline and busy', () => {
     expect([atStart, afterReview, busy()], 'TCL-BUSY').toEqual([['a', 'b'], ['b'], ['a', 'b']])
   })
 
+  it('TCL-BUSY-NONSTATE: a decision or a coord mark on a running task does not free its agent', () => {
+    // the measured case (task-busy-decision, 2026-10-14): started, then decision, read busy=false
+    upsertTask(db, { id: 'fut', type: null, parent_task: null, variant: null, brief_ref: null, assignee: 'murena' }, 1)
+    event('fut', 'started', 'murena', 10)
+    const busy = () => assigneeTasks(db, 'murena').map((t) => [t.id, t.last_kind, t.busy])
+    event('fut', 'decision', 'balazs', 20)
+    const afterDecision = busy()
+    event('fut', 'coord_open', 'acrobot', 30)
+    event('fut', 'coord_close', 'acrobot', 40)
+    const afterCoord = busy()
+    // a state event after them still decides: review_requested frees the agent
+    event('fut', 'review_requested', 'murena', 50)
+    event('fut', 'decision', 'balazs', 60)
+    expect([afterDecision, afterCoord, busy()], 'TCL-BUSY-NONSTATE').toEqual([
+      [['fut', 'started', true]],
+      [['fut', 'started', true]],
+      [['fut', 'review_requested', false]],
+    ])
+  })
+
+  it('TASK-LIST-NONSTATE: the list shows the last state event, a coordination unit its coord mark, and a decision still brings its task up', () => {
+    upsertTask(db, { id: 'regi', type: null, parent_task: null, variant: null, brief_ref: null, assignee: 'murena' }, 1)
+    upsertTask(db, { id: 'koord', type: 'coordination', parent_task: null, variant: null, brief_ref: null, assignee: 'acrobot' }, 2)
+    upsertTask(db, { id: 'uj', type: null, parent_task: null, variant: null, brief_ref: null, assignee: 'nautilus' }, 3)
+    event('regi', 'started', 'murena', 10)
+    event('koord', 'coord_open', 'acrobot', 20)
+    event('koord', 'coord_close', 'acrobot', 30)
+    event('uj', 'started', 'nautilus', 40)
+    // the newest activity of all is a decision on the OLDEST task
+    event('regi', 'decision', 'balazs', 50)
+    const list = allTasks(db).map((t) => [t.id, t.last_kind, t.last_actor, t.last_at, t.busy, t.events])
+    expect(list, 'TASK-LIST-NONSTATE').toEqual([
+      ['regi', 'started', 'murena', 10, true, 2],
+      ['uj', 'started', 'nautilus', 40, true, 1],
+      ['koord', 'coord_close', 'acrobot', 30, false, 2],
+    ])
+  })
+
   it('TASK-LIST: every task with its latest event, newest activity first; an event-less task by its creation', () => {
     upsertTask(db, { id: 'regi', type: null, parent_task: null, variant: null, brief_ref: null, assignee: 'murena', title: 'Régi' }, 1)
     upsertTask(db, { id: 'uj', type: null, parent_task: null, variant: null, brief_ref: null, assignee: 'nautilus', reviewer: 'barracuda' }, 2)
