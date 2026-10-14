@@ -253,7 +253,7 @@ látszik, és akkor semmi nem íródik (barracuda, #97). A felvételeknél nincs
 egyedi index): ha valaki ugyanabban a pillanatban kézzel felvesz egy azonos nevű sablont, kettő
 lehet belőle. Az `apply` után a terv újra lefut, és a duplikált sablonneveket kiírja, tehát ez
 látszik. A kimenet első sora a bemenet sha256-ja (`BEMENET sha256: ...`, ugyanaz, mint a hívó
-oldalán a `sha256sum <fájl>`), és minden audit sor `metadata.inputSha256`-ban hordozza: az írás
+oldalán a `sha256sum <fájl>`: a kapu a bemenetet fájlon át, bájtra azonosan adja tovább), és minden audit sor `metadata.inputSha256`-ban hordozza: az írás
 ahhoz a fájlhoz köthető, amire Balázs igent mondott.
 
 **Az `apply` írás az éles adatbázisba:** a futtatása ugyanúgy Balázs esetenkénti szavára megy, a
@@ -286,7 +286,7 @@ cd /root
 install -o root -g root -m 0755 /tmp/fleet-gate.sh /usr/local/sbin/fleet-gate
 install -d -o root -g root -m 0755 /usr/local/lib/fleet-gate
 install -o root -g root -m 0644 /tmp/quote-templates-sync.mjs /usr/local/lib/fleet-gate/quote-templates-sync.mjs
-echo 'acb3240e77ab19184b191efa2f67b21bb2c5cb9179701997cf5e50deae70f3ac  /usr/local/sbin/fleet-gate' | sha256sum -c
+echo '41919ecdc8d222e6a22db151fbf5586465fec33738ac5baa520e79bda5c98f51  /usr/local/sbin/fleet-gate' | sha256sum -c
 echo 'd958d5a4050ebbf52610ca70f3574a3e572bf349751fbd7b011411a68a322834  /usr/local/lib/fleet-gate/quote-templates-sync.mjs' | sha256sum -c
                                              # mindkettő: OK. Ha nem: állj meg, és szólj.
 ```

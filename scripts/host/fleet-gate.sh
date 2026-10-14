@@ -363,12 +363,20 @@ case "$OP" in
     done
     [ -f "$QUOTE_SYNC_PROG" ] || deny "'quote-templates-sync': a program nem szabályos fájl"
     PROG="$(cat "$QUOTE_SYNC_PROG")"
-    DATA="$(head -c $((QUOTE_SYNC_MAX_BYTES + 1)))"
-    [ -n "$DATA" ] || deny "'quote-templates-sync': üres bemenet (a sablonok JSON-ja a stdin-en)"
-    [ "$(printf '%s' "$DATA" | wc -c)" -le "$QUOTE_SYNC_MAX_BYTES" ] || deny "'quote-templates-sync': túl nagy bemenet"
+    # the input goes through a file, byte for byte: a $(...) would drop the closing
+    # newlines and any NUL, and the program's sha256 would no longer be the
+    # caller's `sha256sum <file>` (barracuda, #97)
+    DATA="$(mktemp)" || exit 1
+    trap 'rm -f "$DATA"' EXIT
+    head -c $((QUOTE_SYNC_MAX_BYTES + 1)) > "$DATA"
+    size="$(stat -c %s "$DATA")"
+    [ "$size" -gt 0 ] || deny "'quote-templates-sync': üres bemenet (a sablonok JSON-ja a stdin-en)"
+    [ "$size" -le "$QUOTE_SYNC_MAX_BYTES" ] || deny "'quote-templates-sync': túl nagy bemenet"
     C="$(resolve "$QUOTE_SYNC_KEY")" || exit 2
     allow quote-templates-sync "${W[1]}"
-    printf '%s' "$DATA" | exec "$DOCKER" exec -i -w /app -e "APPLY=$apply" "$C" node --input-type=module -e "$PROG"
+    # not exec: the trap must still remove the file after docker returns
+    "$DOCKER" exec -i -w /app -e "APPLY=$apply" "$C" node --input-type=module -e "$PROG" < "$DATA"
+    exit $?
     ;;
   coolify-deployments|coolify-deploy-log)
     # coolify-deployments <app uuid>: the app's last five deployments

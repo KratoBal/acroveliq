@@ -19,7 +19,7 @@
 //   - the install step's sha256 lines in docs/fleet-gate.md are not the files'.
 import { describe, it, expect, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
@@ -40,6 +40,9 @@ function world(host: string) {
   const log = join(dir, 'calls.log')
   const sql = join(dir, 'sql.txt')
   const data = join(dir, 'data.txt')
+  // the gate's own temporary files land here, so a test can see that none is left
+  const tmp = join(dir, 'tmp')
+  mkdirSync(tmp)
   // the quote-templates-sync program: a one-line stand-in, the test's own (as root's would be)
   const lib = join(dir, 'lib')
   mkdirSync(lib, { mode: 0o755 })
@@ -97,6 +100,7 @@ esac`,
       `KEYFILE_EXPECT="${OWNER}:644"`,
       `QUOTE_SYNC_PROG=${prog}`,
       `QUOTE_SYNC_OWNER="${OWNER}"`,
+      `export TMPDIR=${tmp}`,
     ].join('\n') + '\n',
   )
   const run = (command: string | undefined, input = '') => {
@@ -109,7 +113,7 @@ esac`,
     writeFileSync(log, '')
     return { code: r.status, out: r.stdout.toString('latin1'), err: r.stderr.toString(), calls }
   }
-  return { dir, run, sql, data, prog, lib, backups: join(dir, 'backups') }
+  return { dir, run, sql, data, prog, lib, tmp, backups: join(dir, 'backups') }
 }
 
 const sha = (text: string) => createHash('sha256').update(Buffer.from(text, 'latin1')).digest('hex')
@@ -179,20 +183,27 @@ describe('fleet-gate: what passes', () => {
 
   it('GATE-QUOTE-SYNC: plan and apply run the installed program in the api container; stdin is its data, unchanged', () => {
     const p = world(PROD)
-    const json = '{"templates":[],"snippets":[{"name":"Szállítás"}]}'
+    // a file from an editor or jq ends in a newline: the program must get it too, or its
+    // sha256 is not the caller's `sha256sum <file>` (barracuda, #97)
+    const json = '{"templates":[],"snippets":[{"name":"Szállítás"}]}\n\n'
     // run() sends latin1: these are the UTF-8 bytes, as ssh would carry them
     const bytes = Buffer.from(json, 'utf-8').toString('latin1')
     const plan = p.run('quote-templates-sync plan', bytes)
     const sentPlan = readFileSync(p.data, 'utf-8')
+    const leftAfterPlan = readdirSync(p.tmp)
     const apply = p.run('quote-templates-sync apply', bytes)
     const call = (r: { calls: string[] }) => r.calls.find((c) => c.startsWith('docker [exec]'))
-    expect([plan.code, plan.out.trim(), sentPlan, call(plan), call(apply), apply.code], 'GATE-QUOTE-SYNC').toEqual([
+    const refused = p.run('quote-templates-sync plan', '')
+    expect([plan.code, plan.out.trim(), sentPlan, call(plan), call(apply), apply.code, leftAfterPlan, refused.code, readdirSync(p.tmp)], 'GATE-QUOTE-SYNC').toEqual([
       0,
       'szinkron',
       json,
       `docker [exec] [-i] [-w] [/app] [-e] [APPLY=0] [${API}-120000] [node] [--input-type=module] [-e] [console.log("PROGRAM")]`,
       `docker [exec] [-i] [-w] [/app] [-e] [APPLY=1] [${API}-120000] [node] [--input-type=module] [-e] [console.log("PROGRAM")]`,
       0,
+      [], // the temporary input file is gone after a run
+      2,
+      [], // and after a refusal
     ])
   })
 
