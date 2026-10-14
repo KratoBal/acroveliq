@@ -358,6 +358,8 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | GET | `/api/tasks` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | GET | `/api/tasks/:id/timeline` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | POST | `/api/decisions/:id` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | decision-decide |  |
+| POST | `/api/task-actions` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | class:KRITIKUS |  |
+| POST | `/api/task-actions/:id` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | class:KRITIKUS |  |
 | POST | `/api/decisions/:id/discord-reply` | KRITIKUS | ✗ | ✓ | ✗ | ✗ | ✗ | decision-discord-reply |  |
 
 ## A csoportok indoka
