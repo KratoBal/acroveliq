@@ -19,7 +19,7 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { rootCertificates, createServer as createTlsServer } from 'node:tls'
 import {
-  HOST_PORTS, SYSTEM_EXACT, PLUGIN_CACHE, checkPluginCache, RUN_COMMON, networkTargets, globalIpv6, checkIpv6, checkHome, RUNNER_HOME,
+  HOST_PORTS, SYSTEM_EXACT, PLUGIN_CACHE, checkPluginCache, SYSTEM_SKILLS, checkSystemSkills, RUN_COMMON, networkTargets, globalIpv6, checkIpv6, checkHome, RUNNER_HOME,
   SYSTEM_CA, TLS_HOSTS, judgeTls, tlsSystemCa,
   AUTH_FILE, checkTestOverrides, checkAuthFile, safeExecArgs, v3Checks, V3_TEST_ARGS, V3_CONTROL_ARGS, V3_CANARIES, toolUses, V3_PROMPT, checkIds, checkCaps, classifyReadable, judgeNetwork, judgeSandboxRun, codexSandboxChecks,
   idsFromStatus, summarize, PINNED_CODEX, FLEET_IDS,
@@ -83,6 +83,25 @@ describe('gpt-runner probe: the pure checks', () => {
 
   it('PLUGIN: after the Codex runs no plugin cache may exist; without a login it is not measurable, never OK', () => {
     expect([checkPluginCache(true, true)[0], checkPluginCache(true, false)[0], checkPluginCache(false, true)[0], checkPluginCache(false, false)[0], PLUGIN_CACHE]).toEqual(['FAIL', 'FAIL', 'OK', 'NEM_MERHETO', '/home/gpt/.codex/plugins'])
+  })
+
+  it('FINISH-ONE-PATH: both paths end in finish() (PLUGIN, SKILLS, the summary); the host path passes whether Codex ran with a model', () => {
+    const src = R('proba.mjs')
+    const main = src.slice(src.indexOf('export async function main()'))
+    expect([
+      (src.match(/console\.log\(`OSSZESITES /g) ?? []).length,
+      /\n {4}finish\(false\)\n {4}return\n {2}\}/.test(main),
+      /\n {2}finish\(authStat != null\)\n\}/.test(main),
+    ]).toEqual([1, true, true])
+  })
+
+  it('SKILLS: after the Codex runs no built-in skills folder may exist; without a login it is not measurable, never OK', () => {
+    expect([checkSystemSkills(true, true)[0], checkSystemSkills(true, false)[0], checkSystemSkills(false, true)[0], checkSystemSkills(false, false)[0], SYSTEM_SKILLS]).toEqual(['FAIL', 'FAIL', 'OK', 'NEM_MERHETO', '/home/gpt/.codex/skills/.system'])
+  })
+
+  it('F2-STAYS-STRICT: the built-in skills\' agents/openai.yaml is still flagged by F2 (no exception: the install is off and the folder removed instead)', () => {
+    const { marked } = classifyReadable(['/home/gpt/.codex/skills/.system/skill-installer/agents/openai.yaml'], '/home/gpt')
+    expect(marked).toEqual(['/home/gpt/.codex/skills/.system/skill-installer/agents/openai.yaml'])
   })
 
   it("F2-DOCKERENV: Docker's own /.dockerenv is allowed by EXACT path only (the first live run's false hit)", () => {
@@ -257,6 +276,8 @@ describe('gpt-runner probe: a live run here, in the fleet container, must come o
       const line = (id: string) => (r.stdout.match(new RegExp(`^PROBA ${id} (\\S+)`, 'm')) || [])[1]
       const expectedG0 = checkIds(idsFromStatus(readFileSync('/proc/self/status', 'utf8')))[0]
       expect([line('G0'), line('F2'), line('N1'), /OSSZESITES ok=\d+ fail=[1-9]/.test(r.stdout)]).toEqual([expectedG0, 'OK', 'NEM_MERHETO', true])
+      // the plugin and the built-in skills lines run in every probe; without a login: not measurable
+      expect([line('PLUGIN'), line('SKILLS')]).toEqual(['NEM_MERHETO', 'NEM_MERHETO'])
       expect(r.status).toBe(1)
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -611,8 +632,8 @@ describe('gpt-runner probe after the login: H1-AUTH, test overrides, V3', () => 
     // the control of the negatives below: the common part alone, with nothing extra, passes
     expect(safeExecArgs([...common, '-'])).toBeNull()
     // plugins and apps are off in BOTH runs (acrobot 30889), and turning one on is refused
-    for (const a of [V3_TEST_ARGS, V3_CONTROL_ARGS]) expect(a).toEqual(expect.arrayContaining(['features.plugins=false', 'features.apps=false']))
-    expect([safeExecArgs([...common, '-c', 'features.plugins=true', '-']) != null, safeExecArgs([...common.filter((x) => x !== 'features.plugins=false' && x !== 'features.apps=false').slice(0, -2), '-']) != null]).toEqual([true, true])
+    for (const a of [V3_TEST_ARGS, V3_CONTROL_ARGS]) expect(a).toEqual(expect.arrayContaining(['features.plugins=false', 'features.apps=false', 'skills.bundled.enabled=false']))
+    expect([safeExecArgs([...common, '-c', 'features.plugins=true', '-']) != null, safeExecArgs([...common, '-c', 'skills.bundled.enabled=true', '-']) != null, safeExecArgs([...common.slice(0, -2), '-']) != null]).toEqual([true, true, true])
     for (const extra of [['--full-auto'], ['--add-dir', '/'], ['-c', 'features.apply_patch=true'], ['-c', 'sandbox_mode="danger-full-access"'], ['--sandbox', 'danger-full-access'], ['-c']]) {
       const args = [...common, ...extra, '-']
       expect([extra.join(' '), safeExecArgs(args) != null]).toEqual([extra.join(' '), true])
@@ -869,14 +890,14 @@ grep -qxF "$hp" "${dir}/nyitott"
     try {
       go(ok)
       const c = calls(ok)
-      const del = c.findIndex((x) => x.startsWith('docker compose run --rm --no-deps --entrypoint sh gpt-futtato -c') && x.includes('rm -rf -- "$p"') && x.includes('p=/home/gpt/.codex/plugins'))
+      const del = c.findIndex((x) => x.startsWith('docker compose run --rm --no-deps --entrypoint sh gpt-futtato -c') && x.includes('rm -rf -- "$p"') && x.includes('for p in /home/gpt/.codex/plugins /home/gpt/.codex/skills/.system;'))
       expect([del >= 0, del < c.indexOf('telepit')]).toEqual([true, true])
     } finally { rmSync(ok, { recursive: true, force: true }) }
     const bad = setup({})
     writeFileSync(join(bad, 'plugin-hiba'), '')
     try {
       const r = go(bad)
-      expect([r.status, r.stdout, calls(bad).includes('telepit')]).toEqual([1, expect.stringContaining('STOP: a plugin-gyorsitotar nem torolheto'), false])
+      expect([r.status, r.stdout, calls(bad).includes('telepit')]).toEqual([1, expect.stringContaining('STOP: a plugin-gyorsitotar vagy a beepitett skillek nem torolhetok'), false])
     } finally { rmSync(bad, { recursive: true, force: true }) }
   })
 

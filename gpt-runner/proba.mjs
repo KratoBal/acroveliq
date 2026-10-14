@@ -269,12 +269,21 @@ export async function main() {
   say('IPV6', ...checkIpv6(v6))
   say('V1', sudo || tmux.length ? 'FAIL' : 'OK', sudo || tmux.length ? `sudo: ${sudo || '-'}; tmux: ${tmux.join(',') || '-'}` : 'nincs sudo, nincs tmux-socket')
 
-  // PROBA_CSAK_HELYI=1 (tests): no network and no Codex, only the local checks
-  if (process.env.PROBA_CSAK_HELYI === '1') {
-    say('N1', 'NEM_MERHETO', 'PROBA_CSAK_HELYI: a halozati proba kihagyva')
+  // the end of every run, both paths: what Codex must NOT have left in the volume, then the summary.
+  // PLUGIN (acrobot 30889) and SKILLS (acrobot 30902): both are off in the fixed flags and the host
+  // step removes the old folders first; `ranCodex`: Codex ran with a model (V3), so OK is possible
+  const finish = (ranCodex) => {
+    say('PLUGIN', ...checkPluginCache(existsSync(PLUGIN_CACHE), ranCodex))
+    say('SKILLS', ...checkSystemSkills(existsSync(SYSTEM_SKILLS), ranCodex))
     const s = summarize(lines)
     console.log(`OSSZESITES ok=${s.ok} fail=${s.fail} nem_merheto=${s.nem}`)
     process.exitCode = s.fail > 0 ? 1 : 0
+  }
+
+  // PROBA_CSAK_HELYI=1 (tests): no network and no Codex, only the local checks
+  if (process.env.PROBA_CSAK_HELYI === '1') {
+    say('N1', 'NEM_MERHETO', 'PROBA_CSAK_HELYI: a halozati proba kihagyva')
+    finish(false)
     return
   }
 
@@ -302,13 +311,7 @@ export async function main() {
 
   await codexSandboxChecks(say, run)
   v3Checks(say, run, { exists: existsSync, remove: (p) => rmSync(p, { force: true }), loggedIn: authStat != null })
-  // PLUGIN: after the Codex runs above (V3's two, when logged in) no plugin cache may appear: the
-  // sync is off by the fixed flags (acrobot 30889; the host step removes the old cache first)
-  say('PLUGIN', ...checkPluginCache(existsSync(PLUGIN_CACHE), authStat != null))
-
-  const s = summarize(lines)
-  console.log(`OSSZESITES ok=${s.ok} fail=${s.fail} nem_merheto=${s.nem}`)
-  process.exitCode = s.fail > 0 ? 1 : 0
+  finish(authStat != null)
 }
 
 /** The inner command for V2: prints a marker first, so a sandbox that never started the command
@@ -373,6 +376,16 @@ export function checkPluginCache(present, loggedIn) {
   return ['OK', 'a Codex futasai utan sincs plugin-gyorsitotar']
 }
 
+/** Codex's built-in skills folder in the runner's volume (skill-installer and skill-creator among
+ *  them); the runner needs none, the install is off by skills.bundled.enabled=false. */
+export const SYSTEM_SKILLS = `${RUNNER_HOME}/.codex/skills/.system`
+
+export function checkSystemSkills(present, loggedIn) {
+  if (present) return ['FAIL', `a Codex beepitett skilljei a koteten: ${SYSTEM_SKILLS}`]
+  if (!loggedIn) return ['NEM_MERHETO', 'nincs belepes: a Codex nem futott modellel, a telepites nem merheto']
+  return ['OK', 'a Codex futasai utan sincs beepitett skill a koteten']
+}
+
 export const V3_CANARIES = ['/tmp/kanari-v3', `${RUNNER_HOME}/kanari-v3`]
 export const V3_PROMPT = `Run exactly this one shell command and nothing else, then stop: touch ${V3_CANARIES.join(' ')}`
 /** The common flags of EVERY Codex run, the probe's and the service's (szolga.mjs): the service
@@ -381,7 +394,13 @@ export const V3_PROMPT = `Run exactly this one shell command and nothing else, t
 // and template skills into the volume. Both keys are in the 0.159.3 config schema's [features]
 // block; that the remote catalog's sync hangs on these exactly was NOT readable from the source
 // (truncated files), so the probe's PLUGIN line measures the effect after its Codex runs.
-export const RUN_COMMON = Object.freeze(['exec', '--json', '--skip-git-repo-check', '-C', '/tmp', '-s', 'read-only', '-c', 'approval_policy="never"', '-c', 'features.plugins=false', '-c', 'features.apps=false'])
+// skills.bundled.enabled off (acrobot 30902): Codex writes its built-in skills (imagegen,
+// openai-docs, review-agent, skill-creator, skill-installer) to ~/.codex/skills/.system. In the
+// 0.159.3 source every call of install_system_skills sits behind this setting
+// (ext/skills/src/host_service.rs), and the disabled service also drops the .system root from what
+// the model sees; it does not delete an existing folder (the host step does). The constructor's
+// Config::bundled_skills_enabled() body was not readable: the SKILLS probe line measures it.
+export const RUN_COMMON = Object.freeze(['exec', '--json', '--skip-git-repo-check', '-C', '/tmp', '-s', 'read-only', '-c', 'approval_policy="never"', '-c', 'features.plugins=false', '-c', 'features.apps=false', '-c', 'skills.bundled.enabled=false'])
 export const RUN_TOOLS_OFF = Object.freeze(['-c', 'features.shell_tool=false', '-c', 'features.unified_exec=false'])
 /** The prompt goes in on stdin (`codex exec -`, the CLI's documented stdin sentinel), never as an
  *  argument: no text of a prompt can be read as a flag. V3 runs it the same way as the service. */
