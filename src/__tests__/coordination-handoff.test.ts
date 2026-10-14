@@ -185,9 +185,10 @@ describe('POST /api/tasks names the keys it does not store', () => {
   })
 
   it('TASK-IGNORED: Hungarian keys come back as ignored with 201; the English ones store and ignore nothing', async () => {
-    const hu = await postTask({ id: 'ign-hu', cim: 'Cím', cel: 'Cél', felelos: 'murena' })
+    // a project, so the answer is about the ignored keys only (Projektek V1 names a missing project)
+    const hu = await postTask({ id: 'ign-hu', project: 'acropora', cim: 'Cím', cel: 'Cél', felelos: 'murena' })
     const huRow = getDb().prepare('SELECT title, assignee FROM tasks WHERE id = ?').get('ign-hu')
-    const en = await postTask({ id: 'ign-en', title: 'Cím', goal: 'Cél', assignee: 'murena' })
+    const en = await postTask({ id: 'ign-en', project: 'acropora', title: 'Cím', goal: 'Cél', assignee: 'murena' })
     const enRow = getDb().prepare('SELECT title, assignee FROM tasks WHERE id = ?').get('ign-en')
     expect([hu.status, hu.body, huRow, en.status, en.body, enRow]).toEqual([
       201, { id: 'ign-hu', ignored: ['cim', 'cel', 'felelos'] }, { title: null, assignee: null },
