@@ -14,7 +14,8 @@
 # letters, digits, space, dot, underscore, colon and hyphen; it is split on
 # spaces with globbing off, the first word picks the operation, and every other
 # word is checked against a fixed list or pattern. Data (SQL, a dump) comes on
-# stdin and goes to the container's own program, never to a shell.
+# stdin and goes to the container's own program (or to a root-owned program
+# installed with the gate, quote-templates-sync), never to a shell.
 #
 # Install, verify and roll back: docs/fleet-gate.md.
 set -uo pipefail
@@ -37,6 +38,11 @@ BACKUP_ROOT="$(getent passwd "$(id -un)" | cut -d: -f6)/backups"
 BACKUP_MAX_BYTES=$((2 * 1024 * 1024 * 1024))
 HOST="$(hostname -s 2>/dev/null || echo unknown)"
 SQL_MAX_BYTES=1048576
+# quote-templates-sync: the program is root's, installed with the gate; the
+# caller sends only its data (docs/fleet-gate.md)
+QUOTE_SYNC_PROG=/usr/local/lib/fleet-gate/quote-templates-sync.mjs
+QUOTE_SYNC_OWNER="root:root"
+QUOTE_SYNC_MAX_BYTES=262144
 
 # Tests only. The authorized_keys line runs the gate with no arguments and an
 # SSH client cannot add any, so this is reachable only from a shell on the host.
@@ -60,12 +66,13 @@ RESTORE_LIST_KEYS=""
 DOCSTORE_KEY=""
 ENV_GET_KEY=""
 ENV_GET_NAMES=""
+QUOTE_SYNC_KEY=""
 BACKUP_GET=""     # what this host may hand out: dump:<db> or docstore
 BACKUP_PUT=""  # what this host may store from the other one
 host_config() {
   case "$HOST" in
     acropora-prod-01)
-      OPS="ps system-df df uptime reboot-required apt-check sshd-match builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-sum backup-put backup-prune"
+      OPS="ps system-df df uptime reboot-required apt-check sshd-match builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-sum backup-put backup-prune quote-templates-sync"
       # psql-ro connects as fleet_ro, a read-only role with per-table, per-column
       # SELECT grants only (#63; no pg_read_all_data, no superuser):
       # docs/fleet-gate.md, "Telepítés, gépenként"
@@ -75,6 +82,7 @@ host_config() {
       DOCSTORE_KEY="t9gxx94ecwekwruxngps5i6v"
       ENV_GET_KEY="t9gxx94ecwekwruxngps5i6v"
       ENV_GET_NAMES="MEDUSA_ADMIN_URL MEDUSA_PROJECTION_SCHEDULE_ENABLED"
+      QUOTE_SYNC_KEY="t9gxx94ecwekwruxngps5i6v"
       BACKUP_GET="dump:acropora dump:medusa docstore"
       BACKUP_PUT="dump:acropora_ai"
       ;;
@@ -328,6 +336,47 @@ case "$OP" in
         case "$line" in "$want"=*) printf '%s\n' "$line" ;; esac
       done
     done
+    ;;
+  quote-templates-sync)
+    # quote-templates-sync plan|apply, the templates and snippets as JSON on
+    # stdin: the quote templates from the test system to this one, without a
+    # root step (Balázs, 2026-10-14: the B8 gate stopped the old way). The
+    # program is a root-owned file installed with the gate and goes to node as
+    # its -e argument; stdin is data only, so the caller cannot run code in the
+    # API container. The program checks the data with the image's own editor
+    # rules, adds what is missing, replaces only untouched seed text, and never
+    # deletes or touches an edited row (scripts/host/quote-templates-sync.mjs).
+    args 1
+    case "${W[1]}" in
+      plan) apply=0 ;;
+      apply) apply=1 ;;
+      *) deny "'quote-templates-sync': plan vagy apply" ;;
+    esac
+    # the program and its directory: regular, not a link, root's, written by
+    # no one else; anything else is a way to put code into the container
+    for f in "$QUOTE_SYNC_PROG" "$(dirname "$QUOTE_SYNC_PROG")"; do
+      [ ! -L "$f" ] && [ -e "$f" ] || deny "'quote-templates-sync': a program nincs telepítve ($f)"
+      case "$(stat -c '%U:%G %a' "$f")" in
+        "$QUOTE_SYNC_OWNER "[0-7][0145][0145]) ;;
+        *) deny "'quote-templates-sync': a program vagy a mappája nem root tulajdonú, vagy más is írhatja ($f)" ;;
+      esac
+    done
+    [ -f "$QUOTE_SYNC_PROG" ] || deny "'quote-templates-sync': a program nem szabályos fájl"
+    PROG="$(cat "$QUOTE_SYNC_PROG")"
+    # the input goes through a file, byte for byte: a $(...) would drop the closing
+    # newlines and any NUL, and the program's sha256 would no longer be the
+    # caller's `sha256sum <file>` (barracuda, #97)
+    DATA="$(mktemp)" || exit 1
+    trap 'rm -f "$DATA"' EXIT
+    head -c $((QUOTE_SYNC_MAX_BYTES + 1)) > "$DATA"
+    size="$(stat -c %s "$DATA")"
+    [ "$size" -gt 0 ] || deny "'quote-templates-sync': üres bemenet (a sablonok JSON-ja a stdin-en)"
+    [ "$size" -le "$QUOTE_SYNC_MAX_BYTES" ] || deny "'quote-templates-sync': túl nagy bemenet"
+    C="$(resolve "$QUOTE_SYNC_KEY")" || exit 2
+    allow quote-templates-sync "${W[1]}"
+    # not exec: the trap must still remove the file after docker returns
+    "$DOCKER" exec -i -w /app -e "APPLY=$apply" "$C" node --input-type=module -e "$PROG" < "$DATA"
+    exit $?
     ;;
   coolify-deployments|coolify-deploy-log)
     # coolify-deployments <app uuid>: the app's last five deployments

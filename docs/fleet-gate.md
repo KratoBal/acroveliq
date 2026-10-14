@@ -29,6 +29,7 @@ akkor az éles, ha a próba-sor (lent) minden sora zöld rajta.
 | `pg-restore-list <kulcs>` | `pg_restore -l`, a dump a stdin-en | éles: OS, Commerce; stage: AI |
 | `docstore-tar`, `docstore-count` | a dokumentum-tároló tar-ja, illetve a fájljainak száma | éles |
 | `env-get` | az api konténer `MEDUSA_ADMIN_URL` és `MEDUSA_PROJECTION_SCHEDULE_ENABLED` értéke, semmi más | éles |
+| `quote-templates-sync plan`, `quote-templates-sync apply` | az ajánlatsablonok és szövegrészletek JSON-ja a stdin-en; a kapuval együtt telepített, root tulajdonú program (`/usr/local/lib/fleet-gate/quote-templates-sync.mjs`) az api konténerben ellenőrzi a kép saját szerkesztő-szabályaival, és név szerint felveszi, ami hiányzik. Az `apply` ír az éles OS-be (lásd lent) | éles |
 | `restore-probe` | eldobható `postgres:16-alpine` hálózat nélkül, memória-, CPU- és folyamat-korláttal, a dump a stdin-ről, egy rögzített számláló-lekérdezés, utána törlés; a képet a kapu nem tölti le | stage |
 | `backup-db <kulcs> <adatbázis> <felhasználó>` | `~/backups/<adatbázis>/<mai dátum>.dump`, utána `pg_restore --list` szám | mindkettő |
 | `backup-docstore` | `~/backups/dokumentumok/<mai dátum>.tar.gz`, a fájlszám egyezésével | éles |
@@ -223,6 +224,82 @@ cd /root && tailscale set --ssh=false && tailscale debug prefs | grep -i runssh 
 
 A `fleet` **marad a docker csoportban**: a kapu a nevében fut, és neki el kell érnie a Dockert.
 A kulcson át vezető utat a kényszer zárja le.
+
+## Az ajánlatsablon-művelet (`quote-templates-sync`, csak éles)
+
+**Miért van** (Balázs, 2026-10-14 06:01 UTC: „eddig at tudtuk vinni, most miert nem”): a kapu óta a
+flotta nem futtathat `docker exec`-et az élesen, tehát a teszten elkészült ajánlatsablonokat
+csak rootként lehetett volna átvinni. Ez a művelet ugyanazt végzi, név szerint, root nélkül.
+
+**Mit kap és mit futtat.** A hívó CSAK ADATOT ad: a sablonok és a szövegrészletek JSON-ját a
+stdin-en (legfeljebb 256 KiB). A program nem a hívóé: a kapuval együtt telepített, root tulajdonú
+fájl, amit a kapu a node `-e` argumentumaként ad át az api konténerben
+(`docker exec -i -w /app -e APPLY=0|1 <api> node --input-type=module -e <program>`). A kapu
+futtatás előtt ellenőrzi, hogy a fájl és a mappája root tulajdonú, szabályos (nem link), és más
+nem írhatja; különben elutasít. A program az adatot a KÉP SAJÁT szabályaival ellenőrzi (a
+`dist/quotes` alatti `templateBody`, `textInput`, `richTextInput`, `snippetMilestones`: ugyanazok,
+amiket a sablonszerkesztő és a seed CLI használ), és az első hibánál az egész bemenetet
+elutasítja, mielőtt az adatbázishoz nyúlna (kilépés 3).
+
+**Mit írhat, és mit nem.** Felvesz egy sablont vagy szövegrészletet, aminek a neve még nincs meg.
+Egy meglévő sablonnak CSAK a blokkjait cseréli, és csak akkor, ha azok betű szerint még a seed
+alapszöveget tartalmazzák; az alapszöveget a kép `DEFAULT_QUOTE_TEMPLATES`-e adja, nem a hívó.
+Kézzel szerkesztett sorhoz, több azonos nevű sorhoz, archivált sorhoz nem nyúl, nem töröl, és a
+két táblán kívül csak az audit naplóba ír (`quote_template.created`, `quote_template.updated`,
+`quote_snippet.created`, `userId` nélkül, `metadata.source = fleet-gate quote-templates-sync`).
+Egy tranzakció. A cserélendő sablont a tranzakción belül `FOR UPDATE`-tel olvassa újra, ugyanazzal
+a zárral, amit a sablonszerkesztő is kér: egy közben mentett kézi szerkesztés vagy megvárja, vagy
+látszik, és akkor semmi nem íródik (barracuda, #97). A felvételeknél nincs ilyen zár (a névre nincs
+egyedi index): ha valaki ugyanabban a pillanatban kézzel felvesz egy azonos nevű sablont, kettő
+lehet belőle. Az `apply` után a terv újra lefut, és a duplikált sablonneveket kiírja, tehát ez
+látszik. A kimenet első sora a bemenet sha256-ja (`BEMENET sha256: ...`, ugyanaz, mint a hívó
+oldalán a `sha256sum <fájl>`: a kapu a bemenetet fájlon át, bájtra azonosan adja tovább), és minden audit sor `metadata.inputSha256`-ban hordozza: az írás
+ahhoz a fájlhoz köthető, amire Balázs igent mondott.
+
+**Az `apply` írás az éles adatbázisba:** a futtatása ugyanúgy Balázs esetenkénti szavára megy, a
+kapu ezt nem váltja ki. A `plan` csak olvas. A flotta hívója:
+
+```bash
+cd /home/marveen/marveen && bash scripts/arajanlat-sablon-elesre.sh plan <sablonok.json>
+cd /home/marveen/marveen && bash scripts/arajanlat-sablon-elesre.sh apply <sablonok.json>
+```
+
+**Ha a kép átrendezi a `dist/quotes` fájljait**, a program importja hibával áll meg, és nem ír:
+akkor a programot kell az új helyekhez igazítani.
+
+**Telepítés az éles gépen (rootként), a kapu újratelepítésével együtt.** A két fájl a PR
+beolvadása és a flotta frissítése után itt áll: `/opt/marveen-docker/data/marveen/scripts/host/`.
+Vidd át mindkettőt a gép `/tmp`-jébe úgy, mint a kaput (fent), utána:
+
+Előbb a program útjának szülőmappái: a kapu csak a fájlt és a saját mappáját nézi, és Debianon a
+`/usr/local` lehet `root:staff 2775`, ahol a `staff` tagja átnevezhetné a mappát (barracuda, #97):
+
+```bash
+cd /root && stat -c '%n %U:%G %a' /usr /usr/local /usr/local/lib
+                                             # mindhárom: root:root 755. Ha nem: előbb ott kell rendet tenni, szólj.
+```
+
+Utána a két fájl:
+
+```bash
+cd /root
+install -o root -g root -m 0755 /tmp/fleet-gate.sh /usr/local/sbin/fleet-gate
+install -d -o root -g root -m 0755 /usr/local/lib/fleet-gate
+install -o root -g root -m 0644 /tmp/quote-templates-sync.mjs /usr/local/lib/fleet-gate/quote-templates-sync.mjs
+echo '41919ecdc8d222e6a22db151fbf5586465fec33738ac5baa520e79bda5c98f51  /usr/local/sbin/fleet-gate' | sha256sum -c
+echo 'd958d5a4050ebbf52610ca70f3574a3e572bf349751fbd7b011411a68a322834  /usr/local/lib/fleet-gate/quote-templates-sync.mjs' | sha256sum -c
+                                             # mindkettő: OK. Ha nem: állj meg, és szólj.
+```
+
+A két lenyomat a repó fájljaié; a teszt (`GATE-INSTALL-SHA`) piros, ha valamelyik fájl úgy
+változik, hogy ez a két sor nem követi.
+
+Próba a flotta konténeréből (csak olvas):
+
+```bash
+cd /home/marveen/marveen && printf '{"templates":[],"snippets":[]}' > /tmp/ures-sablonok.json && bash scripts/arajanlat-sablon-elesre.sh plan /tmp/ures-sablonok.json
+                                             # ELOTTE: N sablon, M reszlet / 0 irast vegeznek (probafutas ...)
+```
 
 ## A köztes állapot: a kapu a stage gépen már áll, az élesen még nem
 
