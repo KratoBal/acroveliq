@@ -19,6 +19,7 @@ import {
   stripAllAnsi,
   paneShowsContextSaturation,
   idleConsideringDimGhost,
+  paneAcceptsQueuedPrompt,
   detectsFirstRunGate,
   detectsModelConsentDialog,
   detectsFeedbackDraftModal,
@@ -2326,7 +2327,7 @@ export async function sendPromptToSession(
   session: string,
   text: string,
   host: string | null = null,
-  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode } = {},
+  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode; busyTarget?: boolean } = {},
 ): Promise<'sent' | 'aborted-busy' | 'skipped-locked'> {
   const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
   // PANEWRITERS805: the three modal dismissals are probe+act keystroke writers
@@ -2473,7 +2474,9 @@ export async function sendPromptToSession(
   for (let attempt = 0; ; attempt++) {
     await delay(SUBMIT_RETRY_POLL_MS)
     const pane = capturePane(session, host)
-    const action = decideSubmitFollowup(pane, payloadHint, attempt, SUBMIT_RETRY_MAX_ATTEMPTS)
+    // busyTarget: typed into a running turn on purpose (isSessionReadyForQueuedPrompt), so
+    // 'busy' is not proof of landing and a placeholder is never Ctrl-C'd (decideSubmitFollowup)
+    const action = decideSubmitFollowup(pane, payloadHint, attempt, SUBMIT_RETRY_MAX_ATTEMPTS, { busyTarget: opts.busyTarget === true })
     if (action === 'done') break
     if (action === 'give-up') {
       logger.warn({ session, attempt }, 'sendPromptToSession: prompt still parked after retries')
@@ -2530,6 +2533,23 @@ export async function sendPromptToSession(
     logger.warn({ session }, 'sendPromptToSession: delivery lock wait budget elapsed; sent WITHOUT the per-pane lock (fail-open) -- a holder may be wedged')
   }
   return 'sent'
+}
+
+/**
+ * May a message be typed into this session's BUSY pane, for Claude Code to queue
+ * (paneAcceptsQueuedPrompt)? Two captures PANE_READY_CONFIRM_DELAY_MS apart must both say
+ * so, the same confirmation isSessionReadyForPrompt uses: a permission dialog or a parked
+ * line that appears between the two refuses. The dim-stripped view is read only when the
+ * plain box shows text. An idle pane answers false (it takes isSessionReadyForPrompt).
+ */
+export async function isSessionReadyForQueuedPrompt(session: string, host: string | null = null): Promise<boolean> {
+  const accepts = (plain: string | null): boolean =>
+    plain != null &&
+    (paneAcceptsQueuedPrompt(plain) ||
+      (detectPaneState(plain) === 'busy' && paneAcceptsQueuedPrompt(plain, captureParkedInputView(session, host))))
+  if (!accepts(capturePane(session, host))) return false
+  await delay(PANE_READY_CONFIRM_DELAY_MS)
+  return accepts(capturePane(session, host))
 }
 
 // How long to wait between the two capture samples when the first one

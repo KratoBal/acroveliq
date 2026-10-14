@@ -61,6 +61,7 @@ vi.mock('../web/agent-process.js', () => ({
   clearFeedbackModalAndRecheck: () => false,
   agentSessionName: (name: string) => `agent-${name}`,
   isSessionReadyForPrompt: vi.fn(() => false),
+  isSessionReadyForQueuedPrompt: vi.fn(async () => false),
   clearStaleParkedInput: vi.fn(() => false),
   sendPromptToSession: vi.fn(),
   sessionExistsOnHost: (...a: unknown[]) => mockSessionExistsOnHost(...a),
