@@ -50,6 +50,8 @@
 #   bash scripts/fleet-api.sh kiadas <task_id> <agens> [--continue] [--parallel "<indok>"] [--kiado <nev>]
 #         (egy feladat kiadasa, megismetelheto; kilepes: 3 atado rekord, 4 feladat, 5 foglalt,
 #          6 restart, 7 uzenet, 8 a panel nem tetlen)
+#   bash scripts/fleet-api.sh task-project <task_id> <projekt> [indok]   # a projekt-csere egyetlen utja
+#   bash scripts/fleet-api.sh project-repo <task_id> <owner/repo>        # a repo a feladat projektjee-e
 #   bash scripts/fleet-api.sh deployed [--nez] marveen <task_id> [--commit <cherry-pick sha>]
 #   bash scripts/fleet-api.sh deployed [--nez] acropora <task_id> --app api|web|partner|commerce [--app ...]
 #         (egy beolvadt valtozas kint van-e: mer, es csak utana ir deployed esemenyt;
@@ -164,6 +166,35 @@ put() {
 }
 
 CMD="${1:?command required}"; shift || true
+
+# PROJEKTEK V1 (Balazs, A valtozat, 2026-10-14 13:11:32 UTC): uj feladathoz projekt kell. Ha a
+# feladat MEG NEM LETEZIK (a timeline 404) es nincs projekt, a hivas megall es felsorolja a
+# nyilvantartast. Letezo feladatnal a szerver a projektet amugy is megtartja (tartos), ott nincs mit kerni.
+proj_need_if_new() {
+  [ -n "${2:-}" ] && return 0
+  local enc code ids
+  enc="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1")"
+  code="$(curl -s -o /dev/null -w '%{http_code}' -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "${API}/tasks/${enc}/timeline" 2>/dev/null || true)"
+  [ "$code" = "404" ] || return 0
+  ids="$(curl -s -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "${API}/projects" 2>/dev/null \
+    | python3 -c 'import json,sys
+try: print("|".join(p["id"] for p in json.load(sys.stdin)))
+except Exception: pass' 2>/dev/null)"
+  echo "FAIL 4: uj feladathoz projekt kell (Projektek V1): ${ids:-acropora|os|commerce|reefclub}. JSON alakban \"project\": \"os\", a poziciosban a masodik argumentum." >&2
+  return 4
+}
+# a szerver project_warning-ja a stderr-re (naplo modban ez a jelzes, a kilepes 0 marad)
+proj_warn() {
+  python3 -c '
+import json,sys
+try:
+    d=json.loads(sys.argv[1])
+except ValueError:
+    sys.exit(0)
+w=d.get("project_warning") if isinstance(d, dict) else None
+if w: print("FIGYELEM (projekt): %s" % w, file=sys.stderr)
+' "$1"
+}
 
 case "$CMD" in
   memory)
@@ -358,6 +389,8 @@ if not isinstance(d, dict):
     sys.exit("FAIL: a STDIN egy JSON objektum legyen")
 d["id"]=sys.argv[1]
 print(json.dumps(d))' "$TASK")" || exit 1
+      P_GIVEN="$(printf '%s' "$BODY" | python3 -c 'import json,sys; v=json.load(sys.stdin).get("project"); print(v.strip() if isinstance(v,str) else "")')"
+      proj_need_if_new "$TASK" "$P_GIVEN" || exit 4
       # A post a parancs-behelyettesitesben fut: a sajat `exit`-je csak az alhejbol lep ki,
       # ezert a kodot itt kell tovabbadni, kulonben egy elbukott hivas utan is 0 jonne.
       OUT="$(post /tasks "$BODY")"; RC=$?
@@ -376,11 +409,46 @@ ig=d.get("ignored") if isinstance(d, dict) else None
 if ig:
     print("FIGYELEM: a szerver ezeket a kulcsokat NEM tarolta (ismeretlen mezo): %s. Angol kulcsok kellenek: title, goal, acceptance, assignee, reviewer, authorization_ref, verification_profile, kanban_card_id, priority, project, type, parent_task, variant, brief_ref." % ", ".join(map(str, ig)), file=sys.stderr)
 ' "$OUT"
+      proj_warn "$OUT"
       exit 0
     fi
     argc_max 5 "$#" "fleet-api.sh task-new <task_id> [projekt] [szulo_feladat] [valtozat] [brief_hivatkozas]"
     TASK="${1:?task id required}"
-    post /tasks "$(json_obj id "$TASK" project "${2:-}" parent_task "${3:-}" variant "${4:-}" brief_ref "${5:-}")"
+    proj_need_if_new "$TASK" "${2:-}" || exit 4
+    OUT="$(post /tasks "$(json_obj id "$TASK" project "${2:-}" parent_task "${3:-}" variant "${4:-}" brief_ref "${5:-}")")"; RC=$?
+    printf '%s\n' "$OUT"
+    [ "$RC" -eq 0 ] || exit "$RC"
+    proj_warn "$OUT"
+    ;;
+  task-project)
+    # PROJEKTEK V1: egy feladat projektjenek EGYETLEN cserelesi utja (a task-new nem irja at, tartos).
+    # A fo agens sajat tokenjevel megy; a szerver project_changed esemenyt ir mellé. Csak nyilvantartott id.
+    argc_max 3 "$#" "fleet-api.sh task-project <task_id> <projekt> [indok]"
+    TASK="${1:?task id required}"; PROJ="${2:?projekt kell (acropora|os|commerce|reefclub)}"
+    TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
+    post "/tasks/${TASK_URL}/project" "$(json_obj project "$PROJ" reason "${3:-}")"
+    ;;
+  project-repo)
+    # PROJEKTEK V1: a repo a feladat projektjee-e (a pr-beolvaszt.sh hivja a beolvasztas elott).
+    # Naplo: csak kiir, a kilepes 0; 1 csak akkor, ha a szerver nem valaszol.
+    argc_max 2 "$#" "fleet-api.sh project-repo <task_id> <owner/repo>"
+    TASK="${1:?task id required}"; REPO_ARG="${2:?repo kell}"
+    TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
+    TL="$(curl -s -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "${API}/tasks/${TASK_URL}/timeline" -w $'\n%{http_code}' 2>/dev/null || true)"
+    PR_LIST="$(curl -s -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "${API}/projects" -w $'\n%{http_code}' 2>/dev/null || true)"
+    [ "$(printf '%s' "$TL" | tail -n1)" = "200" ] && [ "$(printf '%s' "$PR_LIST" | tail -n1)" = "200" ] \
+      || { echo "FAIL: a feladat vagy a projekt-lista nem olvashato (timeline $(printf '%s' "$TL" | tail -n1), projects $(printf '%s' "$PR_LIST" | tail -n1))"; exit 1; }
+    TL_JSON="$(printf '%s' "$TL" | sed '$d')" PR_JSON="$(printf '%s' "$PR_LIST" | sed '$d')" python3 -c '
+import json,os,sys
+repo=sys.argv[1]
+f=json.loads(os.environ["TL_JSON"]).get("fields") or {}
+pid=f.get("project_id")
+if not pid:
+    print("FIGYELEM (projekt): a feladat projektje (%s) nincs a nyilvantartasban" % f.get("project")); sys.exit(0)
+p=[x for x in json.loads(os.environ["PR_JSON"]) if x.get("id")==pid]
+repos=p[0].get("repos",[]) if p else []
+if repo in repos: print("PROJEKT rendben: a %s a(z) %s projekte" % (repo,pid))
+else: print("FIGYELEM (projekt): a %s NEM a(z) %s projekte (%s)" % (repo,pid,", ".join(repos)))' "$REPO_ARG"
     ;;
   task-event)
     # Egy esemeny: assigned|started|review_requested|verdict|fix_started|done|merged,
@@ -575,7 +643,8 @@ if f["assignee"] != agent:
     print("  Atiras: fleet-api.sh task-new %s - < feladat.json, benne \"assignee\": \"%s\"; a project, type," % (sys.argv[2], agent))
     print("  parent_task, variant es brief_ref felulirodik, azokat is add meg (a goal es tarsai maradnak).")
     sys.exit(4)
-print("1 rendben: %s, felelos %s, profil %s" % (sys.argv[2], agent, f["verification_profile"]))' "$AGENT" "$TASK"
+proj = f.get("project_id") or ("ISMERETLEN: %s" % f.get("project")) if "project" in f else "-"
+print("1 rendben: %s, felelos %s, profil %s, projekt %s" % (sys.argv[2], agent, f["verification_profile"], proj))' "$AGENT" "$TASK"
     RC1=$?; [ "$RC1" -eq 0 ] || exit "$RC1"
     # 2. az atado rekord, visszamerve
     HO_OUT="$(bash "${BASH_SOURCE[0]}" handoff-read "$TASK" 2>&1)"; HO_RC=$?
@@ -1311,7 +1380,7 @@ if d.get("action_description"):
 '
     ;;
   *)
-    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-comment|kanban-comments|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart|kiadas|deployed)"
+    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-comment|kanban-comments|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart|kiadas|deployed|task-project|project-repo)"
     exit 1
     ;;
 esac
