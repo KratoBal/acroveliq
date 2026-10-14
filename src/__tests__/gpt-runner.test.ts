@@ -12,12 +12,13 @@
 //     package.json, the lockfile and the probe;
 //   - the probe, run here in the fleet's own container, does not come out red.
 import { describe, it, expect } from 'vitest'
-import { readFileSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
-  HOST_PORTS, SYSTEM_EXACT, networkTargets, globalIpv6, checkIpv6, checkHome, RUNNER_HOME, checkIds, checkCaps, classifyReadable, judgeNetwork, judgeSandboxRun, codexSandboxChecks,
+  HOST_PORTS, SYSTEM_EXACT, networkTargets, globalIpv6, checkIpv6, checkHome, RUNNER_HOME,
+  AUTH_FILE, checkTestOverrides, checkAuthFile, safeExecArgs, v3Checks, V3_TEST_ARGS, V3_CONTROL_ARGS, V3_CANARIES, checkIds, checkCaps, classifyReadable, judgeNetwork, judgeSandboxRun, codexSandboxChecks,
   idsFromStatus, summarize, PINNED_CODEX, FLEET_IDS,
 } from '../../gpt-runner/proba.mjs'
 
@@ -73,8 +74,10 @@ describe('gpt-runner probe: the pure checks', () => {
     const lock = '/home/gpt/.codex/tmp/arg0/codex-arg0NEeGcj/.lock'
     const r = classifyReadable([lock, '/usr/bin/node'], '/home/gpt')
     expect([r.outside, r.marked, r.own]).toEqual([[], [], [lock]])
-    // the danger the home must not swallow: a credential (auth.json) there is fleet-marked
-    expect(classifyReadable(['/home/gpt/.codex/auth.json'], '/home/gpt').marked).toEqual(['/home/gpt/.codex/auth.json'])
+    // the login file by its EXACT path is the one allowed credential (H1-AUTH checks its mode);
+    // any other credential-looking name in the home, or a copy of it, is still fleet-marked
+    expect(classifyReadable(['/home/gpt/.codex/auth.json'], '/home/gpt').marked).toEqual([])
+    expect(classifyReadable(['/home/gpt/auth.json', '/home/gpt/.codex/auth.json.bak', '/home/gpt/token.txt'], '/home/gpt').marked).toEqual(['/home/gpt/auth.json', '/home/gpt/.codex/auth.json.bak', '/home/gpt/token.txt'])
     // a prefix trap: /home/gptx is NOT the home; no home given: the home is outside as before
     expect(classifyReadable(['/home/gptx/a'], '/home/gpt').outside).toEqual(['/home/gptx/a'])
     expect(classifyReadable([lock], null).outside).toEqual([lock])
@@ -135,7 +138,7 @@ describe('gpt-runner probe: the Codex sandbox (V2) against a fake codex', () => 
 
   it('V2-BLOCKED: the command ran (marker) and could not connect, while outside it could: OK', async () => {
     const r = await go((a) => (isNet(a) ? { code: 3, out: 'BELUL\n' } : { code: 1, out: 'BELUL\nsh: cannot create' }))
-    expect([r.V2, r['V2-IRAS'], r.V3]).toEqual(['OK', 'OK', 'NEM_MERHETO'])
+    expect([r.V2, r['V2-IRAS'], r.V3]).toEqual(['OK', 'OK', undefined])
   })
 
   it('V2-ALLOWED: the command reached the network from inside the sandbox: FAIL; a write that worked: FAIL', async () => {
@@ -214,6 +217,8 @@ describe('gpt-runner probe: a live run here, in the fleet container, must come o
       })
       expect(r.stdout).toContain(`sajat home (${join(dir, 'home')}): 1 fajl`)
       expect(r.stdout).toMatch(/^PROBA HOME OK /m)
+      // the test sets PROBA_* overrides: the probe itself must call that out
+      expect(r.stdout).toMatch(/^PROBA TESZT-VALTOZO FAIL teszt-feluliras beallitva: PROBA_ELVART_HOME, PROBA_GYOKER, PROBA_CSAK_HELYI$/m)
       // another HOME than the expected one: FAIL, and no own-home category for it
       const wide = spawnSync(process.execPath, [join(__dirname, '..', '..', 'gpt-runner', 'proba.mjs')], {
         env: { ...process.env, PROBA_CSAK_HELYI: '1', PROBA_GYOKER: dir, HOME: dir, PROBA_ELVART_HOME: join(dir, 'home') }, encoding: 'utf8', timeout: 60_000,
@@ -392,5 +397,134 @@ describe('gpt-runner host: ufw rules that live only in the running state (ufw-el
   it('UFW-WIRED: the installer stops on 1 and on 2, before the reload', () => {
     const inst = R('host/telepit-tuzfal.sh')
     expect(inst).toMatch(/ufw-elo-mentett\.sh" "\$ipt" "\$saved_file"\) \|\| rc=\$\?\n\s+if \[ "\$rc" = 2 \]; then echo "STOP reload nelkul[\s\S]*if \[ -n "\$only_live_all" \]; then[\s\S]*exit 1[\s\S]*\n {2}ufw reload\n/)
+  })
+})
+
+describe('gpt-runner probe after the login: H1-AUTH, test overrides, V3', () => {
+  it('H1-AUTH: no login file is OK; the file is OK only at 600 and owned by the runner', () => {
+    expect(AUTH_FILE).toBe('/home/gpt/.codex/auth.json')
+    expect([
+      checkAuthFile(null)[0],
+      checkAuthFile({ mode: 0o100600, uid: 10002 })[0],
+      checkAuthFile({ mode: 0o100644, uid: 10002 })[0],
+      checkAuthFile({ mode: 0o100600, uid: 0 })[0],
+      checkAuthFile({ mode: 0o100640, uid: 1000 })[0],
+    ]).toEqual(['OK', 'OK', 'FAIL', 'FAIL', 'FAIL'])
+  })
+
+  it('TESZT-VALTOZO: any test-only override set in the container is FAIL; the real inputs are not', () => {
+    expect(checkTestOverrides({ PROBA_FLOTTA_CIMEK: '10.0.2.4', PROBA_GEP_CIMEK: '1.2.3.4' })[0]).toBe('OK')
+    expect(['PROBA_ELVART_HOME', 'PROBA_GYOKER', 'PROBA_CSAK_HELYI', 'PROBA_CODEX_VERSION'].map((k) => checkTestOverrides({ [k]: 'x' })[0])).toEqual(['FAIL', 'FAIL', 'FAIL', 'FAIL'])
+    expect(checkTestOverrides({ PROBA_GYOKER: '' })[0]).toBe('OK')
+  })
+
+  it('V3-ARGS: both runs are read-only with approval never; the test run switches both shell tools off, the control turns shell_tool on', () => {
+    expect([safeExecArgs(V3_TEST_ARGS), safeExecArgs(V3_CONTROL_ARGS)]).toEqual([null, null])
+    expect(V3_TEST_ARGS).toEqual(expect.arrayContaining(['-s', 'read-only', 'approval_policy="never"', 'features.shell_tool=false', 'features.unified_exec=false', '--json']))
+    expect(V3_CONTROL_ARGS).toEqual(expect.arrayContaining(['-s', 'read-only', 'features.shell_tool=true']))
+    expect(V3_CANARIES).toEqual(['/tmp/kanari-v3', '/home/gpt/kanari-v3'])
+    // anything wider is refused before any call
+    for (const bad of [['-s', 'read-only', '--sandbox', 'danger-full-access'], ['-s', 'read-only', '--sandbox', 'workspace-write'], ['-s', 'danger-full-access'], ['-s', 'workspace-write'], ['--dangerously-bypass-approvals-and-sandbox', '-s', 'read-only'], ['--yolo', '-s', 'read-only'], ['-c', 'sandbox_mode="danger-full-access"', '-s', 'read-only'], ['exec']]) {
+      expect([bad.join(' '), safeExecArgs(bad) != null]).toEqual([bad.join(' '), true])
+    }
+  })
+
+  type R = { code: number; out: string }
+  const v3 = (onRun: (args: string[], fs: Set<string>) => R, loggedIn = true) => {
+    const fs = new Set<string>()
+    const said: Record<string, string> = {}
+    const calls: string[][] = []
+    const log = console.log
+    console.log = () => {}
+    try {
+      v3Checks((id, v) => { said[id] = v }, (_c, args) => { calls.push(args); return onRun(args, fs) }, { exists: (p) => fs.has(p), remove: (p) => fs.delete(p), loggedIn })
+    } finally { console.log = log }
+    return { said, calls, fs }
+  }
+  const isControl = (a: string[]) => a.includes('features.shell_tool=true')
+  const EXEC = '{"type":"item.started","item":{"type":"command_execution","command":"touch ..."}}'
+
+  it('V3-OK: off, no execution and no canary; the control shows an attempt', () => {
+    const r = v3((a) => (isControl(a) ? { code: 0, out: EXEC } : { code: 0, out: '{"type":"item.completed","item":{"type":"agent_message"}}' }))
+    expect([r.said.V3, r.said['V3-KONTROLL-IRAS'], r.calls.length, r.fs.size]).toEqual(['OK', undefined, 2, 0])
+  })
+
+  it('V3-EXECUTED: an execution event, or a canary, in the run with the tools off is FAIL', () => {
+    expect(v3(() => ({ code: 0, out: EXEC })).said.V3).toBe('FAIL')
+    expect(v3((a, fs) => { if (!isControl(a)) fs.add('/home/gpt/kanari-v3'); return { code: 0, out: isControl(a) ? EXEC : '' } }).said.V3).toBe('FAIL')
+  })
+
+  it('V3-BLIND: no attempt even in the control: NEM_MERHETO, never OK', () => {
+    expect(v3(() => ({ code: 0, out: '{"type":"item.completed","item":{"type":"agent_message"}}' })).said.V3).toBe('NEM_MERHETO')
+  })
+
+  it('V3-CONTROL-WROTE: a canary from the read-only control run is its own FAIL', () => {
+    const r = v3((a, fs) => { if (isControl(a)) fs.add('/tmp/kanari-v3'); return { code: 0, out: isControl(a) ? EXEC : '' } })
+    expect([r.said.V3, r.said['V3-KONTROLL-IRAS'], r.fs.size]).toEqual(['OK', 'FAIL', 0])
+  })
+
+  it('V3-NO-LOGIN: no model call without a login', () => {
+    const r = v3(() => { throw new Error('called') }, false)
+    expect([r.said.V3, r.calls.length]).toEqual(['NEM_MERHETO', 0])
+  })
+})
+
+describe('gpt-runner host: the login step and the measure after it, against a fake docker', () => {
+  const HOST = join(__dirname, '..', '..', 'gpt-runner', 'host')
+  // the fake docker answers by what it is asked: the login, the stat line, or a probe run
+  const DOCKER = `#!/bin/bash
+args="$*"
+case "$args" in
+  *"login --device-auth"*) printf '%s\\n' "$LOGIN_OUT"; exit "$LOGIN_RC" ;;
+  *'stat -c "%a %u" /home/gpt/.codex/auth.json'*) printf '%s\\n' "$PERM" ;;
+  *"stat -c"*) printf '%s\\n' "$PERM 1234 bajt /home/gpt/.codex/auth.json" "--- a kotet fajljai:" "/home/gpt/.codex/auth.json" ;;
+  "compose up --no-color") printf '%b' "$PROBE_OUT" ;;
+  logs*) : ;;
+esac
+`
+  const runHost = (script: string, env: Record<string, string>) => {
+    const dir = mkdtempSync(join(tmpdir(), 'gpt-host-'))
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
+    writeFileSync(join(bin, 'docker'), DOCKER, { mode: 0o755 })
+    try {
+      const r = spawnSync('bash', [join(HOST, script)], { env: { PATH: `${bin}:/usr/bin:/bin`, GPT_FUTTATO_DIR: dir, ...env }, encoding: 'utf8', timeout: 20_000 })
+      const left = readdirSync(dir).filter((f) => f.startsWith('belepes.'))
+      return { code: r.status, out: r.stdout + r.stderr, left }
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }
+
+  it('LOGIN-NOT-ENABLED: the device-code error is named for Balázs, the one-time-code log is removed', () => {
+    const r = runHost('belepes.sh', { LOGIN_OUT: 'Error logging in with device code: device code login is not enabled for this account', LOGIN_RC: '1', PERM: '' })
+    expect([r.code, /nincs engedelyezve a ChatGPT-fiokban/.test(r.out), r.left]).toEqual([1, true, []])
+  })
+
+  it('LOGIN-OK: only the place, the mode, the owner and the file NAMES are printed; 600 10002 is required', () => {
+    const ok = runHost('belepes.sh', { LOGIN_OUT: 'Successfully logged in', LOGIN_RC: '0', PERM: '600 10002' })
+    expect([ok.code, /rendben: \/home\/gpt\/\.codex\/auth\.json, 600, uid 10002/.test(ok.out), /--- a kotet fajljai:/.test(ok.out), ok.left]).toEqual([0, true, true, []])
+    const wide = runHost('belepes.sh', { LOGIN_OUT: 'Successfully logged in', LOGIN_RC: '0', PERM: '644 10002' })
+    expect([wide.code, /STOP: az auth\.json joga vagy tulajdonosa nem 600 es 10002/.test(wide.out)]).toEqual([1, true])
+  })
+
+  it('LOGIN-NEVER-PRINTS-THE-VALUE: the script never reads the file content (no cat, no jq, no base64 of it)', () => {
+    const s = R('host/belepes.sh')
+    expect(/(cat|jq|base64|head|tail|less|more|xxd|od)\b[^\n]*auth\.json/.test(s)).toBe(false)
+    expect(s).toMatch(/login --device-auth/)
+  })
+
+  it('AFTER-OK: V3 OK, H1-AUTH OK and no FAIL: activation is Balázs\'s decision', () => {
+    const r = runHost('utana-meres.sh', { PROBE_OUT: 'PROBA H1-AUTH OK x\\nPROBA V3 OK y\\nPROBA N1 OK z\\nOSSZESITES ok=3 fail=0 nem_merheto=0\\n' })
+    expect([r.code, /V3=OK H1-AUTH=OK FAIL-sorok=0/.test(r.out), /aktivalasa Balazs dontese/.test(r.out)]).toEqual([0, true, true])
+  })
+
+  it('AFTER-NOT-PROVEN: V3 NEM_MERHETO, a FAIL line, or a missing V3 line keeps the GPT side off', () => {
+    for (const out of [
+      'PROBA H1-AUTH OK x\\nPROBA V3 NEM_MERHETO y\\nOSSZESITES ok=1 fail=0 nem_merheto=1\\n',
+      'PROBA H1-AUTH OK x\\nPROBA V3 OK y\\nPROBA F2 FAIL z\\nOSSZESITES ok=2 fail=1 nem_merheto=0\\n',
+      'PROBA H1-AUTH OK x\\nOSSZESITES ok=1 fail=0 nem_merheto=0\\n',
+    ]) {
+      const r = runHost('utana-meres.sh', { PROBE_OUT: out })
+      expect([out.slice(0, 40), r.code, /KIKAPCSOLVA MARAD/.test(r.out)]).toEqual([out.slice(0, 40), 0, true])
+    }
   })
 })
