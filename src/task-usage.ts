@@ -24,10 +24,10 @@
 // moves when the task id is a card id):
 //   - work:   from the actor's `started` or `fix_started` to its own next
 //             `review_requested`, or the task's end (`done`, `merged`, `cancelled`,
-//             `failed`, `partial`) or `blocked` by anyone;
+//             `failed`, `partial`), `blocked` or `paused` by anyone;
 //   - review: from a `review_requested` to the `verdict` that answers it, for
 //             the verdict's actor;
-//   - admin:  from the actor's `assigned` to the task's end;
+//   - admin:  from the actor's `assigned` to the task's end or a `paused`;
 //   - coord:  from the actor's `coord_open` to its own `coord_close` (or the task's
 //             end). The channel session marks the hand-out and the
 //             take-over of a coordination unit this way (koord-munkamenet, acrobot
@@ -376,7 +376,15 @@ const WORK_CLOSE: ReadonlySet<TaskEventKind> = new Set(['review_requested', 'don
   and coord windows overlap as a matter of course and never make a task invalid.
 */
 const TASK_END: ReadonlySet<TaskEventKind> = new Set(['done', 'merged', 'cancelled', 'failed', 'partial'])
-const WORK_STOP: ReadonlySet<TaskEventKind> = new Set(['blocked'])
+const WORK_STOP: ReadonlySet<TaskEventKind> = new Set(['blocked', 'paused'])
+/*
+  A PAUSE (Feladatkezelés V1) also closes the admin windows: the hand-out's window must not
+  run on through the pause and claim the hand-out agent's calls for a task nobody may work
+  on. After a resume the hand-out writes assigned again (it decides from what happened
+  since the last pause), which opens a new admin window. Coord windows are left to their
+  own close, as with blocked.
+*/
+const ADMIN_STOP: ReadonlySet<TaskEventKind> = new Set(['paused'])
 
 /** The windows of one task's events (already in time order). */
 export function taskWindows(events: readonly TaskEvent[]): TaskWindow[] {
@@ -419,6 +427,10 @@ export function taskWindows(events: readonly TaskEvent[]): TaskWindow[] {
     if (WORK_STOP.has(kind)) {
       for (const window of openWork.values()) window.to ??= at
       openWork.clear()
+    }
+    if (ADMIN_STOP.has(kind)) {
+      for (const window of openAdmin.values()) window.to ??= at
+      openAdmin.clear()
     }
     if (TASK_END.has(kind)) {
       for (const window of [...openAdmin.values(), ...openWork.values(), ...openCoord.values()]) window.to ??= at

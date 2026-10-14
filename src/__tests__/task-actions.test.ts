@@ -13,7 +13,7 @@ vi.mock('../config.js', async (importOriginal) => {
 import { getDb, getPendingMessages, initDatabase } from '../db.js'
 import { waitsOn } from '../open-matters.js'
 import { newTaskId } from '../task-actions.js'
-import { addTaskEvent, addTaskSession, allTasks, assigneeTasks, isTaskPaused, taskTimeline, upsertTask, type TaskEventKind } from '../task-usage.js'
+import { addTaskEvent, addTaskSession, allTasks, assigneeTasks, isTaskPaused, taskTimeline, taskUsage, upsertTask, type TaskEventKind } from '../task-usage.js'
 import { acroveliqAllows } from '../web/acroveliq-host.js'
 import { ACCESS_MODES } from '../web/access-enforcement.js'
 import { tryHandleTaskActions } from '../web/routes/task-actions.js'
@@ -187,6 +187,14 @@ describe('assign and priority: an event and a message each; a repeat changes not
     expect(allTasks(getDb()).find((t) => t.id === 't1')?.priority).toBe('urgent')
   })
 
+  it('a priority set on a running task does not free its agent (owner_action is not a state)', async () => {
+    existing('t1')
+    ev('t1', 'started', 'murena')
+    await act('t1', { action: 'priority', priority: 'urgent' })
+    expect(assigneeTasks(getDb(), 'murena').map((t) => [t.last_kind, t.busy])).toEqual([['started', true]])
+    expect(allTasks(getDb()).find((t) => t.id === 't1')?.last_kind).toBe('started')
+  })
+
   it('assign before the hand-out: to an agent and back to "acrobot assigns"', async () => {
     existing('t1', null)
     const a = await act('t1', { action: 'assign', assignee: 'acrobot' })
@@ -291,6 +299,26 @@ describe('pause and resume: never over running work; while paused no new work st
     for (const body of [{ action: 'pause' }, { action: 'priority', priority: 'low' }, { action: 'assign', assignee: null }])
       expect((await act('t1', body)).status, body.action).toBe(409)
     expect((await act('nincs', { action: 'pause' })).status).toBe(404)
+  })
+
+  it('a pause closes the task\'s admin window: the hand-out agent\'s later calls are not this task\'s; the resume and a new assigned open it again', async () => {
+    existing('t1')
+    const T0 = NOW() - 1000
+    ev('t1', 'assigned', 'acrobot', T0)
+    getDb().exec(`CREATE TABLE IF NOT EXISTS token_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT NOT NULL, session_id TEXT NOT NULL, timestamp INTEGER NOT NULL,
+      input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_creation_tokens INTEGER NOT NULL DEFAULT 0)`)
+    const callAt = (at: number) => getDb().prepare('INSERT INTO token_usage (agent, session_id, timestamp) VALUES (?, ?, ?)').run('acrobot', 'chan', at)
+    callAt(T0 + 10) // in the admin window
+    await act('t1', { action: 'pause' }) // at NOW()
+    const pausedAt = NOW()
+    callAt(pausedAt + 5) // after the pause: not the task's
+    expect(taskUsage(getDb(), 't1', pausedAt + 100)!.totals.calls).toBe(1)
+    await act('t1', { action: 'resume' })
+    ev('t1', 'assigned', 'acrobot', pausedAt + 10)
+    callAt(pausedAt + 20) // the new hand-out's window
+    expect(taskUsage(getDb(), 't1', pausedAt + 100)!.totals.calls).toBe(2)
   })
 
   it('every action is on the task\'s timeline, by the owner, with a message linked to the task', async () => {
