@@ -2220,3 +2220,49 @@ describe('detectBlockingPrompt (AcrovelIQ: a measured "waiting on a permission p
     ).toEqual(['permission', 'menu', 'menu', 'menu', null, null, null, null])
   })
 })
+
+// A turn longer than a minute renders its counter as "(15m 26s · ↓ ...". The first
+// fixture is nautilus's real pane, 2026-10-14 11:05: 15 minutes into a typecheck,
+// shown "Tétlen, nyitott feladattal" on AcrovelIQ because only "(52s ·" matched.
+describe('long turns (minutes and hours in the counter)', () => {
+  const LONG_TURN_REAL = [
+    '     dontesek-v1-backend --fajta typecheck -- npm run typecheck 2>&1 | tail -3;',
+    '     --feladat dontesek-v1-backend --fa… (3m 11s · 19 lines)',
+    '     (ctrl+b ctrl+b (twice) to run in background)',
+    '· Enchanting… (15m 26s · ↓ 69.2k tokens)',
+    "  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's",
+    '     current work',
+    SEP,
+    '❯ ',
+    SEP,
+    '  claude-opus-5-5 | 5h 1% | 7d 46%',
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+  ].join('\n')
+  const HOUR_TURN = [
+    '✶ Combobulating… (1h 2m 3s · ↓ 120k tokens)',
+    '',
+    SEP,
+    '❯ ',
+    SEP,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  ].join('\n')
+  // A tool line's own duration ("(3m 11s · 19 lines)") has no ↓ and must stay idle.
+  const TOOL_DURATION_ONLY = [
+    '     --feladat x --fa… (3m 11s · 19 lines)',
+    '',
+    SEP,
+    '❯ ',
+    SEP,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+  ].join('\n')
+
+  it('reads a 15-minute turn as busy', () => {
+    expect(detectPaneState(LONG_TURN_REAL)).toBe('busy')
+  })
+  it('reads an hour-long turn as busy', () => {
+    expect(detectPaneState(HOUR_TURN)).toBe('busy')
+  })
+  it('does not read a tool duration without the token arrow as busy', () => {
+    expect(detectPaneState(TOOL_DURATION_ONLY)).toBe('idle')
+  })
+})

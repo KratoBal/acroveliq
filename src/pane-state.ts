@@ -130,12 +130,15 @@ const BUSY_INDICATORS: RegExp[] = [
   // box during a real turn, so the bottom-region scope still catches it.
   //
   // Tokens-down-arrow counter: "(52s · ↓ 2.6k tokens ..."
-  /\(\s*\d+s\s*·\s*↓\s*\d/,
+  // A turn longer than a minute renders "(15m 26s · ↓ ..." (and "(1h 2m 3s"), so the
+  // hour and minute parts are optional: with \d+s alone every long turn read as idle
+  // (measured 2026-10-14: nautilus 15 min into a typecheck, shown idle on AcrovelIQ).
+  /\(\s*(?:\d+h\s*)?(?:\d+m\s*)?\d+s\s*·\s*↓\s*\d/,
   // Known spinner labels paired with the turn-scoped `(Ns · ↓` tail on
   // the same line. The tail requirement kills the "Thinking…" prose
   // false positive. Non-exhaustive by design; the bare tokens pattern
   // above is the authoritative fallback.
-  /\b(?:Combobulating|Beaming|Thinking|Pondering|Reticulating|Configuring|Noodling|Ruminating|Percolating|Cogitating|Deliberating|Contemplating|Musing|Brewing|Synthesizing|Distilling|Refining|Simmering|Crafting|Formulating|Consulting|Unfurling|Unspooling|Unraveling)…\s*\(\s*\d+s\s*·\s*↓/,
+  /\b(?:Combobulating|Beaming|Thinking|Pondering|Reticulating|Configuring|Noodling|Ruminating|Percolating|Cogitating|Deliberating|Contemplating|Musing|Brewing|Synthesizing|Distilling|Refining|Simmering|Crafting|Formulating|Consulting|Unfurling|Unspooling|Unraveling)…\s*\(\s*(?:\d+h\s*)?(?:\d+m\s*)?\d+s\s*·\s*↓/,
 ]
 
 // `esc to interrupt` is a footer-region-only busy signal: Claude Code
