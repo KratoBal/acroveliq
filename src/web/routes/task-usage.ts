@@ -7,6 +7,7 @@ import { logger } from '../../logger.js'
 import {
   REVIEW_REF_KINDS,
   TASK_EVENT_KINDS,
+  TASK_PRIORITIES,
   VERIFICATION_PROFILES,
   addTaskEvent,
   addTaskSession,
@@ -14,6 +15,7 @@ import {
   assigneeTasks,
   doneGuard,
   githubMergeProbe,
+  isTaskPaused,
   loadTaskEvents,
   parseTaskCoreMode,
   reviewRefGuard,
@@ -34,7 +36,7 @@ import type { RouteContext } from './types.js'
 //
 //   POST /api/tasks                       a task: {id, project?, type?, parent_task?, variant?, brief_ref?,
 //                                         title?, goal?, acceptance?, assignee?, reviewer?, authorization_ref?,
-//                                         verification_profile?, kanban_card_id?}
+//                                         verification_profile?, kanban_card_id?, priority?}
 //   GET  /api/tasks?assignee=<a>[&busy=1] an agent's tasks; with busy=1 only those that keep it busy
 //   GET  /api/tasks                       every task with its last event (the AcrovelIQ list); an unknown
 //                                         query parameter is 400, not the whole list
@@ -44,7 +46,14 @@ import type { RouteContext } from './types.js'
 //   GET  /api/tasks/<task>/usage          the task's usage; with ?variants=1 its variants beside it
 //   GET  /api/tasks/<task>/timeline       events, handoff records and sessions, in time order;
 //                                         `fields`: the task's title, goal, assignee, reviewer,
-//                                         authorization_ref and verification_profile
+//                                         authorization_ref, verification_profile and priority;
+//                                         `paused`: whether the task is paused
+//
+// THE OWNER'S KINDS (Feladatkezelés V1): paused, resumed and owner_action are written by
+// POST /api/task-actions only (src/task-actions.ts), like decision by its route. And while
+// a task is paused, started and fix_started are refused with 409 in EVERY mode: the pause
+// is the owner's decision, not a logging guard (barracuda msg 30316). A review may still
+// be recorded; it does not end the pause (isTaskPaused).
 //
 // THE `done` GUARD (TC-Lite L1), by TASK_CORE_MODE: `off` is the behaviour
 // before L1; `naplo` (the default) accepts every `done` and marks the one it
@@ -141,6 +150,11 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid task', missing: [`verification_profile (${VERIFICATION_PROFILES.join('|')})`] }, 400)
       return true
     }
+    const priority = text(b.priority)
+    if (priority && !(TASK_PRIORITIES as readonly string[]).includes(priority)) {
+      json(res, { error: 'invalid task', missing: [`priority (${TASK_PRIORITIES.join('|')})`] }, 400)
+      return true
+    }
     // the profile decides what `done` must prove: a different one on an
     // existing task is refused, not ignored (barracuda, #46)
     const stored = getDb().prepare('SELECT verification_profile, type FROM tasks WHERE id = ?').get(id) as
@@ -174,6 +188,7 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
         authorization_ref: text(b.authorization_ref),
         verification_profile: profile,
         kanban_card_id: text(b.kanban_card_id),
+        priority,
       },
       now,
     )
@@ -193,9 +208,9 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
     }
     // the fields too: the hand-out (fleet-api.sh kiadas, L5) checks them before it acts
     const fields = getDb()
-      .prepare('SELECT title, goal, assignee, reviewer, authorization_ref, verification_profile FROM tasks WHERE id = ?')
+      .prepare('SELECT title, goal, assignee, reviewer, authorization_ref, verification_profile, priority FROM tasks WHERE id = ?')
       .get(taskId)
-    json(res, { task: taskId, fields, items: taskTimeline(getDb(), taskId) })
+    json(res, { task: taskId, fields, paused: isTaskPaused(getDb(), taskId), items: taskTimeline(getDb(), taskId) })
     return true
   }
 
@@ -246,6 +261,10 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'a decision event is written by POST /api/decisions/:id only' }, 403)
       return true
     }
+    if (kind === 'paused' || kind === 'resumed' || kind === 'owner_action') {
+      json(res, { error: `a ${kind} event is written by POST /api/task-actions only` }, 403)
+      return true
+    }
     const db = getDb()
     // a repeat is answered before the guard: the first one was already judged
     if (idemKey) {
@@ -257,6 +276,11 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
         else json(res, { error: `idem_key already used by event ${earlier.id}, a different event`, id: earlier.id }, 409)
         return true
       }
+    }
+    // after the repeat check: a started recorded before the pause answers its retry as before
+    if ((kind === 'started' || kind === 'fix_started') && isTaskPaused(db, taskId)) {
+      json(res, { error: 'a feladat szunetel (the task is paused): no new work until the owner resumes it', paused: true }, 409)
+      return true
     }
     let stored = data as Record<string, unknown> | null
     let wouldReject: string | null = null

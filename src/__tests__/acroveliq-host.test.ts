@@ -152,22 +152,29 @@ describe('acroveliqAllows: the positive list', () => {
       ['PATCH', '/api/decisions/x'], ['DELETE', '/api/decisions/x'], ['POST', '/api/decisions/x/discord-reply'],
       ['POST', '/api/decisions/x/y'], ['POST', '/api/agents/acrobot/restart'], ['POST', '/api/memories'],
       ['POST', '/api/kanban'], ['POST', '/api/messages'], ['POST', '/api/schedules'],
+      // the task writes are POST /api/task-actions[/:id]; the agents' task routes and the
+      // neighbours stay shut (Feladatkezelés V1, decision B)
+      ['GET', '/api/task-actions'], ['GET', '/api/task-actions/x'], ['PUT', '/api/task-actions/x'],
+      ['PATCH', '/api/task-actions/x'], ['DELETE', '/api/task-actions/x'], ['POST', '/api/task-actions/x/y'],
+      ['POST', '/api/tasks'], ['POST', '/api/tasks/x/events'], ['POST', '/api/tasks/x/sessions'],
+      ['POST', '/api/tasks/x/handoffs'], ['POST', '/api/agents/nautilus/stop'],
     ]) expect(acroveliqAllows(method!, path!), `${method} ${path}`).toBe(false)
   })
 
-  it('every /api/ row is a read or public route rule, matched by the very pattern it names; the decision write is the one exception', () => {
+  it('every /api/ row is a read or public route rule, matched by the very pattern it names; the decision and task writes are the exceptions', () => {
     for (const row of ACROVELIQ_ROUTES.filter((r) => r.path.startsWith('/api/'))) {
       const concrete = row.path.replace(/:[A-Za-z_]+/g, 'x')
       const rule = matchRouteRule(row.method, concrete)
       expect(rule?.path, `${row.method} ${row.path}`).toBe(row.path)
-      const allowed = row.method === 'POST' && row.path === '/api/decisions/:id' ? ['KRITIKUS'] : ['OLVASO', 'NYILVANOS']
+      const writes = ['/api/decisions/:id', '/api/task-actions', '/api/task-actions/:id']
+      const allowed = row.method === 'POST' && writes.includes(row.path) ? ['KRITIKUS'] : ['OLVASO', 'NYILVANOS']
       expect(allowed, `${row.method} ${row.path} is ${rule?.class}`).toContain(rule!.class)
     }
   })
 
-  it('the non-GET rows are the login and the decision, nothing else (Balázs, 2026-10-14, decision B)', () => {
+  it('the non-GET rows are the login, the decision and the task actions, nothing else (Balázs, 2026-10-14, decision B twice)', () => {
     expect(ACROVELIQ_ROUTES.filter((r) => r.method !== 'GET').map((r) => `${r.method} ${r.path}`))
-      .toEqual(['POST /api/auth/login', 'POST /api/decisions/:id'])
+      .toEqual(['POST /api/auth/login', 'POST /api/decisions/:id', 'POST /api/task-actions', 'POST /api/task-actions/:id'])
   })
 
   it('every static row names a file the dashboard ships', () => {

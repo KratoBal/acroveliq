@@ -728,9 +728,10 @@ describe('TC-Lite L1: the timeline and busy', () => {
     const badProfile = await call('/api/tasks', 'POST', { id, verification_profile: 'kod' })
     const acceptance = getDb().prepare('SELECT acceptance FROM tasks WHERE id = ?').get(id) as { acceptance: string }
     expect([busy.status, busy.body.map((t: { id: string }) => t.id), timeline.status, timeline.body.items.length, unknown.status,
-      noAssignee.status, badProfile.status, JSON.parse(acceptance.acceptance), timeline.body.fields]).toEqual([
+      noAssignee.status, badProfile.status, JSON.parse(acceptance.acceptance), timeline.body.fields, timeline.body.paused]).toEqual([
       200, [id], 200, 1, 404, 400, 400, ['zöld kapu'],
-      { title: 'Cím', goal: null, assignee: 'polip-' + id, reviewer: null, authorization_ref: null, verification_profile: null },
+      { title: 'Cím', goal: null, assignee: 'polip-' + id, reviewer: null, authorization_ref: null, verification_profile: null, priority: null },
+      false,
     ])
   })
 })

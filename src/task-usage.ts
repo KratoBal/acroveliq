@@ -64,6 +64,12 @@ export const TASK_EVENT_KINDS = [
   // Dontéseim V1: the owner's decision on a decision row. Written by the server only
   // (POST /api/decisions/:id); the events route refuses it from any caller.
   'decision',
+  // Feladatkezelés V1: the owner's actions from the AcrovelIQ page. Written by the server
+  // only (POST /api/task-actions[/:id], src/task-actions.ts); the events route refuses them.
+  // paused and resumed are states; owner_action (create, assign, priority) is not.
+  'paused',
+  'resumed',
+  'owner_action',
 ] as const
 export type TaskEventKind = (typeof TASK_EVENT_KINDS)[number]
 
@@ -73,7 +79,11 @@ export type VerificationProfile = (typeof VERIFICATION_PROFILES)[number]
 /** The profiles whose `done` needs a merged, re-measured PR. */
 export const CODE_PROFILES: ReadonlySet<string> = new Set(['code_fleet', 'code_app', 'migration'])
 
-/** The task fields added by TC-Lite L1, in the order of the schema. */
+/** A task's priority (Feladatkezelés V1): the kanban card's four values. */
+export const TASK_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const
+export type TaskPriority = (typeof TASK_PRIORITIES)[number]
+
+/** The task fields added by TC-Lite L1 (and priority, Feladatkezelés V1), in the order of the schema. */
 const TASK_FIELDS = [
   'title',
   'goal',
@@ -83,6 +93,7 @@ const TASK_FIELDS = [
   'authorization_ref',
   'verification_profile',
   'kanban_card_id',
+  'priority',
 ] as const
 type TaskField = (typeof TASK_FIELDS)[number]
 
@@ -198,6 +209,7 @@ export interface TaskRow {
   authorization_ref?: string | null
   verification_profile?: string | null
   kanban_card_id?: string | null
+  priority?: string | null
   updated_at?: number | null
 }
 
@@ -918,18 +930,41 @@ const BUSY_KINDS: ReadonlySet<string> = new Set(['assigned', 'started', 'fix_sta
   is therefore the latest STATE event; a task with no state event at all (a coordination
   unit, only coord marks) keeps its latest event, so what it shows does not change.
 */
-export const NON_STATE_KINDS: readonly TaskEventKind[] = ['decision', 'coord_open', 'coord_close']
+export const NON_STATE_KINDS: readonly TaskEventKind[] = ['decision', 'coord_open', 'coord_close', 'owner_action']
 const NON_STATE_SQL = NON_STATE_KINDS.map((k) => `'${k}'`).join(', ')
 /** The task's last event as the busy check and the list read it (see NON_STATE_KINDS). */
 const LAST_STATE_EVENT = (alias: string) =>
   `SELECT id FROM task_events ${alias} WHERE ${alias}.task_id = t.id
    ORDER BY (${alias}.kind IN (${NON_STATE_SQL})), ${alias}.at DESC, ${alias}.id DESC LIMIT 1`
 
+/*
+  WHETHER A TASK IS PAUSED (Feladatkezelés V1). Not its last state event: a review can be
+  recorded during a pause (a running review may finish, barracuda msg 30316), and as the
+  last state event it would end the pause silently. A task is paused while the latest of
+  its pause, resume and end events is the pause. A paused task keeps nobody busy.
+*/
+export const PAUSE_ENDERS: readonly TaskEventKind[] = ['resumed', 'done', 'merged', 'cancelled', 'failed', 'partial']
+const PAUSED_SQL = (alias: string) =>
+  `(SELECT ${alias}.kind FROM task_events ${alias} WHERE ${alias}.task_id = t.id
+     AND ${alias}.kind IN ('paused', ${PAUSE_ENDERS.map((k) => `'${k}'`).join(', ')})
+   ORDER BY ${alias}.at DESC, ${alias}.id DESC LIMIT 1) = 'paused'`
+
+export function isTaskPaused(db: Database.Database, taskId: string): boolean {
+  const row = db.prepare(`SELECT ${PAUSED_SQL('p')} AS paused FROM tasks t WHERE t.id = ?`).get(taskId) as
+    | { paused: number | null }
+    | undefined
+  return row?.paused === 1
+}
+
+const isBusy = (r: { last_kind: string | null; paused: boolean }) =>
+  !r.paused && r.last_kind !== null && BUSY_KINDS.has(r.last_kind)
+
 export interface AssigneeTask {
   id: string
   title: string | null
   last_kind: string | null
   last_at: number | null
+  paused: boolean
   busy: boolean
 }
 
@@ -941,13 +976,16 @@ export interface AssigneeTask {
 export function assigneeTasks(db: Database.Database, agent: string): AssigneeTask[] {
   const rows = db
     .prepare(
-      `SELECT t.id, t.title, e.kind AS last_kind, e.at AS last_at
+      `SELECT t.id, t.title, e.kind AS last_kind, e.at AS last_at, coalesce(${PAUSED_SQL('p')}, 0) AS paused
        FROM tasks t
        LEFT JOIN task_events e ON e.id = (${LAST_STATE_EVENT('x')})
        WHERE t.assignee = ? ORDER BY t.created_at, t.id`,
     )
-    .all(agent) as Omit<AssigneeTask, 'busy'>[]
-  return rows.map((r) => ({ ...r, busy: r.last_kind !== null && BUSY_KINDS.has(r.last_kind) }))
+    .all(agent) as (Omit<AssigneeTask, 'busy' | 'paused'> & { paused: number })[]
+  return rows.map((r) => {
+    const row = { ...r, paused: r.paused === 1 }
+    return { ...row, busy: isBusy(row) }
+  })
 }
 
 export const busyTasks = (db: Database.Database, agent: string): AssigneeTask[] =>
@@ -960,6 +998,7 @@ export interface ListedTask extends AssigneeTask {
   reviewer: string | null
   verification_profile: string | null
   kanban_card_id: string | null
+  priority: string | null
   created_at: number
   updated_at: number | null
   last_actor: string | null
@@ -977,15 +1016,19 @@ export function allTasks(db: Database.Database): ListedTask[] {
   const rows = db
     .prepare(
       `SELECT t.id, t.project, t.title, t.goal, t.assignee, t.reviewer, t.verification_profile, t.kanban_card_id,
-              t.created_at, t.updated_at,
+              t.priority, t.created_at, t.updated_at,
               e.kind AS last_kind, e.at AS last_at, e.actor AS last_actor, e.ref AS last_ref,
+              coalesce(${PAUSED_SQL('p')}, 0) AS paused,
               (SELECT count(*) FROM task_events c WHERE c.task_id = t.id) AS events
        FROM tasks t
        LEFT JOIN task_events e ON e.id = (${LAST_STATE_EVENT('x')})
        ORDER BY coalesce((SELECT max(a.at) FROM task_events a WHERE a.task_id = t.id), t.created_at) DESC, t.id`,
     )
-    .all() as Omit<ListedTask, 'busy'>[]
-  return rows.map((r) => ({ ...r, busy: r.last_kind !== null && BUSY_KINDS.has(r.last_kind) }))
+    .all() as (Omit<ListedTask, 'busy' | 'paused'> & { paused: number })[]
+  return rows.map((r) => {
+    const row = { ...r, paused: r.paused === 1 }
+    return { ...row, busy: isBusy(row) }
+  })
 }
 
 export type TimelineItem =

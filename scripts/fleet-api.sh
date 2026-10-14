@@ -495,6 +495,9 @@ print(json.dumps(b))')"
     #   5  friss inditas a feladat munkamenet-azonositojaval, ha nincs --continue
     #      es a feladaton meg nincs az agensnek munkamenete                    -> 6
     #   6  indito uzenet --task-kal, ha a feladaton meg nincs neki szolo uzenet -> 7
+    # SZUNET (Feladatkezeles V1): szuneteltetett feladatot az 1. lepes nem ad ki (4-es kod), es
+    # a 4., 5. es 6. lepes CSAK az utolso paused UTANI tetelekbol dont, kulonben a folytatas
+    # utani ujrakiadas mindharmat kihagyna (a szunet elotti assigned, munkamenet es uzenet miatt).
     # FUTO KORT NEM SZAKITUNK MEG: a 4b CSAK akkor fut, ha az 5 ujrainditana. Ha nem tetlen,
     # a kiadas --continue alakban ismetelheto (akkor az uzenet a sorba megy, restart nelkul).
     # Ismetleskor a 4, 5 es 6 a feladat idovonalabol latja, hogy mar megtortent, es kihagyja.
@@ -530,9 +533,12 @@ print(json.dumps(b))')"
 import json,sys
 agent=sys.argv[1]
 try:
-    f=json.load(sys.stdin).get("fields")
+    d=json.load(sys.stdin)
+    f=d.get("fields")
 except (ValueError, AttributeError):
     print("FAIL 1: a timeline valasza nem olvashato JSON objektum"); sys.exit(1)
+if d.get("paused") is True:
+    print("FAIL 1: a feladat szunetel: kiadni csak Balazs folytatasa utan lehet (AcrovelIQ, Folytatas)"); sys.exit(4)
 if not isinstance(f, dict):
     print("FAIL 1: a valaszban nincs a feladat mezoinek listaja (fields): a dashboard regebbi, mint az L5"); sys.exit(4)
 missing=[k for k in ("goal","authorization_ref","verification_profile") if not f.get(k)]
@@ -578,6 +584,9 @@ print(" ".join("%s(%s)" % (t["id"], t.get("last_kind")) for t in json.load(sys.s
 import json,sys
 agent=sys.argv[1]
 items=json.load(sys.stdin)["items"]
+# only what happened since the last pause counts (a resumed task is handed out again)
+pauses=[n for n,i in enumerate(items) if i.get("source")=="event" and i.get("kind")=="paused"]
+if pauses: items=items[pauses[-1]+1:]
 assigned=[i for i in items if i["source"]=="event" and i["kind"]=="assigned"]
 last=assigned[-1] if assigned else None
 to_me = bool(last) and ((last.get("data") or {}).get("agent")==agent or last.get("ref")==agent)

@@ -185,6 +185,7 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
     pending: { id: number; to_agent: string }[]
     restart: [number, unknown]
     message: [number, unknown]
+    paused?: boolean
   }
   const goodFields = { title: 'L5', goal: 'kiadas', assignee: 'nautilus', reviewer: 'barracuda', authorization_ref: 'msg 1', verification_profile: 'code_fleet' }
   const fake = (over: Partial<Fake> = {}): Fake => ({
@@ -198,7 +199,7 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
     router = (method, path, body) => {
       const b = body as Record<string, unknown> | null
       if (method === 'GET' && path === '/api/tasks/t5/timeline')
-        return f.fields ? [200, { task: 't5', fields: f.fields, items: f.items }] : [404, { error: 'no task t5' }]
+        return f.fields ? [200, { task: 't5', fields: f.fields, paused: f.paused ?? false, items: f.items }] : [404, { error: 'no task t5' }]
       if (method === 'GET' && path === '/api/tasks/t5/handoffs/latest?verify=1')
         return [200, { id: 18, agent: 'acrobot', created_at: 1, record: { next_step: 'olvasd' },
           check: f.handoffOk ? { ok: true, mismatches: [] } : { ok: false, mismatches: ['code.head: a rekord abc, az ag most def'] } }]
@@ -243,6 +244,35 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
       { kind: 'assigned', actor: 'acrobot', ref: 'nautilus', data: { agent: 'nautilus' } },
       true, 0, [], true, true, true,
     ])
+  })
+
+  // Feladatkezelés V1: a paused task is not handed out; a resumed one is handed out again
+  it('FLEET-KIADAS-PAUSED: a paused task stops at step 1 with 4, says so, and writes nothing', async () => {
+    install(fake({ paused: true }))
+    const r = await run(['kiadas', 't5', 'nautilus'])
+    expect([r.code, /szunetel/.test(r.out), writes()], 'FLEET-KIADAS-PAUSED').toEqual([4, true, []])
+  })
+
+  it('FLEET-KIADAS-RESUMED: after a pause and a resume, assigned, the restart and the message go again', async () => {
+    install(fake({
+      items: [
+        { at: 1, source: 'event', id: 1, kind: 'assigned', actor: 'acrobot', ref: 'nautilus', data: { agent: 'nautilus' } },
+        { at: 2, source: 'session', agent: 'nautilus', session_id: 'sess-old' },
+        { at: 3, source: 'message', id: 70, from: 'acrobot', to: 'nautilus', status: 'delivered' },
+        { at: 4, source: 'event', id: 2, kind: 'paused', actor: 'balazs', ref: 'pause', data: null },
+        { at: 5, source: 'event', id: 3, kind: 'resumed', actor: 'balazs', ref: 'resume', data: null },
+      ],
+    }))
+    const r = await run(['kiadas', 't5', 'nautilus'])
+    expect([r.code, writes()], 'FLEET-KIADAS-RESUMED').toEqual([0, ['/api/tasks/t5/events', '/api/agents/nautilus/restart', '/api/messages']])
+    // the control: the same history WITHOUT the pause skips all three, as a repeat should
+    install(fake({ items: [
+      { at: 1, source: 'event', id: 1, kind: 'assigned', actor: 'acrobot', ref: 'nautilus', data: { agent: 'nautilus' } },
+      { at: 2, source: 'session', agent: 'nautilus', session_id: 'sess-old' },
+      { at: 3, source: 'message', id: 70, from: 'acrobot', to: 'nautilus', status: 'delivered' },
+    ] }))
+    const repeat = await run(['kiadas', 't5', 'nautilus'])
+    expect([repeat.code, writes()]).toEqual([0, []])
   })
 
   it('FLEET-KIADAS-1: no task, a missing field, another assignee: exit 4 and named, nothing written', async () => {

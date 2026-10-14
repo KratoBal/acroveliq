@@ -352,5 +352,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'GET', path: '/api/tasks/:id/timeline', module: 'task-usage', class: 'OLVASO' },
   // after the inventory: Dontéseim V1 (task dontesek-v1-backend, 2026-10-14)
   { method: 'POST', path: '/api/decisions/:id', module: 'decisions', class: 'KRITIKUS', note: 'the owner\'s answer on a decision row (approve, reject, discuss): session only in every access mode (the handler), the one write on the AcrovelIQ host' },
+  { method: 'POST', path: '/api/task-actions', module: 'task-actions', class: 'KRITIKUS', note: 'the owner creates a task (Feladatkezelés V1): session only in every access mode (the handler), Idempotency-Key required, a message to the main agent; an AcrovelIQ host write' },
+  { method: 'POST', path: '/api/task-actions/:id', module: 'task-actions', class: 'KRITIKUS', note: 'the owner assigns, sets the priority, pauses or resumes a task: session only in every access mode (the handler), a message to the main agent; an AcrovelIQ host write' },
   { method: 'POST', path: '/api/decisions/:id/discord-reply', module: 'decisions', class: 'KRITIKUS', note: 'the main agent attaches the Discord message the owner answered in; decides nothing' },
 ]
