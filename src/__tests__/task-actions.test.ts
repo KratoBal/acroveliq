@@ -12,7 +12,7 @@ vi.mock('../config.js', async (importOriginal) => {
 
 import { getDb, getPendingMessages, initDatabase } from '../db.js'
 import { waitsOn } from '../open-matters.js'
-import { newTaskId } from '../task-actions.js'
+import { newTaskId, ownerTaskAction } from '../task-actions.js'
 import { addTaskEvent, addTaskSession, allTasks, assigneeTasks, isTaskPaused, taskTimeline, taskUsage, upsertTask, type TaskEventKind } from '../task-usage.js'
 import { acroveliqAllows } from '../web/acroveliq-host.js'
 import { ACCESS_MODES } from '../web/access-enforcement.js'
@@ -222,6 +222,22 @@ describe('assign and priority: an event and a message each; a repeat changes not
     expect(allTasks(getDb()).map((t) => [t.id, t.priority])).toEqual([['tp', 'high']])
   })
 
+  it('GET /api/tasks carries waits_on, the open-matters reading: the reviewer, and the owner for a paused task', async () => {
+    existing('r1')
+    getDb().prepare("UPDATE tasks SET reviewer = 'barracuda' WHERE id = 'r1'").run()
+    ev('r1', 'review_requested', 'murena', NOW() - 60)
+    existing('p1')
+    ev('p1', 'review_requested', 'murena', NOW() - 60)
+    await act('p1', { action: 'pause' })
+    // a task made on the page with nobody named waits on acrobot's assignment; a started one without an assignee keeps the old mark
+    await create({ title: 'Uj', goal: 'g' }, 'kulcs-0042')
+    existing('regi', null)
+    ev('regi', 'started', 'murena', NOW() - 30)
+    const list = await call(tryHandleTaskUsage, 'GET', '/api/tasks', undefined, ACRO)
+    expect(list.body.map((t: { id: string; waits_on: string }) => [t.id.startsWith('t-') ? 'uj' : t.id, t.waits_on]).sort())
+      .toEqual([['p1', 'Balazs (szunetel, a folytatas az ove)'], ['r1', 'barracuda'], ['regi', '? (nincs felelos)'], ['uj', 'acrobot (kiosztas)']])
+  })
+
   it('open-matters: a paused task waits on the owner, whatever its last state', async () => {
     existing('t1')
     ev('t1', 'started', 'murena', NOW() - 60)
@@ -290,6 +306,15 @@ describe('pause and resume: never over running work; while paused no new work st
     expect(assigneeTasks(getDb(), 'murena').map((t) => t.busy)).toEqual([true])
     await act('t1', { action: 'pause' })
     expect(assigneeTasks(getDb(), 'murena').map((t) => [t.paused, t.busy])).toEqual([[true, false]])
+  })
+
+  it('ownerTaskAction itself refuses an unknown action, not only the route (it is not read as a resume)', async () => {
+    existing('t1')
+    ev('t1', 'review_requested', 'murena')
+    await act('t1', { action: 'pause' })
+    const r = ownerTaskAction(getDb(), 't1', 'restart' as never, {}, 'balazs', NOW(), 'acrobot', () => true)
+    expect([r.status, isTaskPaused(getDb(), 't1')]).toEqual([400, true])
+    expect((await act('t1', { action: 'restart' })).status).toBe(400)
   })
 
   it('resume on a task never paused is 409; an ended task takes no action', async () => {

@@ -224,6 +224,8 @@ export function ownerTaskAction(
   mainAgent: string,
   isAgent: (name: string) => boolean,
 ): TaskActionResult {
+  // the route checks the action too; this function does not take an unknown one as a resume either
+  if (!(TASK_ACTIONS as readonly string[]).includes(action)) return { status: 400, body: { error: `action: one of ${TASK_ACTIONS.join(', ')}` } }
   const task = db.prepare('SELECT id, assignee, priority FROM tasks WHERE id = ?').get(id) as
     | { id: string; assignee: string | null; priority: string | null }
     | undefined
@@ -287,7 +289,7 @@ export function ownerTaskAction(
     )
   }
 
-  // resume
+  // resume (the only action left: the check above)
   if (!paused) {
     const ever = db.prepare("SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'paused' LIMIT 1").get(id)
     return ever ? { status: 200, body: { task: taskSnapshot(db, id), repeated: true } } : { status: 409, body: { error: 'the task is not paused' } }
