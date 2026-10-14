@@ -25,6 +25,14 @@ if [ -x "./scripts/fleet-bootstrap.sh" ]; then
     || echo "ensure-native-modules: fleet-bootstrap failed, per-user agents may not start" >&2
 fi
 
+# The marveen user's crontab (backup lines) is in the container filesystem too, and a
+# recreate drops it (measured 2026-10-14: the 03:40 fleet backup did not run). Same
+# contract as above: idempotent, non-fatal.
+if [ -f "./scripts/crontab-ensure.sh" ]; then
+  bash ./scripts/crontab-ensure.sh >&2 2>&1 \
+    || echo "ensure-native-modules: crontab-ensure failed, backups may not run" >&2
+fi
+
 # Health check must INSTANTIATE a Database -- better-sqlite3 loads its native
 # binding lazily on `new Database()`, not on require(), so a bare require passes
 # even when the .node file is missing (learned the hard way, 2026-07-03).
