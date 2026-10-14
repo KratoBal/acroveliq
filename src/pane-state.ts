@@ -924,7 +924,51 @@ export function paneShowsOnlyLiveInput(pane: string): boolean {
   const footerRegion = lines.slice(-MENU_FOOTER_REGION_LINES).join('\n')
   if (MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)) return false
   if (!IDLE_FOOTER_RX.test(pane)) return false
-  return liveInputBox(pane) != null
+  // the box's BOTTOM (its lower separator above the footer) proves the live prompt; its top may
+  // have scrolled out of view under a long message (task kezbesites-busy-panelre, nautilus)
+  return liveInputBoxRows(pane) != null
+}
+
+/**
+ * The visible rows of the live input box, bottom-anchored: the rows between its lower
+ * separator (above the footer) and its upper one, or the top of the capture when the box is
+ * taller than the pane and its upper separator has scrolled out. Measured need (nautilus,
+ * 2026-10-14): a 24-row pane loses the box's top above ~3200 characters (the 936-character
+ * safety preamble included), and a top-anchored read then saw no live box at all, so a send
+ * into a running turn stopped half-typed. Null when there is no lower separator under a footer.
+ */
+export function liveInputBoxRows(pane: string): string[] | null {
+  const lines = pane.split('\n')
+  const footerIdx = lines.findIndex((l) => IDLE_FOOTER_RX.test(l))
+  if (footerIdx < 0) return null
+  let bottomSep = -1
+  for (let i = footerIdx - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i]!)) { bottomSep = i; break }
+  }
+  if (bottomSep <= 0) return null
+  let topSep = -1
+  for (let i = bottomSep - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i]!)) { topSep = i; break }
+  }
+  return lines.slice(topSep + 1, bottomSep)
+}
+
+const collapseWs = (text: string) => text.replace(/\s+/g, ' ').trim()
+/** A box row without the prompt glyph and the wrap indent. */
+const boxRowText = (row: string) => collapseWs(row.replace(/^\s*\u276F/, ''))
+
+/**
+ * Does the visible box hold OUR text and nothing else? Every non-empty visible row must be a
+ * piece of `text` (a wrapped row is a contiguous slice of it), and at least one row must be
+ * long enough to be evidence. Bottom-anchored like liveInputBoxRows, so it holds when the box
+ * is taller than the pane and the head of the text is out of view.
+ */
+export function liveBoxHoldsOnly(pane: string, text: string): boolean {
+  const rows = liveInputBoxRows(pane)
+  if (rows == null) return false
+  const whole = collapseWs(text)
+  const pieces = rows.map(boxRowText).filter((r) => r.length > 0)
+  return pieces.length > 0 && pieces.some((r) => r.length >= 16) && pieces.every((r) => whole.includes(r))
 }
 
 /** The live input box's text (between its two separators above the footer), or null. */
@@ -1224,7 +1268,7 @@ export function decideSubmitFollowup(
   payloadHint: string,
   attempt: number,
   maxAttempts: number,
-  opts: { busyTarget?: boolean } = {},
+  opts: { busyTarget?: boolean; payload?: string } = {},
 ): SubmitFollowupAction {
   if (pane == null) return 'give-up'
   // A send INTO a busy pane (paneAcceptsQueuedPrompt): busy is the normal state here, so
@@ -1236,10 +1280,15 @@ export function decideSubmitFollowup(
     // a dialog took the screen after the Enter: no more keys, and not proof of landing
     if (!paneShowsOnlyLiveInput(pane)) return 'give-up'
     if (detectsPastePlaceholder(pane)) return 'give-up'
-    const box = liveInputBox(pane)
-    // the box wraps a long line, so only the head of the text is sure to stand on one row
+    // our text is still in the box: a visible row (long enough to be evidence) is a piece of
+    // it. Bottom-anchored, so it holds when the head has scrolled out of a tall box; without
+    // the whole text (an older caller) the head of the hint is the evidence, as before.
+    const rows = liveInputBoxRows(pane) ?? []
+    const whole = collapseWs(opts.payload ?? '')
     const head = payloadHint.slice(0, 24)
-    const parked = box != null && !inputBoxIsFree(box) && head.length >= 16 && box.includes(head)
+    const parked = opts.payload
+      ? rows.map(boxRowText).some((r) => r.length >= 16 && whole.includes(r))
+      : rows.join('\n').includes(head) && head.length >= 16 && !inputBoxIsFree(rows.join('\n'))
     if (!parked) return 'done'
     return attempt >= maxAttempts ? 'give-up' : 'retry-enter'
   }

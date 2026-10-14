@@ -21,7 +21,7 @@
 //
 // I/O is injected (BusyPaneIo) so the decision sequence is tested against a scripted pane
 // that turns into a permission dialog mid-typing.
-import { decideSubmitFollowup, liveInputBoxText, paneShowsOnlyLiveInput } from '../pane-state.js'
+import { decideSubmitFollowup, liveBoxHoldsOnly, paneShowsOnlyLiveInput } from '../pane-state.js'
 
 /** Characters per send-keys write, as on the idle path. */
 export const SEND_KEYS_CHUNK = 80
@@ -75,11 +75,13 @@ export function payloadHead(oneLine: string): string {
   return oneLine.slice(0, 24)
 }
 
-/** The pane shows only the live input box, and the head of our text stands in it. */
-function ourTextInLiveBox(pane: string | null, head: string): boolean {
-  if (pane == null || !paneShowsOnlyLiveInput(pane)) return false
-  const box = liveInputBoxText(pane)
-  return box != null && head.length >= 16 && box.includes(head)
+/**
+ * The pane shows only the live input box, and what it shows of the box is our text and nothing
+ * else (every visible row a piece of it). Not the head: under a long message the box grows
+ * taller than the pane and its head scrolls out (nautilus, 2026-10-14).
+ */
+function ourTextInLiveBox(pane: string | null, text: string): boolean {
+  return pane != null && paneShowsOnlyLiveInput(pane) && liveBoxHoldsOnly(pane, text)
 }
 
 /**
@@ -102,16 +104,16 @@ export async function emitIntoBusyPane(oneLine: string, io: BusyPaneIo, cfg: Bus
     if (i < chunks.length - 1) await io.delay(cfg.chunkGapMs)
   }
   const head = payloadHead(oneLine)
-  if (!ourTextInLiveBox(io.capture(), head)) return notLanded()
+  if (!ourTextInLiveBox(io.capture(), oneLine)) return notLanded()
   io.enter()
   for (let attempt = 0; ; attempt++) {
     await io.delay(cfg.pollMs)
     const pane = io.capture()
-    const action = decideSubmitFollowup(pane, head, attempt, cfg.maxRetries, { busyTarget: true })
+    const action = decideSubmitFollowup(pane, head, attempt, cfg.maxRetries, { busyTarget: true, payload: oneLine })
     if (action === 'done') return 'sent'
     if (action !== 'retry-enter') return notLanded()
     // the retry Enter gets the same fresh look as the first one
-    if (!ourTextInLiveBox(io.capture(), head)) return notLanded()
+    if (!ourTextInLiveBox(io.capture(), oneLine)) return notLanded()
     io.enter()
   }
 }
