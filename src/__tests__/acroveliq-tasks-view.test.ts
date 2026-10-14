@@ -30,6 +30,9 @@ interface View {
   aqTaskRow: (t: unknown) => string
   aqTaskWrite: (id: string | null, body: unknown, key?: string) => Promise<{ ok: boolean; status?: number; error?: string; value?: any }>
   aqNewKey: () => string
+  aqGroupOf: (t: unknown) => string
+  aqTaskSaveClick: (id: string) => Promise<void>
+  AQ_KIND: Record<string, string>
   aqState: Record<string, any>
 }
 
@@ -53,7 +56,7 @@ function load(fetchImpl: (url: string, init?: any) => Promise<unknown> = async (
     },
     console,
   })
-  vm.runInContext(`${ESCAPE}\n${SECTION}\n;globalThis.__view = { aqRenderTasks, aqTaskManage, aqTaskAllowed, aqPhases, aqStatusPill, aqTaskRow, aqTaskWrite, aqNewKey, aqState }`, context)
+  vm.runInContext(`${ESCAPE}\n${SECTION}\n;globalThis.__view = { aqRenderTasks, aqTaskManage, aqTaskAllowed, aqPhases, aqStatusPill, aqTaskRow, aqTaskWrite, aqNewKey, aqGroupOf, aqTaskSaveClick, AQ_KIND, aqState }`, context)
   return { view: (context as unknown as { __view: View }).__view, calls }
 }
 
@@ -108,7 +111,7 @@ describe('Feladatkezelés V1 page', () => {
     // paused: resume, and the assignee may change; a resume then opens assign until the next hand-out
     expect(pick(can({ last_kind: 'paused', paused: true }, [ev('assigned'), ev('paused')]))).toEqual([false, true, true, true])
     expect(pick(can({ last_kind: 'resumed' }, [ev('assigned'), ev('paused'), ev('resumed')]))).toEqual([true, false, true, true])
-    expect(pick(can({ last_kind: 'done' }, [ev('done')]))).toEqual([false, false, false, false])
+    expect(pick(can({ last_kind: 'done', closed: true }, [ev('done')]))).toEqual([false, false, false, false])
   })
 
   it('TASK-VIEW-MANAGE: the buttons follow the state; a paused task shows resume, a running one a disabled pause and why', () => {
@@ -119,9 +122,39 @@ describe('Feladatkezelés V1 page', () => {
     const running = view.aqTaskManage(data(), task({ last_kind: 'started' }), { priority: 'normal', assignee: 'murena' }, [ev('started')])
     expect(running).toMatch(/data-aq-act="pause" data-aq-id="t-1" disabled>Szünet/)
     expect(running).toContain('a szünet nem szakíthat meg futó munkát')
-    expect(running).toMatch(/data-aq-set="assignee" data-aq-id="t-1" disabled/)
-    expect(running).not.toMatch(/data-aq-set="priority" data-aq-id="t-1" disabled/)
+    expect(running).toMatch(/data-aq-edit="assignee" data-aq-id="t-1" disabled/)
+    expect(running).not.toMatch(/data-aq-edit="priority" data-aq-id="t-1" disabled/)
+    // nothing changed yet: Mentés is off
+    expect(running).toMatch(/data-aq-save data-aq-id="t-1" disabled>Mentés/)
     expect(running).toContain('Ágenst innen nem indítunk')
+  })
+
+  it('TASK-VIEW-CLOSED: the Lezárt group is exactly the server\'s closed, for every kind the page knows (barracuda, #116)', () => {
+    const { view } = load()
+    const kinds = Object.keys(view.AQ_KIND)
+    expect(kinds.length).toBeGreaterThanOrEqual(17)
+    for (const k of kinds) {
+      expect(view.aqGroupOf(task({ last_kind: k, closed: false })), `${k} open`).not.toBe('closed')
+      expect(view.aqGroupOf(task({ last_kind: k, closed: true })), `${k} closed`).toBe('closed')
+    }
+    // the two measured disagreements: coord_close is not the task's end, merged is closed when the server says so
+    expect([view.aqGroupOf(task({ last_kind: 'coord_close' })), view.aqGroupOf(task({ last_kind: 'merged', closed: true }))]).toEqual(['active', 'closed'])
+  })
+
+  it('TASK-VIEW-SAVE: a select only edits; Mentés writes what changed, priority before assignee, and nothing else', async () => {
+    const { view, calls } = load(async () => ({ ok: true, json: async () => ({}) }))
+    view.aqState.data = data([task({ priority: 'normal', assignee: 'murena' })])
+    view.aqState.edit = { id: 't-1', priority: 'normal', assignee: '' }
+    await view.aqTaskSaveClick('t-1')
+    const writes = calls.filter((c) => c.init && c.init.method === 'POST').map((c) => [c.url, JSON.parse(c.init.body)])
+    expect(writes).toEqual([['/api/task-actions/t-1', { action: 'assign', assignee: null }]])
+    // no edit, no write
+    calls.length = 0
+    view.aqState.data = data([task()])
+    await view.aqTaskSaveClick('t-1')
+    expect(calls.filter((c) => c.init && c.init.method === 'POST')).toEqual([])
+    // the page has no select that writes on change
+    expect(SECTION).not.toContain('data-aq-set')
   })
 
   it('TASK-VIEW-PAUSED: a paused task is shown paused even when a review came after the pause', () => {

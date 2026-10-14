@@ -30,6 +30,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 
 import { createAgentMessage } from './db.js'
+import { CLOSED_KINDS } from './open-matters.js'
 import {
   NON_STATE_SQL,
   TASK_PRIORITIES,
@@ -48,7 +49,8 @@ export interface TaskActionResult {
   body: Record<string, unknown>
 }
 
-const ENDED: ReadonlySet<string> = new Set(['done', 'merged', 'cancelled', 'failed', 'partial'])
+/** An ended task is a closed one, as open-matters reads it: one list (barracuda, #116). */
+const ENDED: ReadonlySet<string> = CLOSED_KINDS
 const WORKING: ReadonlySet<string> = new Set(['started', 'fix_started'])
 /** Events that mean the task has been handed out (or worked on). */
 const HANDED_OUT: readonly TaskEventKind[] = ['assigned', 'started', 'fix_started', 'review_requested', 'verdict', 'merged']

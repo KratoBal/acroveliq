@@ -11,7 +11,7 @@ vi.mock('../config.js', async (importOriginal) => {
 })
 
 import { getDb, getPendingMessages, initDatabase } from '../db.js'
-import { waitsOn } from '../open-matters.js'
+import { CLOSED_KINDS, waitsOn } from '../open-matters.js'
 import { newTaskId, ownerTaskAction } from '../task-actions.js'
 import { addTaskEvent, addTaskSession, allTasks, assigneeTasks, isTaskPaused, taskTimeline, taskUsage, upsertTask, type TaskEventKind } from '../task-usage.js'
 import { acroveliqAllows } from '../web/acroveliq-host.js'
@@ -236,6 +236,19 @@ describe('assign and priority: an event and a message each; a repeat changes not
     const list = await call(tryHandleTaskUsage, 'GET', '/api/tasks', undefined, ACRO)
     expect(list.body.map((t: { id: string; waits_on: string }) => [t.id.startsWith('t-') ? 'uj' : t.id, t.waits_on]).sort())
       .toEqual([['p1', 'Balazs (szunetel, a folytatas az ove)'], ['r1', 'barracuda'], ['regi', '? (nincs felelos)'], ['uj', 'acrobot (kiosztas)']])
+  })
+
+  it('GET /api/tasks closed is open-matters\' CLOSED_KINDS: done and merged closed, coord_close and blocked open', async () => {
+    for (const [id, kinds] of [['d', ['done']], ['m', ['merged']], ['k', ['coord_open', 'coord_close']], ['b', ['started', 'blocked']]] as const) {
+      existing(id)
+      kinds.forEach((k, i) => ev(id, k as TaskEventKind, 'acrobot', NOW() - 50 + i))
+    }
+    const list = await call(tryHandleTaskUsage, 'GET', '/api/tasks', undefined, ACRO)
+    const closed = Object.fromEntries(list.body.map((t: { id: string; closed: boolean }) => [t.id, t.closed]))
+    expect(closed).toEqual({ d: true, m: true, k: false, b: false })
+    // and it agrees with what open-matters lists as open
+    const open = new Set(allTasks(getDb()).filter((t) => t.last_kind === null || !CLOSED_KINDS.has(t.last_kind)).map((t) => t.id))
+    for (const t of list.body) expect(open.has(t.id), t.id).toBe(!t.closed)
   })
 
   it('open-matters: a paused task waits on the owner, whatever its last state', async () => {

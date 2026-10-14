@@ -16937,12 +16937,15 @@ const AQ_KIND = {
   paused: 'Szüneteltetve', resumed: 'Folytatva', owner_action: 'Balázs módosította',
 }
 // filter group of a task by its LAST event
-// (owner_action is the last kind only of a task with no state event yet: created, waiting for its hand-out)
+// (owner_action is the last kind only of a task with no state event yet: created, waiting for its hand-out).
+// The 'closed' entries colour the timeline only: whether a TASK is closed is the server's `closed`
+// (open-matters' CLOSED_KINDS), so the list never calls closed what open-matters counts open
+// (barracuda, #116: coord_close ends the coordination window, not the task).
 const AQ_GROUP = {
-  assigned: 'active', started: 'active', fix_started: 'active', coord_open: 'active',
+  assigned: 'active', started: 'active', fix_started: 'active', coord_open: 'active', coord_close: 'active',
   review_requested: 'review', verdict: 'review', merged: 'review',
   blocked: 'blocked', failed: 'blocked',
-  done: 'closed', cancelled: 'closed', partial: 'closed', coord_close: 'closed',
+  done: 'closed', cancelled: 'closed', partial: 'closed',
   resumed: 'waiting', owner_action: 'waiting', paused: 'paused',
 }
 const AQ_GROUP_LABEL = { all: 'Mind', waiting: 'Kiosztásra vár', active: 'Folyamatban', review: 'Ellenőrzés', paused: 'Szünetel', blocked: 'Blokkolt', closed: 'Lezárt', none: 'Nincs esemény' }
@@ -16951,10 +16954,9 @@ const AQ_GROUP_TONE = { waiting: 'orange', active: 'orange', review: 'blue', pau
 const AQ_TASK_ACTIONS = { assign: 'Felelős', priority: 'Prioritás', pause: 'Szünet', resume: 'Folytatás' }
 const AQ_PRIORITY = { urgent: 'Sürgős', high: 'Magas', normal: 'Normál', low: 'Alacsony' }
 const AQ_PRIORITY_TONE = { urgent: 'red', high: 'orange', normal: 'grey', low: 'grey' }
-const AQ_ENDED = new Set(['done', 'merged', 'cancelled', 'failed', 'partial'])
 
 const aqState = { view: 'overview', filter: 'all', detail: null, data: null, loading: false, decision: null, decBusy: null, decMsg: null,
-  form: null, taskBusy: false, taskMsg: null }
+  form: null, taskBusy: false, taskMsg: null, edit: null }
 
 const aqEsc = (v) => escapeHtml(v === null || v === undefined ? '' : String(v))
 
@@ -16980,8 +16982,14 @@ function aqDuration(s) {
   return Math.round(s / 86400) + ' nap'
 }
 
-// a paused task is paused whatever its last state (a review may be recorded during the pause)
-const aqGroupOf = (t) => (t.paused ? 'paused' : t.last_kind ? AQ_GROUP[t.last_kind] || 'none' : 'none')
+// a paused task is paused whatever its last state (a review may be recorded during the pause);
+// closed is the server's `closed` and nothing else
+const aqGroupOf = (t) => {
+  if (t.paused) return 'paused'
+  if (t.closed) return 'closed'
+  const g = t.last_kind ? AQ_GROUP[t.last_kind] : null
+  return g && g !== 'closed' ? g : 'none'
+}
 const aqPill = (text, tone) => `<span class="aq-pill aq-pill-${tone}">${aqEsc(text)}</span>`
 const aqStatusPill = (t) => {
   const g = aqGroupOf(t)
@@ -17101,7 +17109,7 @@ function aqTaskRow(t) {
   // the row tag is the priority when the task has one (Figma 7:2), else the id's initials
   const tag = t.priority && AQ_PRIORITY[t.priority] ? AQ_PRIORITY[t.priority] : aqTaskTag(t.id)
   // whom it waits on and since when: the server's open-matters reading (waits_on), not a guess here
-  const waits = t.waits_on && !AQ_ENDED.has(t.last_kind) ? ' · vár: ' + t.waits_on + (t.last_at ? ', ' + aqAgo(t.last_at) : '') : (t.last_at ? ' · ' + aqAgo(t.last_at) : '')
+  const waits = t.waits_on && !t.closed ? ' · vár: ' + t.waits_on + (t.last_at ? ', ' + aqAgo(t.last_at) : '') : (t.last_at ? ' · ' + aqAgo(t.last_at) : '')
   return `<button type="button" class="aq-row" data-aq-task="${aqEsc(t.id)}">
     <span class="aq-row-tag${t.priority ? ' aq-prio-' + aqEsc(t.priority) : ''}">${aqEsc(tag)}</span>
     <span class="aq-row-main"><span class="aq-row-title">${aqEsc(t.title || t.id)}</span>
@@ -17338,7 +17346,7 @@ function aqPhases(items, task) {
 // still decides, and its refusal is shown under the buttons.
 function aqTaskAllowed(task, items) {
   const last = task.last_kind
-  const ended = AQ_ENDED.has(last)
+  const ended = !!task.closed
   const paused = !!task.paused
   const working = last === 'started' || last === 'fix_started' ||
     (last === 'assigned' && !!task.assignee && items.some((i) => i.source === 'session' && i.agent === task.assignee))
@@ -17348,9 +17356,15 @@ function aqTaskAllowed(task, items) {
   return { ended, paused, working, priority: !ended, assign: !ended && (paused || !handedOut), pause: !ended && !paused && !working, resume: paused }
 }
 
+// The selects only edit; Mentés writes (a focused select changes on an arrow key, and each change
+// would be a write and a message: barracuda, #116).
 function aqTaskManage(data, task, f, items) {
   const can = aqTaskAllowed(task, items)
   const busy = aqState.taskBusy
+  const edit = aqState.edit && aqState.edit.id === task.id ? aqState.edit : null
+  const cur = { priority: f.priority || 'normal', assignee: f.assignee || '' }
+  const want = { priority: edit && edit.priority !== undefined ? edit.priority : cur.priority, assignee: edit && edit.assignee !== undefined ? edit.assignee : cur.assignee }
+  const changed = (can.priority && want.priority !== cur.priority) || (can.assign && want.assignee !== cur.assignee)
   const names = data.team.map((a) => a.name)
   const opt = (value, label, current) => `<option value="${aqEsc(value)}"${value === (current || '') ? ' selected' : ''}>${aqEsc(label)}</option>`
   const msg = aqState.taskMsg && aqState.taskMsg.id === task.id ? `<p class="aq-note ${aqState.taskMsg.ok ? 'aq-note-ok' : 'aq-note-warn'}">${aqEsc(aqState.taskMsg.text)}</p>` : ''
@@ -17360,13 +17374,14 @@ function aqTaskManage(data, task, f, items) {
   return `<section class="aq-card"><h2>Kezelés</h2>
     <div class="aq-form-row">
       <div><label class="aq-label" for="aqtPriority">Prioritás</label>
-        <select id="aqtPriority" class="aq-input" data-aq-set="priority" data-aq-id="${aqEsc(task.id)}"${can.priority && !busy ? '' : ' disabled'}>
-          ${Object.entries(AQ_PRIORITY).map(([k, v]) => opt(k, v, f.priority || 'normal')).join('')}</select></div>
+        <select id="aqtPriority" class="aq-input" data-aq-edit="priority" data-aq-id="${aqEsc(task.id)}"${can.priority && !busy ? '' : ' disabled'}>
+          ${Object.entries(AQ_PRIORITY).map(([k, v]) => opt(k, v, want.priority)).join('')}</select></div>
       <div><label class="aq-label" for="aqtAssignee">Felelős</label>
-        <select id="aqtAssignee" class="aq-input" data-aq-set="assignee" data-aq-id="${aqEsc(task.id)}"${can.assign && !busy ? '' : ' disabled'}>
-          ${opt('', 'Acrobot osztja ki', f.assignee)}${names.map((n) => opt(n, n, f.assignee)).join('')}</select></div>
+        <select id="aqtAssignee" class="aq-input" data-aq-edit="assignee" data-aq-id="${aqEsc(task.id)}"${can.assign && !busy ? '' : ' disabled'}>
+          ${opt('', 'Acrobot osztja ki', want.assignee)}${names.map((n) => opt(n, n, want.assignee)).join('')}</select></div>
     </div>
     <div class="aq-dec-actions">
+      <button type="button" class="aq-dec-btn aq-dec-yes" data-aq-save data-aq-id="${aqEsc(task.id)}"${changed && !busy ? '' : ' disabled'}>Mentés</button>
       ${can.resume
         ? `<button type="button" class="aq-dec-btn aq-dec-yes" data-aq-act="resume" data-aq-id="${aqEsc(task.id)}"${busy ? ' disabled' : ''}>Folytatás</button>`
         : `<button type="button" class="aq-dec-btn aq-dec-talk" data-aq-act="pause" data-aq-id="${aqEsc(task.id)}"${can.pause && !busy ? '' : ' disabled'}>Szünet</button>`}
@@ -17502,6 +17517,34 @@ async function aqTaskActionClick(id, action, extra) {
   aqState.taskMsg = out.ok
     ? { id, ok: true, text: out.value && out.value.repeated ? 'Már ez az állapota, nem változott semmi.' : done[action] }
     : { id, ok: false, text: aqRefusal(out, AQ_TASK_ACTIONS[action]) }
+  await loadAcroveliq()
+}
+
+// Mentés: what the selects changed, against the task as the list has it; the priority first, then
+// the assignee, each its own action (and event). The first refusal stops the second.
+async function aqTaskSaveClick(id) {
+  const edit = aqState.edit && aqState.edit.id === id ? aqState.edit : null
+  const task = aqState.data && aqState.data.tasks.find((t) => t.id === id)
+  if (!edit || !task || aqState.taskBusy) return
+  const steps = []
+  if (edit.priority !== undefined && edit.priority !== (task.priority || 'normal')) steps.push(['priority', { priority: edit.priority }])
+  if (edit.assignee !== undefined && edit.assignee !== (task.assignee || '')) steps.push(['assign', { assignee: edit.assignee || null }])
+  if (!steps.length) return
+  aqState.taskBusy = true
+  aqState.taskMsg = null
+  await aqRender()
+  const done = []
+  let failed = null
+  for (const [action, extra] of steps) {
+    const out = await aqTaskWrite(id, { action, ...extra })
+    if (!out.ok) { failed = aqRefusal(out, AQ_TASK_ACTIONS[action]); break }
+    done.push(AQ_TASK_ACTIONS[action])
+  }
+  aqState.taskBusy = false
+  aqState.edit = null
+  aqState.taskMsg = failed
+    ? { id, ok: false, text: (done.length ? done.join(' és ') + ' rögzítve; ' : '') + failed }
+    : { id, ok: true, text: done.join(' és ') + ' rögzítve.' + (steps.some(([a]) => a === 'assign') ? ' A kiadás Acroboté.' : '') }
   await loadAcroveliq()
 }
 
@@ -17689,10 +17732,13 @@ function aqWire() {
   document.getElementById('aqBody')?.addEventListener('input', keep)
   document.getElementById('aqBody')?.addEventListener('change', (e) => {
     keep(e)
-    const set = e.target.closest('[data-aq-set]')
-    if (!set) return
-    const field = set.dataset.aqSet
-    aqTaskActionClick(set.dataset.aqId, field === 'priority' ? 'priority' : 'assign', field === 'priority' ? { priority: set.value } : { assignee: set.value || null })
+    // a select only edits; nothing is written until Mentés
+    const ed = e.target.closest('[data-aq-edit]')
+    if (!ed) return
+    if (!aqState.edit || aqState.edit.id !== ed.dataset.aqId) aqState.edit = { id: ed.dataset.aqId }
+    aqState.edit[ed.dataset.aqEdit] = ed.value
+    aqState.taskMsg = null
+    aqRender()
   })
   document.getElementById('aqBody')?.addEventListener('click', (e) => {
     if (e.target.closest('[data-aq-new]')) {
@@ -17703,6 +17749,8 @@ function aqWire() {
     }
     if (e.target.closest('[data-aq-form-cancel]')) { aqState.form = null; aqState.taskMsg = null; aqRender(); return }
     if (e.target.closest('[data-aq-form-submit]')) { aqTaskCreateClick(); return }
+    const saveBtn = e.target.closest('[data-aq-save]')
+    if (saveBtn) { aqTaskSaveClick(saveBtn.dataset.aqId); return }
     const actBtn = e.target.closest('[data-aq-act]')
     if (actBtn) { aqTaskActionClick(actBtn.dataset.aqId, actBtn.dataset.aqAct); return }
     const decideBtn = e.target.closest('[data-aq-decide]')
