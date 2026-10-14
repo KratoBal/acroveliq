@@ -152,6 +152,22 @@ check 'a 200 that left no line on the timeline -> 1' 1 "$(ell marveen70 tsk-a CH
 check '... and says why' 1 "$(grep -c 'nem latszik az uj sor' "$T/out")"
 rm "$T/swallow"
 
+echo 'the AI service packet (acrobot 30257): pr-ai<N> is KratoBal/acropora-ai-agent#N'
+n="$(events)"
+mkdir "$Z/pr-ai37"
+# the shape murena made by hand on 2026-10-14 (pr-ai37), and the second round line
+printf 'KratoBal/acropora-ai-agent#37 feat(recommendation): three parts\ntask_id: tsk-a\nfej: 278c1d363134486fd48c69a8e3ae7d47c4d0d296\nmerge-base: fe29f6e\nv2: task_id tsk-a, fej 2a4c62f661f628ad557170e9ed80aadecabec6fd\n' > "$Z/pr-ai37/README"
+cp "$Z/pr-marveen70/diff.patch" "$Z/pr-ai37/diff.patch"
+check 'olvas: an ai packet -> 0' 0 "$(olv ai37)"
+check 'ellenoriz: an ai packet -> 0' 0 "$(ell ai37 tsk-a APPROVE)"
+check '... the ref names the AI repo and the latest round head' \
+  "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/acropora-ai-agent#37 pr-ai37 fej 2a4c62f" "$(tail -n1 "$EV")"
+mkdir "$Z/pr-ai38"; printf 'ai PR 38 \npr: KratoBal/acropora-os#38\ntask_id: tsk-a\nfej: 1234567\n' > "$Z/pr-ai38/README.md"
+check 'an ai packet whose README pr: names another repo -> 1' 1 "$(ell ai38 tsk-a APPROVE)"
+check 'an unknown prefix -> 2' 2 "$(ell xy37 tsk-a APPROVE)"
+check 'olvas: an unknown prefix -> 2' 2 "$(olv xy37)"
+check 'one event, from the good packet only' "$((n + 1))" "$(events)"
+
 echo 'a document packet (task review-docs-verdict): the file path in the ref, the copy checked'
 n="$(events)"
 mkdir "$Z/doc-tsk-d"; printf 'terv\n' > "$Z/doc-tsk-d/v1-terv.md"

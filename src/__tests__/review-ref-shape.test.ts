@@ -31,7 +31,7 @@ describe('review-ellenoriz.sh refs pass the Task Core review-ref guard', () => {
       expect(r.code).toBe(0)
       const refs = readFileSync(out, 'utf-8').split('\n').filter(Boolean)
       // the three repos' packet prefixes, each at least once, and a document packet
-      for (const repo of ['KratoBal/marveen#', 'KratoBal/acropora-os#', 'KratoBal/acropora-commerce#', ' doc-'])
+      for (const repo of ['KratoBal/marveen#', 'KratoBal/acropora-os#', 'KratoBal/acropora-commerce#', 'KratoBal/acropora-ai-agent#', ' doc-'])
         expect(refs.some((ref) => ref.includes(repo))).toBe(true)
       // a PR ref passes the code rule; a document ref (task review-docs-verdict) passes on a
       // docs or ops task only, and is still refused on a code task: it names a file, not a PR
