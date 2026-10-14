@@ -143,8 +143,17 @@ export async function emitIntoBusyPane(oneLine: string, io: BusyPaneIo, cfg: Bus
     }
     if (action !== 'retry-enter') return notLanded('after-enter', followupRefusal(pane))
     // the retry Enter gets the same fresh look as the first one
-    const beforeRetry = ourTextRefusal(io.capture(), oneLine)
-    if (beforeRetry) return notLanded('after-enter', beforeRetry)
+    const look = io.capture()
+    const beforeRetry = ourTextRefusal(look, oneLine)
+    if (beforeRetry) {
+      // the text left the box between the two looks: the first Enter landed late. Not
+      // 'not-landed' -- the router would send the whole message again (barracuda, #129 review)
+      if (decideSubmitFollowup(look, head, attempt, cfg.maxRetries, { busyTarget: true, payload: oneLine }) === 'done') {
+        io.report?.({ result: 'sent', chunks: chunks.length, retries })
+        return 'sent'
+      }
+      return notLanded('after-enter', beforeRetry)
+    }
     io.enter()
     retries++
   }
