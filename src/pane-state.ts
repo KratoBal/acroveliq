@@ -917,16 +917,31 @@ function inputBoxIsFree(box: string): boolean {
  * permission question can appear mid-typing in a running turn).
  */
 export function paneShowsOnlyLiveInput(pane: string): boolean {
-  if (!pane || !pane.trim()) return false
-  if (detectsFeedbackDraftModal(pane) || detectsModelConsentDialog(pane)) return false
-  const lines = pane.split('\n')
-  if (PERMISSION_QUESTION_RX.test(lines.slice(-PERMISSION_QUESTION_REGION_LINES).join('\n'))) return false
-  const footerRegion = lines.slice(-MENU_FOOTER_REGION_LINES).join('\n')
-  if (MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)) return false
-  if (!IDLE_FOOTER_RX.test(pane)) return false
+  return liveInputRefusal(pane) === null
+}
+
+/**
+ * Why the pane does NOT show only the live input box, by name, or null when it does. The names
+ * go to the delivery diagnostics (delivery-diag.ts), so a not-landed send says which look failed.
+ */
+export function liveInputRefusal(pane: string | null): string | null {
+  const dialog = dialogRefusal(pane)
+  if (dialog) return dialog
+  if (!IDLE_FOOTER_RX.test(pane!)) return 'no-footer'
   // the box's BOTTOM (its lower separator above the footer) proves the live prompt; its top may
   // have scrolled out of view under a long message (task kezbesites-busy-panelre, nautilus)
-  return liveInputBoxRows(pane) != null
+  return liveInputBoxRows(pane!) != null ? null : 'no-box'
+}
+
+/** A dialog on screen (or no capture at all), by name: the look named first, whatever else fails. */
+function dialogRefusal(pane: string | null): string | null {
+  if (!pane || !pane.trim()) return 'no-capture'
+  if (detectsFeedbackDraftModal(pane) || detectsModelConsentDialog(pane)) return 'feedback-or-consent-dialog'
+  const lines = pane.split('\n')
+  if (PERMISSION_QUESTION_RX.test(lines.slice(-PERMISSION_QUESTION_REGION_LINES).join('\n'))) return 'permission-question'
+  const footerRegion = lines.slice(-MENU_FOOTER_REGION_LINES).join('\n')
+  if (MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)) return 'menu'
+  return null
 }
 
 /**
@@ -986,17 +1001,26 @@ export function liveInputBoxText(pane: string): string | null {
  * replace that look).
  */
 export function paneAcceptsQueuedPrompt(plain: string, dimStripped: string | null = null): boolean {
-  if (!plain || !plain.trim()) return false
-  if (detectPaneState(plain) !== 'busy') return false
-  if (detectPermissionMode(plain) !== 'bypass permissions') return false
-  if (detectsPastePlaceholder(plain)) return false
-  if (paneShowsContextSaturation(plain)) return false
-  if (!paneShowsOnlyLiveInput(plain)) return false
-  const box = liveInputBox(plain)
-  if (box == null) return false
-  if (inputBoxIsFree(box)) return true
-  const ghostBox = dimStripped != null ? liveInputBox(dimStripped) : null
-  return ghostBox != null && inputBoxIsFree(ghostBox)
+  return queuedPromptRefusal(plain, dimStripped) === null
+}
+
+/** Why a busy pane may NOT take a queued message, by name, or null when it may (diagnostics). */
+export function queuedPromptRefusal(plain: string | null, dimStripped: string | null = null): string | null {
+  // a dialog hides the footer, so it would read 'not-bypass' below: name it first
+  const dialog = dialogRefusal(plain)
+  if (dialog) return dialog
+  if (!plain) return 'no-capture'
+  if (detectPaneState(plain) !== 'busy') return 'not-busy'
+  if (detectPermissionMode(plain) !== 'bypass permissions') return 'not-bypass'
+  if (detectsPastePlaceholder(plain)) return 'placeholder'
+  if (paneShowsContextSaturation(plain)) return 'context-saturated'
+  const live = liveInputRefusal(plain)
+  if (live) return live
+  const rows = liveInputBoxRows(plain)
+  if (rows == null) return 'no-box'
+  if (inputBoxIsFree(rows.join('\n'))) return null
+  const ghostRows = dimStripped != null ? liveInputBoxRows(dimStripped) : null
+  return ghostRows != null && inputBoxIsFree(ghostRows.join('\n')) ? null : 'box-not-free'
 }
 
 /**
