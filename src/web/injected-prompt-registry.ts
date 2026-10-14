@@ -40,6 +40,25 @@ export interface InjectedPromptRecord {
 
 const records = new Map<string, InjectedPromptRecord>()
 
+// ABANDONED TYPING (task kezbesites-busy-panelre, barracuda's #117 note): a send
+// into a busy pane that stops before landing ('not-landed', busy-pane-emit.ts)
+// leaves what it typed in the box ON PURPOSE (no keys while a dialog may be
+// up). That text is NOT a message to submit: the router keeps the message
+// pending and sends it again whole. Without this record the stuck-input
+// recovery would read the half frame as machine-origin parked input and SUBMIT
+// it -- the agent would get half a message, then the whole one. Here it is the
+// opposite of an injected record: a match means CLEAR, never send.
+const abandoned = new Map<string, InjectedPromptRecord>()
+// NOT the 10-minute TTL of the injected records (barracuda, #118): a not-landed
+// send happens IN a running turn, and the recovery acts only after the turn ends
+// -- turns run 15-40 minutes (#105: nautilus 39), so a time-based expiry would
+// drop the record exactly in the long turns this exists for, and the half would
+// be submitted after all. The record ends on EVENTS: cleared by the recovery, a
+// newer recorded typing or a landed send, or an idle pane with an empty box (the
+// half is gone some other way). This cap is only a safety net, longer than any
+// measured turn.
+const ABANDONED_MAX_AGE_MS = 3 * 60 * 60 * 1000
+
 /** Collapse whitespace so a wrapped screen scrape compares against the source. */
 export function normalizeForMatch(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
@@ -63,6 +82,35 @@ export function recordInjectedPrompt(session: string, text: string, now: number 
     if (oldestKey != null) records.delete(oldestKey)
   }
   records.set(session, { text, at: now })
+  // a newer typing supersedes an abandoned one: a parked RE-delivery must be
+  // submitted, not cleared as the earlier half
+  abandoned.delete(session)
+}
+
+/** Remember text typed into a busy pane by a send that did not land (clear it, never submit it). */
+export function recordAbandonedPrompt(session: string, text: string, now: number = Date.now()): void {
+  if (session.length === 0 || text.length === 0) return
+  if (!abandoned.has(session) && abandoned.size >= MAX_RECORDS) {
+    const oldest = [...abandoned.entries()].sort((a, b) => a[1].at - b[1].at)[0]
+    if (oldest) abandoned.delete(oldest[0])
+  }
+  abandoned.set(session, { text, at: now })
+}
+
+/** The abandoned typing of this pane, or null if absent/expired. */
+export function getAbandonedPrompt(session: string, now: number = Date.now()): InjectedPromptRecord | null {
+  const rec = abandoned.get(session)
+  if (rec == null) return null
+  if (now - rec.at > ABANDONED_MAX_AGE_MS) {
+    abandoned.delete(session)
+    return null
+  }
+  return rec
+}
+
+/** Forget the abandoned typing once it is cleared from the box. */
+export function clearAbandonedPrompt(session: string): void {
+  abandoned.delete(session)
 }
 
 /** The last prompt typed into this pane, or null if absent/expired. */
@@ -100,7 +148,26 @@ export function matchesInjectedPrompt(parked: string | null, record: InjectedPro
   return b.includes(a) || a.includes(b)
 }
 
+/**
+ * Is the parked scrape a piece of what a busy-pane send typed and abandoned?
+ * ONE direction only (barracuda, #118): the parked text must lie INSIDE the
+ * abandoned typing. Every inter-agent frame starts with the same safety
+ * preamble, so a half that only got through the preamble would, with the
+ * two-way test of matchesInjectedPrompt, also "match" a later, longer, real
+ * message parked there -- and clear it. A real later message is longer than
+ * the half and runs past it; the half itself (or a head-lost scrape of it) is
+ * always inside what was typed.
+ */
+export function isAbandonedFragment(parked: string | null, record: InjectedPromptRecord | null): boolean {
+  if (parked == null || record == null) return false
+  const a = normalizeForMatch(parked)
+  const b = normalizeForMatch(record.text)
+  if (a.length < 24 || b.length === 0) return false
+  return b.includes(a)
+}
+
 /** Test-only: drop all records between unit tests. */
 export function _resetInjectedPromptsForTest(): void {
   records.clear()
+  abandoned.clear()
 }
