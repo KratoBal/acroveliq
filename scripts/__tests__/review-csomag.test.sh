@@ -77,7 +77,9 @@ check 'ai with a clone of another repo -> refuse' 1 "$(g "$T/repo" ai 117 >/dev/
 echo 'a document packet (task review-docs-verdict): a copy and its sha256, nothing private'
 R="$T/root"; mkdir -p "$R/exchange/acroveliq" "$R/store" "$R/agents/x/.claude" "$R/elo"
 printf 'terv\n' > "$R/exchange/acroveliq/terv.md"
-d() { REVIEW_CSOMAG_ROOT="$R" REVIEW_CSOMAG_DIR="$T/zona" bash "$S" docs "$@" 2>&1; }
+# the fleet group is pinned: on a fleet machine the test user's own group IS fleet, and the
+# group-readable case below would pass for the wrong reason
+d() { REVIEW_CSOMAG_ROOT="$R" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GROUP="${GRP:-nincs-ilyen-csoport}" bash "$S" docs "$@" 2>&1; }
 dr() { d "$@" >/dev/null; echo $?; }
 check 'a file under the root -> 0' 0 "$(dr exchange/acroveliq/terv.md doc-proba)"
 P="$T/zona/doc-doc-proba"
@@ -107,7 +109,18 @@ check 'a missing file -> 1' 1 "$(dr elo/nincs.md t9)"
 check 'an absolute path outside the root -> 2' 2 "$(dr /etc/passwd t10)"
 check 'a path with a space -> 2' 2 "$(dr 'elo/a b.md' t11)"
 check 'no task_id -> 2' 2 "$(dr exchange/acroveliq/terv.md '')"
-check 'no refused document left a packet' 0 "$(ls "$T/zona" | grep -cE '^doc-(t[0-9]+)?$')"
+
+echo '... and the copy may not widen who reads the file (barracuda, #106 review)'
+mkdir -p "$R/csoport" "$R/zart"; chmod 755 "$R/csoport"; chmod 750 "$R/zart"
+printf 'c\n' > "$R/csoport/negyven.md"; chmod 640 "$R/csoport/negyven.md"
+printf 'z\n' > "$R/zart/nyitott.md"; chmod 644 "$R/zart/nyitott.md"
+check 'a 640 file whose group is not the fleet -> 1' 1 "$(dr csoport/negyven.md t12)"
+check '... and says the packet would widen it' 1 "$(d csoport/negyven.md t12 | grep -c 'tagitana, ki olvassa')"
+check 'a 644 file under a 750 folder -> 1' 1 "$(dr zart/nyitott.md t13)"
+check '... and names the folder' 1 "$(d zart/nyitott.md t13 | grep -c "be ide: $R/zart ")"
+check 'the same 640 file when its group IS the fleet -> 0' 0 "$(GRP="$(id -gn)" dr csoport/negyven.md t14)"
+check 'the same 750 folder when its group IS the fleet -> 0' 0 "$(GRP="$(id -gn)" dr zart/nyitott.md t15)"
+check 'no refused document left a packet' 0 "$(ls "$T/zona" | grep -cE '^doc-(t([0-9]|1[0-3]))?$')"
 
 echo
 [ "$fails" = 0 ] && { echo 'all pass'; exit 0; }

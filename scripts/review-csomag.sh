@@ -18,8 +18,12 @@
 # review-ellenoriz.sh took pr-<N> packets only (30212). The copy is what was reviewed: the
 # file itself may change after packaging, its sha256 in the README pins the version, and
 # the verdict's ref carries the path, which the Task Core takes for a docs/ops profile.
-# The copy lands in a zone every fleet user reads, so a file only its owner can read is not
-# copied, and neither is anything under store/ or behind a dot-component (.env, .claude).
+# The copy lands in a zone every fleet user reads, so it may not widen who reads the file:
+# the fleet must reach it ALREADY, every folder from the root down o+x (or g+x with the
+# fleet group) and the file o+r (or g+r with the fleet group). Asking only whether the file
+# is "readable beyond its owner" let a 640 file of another group, or a 644 file under an
+# agent's 750 folder, through (barracuda, #106 review). Nothing under store/ or behind a
+# dot-component (.env, .claude) either, as a second layer.
 # The path must be the real one: a symlink on it is refused, so the ref names what was copied.
 #
 # WHY: 2026-10-07 este negyszer kertem reviewt csomag nelkul (#529, #1586 v3, #1592),
@@ -87,8 +91,18 @@ if [ "${1:-}" = docs ]; then
   REAL="$(realpath -e -- "$RROOT/$REL" 2>/dev/null)" || { echo "FAIL: nincs ilyen fajl: $ROOT/$REL" >&2; exit 1; }
   [ "$REAL" = "$RROOT/$REL" ] || { echo "FAIL: az ut symlinken at vezet ($REL -> $REAL): a ref mast nevezne meg, mint amit masolok" >&2; exit 1; }
   { [ -f "$REAL" ] && [ -r "$REAL" ]; } || { echo "FAIL: nem olvashato rendes fajl: $REL" >&2; exit 1; }
-  MODE="$(stat -c %a "$REAL")"
-  (( 8#$MODE & 8#044 )) || { echo "FAIL: a fajl ($MODE) csak a tulajdonosanak olvashato: privat fajlt nem viszek a kozos zonaba" >&2; exit 1; }
+  FLEET_GROUP="${REVIEW_CSOMAG_GROUP:-fleet}"
+  # reaches <path> <other bits> <group bits>: the fleet gets there without this packet
+  reaches() { local m g; m="$(stat -c %a "$1")"; g="$(stat -c %G "$1")"
+    (( 8#$m & $2 )) && return 0; [ "$g" = "$FLEET_GROUP" ] && (( 8#$m & $3 )) && return 0; return 1; }
+  DIR="$RROOT"
+  reaches "$DIR" 8#001 8#010 || { echo "FAIL: a flotta nem jut be ide: $DIR (a csomagolas tagitana, ki olvassa)" >&2; exit 1; }
+  IFS=/ read -ra PARTS <<< "${REL%/*}"
+  for part in "${PARTS[@]}"; do
+    DIR="$DIR/$part"
+    reaches "$DIR" 8#001 8#010 || { echo "FAIL: a flotta nem jut be ide: $DIR ($(stat -c '%a %U:%G' "$DIR")); a csomagolas tagitana, ki olvassa" >&2; exit 1; }
+  done
+  reaches "$REAL" 8#004 8#040 || { echo "FAIL: a flotta nem olvassa a fajlt ($(stat -c '%a %U:%G' "$REAL")); a csomagolas tagitana, ki olvassa" >&2; exit 1; }
   SIZE="$(stat -c %s "$REAL")"
   { [ "$SIZE" -gt 0 ] && [ "$SIZE" -le 1048576 ]; } || { echo "FAIL: a fajl merete $SIZE bajt (1 es 1048576 kozott lehet)" >&2; exit 1; }
   D="$ZONA/doc-$TASK"

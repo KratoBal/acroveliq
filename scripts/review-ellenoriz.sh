@@ -129,6 +129,8 @@ case "$NAMED" in
 esac
 
 if [ "$DOCS" = 1 ]; then
+  # the packet folder is the task's own: a hand-made doc-<x> naming another task is refused
+  [ "$C" = "doc-$TASK" ] || { echo "FAIL: a dokumentum-csomag ($C) nem ennek a feladatnak a mappaja: doc-$TASK" >&2; exit 1; }
   [ -z "$README_PR" ] || { echo "FAIL: dokumentum-csomag ($C), a README megis PR-t nevez: '$README_PR'" >&2; exit 1; }
   { [ -n "$FAJL" ] && [ -n "$SHA" ]; } || { echo "FAIL: a dokumentum-csomag README-je nem nevez fajlt es sha256-ot (fajl:, sha256: vagy vN: ... fajl X, sha256 Y)" >&2; exit 1; }
   SEG='[A-Za-z0-9_][A-Za-z0-9._-]*'
