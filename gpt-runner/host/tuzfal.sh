@@ -26,9 +26,10 @@
 # The private-range drops match only what is not a reply (! RELATED,ESTABLISHED): the runner's
 # answer to the controller goes back to a private address. A NEW connection from the runner is
 # still dropped, so it can never have an established flow of its own to a private address.
-#   GPTF-TOVABB  the one DOCKER-USER jump, to GPTF-PRIVAT (-i) and GPTF-BE (-o).
-# Every rule in our chains is a DROP (GPTF-TOVABB: a jump to one), so their order does not matter
-# and a refill never opens more than wanted. The canonical (`iptables -S`) spelling is written, because the chains are
+#   GPTF-TOVABB  the one DOCKER-USER jump, to GPTF-PRIVAT (-i) and GPTF-BE (-o); while the channel
+#                is open, also two ACCEPTs for exactly its one flow (past Docker's isolation).
+# Every other rule in our chains is a DROP, and the two ACCEPTs pass only what the DROP chains pass
+# anyway, so the order does not matter and a refill never opens more than wanted. The canonical (`iptables -S`) spelling is written, because the chains are
 # compared to that text; the installer runs this script a second time and wants it quiet.
 # Outward traffic to public addresses (the vendor's API) is untouched; the probe's control
 # (api.openai.com:443) proves it, and its name resolution, after these rules.
@@ -118,37 +119,11 @@ private_rules=()
 for range in $PRIVATE_RANGES; do private_rules+=("-d $range -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP"); done
 ensure_chain GPTF-PRIVAT "${private_rules[@]}"
 
-# into the runner: no NEW connection, except the channel; each part of "except" is its own DROP
-be_rules=("-m conntrack --ctstate INVALID -j DROP")
-if ipv4 "$VEZERLO" && ipv4 "$SZOLGA"; then
-  be_rules+=(
-    "! -s $VEZERLO/32 -m conntrack --ctstate NEW -j DROP"
-    "! -d $SZOLGA/32 -m conntrack --ctstate NEW -j DROP"
-    "! -p tcp -m conntrack --ctstate NEW -j DROP"
-    "-p tcp -m tcp ! --dport $SZOLGA_PORT -m conntrack --ctstate NEW -j DROP"
-  )
-else
-  be_rules+=("-m conntrack --ctstate NEW -j DROP")
-fi
-ensure_chain GPTF-BE "${be_rules[@]}"
-ensure_chain GPTF-GEPROL "-j DROP"
-ensure_chain GPTF-TOVABB "-i $BRIDGE -j GPTF-PRIVAT" "-o $BRIDGE -j GPTF-BE"
-
-ensure_first INPUT "-i $BRIDGE -j GPTF-GEP"
-ensure_first OUTPUT "-o $BRIDGE -j GPTF-GEPROL"
-# DOCKER-USER exists once Docker has started (After=docker.service); create it if not, Docker keeps it
-ipt -N DOCKER-USER 2>/dev/null || true
-ensure_first DOCKER-USER "-j GPTF-TOVABB"
-# the jump of the first version (before the channel), now inside GPTF-TOVABB: removed AFTER the
-# new jump is in place, so the private ranges are never open
-while ipt -C DOCKER-USER -i "$BRIDGE" -j GPTF-PRIVAT 2>/dev/null; do
-  ipt -D DOCKER-USER -i "$BRIDGE" -j GPTF-PRIVAT
-  echo "ATTETTE: a DOCKER-USER regi ugrasa (-i $BRIDGE -j GPTF-PRIVAT) a GPTF-TOVABB lancba"
-done
-
-# The fleet container's address can change when it is re-created: then the fixed controller
-# address no longer matches, the channel does not work (the safe way), and this says so. One
-# journal line when the state CHANGES, not every minute.
+# The fleet container's address can change when it is re-created, and Docker may later give the
+# OLD address to another container on that network (barracuda, #148). So the channel is OPEN only
+# while the fleet container holds the fixed address, measured here at every run (the per-minute
+# timer too); anything else (another address, the container unreadable, an address missing) gives
+# GPTF-BE its closed form. One journal line when the state CHANGES, not every minute.
 cim_allapot() {
   if ! ipv4 "$VEZERLO" || ! ipv4 "$SZOLGA"; then echo "a csatorna zarva: nincs ervenyes GPT_FUTTATO_VEZERLO_CIM es GPT_FUTTATO_SZOLGA_CIM"; return; fi
   [ -n "$FLOTTA" ] || { echo "a flotta kontener cime nem ellenorizheto: nincs GPT_FUTTATO_FLOTTA_KONTENER"; return; }
@@ -162,6 +137,52 @@ cim_allapot() {
   esac
 }
 allapot="$(cim_allapot)"
+
+# into the runner: no NEW connection, except the channel; each part of "except" is its own DROP
+be_rules=("-m conntrack --ctstate INVALID -j DROP")
+tovabb_rules=("-i $BRIDGE -j GPTF-PRIVAT" "-o $BRIDGE -j GPTF-BE")
+if [ "$allapot" = rendben ]; then
+  be_rules+=(
+    "! -s $VEZERLO/32 -m conntrack --ctstate NEW -j DROP"
+    "! -d $SZOLGA/32 -m conntrack --ctstate NEW -j DROP"
+    "! -p tcp -m conntrack --ctstate NEW -j DROP"
+    "-p tcp -m tcp ! --dport $SZOLGA_PORT -m conntrack --ctstate NEW -j DROP"
+  )
+  # Docker's own isolation (DOCKER-ISOLATION-STAGE-*, after DOCKER-USER) drops traffic between
+  # two bridges, the DNAT-ed channel too (barracuda, #148). These two ACCEPTs let exactly this one
+  # flow past it, both ways, and nothing else: each is a subset of what our DROP chains pass
+  # anyway (GPTF-BE passes this NEW or ESTABLISHED flow, GPTF-PRIVAT passes a reply), so their
+  # order against the two jumps changes no verdict. Isolation itself is not loosened.
+  tovabb_rules+=(
+    "-s $VEZERLO/32 -d $SZOLGA/32 -o $BRIDGE -p tcp -m tcp --dport $SZOLGA_PORT -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT"
+    "-s $SZOLGA/32 -d $VEZERLO/32 -i $BRIDGE -p tcp -m tcp --sport $SZOLGA_PORT -m conntrack --ctstate ESTABLISHED -j ACCEPT"
+  )
+else
+  be_rules+=("-m conntrack --ctstate NEW -j DROP")
+fi
+# opening: GPTF-BE first, the ACCEPTs after; closing: the ACCEPTs out first, then GPTF-BE. So the
+# ACCEPTs never stand while GPTF-BE is closed, not even for the moment between the two calls
+if [ "$allapot" = rendben ]; then
+  ensure_chain GPTF-BE "${be_rules[@]}"
+  ensure_chain GPTF-TOVABB "${tovabb_rules[@]}"
+else
+  ensure_chain GPTF-TOVABB "${tovabb_rules[@]}"
+  ensure_chain GPTF-BE "${be_rules[@]}"
+fi
+ensure_chain GPTF-GEPROL "-j DROP"
+
+ensure_first INPUT "-i $BRIDGE -j GPTF-GEP"
+ensure_first OUTPUT "-o $BRIDGE -j GPTF-GEPROL"
+# DOCKER-USER exists once Docker has started (After=docker.service); create it if not, Docker keeps it
+ipt -N DOCKER-USER 2>/dev/null || true
+ensure_first DOCKER-USER "-j GPTF-TOVABB"
+# the jump of the first version (before the channel), now inside GPTF-TOVABB: removed AFTER the
+# new jump is in place, so the private ranges are never open
+while ipt -C DOCKER-USER -i "$BRIDGE" -j GPTF-PRIVAT 2>/dev/null; do
+  ipt -D DOCKER-USER -i "$BRIDGE" -j GPTF-PRIVAT
+  echo "ATTETTE: a DOCKER-USER regi ugrasa (-i $BRIDGE -j GPTF-PRIVAT) a GPTF-TOVABB lancba"
+done
+
 if mkdir -p "$ALLAPOT_DIR" 2>/dev/null; then
   elozo="$(cat "$ALLAPOT_DIR/cim-allapot" 2>/dev/null || true)"
   if [ "$allapot" != "$elozo" ]; then

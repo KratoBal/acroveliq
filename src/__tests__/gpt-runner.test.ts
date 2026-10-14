@@ -353,7 +353,7 @@ esac
   }))
 
   // a tiny evaluator of OUR rule shapes, so the tests check what a packet meets, not only the text
-  type Pkt = { src: string; dst: string; proto: 'tcp' | 'udp'; dport: number; state: 'NEW' | 'ESTABLISHED' | 'RELATED' | 'INVALID' }
+  type Pkt = { src: string; dst: string; proto: 'tcp' | 'udp'; dport: number; sport?: number; in?: string; out?: string; state: 'NEW' | 'ESTABLISHED' | 'RELATED' | 'INVALID' }
   const inCidr = (ip: string, cidr: string) => {
     const [base, bits = '32'] = cidr.split('/')
     const n = (a: string) => a.split('.').reduce((x, o) => (x << 8) + Number(o), 0) >>> 0
@@ -373,6 +373,9 @@ esac
       else if (k === '-d') hit = inCidr(p.dst, v!)
       else if (k === '-p') hit = p.proto === v
       else if (k === '--dport') hit = p.dport === Number(v)
+      else if (k === '--sport') hit = p.sport === Number(v)
+      else if (k === '-i') hit = p.in === v
+      else if (k === '-o') hit = p.out === v
       else if (k === '--ctstate') hit = v!.split(',').includes(p.state)
       else if (k === '-m') { i++; continue }
       else if (k === '-j') break
@@ -383,10 +386,18 @@ esac
     return ok
   }
   const verdict = (rules: string[], p: Pkt) => (rules.some((r) => r.endsWith('-j DROP') && matches(r, p)) ? 'DROP' : 'tovabb')
-  const CHANNEL_ENV = 'GPT_FUTTATO_VEZERLO_CIM=10.0.2.4\nGPT_FUTTATO_SZOLGA_CIM=10.0.5.10\n'
+  const accepts = (rules: string[], p: Pkt) => rules.some((r) => r.endsWith('-j ACCEPT') && matches(r, p))
+  const CHANNEL_ENV = 'GPT_FUTTATO_VEZERLO_CIM=10.0.2.4\nGPT_FUTTATO_SZOLGA_CIM=10.0.5.10\nGPT_FUTTATO_FLOTTA_KONTENER=marveen\n'
+  // a fake docker: `inspect ... marveen` prints the fleet container's addresses from a file
+  const fleetAt = (dir: string, ips: string | null) => {
+    writeFileSync(join(dir, 'docker'), `#!/bin/bash\n[ "$1 $4" = "inspect marveen" ] || exit 9\n[ -f "${join(dir, 'ips')}" ] || exit 1\ncat "${join(dir, 'ips')}"\n`, { mode: 0o755 })
+    if (ips == null) rmSync(join(dir, 'ips'), { force: true })
+    else writeFileSync(join(dir, 'ips'), ips)
+  }
 
   it('FW-CHANNEL: into the runner only the fleet address to the service port is new; replies pass; the runner still cannot start one to a private address', () => run('', (dir) => {
     writeFileSync(join(dir, 'env'), CHANNEL_ENV)
+    fleetAt(dir, '10.0.2.4 192.168.250.2 ')
     expect(fw(dir).status).toBe(0)
     const be = chain(dir, 'GPTF-BE')
     const priv = chain(dir, 'GPTF-PRIVAT')
@@ -405,6 +416,48 @@ esac
       verdict(priv, { src: '10.0.5.10', dst: '162.159.140.245', proto: 'tcp', dport: 443, state: 'NEW' }),
     ]).toEqual(['tovabb', 'DROP', 'DROP', 'DROP', 'DROP', 'DROP', 'DROP', 'tovabb', 'DROP', 'tovabb', 'tovabb'])
     expect([chain(dir, 'OUTPUT'), chain(dir, 'GPTF-GEPROL')]).toEqual([['-o gptki0 -j GPTF-GEPROL'], ['-j DROP']])
+  }))
+
+  it('FW-ISOLATION-ACCEPT: past Docker\'s isolation goes EXACTLY the channel flow, both ways, and each ACCEPT is something our DROP chains pass anyway', () => run('', (dir) => {
+    writeFileSync(join(dir, 'env'), CHANNEL_ENV)
+    fleetAt(dir, '10.0.2.4 ')
+    fw(dir)
+    const tv = chain(dir, 'GPTF-TOVABB')
+    const be = chain(dir, 'GPTF-BE')
+    const priv = chain(dir, 'GPTF-PRIVAT')
+    const there = { src: '10.0.2.4', dst: '10.0.5.10', proto: 'tcp', dport: 8790, sport: 41000, out: 'gptki0', state: 'NEW' } as Pkt
+    const back = { src: '10.0.5.10', dst: '10.0.2.4', proto: 'tcp', dport: 41000, sport: 8790, in: 'gptki0', state: 'ESTABLISHED' } as Pkt
+    const cases: [Pkt, boolean][] = [
+      [there, true], [{ ...there, state: 'ESTABLISHED' }, true], [back, true],
+      [{ ...there, src: '10.0.2.9' }, false], [{ ...there, dport: 22 }, false], [{ ...there, dst: '10.0.5.11' }, false], [{ ...there, proto: 'udp' }, false],
+      [{ ...there, state: 'INVALID' }, false], [{ ...there, out: 'br-masik' }, false],
+      [{ ...back, state: 'NEW' }, false], [{ ...back, sport: 22 }, false], [{ ...back, dst: '10.0.2.9' }, false], [{ ...back, in: 'br-masik' }, false],
+    ]
+    expect(cases.map(([p]) => accepts(tv, p))).toEqual(cases.map(([, want]) => want))
+    // every accepted packet is one the DROP chain of its direction passes too: the ACCEPT never opens more
+    for (const [p, want] of cases) if (want) expect(verdict(p.out === 'gptki0' ? be : priv, p)).toBe('tovabb')
+  }))
+
+  it('FW-ADDRESS-CLOSES: the fleet container without the fixed address (or unreadable) CLOSES the channel: GPTF-BE closed, no ACCEPT; back at the address it opens; the ACCEPTs leave first and come last', () => run('', (dir) => {
+    writeFileSync(join(dir, 'env'), CHANNEL_ENV)
+    const closedTv = ['-i gptki0 -j GPTF-PRIVAT', '-o gptki0 -j GPTF-BE']
+    fleetAt(dir, '10.0.2.9 192.168.250.2 ')
+    fw(dir)
+    const a = [chain(dir, 'GPTF-BE'), chain(dir, 'GPTF-TOVABB')]
+    fleetAt(dir, '10.0.2.4 ')
+    const opening = calls(dir).length
+    fw(dir)
+    const openCalls = calls(dir).slice(opening)
+    const b = chain(dir, 'GPTF-TOVABB').length
+    fleetAt(dir, null)
+    const closing = calls(dir).length
+    fw(dir)
+    const closeCalls = calls(dir).slice(closing)
+    expect([a, b, chain(dir, 'GPTF-BE'), chain(dir, 'GPTF-TOVABB')]).toEqual([[BE_CLOSED, closedTv], 4, BE_CLOSED, closedTv])
+    const idx = (cs: string[], re: RegExp) => cs.findIndex((x) => re.test(x))
+    expect(idx(openCalls, /^W -A GPTF-BE ! -s /) < idx(openCalls, /^W -A GPTF-TOVABB .*-j ACCEPT$/)).toBe(true)
+    const lastAcceptDel = closeCalls.map((x, i) => (/^W -D GPTF-TOVABB .*-j ACCEPT$/.test(x) ? i : -1)).filter((i) => i >= 0).pop()!
+    expect(lastAcceptDel < idx(closeCalls, /^W -A GPTF-BE -m conntrack --ctstate NEW -j DROP$/)).toBe(true)
   }))
 
   it('FW-CHANNEL-MALFORMED: an address that is not a plain IPv4 (or a rule smuggled after it) keeps the channel closed', () => {
@@ -428,15 +481,15 @@ esac
     }))
 
   it('FW-FLEET-ADDRESS: the fleet container without the fixed controller address is said once (channel closed), then said again when it is back', () => run('', (dir) => {
-    writeFileSync(join(dir, 'env'), `${CHANNEL_ENV}GPT_FUTTATO_FLOTTA_KONTENER=marveen\n`)
-    writeFileSync(join(dir, 'docker'), `#!/bin/bash\n[ "$1 $4" = "inspect marveen" ] || exit 9\ncat "${join(dir, 'ips')}"\n`, { mode: 0o755 })
-    writeFileSync(join(dir, 'ips'), '10.0.2.9 192.168.250.2 ')
+    writeFileSync(join(dir, 'env'), CHANNEL_ENV)
+    fleetAt(dir, '10.0.2.9 192.168.250.2 ')
     const a = fw(dir).stdout
     const b = fw(dir).stdout
-    writeFileSync(join(dir, 'ips'), '10.0.2.4 192.168.250.2 ')
+    fleetAt(dir, '10.0.2.4 192.168.250.2 ')
     const c = fw(dir).stdout
     expect(a).toMatch(/^CSATORNA: a flotta kontener \(marveen\) cimei: 10\.0\.2\.9 192\.168\.250\.2; a rogzitett vezerlo-cim \(10\.0\.2\.4\) nincs koztuk: a csatorna zarva marad$/m)
-    expect([b, c.trim()]).toEqual(['', 'CSATORNA: rendben'])
+    // opening changes our chains (said by their own lines); the state line says why
+    expect([b, /^CSATORNA: rendben$/m.test(c)]).toEqual(['', true])
   }))
 
   it('FW-UNIT: the unit runs the script at boot and after every docker (re)start', () => {
@@ -730,7 +783,10 @@ exit 0
 `, { mode: 0o755 })
     writeFileSync(join(bin, 'iptables'), `#!/bin/bash
 ${log}
-printf -- '-N GPTF-BE\\n-A GPTF-BE -m conntrack --ctstate INVALID -j DROP\\n-A GPTF-BE ! -s 10.0.2.4/32 -m conntrack --ctstate NEW -j DROP\\n-A GPTF-BE ! -d 10.0.5.10/32 -m conntrack --ctstate NEW -j DROP\\n'
+case "$4" in
+  GPTF-BE) printf -- '-N GPTF-BE\\n-A GPTF-BE -m conntrack --ctstate INVALID -j DROP\\n-A GPTF-BE ! -s 10.0.2.4/32 -m conntrack --ctstate NEW -j DROP\\n-A GPTF-BE ! -d 10.0.5.10/32 -m conntrack --ctstate NEW -j DROP\\n' ;;
+  GPTF-TOVABB) printf -- '-N GPTF-TOVABB\\n-A GPTF-TOVABB -i gptki0 -j GPTF-PRIVAT\\n-A GPTF-TOVABB -o gptki0 -j GPTF-BE\\n'; [ -f "${dir}/accept-nincs" ] || printf -- '-A GPTF-TOVABB -s 10.0.2.4/32 -d 10.0.5.10/32 -o gptki0 -p tcp -m tcp --dport 8790 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT\\n-A GPTF-TOVABB -s 10.0.5.10/32 -d 10.0.2.4/32 -i gptki0 -p tcp -m tcp --sport 8790 -m conntrack --ctstate ESTABLISHED -j ACCEPT\\n' ;;
+esac
 `, { mode: 0o755 })
     writeFileSync(join(bin, 'timeout'), `#!/bin/bash
 ${log}
@@ -779,6 +835,15 @@ grep -qxF "$hp" "${dir}/nyitott"
   it('CSAT-BLIND: when the control does not connect either, a closed port proves nothing: STOP', () => run({ nyitott: [] }, (_dir, r) => {
     expect([r.status, r.stdout]).toEqual([1, expect.stringContaining('STOP: a kontroll sem ert el semmit a masik kontenerbol')])
   }))
+
+  it('CSAT-NO-ACCEPT: the flow\'s ACCEPTs past Docker\'s isolation are missing: STOP before the service starts', () => {
+    const dir = setup({})
+    writeFileSync(join(dir, 'accept-nincs'), '')
+    try {
+      const r = go(dir)
+      expect([r.status, r.stdout, calls(dir).some((c) => c.includes('up -d gpt-szolga'))]).toEqual([1, expect.stringContaining('STOP: a GPTF-TOVABB-ban nincs meg a csatorna oda-iranyu ACCEPT-je'), false])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
 
   it('CSAT-TIMER-ADDRESS: the timer says the fleet address does not match: STOP', () => run({ allapot: 'a flotta kontener (marveen) cimei: 10.0.2.9; ...' }, (_dir, r) => {
     expect([r.status, r.stdout]).toEqual([1, expect.stringContaining('STOP: a tuzfal szerint a flotta cime nem egyezik')])
