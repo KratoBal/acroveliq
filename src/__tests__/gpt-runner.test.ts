@@ -234,7 +234,9 @@ describe('gpt-runner host firewall (host/tuzfal.sh) against a stateful fake ipta
   // -D removes ONE instance, -I puts at the top; every call is logged (to see that a correct
   // chain is never flushed)
   const FAKE = `#!/bin/bash
-S="$FAKE_STATE"; touch "$S"; echo "$*" >> "$S.calls"
+S="$FAKE_STATE"; touch "$S"
+w=""; if [ "$1" = "-w" ]; then w="W "; shift 2; fi
+echo "$w$*" >> "$S.calls"
 op="$1"; chain="$2"; shift 2
 case "$op" in
   -N) grep -qx "N|$chain" "$S" && exit 1; echo "N|$chain" >> "$S" ;;
@@ -242,7 +244,11 @@ case "$op" in
   -A) echo "R|$chain|$*" >> "$S" ;;
   -I) shift; { grep -v "^R|" "$S" || true; echo "R|$chain|$*"; grep "^R|" "$S" || true; } > "$S.t"; mv "$S.t" "$S" ;;
   -C) grep -qxF "R|$chain|$*" "$S" ;;
-  -D) awk -v want="R|$chain|$*" '!done && $0 == want { done = 1; next } { print }' "$S" > "$S.t"; mv "$S.t" "$S" ;;
+  -D) if [[ "$*" =~ ^[0-9]+$ ]]; then
+        awk -v c="R|$chain|" -v n="$1" 'index($0, c) == 1 { i++; if (i == n) next } { print }' "$S" > "$S.t"
+      else
+        awk -v want="R|$chain|$*" '!done && $0 == want { done = 1; next } { print }' "$S" > "$S.t"
+      fi; mv "$S.t" "$S" ;;
   -S) echo "-P $chain ACCEPT"; grep "^R|$chain|" "$S" | cut -d'|' -f3- | sed "s/^/-A $chain /" ;;
 esac
 `
@@ -275,7 +281,7 @@ esac
     const before = calls(dir).length
     const second = fw(dir)
     fw(dir)
-    expect([rules(dir), second.stdout, calls(dir).slice(before).filter((c) => /^-(F|A|I|D) /.test(c))]).toEqual([first, '', []])
+    expect([rules(dir), second.stdout, calls(dir).slice(before).filter((c) => /^(W )?-(F|A|I|D) /.test(c))]).toEqual([first, '', []])
   }))
 
   it('FW-UFW-REORDER: a rule put above our jump (a ufw reload) is undone: ours first again, once, one journal line', () => run(
@@ -297,8 +303,32 @@ esac
       const r = fw(dir)
       expect(chain(dir, 'GPTF-PRIVAT')).toEqual(PRIVATE)
       expect(r.stdout).toMatch(/^VISSZATETTE: a GPTF-PRIVAT lanc tartalma$/m)
-      expect(calls(dir).filter((c) => c.startsWith('-F '))).toEqual(['-F GPTF-PRIVAT'])
+      expect(calls(dir).filter((c) => /^(W )?-F /.test(c))).toEqual([])
     }))
+
+  it('FW-NEVER-OPEN: a chain with an extra rule and a missing one: the missing is ADDED before the extra is removed', () => run(
+    `N|GPTF-PRIVAT\nR|GPTF-PRIVAT|-d 8.8.8.8/32 -j DROP\n${PRIVATE.slice(1).map((x) => `R|GPTF-PRIVAT|${x}`).join('\n')}\n`, (dir) => {
+      fw(dir)
+      const c = calls(dir)
+      const lastAdd = c.map((x, i) => (/^W -A GPTF-PRIVAT /.test(x) ? i : -1)).filter((i) => i >= 0).pop()!
+      const firstDel = c.findIndex((x) => /^W -D GPTF-PRIVAT /.test(x))
+      expect([chain(dir, 'GPTF-PRIVAT').sort(), lastAdd < firstDel]).toEqual([[...PRIVATE].sort(), true])
+    }))
+
+  it('FW-JUMP-NEVER-MISSING: when our jump is not first, the new copy goes in BEFORE the old one is removed', () => run(
+    'R|INPUT|-j ufw-before-input\nR|INPUT|-i gptki0 -j GPTF-GEP\n', (dir) => {
+      fw(dir)
+      const c = calls(dir)
+      expect(c.findIndex((x) => /^W -I INPUT 1 -i gptki0 -j GPTF-GEP$/.test(x)) < c.findIndex((x) => /^W -D INPUT /.test(x))).toBe(true)
+      expect(chain(dir, 'INPUT')).toEqual(['-i gptki0 -j GPTF-GEP', '-j ufw-before-input'])
+    }))
+
+  it('FW-LOCK-WAIT: every iptables call of the script waits for the xtables lock (-w)', () => run('', (dir) => {
+    fw(dir)
+    fw(dir)
+    expect(calls(dir).filter((c) => !c.startsWith('W ')).length).toBe(0)
+    expect(calls(dir).length).toBeGreaterThan(10)
+  }))
 
   it('FW-UNIT: the unit runs the script at boot and after every docker (re)start', () => {
     const unit = R('host/gpt-futtato-tuzfal.service')
@@ -314,11 +344,14 @@ esac
 
   it('FW-INSTALL: persistence and the timer are measured on the host, docker is never restarted', () => {
     const inst = R('host/telepit-tuzfal.sh')
-    expect(inst).toMatch(/iptables -D INPUT -i "\$BRIDGE" -j GPTF-GEP[\s\S]*systemctl restart gpt-futtato-tuzfal\.service[\s\S]*grep -F GPTF-GEP \|\| \{ echo "STOP/)
+    expect(inst).toMatch(/iptables -w 5 -D INPUT -i "\$BRIDGE" -j GPTF-GEP[\s\S]*systemctl restart gpt-futtato-tuzfal\.service[\s\S]*grep -F GPTF-GEP \|\| \{ echo "STOP/)
     expect(inst).toMatch(/systemctl enable --now gpt-futtato-tuzfal\.service/)
     expect(inst).toMatch(/systemctl enable --now gpt-futtato-tuzfal-ellenor\.timer/)
     // the one timer round: a rule above ours, the DOCKER-USER jump removed, wait, check, clean up
-    expect(inst).toMatch(/iptables -I INPUT 1 -m comment --comment gptf-ufw-proba\niptables -D DOCKER-USER -i "\$BRIDGE" -j GPTF-PRIVAT[\s\S]*sleep 5[\s\S]*"-A INPUT -i \$BRIDGE -j GPTF-GEP"[\s\S]*iptables -D INPUT -m comment --comment gptf-ufw-proba[\s\S]*STOP: a timer/)
+    expect(inst).toMatch(/iptables -w 5 -I INPUT 1 -m comment --comment gptf-ufw-proba\niptables -w 5 -D DOCKER-USER -i "\$BRIDGE" -j GPTF-PRIVAT[\s\S]*sleep 5[\s\S]*"-A INPUT -i \$BRIDGE -j GPTF-GEP"[\s\S]*iptables -w 5 -D INPUT -m comment --comment gptf-ufw-proba[\s\S]*STOP: a timer/)
+    // every write of the installer waits for the lock too; the save before the real reload
+    expect(inst.match(/\biptables -(?!w 5 |V\b)\w/g)).toBeNull()
+    expect(inst).toMatch(/ufw-elo-mentett\.sh[\s\S]*STOP reload nelkul[\s\S]*iptables-save > \/opt\/gpt-futtato\/iptables-elotte\.rules[\s\S]*chmod 600[\s\S]*\n {2}ufw reload\n/)
     expect(/systemctl (restart|stop) docker/.test(inst)).toBe(false)
     // a REAL ufw reload, with what it may change outside ufw printed, and the timer measured after it
     expect(inst).toMatch(/ufw_before=\$\(ufw status verbose\)[\s\S]*rules_before=\$\(other_rules\)[\s\S]*\nufw reload\n|\n {2}ufw reload\n/)
@@ -326,7 +359,38 @@ esac
     expect(inst).toMatch(/\^PROBA N1 NEM_MERHETO[\s\S]*STOP/)
     expect(inst).toMatch(/^trap '.*STOP.*\$LINENO.*' ERR$/m)
     expect(inst).toMatch(/iptables -V/)
-    expect(inst).toMatch(/iptables -S FORWARD \| grep -F -- '-j DOCKER-USER' \|\| echo "FIGYELEM/)
+    expect(inst).toMatch(/iptables -w 5 -S FORWARD \| grep -F -- '-j DOCKER-USER' \|\| echo "FIGYELEM/)
     expect(inst).toMatch(/for fw in ufw firewalld/)
+  })
+})
+
+describe('gpt-runner host: ufw rules that live only in the running state (ufw-elo-mentett.sh)', () => {
+  const helper = join(__dirname, '..', '..', 'gpt-runner', 'host', 'ufw-elo-mentett.sh')
+  const go = (running: string | null, saved: string | null) => {
+    const dir = mkdtempSync(join(tmpdir(), 'gpt-ufw-'))
+    try {
+      // a fake iptables whose -S prints the given running rules (or fails, when null)
+      writeFileSync(join(dir, 'iptables'), running == null ? '#!/bin/bash\nexit 4\n' : `#!/bin/bash\n[ "$1" = -w ] && shift 2\n[ "$1" = -S ] && cat <<'X'\n-P INPUT DROP\n${running}\nX\n`, { mode: 0o755 })
+      if (saved != null) writeFileSync(join(dir, 'user.rules'), `*filter\n:ufw-user-input - [0:0]\n${saved}\nCOMMIT\n`)
+      const r = spawnSync('bash', [helper, join(dir, 'iptables'), join(dir, 'user.rules')], { encoding: 'utf8', timeout: 20_000 })
+      return { code: r.status, out: r.stdout.trim() }
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }
+
+  it('UFW-SAME: the running rules are the saved ones (spelled the iptables -S way): exit 0, nothing printed', () => {
+    expect(go('-A ufw-user-input -p tcp -m tcp --dport 22 -j ACCEPT\n-A ufw-user-input -s 10.0.0.0/8 -j DROP', '-A ufw-user-input -p tcp --dport 22 -j ACCEPT\n-A ufw-user-input -s 10.0.0.0/8 -j DROP')).toEqual({ code: 0, out: '' })
+  })
+
+  it('UFW-ONLY-LIVE: a rule only in the running state is printed and exits 1 (the installer stops before the reload)', () => {
+    expect(go('-A ufw-user-input -p tcp -m tcp --dport 22 -j ACCEPT\n-A ufw-user-input -p tcp -m tcp --dport 8443 -j ACCEPT', '-A ufw-user-input -p tcp --dport 22 -j ACCEPT')).toEqual({ code: 1, out: '-A ufw-user-input -p tcp --dport 8443 -j ACCEPT' })
+  })
+
+  it('UFW-CANNOT-TELL: a failing iptables -S or an unreadable saved file is exit 2, never "nothing"', () => {
+    expect([go(null, '-A ufw-user-input -j DROP').code, go('-A ufw-user-input -j DROP', null).code]).toEqual([2, 2])
+  })
+
+  it('UFW-WIRED: the installer stops on 1 and on 2, before the reload', () => {
+    const inst = R('host/telepit-tuzfal.sh')
+    expect(inst).toMatch(/ufw-elo-mentett\.sh" "\$ipt" "\$saved_file"\) \|\| rc=\$\?\n\s+if \[ "\$rc" = 2 \]; then echo "STOP reload nelkul[\s\S]*if \[ -n "\$only_live_all" \]; then[\s\S]*exit 1[\s\S]*\n {2}ufw reload\n/)
   })
 })

@@ -23,42 +23,64 @@ BRIDGE="${GPT_FUTTATO_BRIDGE:-gptki0}"
 IPT="${IPTABLES:-iptables}"
 PRIVATE_RANGES="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16"
 
+# every call waits for the xtables lock (-w 5): Docker, ufw and this timer share it, and a call
+# that fails on a busy lock under set -e would stop the script half way (barracuda, #144)
+ipt() { "$IPT" -w 5 "$@"; }
+
 # "-S <chain>" prints "-P ..." / "-N ..." and then the rules as "-A <chain> <spec>"; every check
 # below compares that form, so the script writes ONLY when something differs (a quiet journal
-# for the per-minute timer) and never flushes a correct chain (no instant with an empty chain).
+# for the per-minute timer).
 
-# ensure_chain CHAIN SPEC...: the chain holds exactly these rules, in this order
+# ensure_chain CHAIN SPEC...: the chain holds exactly these rules. Never flushed (acrobot and
+# barracuda, #144): the missing rules are ADDED first, the extra ones removed after. All our
+# rules are DROP, so every state in between drops at least what the final one does: the chain
+# is never empty and never more open than wanted, not even for an instant or after a stop.
 ensure_chain() {
   local chain="$1"; shift
-  "$IPT" -N "$chain" 2>/dev/null || true
-  local want="" spec
-  for spec in "$@"; do want+="-A $chain $spec"$'\n'; done
-  local have
-  have="$("$IPT" -S "$chain" | grep '^-A ' || true)"$'\n'
-  if [ "$have" != "$want" ]; then
-    "$IPT" -F "$chain"
-    for spec in "$@"; do
+  ipt -N "$chain" 2>/dev/null || true
+  local changed="" spec line
+  for spec in "$@"; do
+    # shellcheck disable=SC2086
+    if ! ipt -C "$chain" $spec 2>/dev/null; then ipt -A "$chain" $spec; changed=1; fi
+  done
+  # the extra ones and the duplicates, after: a wanted rule is kept once
+  local -A seen=()
+  while IFS= read -r line; do
+    spec="${line#-A "$chain" }"
+    local wanted=""
+    local w; for w in "$@"; do [ "$w" = "$spec" ] && wanted=1; done
+    if [ -z "$wanted" ] || [ -n "${seen[$spec]:-}" ]; then
       # shellcheck disable=SC2086
-      "$IPT" -A "$chain" $spec
-    done
-    echo "VISSZATETTE: a $chain lanc tartalma"
-  fi
+      ipt -D "$chain" $spec; changed=1
+    else
+      seen[$spec]=1
+    fi
+  done < <(ipt -S "$chain" | grep '^-A ' || true)
+  if [ -n "$changed" ]; then echo "VISSZATETTE: a $chain lanc tartalma"; fi
 }
 
 # ensure_first CHAIN SPEC: our jump is the FIRST rule of the chain, exactly once. Not just
 # "exists" (-C): a ufw reload puts its own jumps at the top of INPUT, and ours behind them
-# would only act on what ufw lets through (acrobot, 30821).
+# would only act on what ufw lets through (acrobot, 30821). The new copy goes in at the top
+# BEFORE the old ones are removed, so the jump is never missing.
 ensure_first() {
   local chain="$1" spec="$2"
-  local first
-  first="$("$IPT" -S "$chain" | grep -m1 '^-A ' || true)"
-  local count
-  count="$("$IPT" -S "$chain" | grep -cxF -- "-A $chain $spec" || true)"
+  local first count
+  first="$(ipt -S "$chain" | grep -m1 '^-A ' || true)"
+  count="$(ipt -S "$chain" | grep -cxF -- "-A $chain $spec" || true)"
   if [ "$first" != "-A $chain $spec" ] || [ "$count" != "1" ]; then
     # shellcheck disable=SC2086
-    while "$IPT" -C "$chain" $spec 2>/dev/null; do "$IPT" -D "$chain" $spec; done
-    # shellcheck disable=SC2086
-    "$IPT" -I "$chain" 1 $spec
+    ipt -I "$chain" 1 $spec
+    # every other copy (the first one now is the new one)
+    local n
+    n="$(ipt -S "$chain" | grep -cxF -- "-A $chain $spec" || true)"
+    while [ "$n" -gt 1 ]; do
+      # the LAST copy: rule numbers counted on the -A lines
+      local num
+      num="$(ipt -S "$chain" | grep '^-A ' | grep -nxF -- "-A $chain $spec" | tail -1 | cut -d: -f1)"
+      ipt -D "$chain" "$num"
+      n=$((n - 1))
+    done
     echo "VISSZATETTE: $chain elejere: $spec"
   fi
 }
@@ -70,5 +92,5 @@ ensure_chain GPTF-PRIVAT "${private_rules[@]}"
 
 ensure_first INPUT "-i $BRIDGE -j GPTF-GEP"
 # DOCKER-USER exists once Docker has started (After=docker.service); create it if not, Docker keeps it
-"$IPT" -N DOCKER-USER 2>/dev/null || true
+ipt -N DOCKER-USER 2>/dev/null || true
 ensure_first DOCKER-USER "-i $BRIDGE -j GPTF-PRIVAT"
