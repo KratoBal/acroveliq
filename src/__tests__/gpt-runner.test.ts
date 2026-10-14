@@ -19,7 +19,7 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { rootCertificates, createServer as createTlsServer } from 'node:tls'
 import {
-  HOST_PORTS, SYSTEM_EXACT, networkTargets, globalIpv6, checkIpv6, checkHome, RUNNER_HOME,
+  HOST_PORTS, SYSTEM_EXACT, PLUGIN_CACHE, checkPluginCache, RUN_COMMON, networkTargets, globalIpv6, checkIpv6, checkHome, RUNNER_HOME,
   SYSTEM_CA, TLS_HOSTS, judgeTls, tlsSystemCa,
   AUTH_FILE, checkTestOverrides, checkAuthFile, safeExecArgs, v3Checks, V3_TEST_ARGS, V3_CONTROL_ARGS, V3_CANARIES, toolUses, V3_PROMPT, checkIds, checkCaps, classifyReadable, judgeNetwork, judgeSandboxRun, codexSandboxChecks,
   idsFromStatus, summarize, PINNED_CODEX, FLEET_IDS,
@@ -65,6 +65,24 @@ describe('gpt-runner probe: the pure checks', () => {
     expect(r.outside).toEqual(['/home/marveen/marveen/store/x', '/opt/acropora-commerce-stage/backend/apps/backend/.env'])
     expect(r.marked).toEqual(expect.arrayContaining(['/home/marveen/marveen/store/x', '/opt/acropora-commerce-stage/backend/apps/backend/.env']))
     expect(classifyReadable(['/usr/bin/node', '/etc/passwd', '/tmp/kanari-proba.txt'])).toEqual({ outside: [], marked: [], own: [] })
+  })
+
+  it('F2-FULL-LIST: every flagged path is on its own log line, not just the first 8 of the summary (acrobot 30889: 35 hits, 8 seen)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gpt-f2-'))
+    try {
+      mkdirSync(join(dir, 'home'))
+      const names = Array.from({ length: 12 }, (_, i) => join(dir, `token-${String(i).padStart(2, '0')}.md`))
+      for (const n of names) writeFileSync(n, 'x')
+      const r = spawnSync(process.execPath, [join(__dirname, '..', '..', 'gpt-runner', 'proba.mjs')], {
+        env: { ...process.env, PROBA_CSAK_HELYI: '1', PROBA_GYOKER: dir, HOME: join(dir, 'home'), PROBA_ELVART_HOME: join(dir, 'home') }, encoding: 'utf8', timeout: 60_000,
+      })
+      const listed = r.stdout.split('\n').filter((l) => l.startsWith('PROBA-NAPLO f2 flotta-jelzesu ')).map((l) => l.slice('PROBA-NAPLO f2 flotta-jelzesu '.length)).sort()
+      expect([listed, /^PROBA F2 FAIL rendszeren kivul 0, flotta-jelzesu 12 \(mind a 12 a PROBA-NAPLO f2 sorokban\)/m.test(r.stdout)]).toEqual([names, true])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('PLUGIN: after the Codex runs no plugin cache may exist; without a login it is not measurable, never OK', () => {
+    expect([checkPluginCache(true, true)[0], checkPluginCache(true, false)[0], checkPluginCache(false, true)[0], checkPluginCache(false, false)[0], PLUGIN_CACHE]).toEqual(['FAIL', 'FAIL', 'OK', 'NEM_MERHETO', '/home/gpt/.codex/plugins'])
   })
 
   it("F2-DOCKERENV: Docker's own /.dockerenv is allowed by EXACT path only (the first live run's false hit)", () => {
@@ -524,6 +542,8 @@ esac
     expect(inst).toMatch(/iptables -w 5 -S FORWARD \| grep -F -- '-j DOCKER-USER' \|\| echo "FIGYELEM/)
     // ufw by its own status (the host: service running, firewall off; acrobot 30839)
     expect(inst).toMatch(/ufw_aktiv\(\) \{ command -v ufw >\/dev\/null && grep -q '\^Status: active' <<< "\$\(ufw status 2>\/dev\/null \|\| true\)"; \}/)
+    // F2's full list is printed by both host scripts that show the probe (acrobot 30889)
+    expect([/grep -E "\^PROBA-NAPLO f2 " \/opt\/gpt-futtato\/proba-teljes\.log/.test(inst), /PROBA-NAPLO f2 /.test(R('host/utana-meres.sh'))]).toEqual([true, true])
     // no `cmd | grep -q` in the host scripts: under pipefail an early grep exit (SIGPIPE) is a false failure
     for (const f of ['host/telepit-tuzfal.sh', 'host/csatorna.sh', 'host/tuzfal.sh']) expect([f, /\|\s*grep -q/.test(R(f).split('\n').filter((l) => !l.trim().startsWith('#')).join('\n'))]).toEqual([f, false])
     expect(inst).toMatch(/\nif ufw_aktiv; then\n {2}echo "== valodi ufw reload"/)
@@ -587,7 +607,12 @@ describe('gpt-runner probe after the login: H1-AUTH, test overrides, V3', () => 
     expect(V3_CANARIES).toEqual(['/tmp/kanari-v3', '/home/gpt/kanari-v3'])
     // anything wider is refused before any call
     // an ALLOWLIST (barracuda, #145): the common part, feature pairs, the fixed prompt; nothing else
-    const common = V3_TEST_ARGS.slice(0, V3_TEST_ARGS.indexOf('-c', 9))
+    const common = [...RUN_COMMON]
+    // the control of the negatives below: the common part alone, with nothing extra, passes
+    expect(safeExecArgs([...common, '-'])).toBeNull()
+    // plugins and apps are off in BOTH runs (acrobot 30889), and turning one on is refused
+    for (const a of [V3_TEST_ARGS, V3_CONTROL_ARGS]) expect(a).toEqual(expect.arrayContaining(['features.plugins=false', 'features.apps=false']))
+    expect([safeExecArgs([...common, '-c', 'features.plugins=true', '-']) != null, safeExecArgs([...common.filter((x) => x !== 'features.plugins=false' && x !== 'features.apps=false').slice(0, -2), '-']) != null]).toEqual([true, true])
     for (const extra of [['--full-auto'], ['--add-dir', '/'], ['-c', 'features.apply_patch=true'], ['-c', 'sandbox_mode="danger-full-access"'], ['--sandbox', 'danger-full-access'], ['-c']]) {
       const args = [...common, ...extra, '-']
       expect([extra.join(' '), safeExecArgs(args) != null]).toEqual([extra.join(' '), true])
@@ -780,6 +805,7 @@ case "$1 $2" in
   "logs gpt-szolga") printf 'SZOLGA figyel 10.0.5.10:8790\\nFORRAS %s\\n' "$(cat "${dir}/forras")" ;;
   "exec marveen") cat "${dir}/forras"; echo ;;
   "run --rm") h="\${@: -2:1}"; p="\${@: -1}"; if grep -qxF "$h:$p" "${dir}/nyitott"; then echo NYITOTT; else echo "ZART (idotullepes)"; fi ;;
+  "compose run") [ -f "${dir}/plugin-hiba" ] && exit 1; echo "elotte: 35 fajl" ;;
 esac
 exit 0
 `, { mode: 0o755 })
@@ -837,6 +863,22 @@ grep -qxF "$hp" "${dir}/nyitott"
   it('CSAT-BLIND: when the control does not connect either, a closed port proves nothing: STOP', () => run({ nyitott: [] }, (_dir, r) => {
     expect([r.status, r.stdout]).toEqual([1, expect.stringContaining('STOP: a kontroll sem ert el semmit a masik kontenerbol')])
   }))
+
+  it('CSAT-PLUGIN-CACHE: the plugin cache is removed as the runner, BEFORE the probe; if it cannot be, STOP before the probe', () => {
+    const ok = setup({})
+    try {
+      go(ok)
+      const c = calls(ok)
+      const del = c.findIndex((x) => x.startsWith('docker compose run --rm --no-deps --entrypoint sh gpt-futtato -c') && x.includes('rm -rf -- "$p"') && x.includes('p=/home/gpt/.codex/plugins'))
+      expect([del >= 0, del < c.indexOf('telepit')]).toEqual([true, true])
+    } finally { rmSync(ok, { recursive: true, force: true }) }
+    const bad = setup({})
+    writeFileSync(join(bad, 'plugin-hiba'), '')
+    try {
+      const r = go(bad)
+      expect([r.status, r.stdout, calls(bad).includes('telepit')]).toEqual([1, expect.stringContaining('STOP: a plugin-gyorsitotar nem torolheto'), false])
+    } finally { rmSync(bad, { recursive: true, force: true }) }
+  })
 
   it('CSAT-NO-ACCEPT: the flow\'s ACCEPTs past Docker\'s isolation are missing: STOP before the service starts', () => {
     const dir = setup({})

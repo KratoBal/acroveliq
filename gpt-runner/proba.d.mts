@@ -37,6 +37,8 @@ export function checkAuthFile(stat: { mode: number; uid: number } | null): [Verd
 export const V3_CANARIES: string[]
 export const V3_PROMPT: string
 export const RUN_COMMON: readonly string[]
+export const PLUGIN_CACHE: string
+export function checkPluginCache(present: boolean, loggedIn: boolean): [Verdict, string]
 export const RUN_TOOLS_OFF: readonly string[]
 export const PROMPT_FROM_STDIN: '-'
 export const V3_TEST_ARGS: string[]

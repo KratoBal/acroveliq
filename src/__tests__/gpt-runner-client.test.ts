@@ -128,6 +128,11 @@ describe('a call', () => {
     expect([fetches.length, posts.some((p) => p.includes('TITKOS-VALASZ'))]).toEqual([1, false])
   })
 
+  it('KLIENS-OUTPUT-BLOCKED: an answer the output filter stops is said as such in the thread, not as a runner failure (barracuda, #149)', async () => {
+    await askGpt(makeRunGpt(opts({ filters: filters({ allowOutput: () => false }) })))
+    expect([posts.some((p) => p.includes('GPT válasza a kimeneti titok-szűrőn fennakadt')), posts.some((p) => /futtató hibát adott/.test(p))]).toEqual([true, false])
+  })
+
   it('KLIENS-TOKEN: the token is read at every call; missing or malformed: zero calls', async () => {
     rmSync(join(dir, 'token'))
     await askGpt(makeRunGpt(opts()))

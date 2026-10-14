@@ -25,6 +25,15 @@ import type Database from 'better-sqlite3'
 import type { Debate } from './debates.js'
 import { SECRET_PATTERNS } from './security/secret-gate.js'
 
+/** GPT's answer the output filter stopped (the runner WAS called: an attempt). Safe to post. */
+export class GptOutputBlocked extends Error {
+  readonly publicMessage = 'GPT válasza a kimeneti titok-szűrőn fennakadt, nem került ki (a részlet a naplóban).'
+  constructor(readonly reason: string) {
+    super(reason)
+    this.name = 'GptOutputBlocked'
+  }
+}
+
 /** A package the filters stopped. The message is safe to post: it names the piece, not its content. */
 export class GptBlocked extends Error {
   constructor(readonly publicMessage: string, readonly reason: string) {
@@ -41,6 +50,8 @@ export interface GptPackage {
 
 export interface PackageOptions {
   storeDir: string
+  /** The dashboard's .env: the VALUES of its secret-named settings are compared too (barracuda, #149). */
+  envFile?: string
   logDir: string
   /** The boundary script and the interpreter; a test may point them elsewhere. */
   boundary: { python: string; script: string; env?: Record<string, string>; timeoutMs: number }
@@ -80,8 +91,27 @@ export function debatePieces(db: Database.Database, debate: Debate): PackagePiec
 // Filter 1: secrets
 // ---------------------------------------------------------------------------
 
-/** The fleet's own secret VALUES, read at every call (a rotation needs no restart). */
-export function knownSecretValues(storeDir: string): string[] {
+/** The names of .env settings whose values are secrets (a token, a key, a secret, a password). */
+export const SECRET_SETTING = /(TOKEN|KEY|SECRET|PASS|PASSWORD|CREDENTIAL)/i
+
+/** The VALUES of the secret-named settings of an .env file (16 characters or more). */
+export function envSecretValues(envFile: string | undefined): string[] {
+  if (!envFile) return []
+  let raw: string
+  try { raw = readFileSync(envFile, 'utf8') } catch { return [] }
+  const out: string[] = []
+  for (const line of raw.split('\n')) {
+    const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line)
+    if (!m || !SECRET_SETTING.test(m[1]!)) continue
+    const v = m[2]!.replace(/^(['"])(.*)\1$/, '$2')
+    if (v.length >= 16) out.push(v)
+  }
+  return out
+}
+
+/** The fleet's own secret VALUES, read at every call (a rotation needs no restart): the store's
+ *  token files, and the secret-named settings of the dashboard's .env. */
+export function knownSecretValues(storeDir: string, envFile?: string): string[] {
   const files = ['.dashboard-token', '.gpt-futtato-token', '.federation-token', '.claude-oauth-token', '.github-token', '.vault-key']
   try {
     for (const f of readdirSync(join(storeDir, 'tokens'))) if (f.endsWith('.token')) files.push(join('tokens', f))
@@ -93,7 +123,7 @@ export function knownSecretValues(storeDir: string): string[] {
       if (v.length >= 16) out.push(v)
     } catch { /* missing or not readable: nothing to compare */ }
   }
-  return out
+  return [...out, ...envSecretValues(envFile)]
 }
 
 /** The name of the secret found in a text, or null. */
@@ -158,7 +188,7 @@ function render(debate: Debate, pieces: PackagePiece[], dropped: number, ask: st
  */
 export async function buildPackage(db: Database.Database, debate: Debate, ask: string, o: PackageOptions): Promise<GptPackage> {
   const all = debatePieces(db, debate)
-  const known = knownSecretValues(o.storeDir)
+  const known = knownSecretValues(o.storeDir, o.envFile)
   // 1. secrets, on every raw piece, before anything leaves this process (the boundary script too)
   for (const [label, text] of [['A vita témája', debate.topic] as const, ...all.map((p) => [p.label, p.text] as const), ['A GPT-nek szóló kérés', ask] as const]) {
     const hit = secretIn(text, known)
@@ -182,7 +212,10 @@ export async function buildPackage(db: Database.Database, debate: Debate, ask: s
     logPackage(o, { debate: debate.id, result: 'szemelyes-adat', reason: r.why })
     throw new GptBlocked('GPT most nem kapja meg a beszélgetést: a személyesadat-szűrő nem engedte ki (a részlet a naplóban).', `personal data: ${r.why}`)
   }
-  // a last secret look at what really goes out
+  // internal addresses the redactor left (barracuda, #149), then a last secret look at what goes out
+  const masked = maskInternalIpv4(r.text)
+  r.text = masked.text
+  if (masked.count) r.counts = { ...r.counts, BELSO_IP: masked.count }
   const late = secretIn(r.text, known)
   if (late) {
     logPackage(o, { debate: debate.id, result: 'titok', reason: late })
@@ -193,8 +226,23 @@ export async function buildPackage(db: Database.Database, debate: Debate, ask: s
 }
 
 /** GPT's answer may be posted only without a secret shape or a fleet token in it. */
-export function outputAllowed(text: string, storeDir: string): boolean {
-  return secretIn(text, knownSecretValues(storeDir)) == null
+export function outputAllowed(text: string, o: Pick<PackageOptions, 'storeDir' | 'envFile'>): boolean {
+  return secretIn(text, knownSecretValues(o.storeDir, o.envFile)) == null
+}
+
+/** Private, tailnet, loopback and link-local IPv4 addresses (with a port, if any). The JEV
+ *  redactor misses one at the end of a sentence ("10.0.2.4."); these are infrastructure, not
+ *  personal data, and do not go out either (barracuda, #149). */
+export const INTERNAL_IPV4 = /(?<![\d.])(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3})(?::\d{1,5})?(?!\d)/g
+
+/** Each internal address becomes a stable placeholder (the same address, the same placeholder). */
+export function maskInternalIpv4(text: string): { text: string; count: number } {
+  const seen = new Map<string, string>()
+  const out = text.replace(INTERNAL_IPV4, (ip) => {
+    if (!seen.has(ip)) seen.set(ip, `<BELSO_IP_${seen.size + 1}>`)
+    return seen.get(ip)!
+  })
+  return { text: out, count: seen.size }
 }
 
 /** One line per package: its hash and size, never its text. */

@@ -48,6 +48,7 @@ export function debateConfig(): DebateConfig {
 export function packageOptions(): PackageOptions {
   return {
     storeDir: STORE_DIR,
+    envFile: join(PROJECT_ROOT, '.env'),
     logDir: join(PROJECT_ROOT, 'logs', 'gpt-csomag'),
     boundary: { python: 'python3', script: join(PROJECT_ROOT, 'scripts', 'gpt-csomag', 'hatar.py'), timeoutMs: 20_000 },
     // the runner takes 48 KiB; the redacted text is a little longer than the raw one
@@ -60,7 +61,7 @@ export function debateFilters(db: Database.Database): GptFilters {
   const o = packageOptions()
   return {
     buildPrompt: (debate, ask) => buildPackage(db, debate, ask, o),
-    allowOutput: (text) => outputAllowed(text, o.storeDir),
+    allowOutput: (text) => outputAllowed(text, o),
   }
 }
 

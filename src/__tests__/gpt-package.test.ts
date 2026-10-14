@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { getDb, initDatabase } from '../db.js'
 import { getDebate, type Debate } from '../debates.js'
-import { GptBlocked, buildPackage, debatePieces, outputAllowed, secretIn, type PackageOptions } from '../gpt-package.js'
+import { GptBlocked, buildPackage, debatePieces, envSecretValues, maskInternalIpv4, outputAllowed, secretIn, type PackageOptions } from '../gpt-package.js'
 
 const ROOT = join(__dirname, '..', '..')
 const SCRIPT = join(ROOT, 'scripts', 'gpt-csomag', 'hatar.py')
@@ -124,7 +124,29 @@ describe('filter 1: secrets', () => {
 
   it('PKG-OUTPUT: GPT\'s answer with a secret shape or a fleet token is not allowed out; a plain answer is', () => {
     writeFileSync(join(dir, 'store', '.gpt-futtato-token'), 'Mm3Nn4Bb5Vv6Cc7Xx8Zz9Ll0Kk1')
-    expect([outputAllowed('Szerintem így jobb.', join(dir, 'store')), outputAllowed(`kulcs ${GH}`, join(dir, 'store')), outputAllowed('Mm3Nn4Bb5Vv6Cc7Xx8Zz9Ll0Kk1', join(dir, 'store'))]).toEqual([true, false, false])
+    const s = { storeDir: join(dir, 'store') }
+    expect([outputAllowed('Szerintem így jobb.', s), outputAllowed(`kulcs ${GH}`, s), outputAllowed('Mm3Nn4Bb5Vv6Cc7Xx8Zz9Ll0Kk1', s)]).toEqual([true, false, false])
+  })
+
+  it('PKG-ENV-VALUES: the VALUES of the dashboard .env secret-named settings are compared too; other settings and short values are not (barracuda, #149)', async () => {
+    const env = join(dir, 'dot.env')
+    writeFileSync(env, ['DISCORD_BOT_TOKEN="Dq1Wr2Te3Yu4Io5Pa6Sd7Fg8"', 'export OPENAI_API_KEY=Kk9Jj8Hh7Gg6Ff5Dd4Ss3', 'SCHEDULER_TZ=Europe/Budapest/Hosszu_Ertek', 'SHORT_SECRET=rovid', '# KOMMENT_TOKEN=Zz1Xx2Cc3Vv4Bb5Nn6Mm7'].join('\n'))
+    expect(envSecretValues(env)).toEqual(['Dq1Wr2Te3Yu4Io5Pa6Sd7Fg8', 'Kk9Jj8Hh7Gg6Ff5Dd4Ss3'])
+    const d = debate()
+    owner('v1', 'm1', 'a bot tokenje: Dq1Wr2Te3Yu4Io5Pa6Sd7Fg8', 110)
+    const err = await buildPackage(getDb(), d, 'kérdés', opts({ envFile: env, boundary: fakeBoundary('print(json.dumps({"ok": True, "text": "x"}))') })).catch((e) => e)
+    expect([err instanceof GptBlocked, existsSync(join(dir, 'boundary-called')), outputAllowed('ez Kk9Jj8Hh7Gg6Ff5Dd4Ss3', { storeDir: join(dir, 'store'), envFile: env })]).toEqual([true, false, false])
+  })
+
+  it('PKG-INTERNAL-IP: an internal IPv4 the redactor left (at a sentence end, with a port) leaves only as a stable placeholder; a public one stays', async () => {
+    expect(maskInternalIpv4('A 10.0.2.4. És 10.0.2.4:8790, 192.168.250.1; 100.117.177.56. Publikus: 162.55.216.28. Nem cím: 110.0.2.45, v10.0.2.4.5')).toEqual({
+      // a doubtful shape (a version-like v10.0.2.4.5) is masked too: the safe direction
+      text: 'A <BELSO_IP_1>. És <BELSO_IP_2>, <BELSO_IP_3>; <BELSO_IP_4>. Publikus: 162.55.216.28. Nem cím: 110.0.2.45, v<BELSO_IP_1>.5', count: 4,
+    })
+    const d = debate()
+    owner('v1', 'm1', 'A gép címe 10.0.2.4.', 110)
+    const pkg = await buildPackage(getDb(), d, 'kérdés', opts())
+    expect([pkg.prompt.includes('10.0.2.4'), /<BELSO_IP_1>|<ID_\d+>/.test(pkg.prompt)]).toEqual([false, true])
   })
 
   it('PKG-LATE-SECRET: a secret in what the boundary returns (the last look) blocks too', async () => {
