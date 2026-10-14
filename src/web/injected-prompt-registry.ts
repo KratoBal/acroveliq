@@ -139,6 +139,24 @@ export function matchesInjectedPrompt(parked: string | null, record: InjectedPro
   return b.includes(a) || a.includes(b)
 }
 
+/**
+ * Is the parked scrape a piece of what a busy-pane send typed and abandoned?
+ * ONE direction only (barracuda, #118): the parked text must lie INSIDE the
+ * abandoned typing. Every inter-agent frame starts with the same safety
+ * preamble, so a half that only got through the preamble would, with the
+ * two-way test of matchesInjectedPrompt, also "match" a later, longer, real
+ * message parked there -- and clear it. A real later message is longer than
+ * the half and runs past it; the half itself (or a head-lost scrape of it) is
+ * always inside what was typed.
+ */
+export function isAbandonedFragment(parked: string | null, record: InjectedPromptRecord | null): boolean {
+  if (parked == null || record == null) return false
+  const a = normalizeForMatch(parked)
+  const b = normalizeForMatch(record.text)
+  if (a.length < 24 || b.length === 0) return false
+  return b.includes(a)
+}
+
 /** Test-only: drop all records between unit tests. */
 export function _resetInjectedPromptsForTest(): void {
   records.clear()

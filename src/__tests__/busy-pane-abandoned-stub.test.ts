@@ -90,6 +90,14 @@ describe('the half a busy-pane send left behind', () => {
     expect([calls.clear, calls.enter, calls.send, getAbandonedPrompt(SESSION)]).toEqual([1, 0, 0, null])
   })
 
+  it('STUB-PREAMBLE: a half that only got through the common preamble does not clear a later, longer real message', async () => {
+    // every inter-agent frame starts the same way: the abandoned half is that start only
+    const preambleHalf = HALF.slice(0, 40)
+    recordAbandonedPrompt(SESSION, preambleHalf)
+    await recoverOnce() // the parked text (HALF) runs past what was abandoned
+    expect([calls.clear, calls.enter + calls.send]).toEqual([0, 1])
+  })
+
   it('STUB-REDELIVERY: a later typing recorded for the same pane is submitted, not cleared as the old half', async () => {
     recordAbandonedPrompt(SESSION, HALF)
     recordInjectedPrompt(SESSION, `${HALF}age for you.`)

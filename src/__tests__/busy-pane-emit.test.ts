@@ -147,10 +147,12 @@ describe('sendPromptToSession routes busyTarget to the guarded emit', () => {
   it('BUSY-EMIT-WIRED: the busyTarget branch comes first in emitToPane and returns emitIntoBusyPane', () => {
     const src = readFileSync(join(__dirname, '../web/agent-process.ts'), 'utf-8')
     const span = src.slice(src.indexOf('const emitToPane = async ()'))
-    const branch = span.indexOf('if (opts.busyTarget) {\n    return emitIntoBusyPane(')
+    const branch = span.indexOf('if (opts.busyTarget) {\n    const outcome = await emitIntoBusyPane(')
     expect(branch).toBeGreaterThan(0)
     for (const idleStep of ['shouldClearTruncatedPreamble(', 'recordInjectedPrompt(', 'await sendChunks()'])
       expect(span.indexOf(idleStep), idleStep).toBeGreaterThan(branch)
     expect(src).toMatch(/return lockResult\.value \?\? 'sent'/)
+    // a landed busy send spends an earlier abandoned record of the pane (#118)
+    expect(span.slice(branch, branch + 1200)).toMatch(/if \(outcome === 'sent'\) clearAbandonedPrompt\(session\)/)
   })
 })

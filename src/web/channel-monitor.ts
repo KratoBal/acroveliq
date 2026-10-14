@@ -33,7 +33,7 @@ import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
-import { clearAbandonedPrompt, getAbandonedPrompt, getInjectedPrompt, matchesInjectedPrompt } from './injected-prompt-registry.js'
+import { clearAbandonedPrompt, getAbandonedPrompt, getInjectedPrompt, isAbandonedFragment, matchesInjectedPrompt } from './injected-prompt-registry.js'
 import {
   detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
@@ -345,7 +345,7 @@ export async function recoverStuckInputForSession(
       scheduledTaskBlock: parkedScheduledTaskInput(pane),
       machineOrigin: parkedMachineOriginInput(pane),
       recordedMatch,
-      abandonedMatch: matchesInjectedPrompt(parkedInputText(pane), getAbandonedPrompt(session)),
+      abandonedMatch: isAbandonedFragment(parkedInputText(pane), getAbandonedPrompt(session)),
     }
     const action = decideStuckInputAction(facts)
     await performStuckInputAction(session, action, pane, block, sig, attempt, recorded?.text ?? null)
