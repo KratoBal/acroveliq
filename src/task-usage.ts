@@ -961,7 +961,12 @@ const BUSY_KINDS: ReadonlySet<string> = new Set(['assigned', 'started', 'fix_sta
   unit, only coord marks) keeps its latest event, so what it shows does not change.
 */
 export const NON_STATE_KINDS: readonly TaskEventKind[] = ['decision', 'coord_open', 'coord_close', 'owner_action']
-const NON_STATE_SQL = NON_STATE_KINDS.map((k) => `'${k}'`).join(', ')
+/** Every other kind, named: a new kind must be put in one of the two lists (a test holds it; barracuda, #110 and #113). */
+export const STATE_KINDS: readonly TaskEventKind[] = [
+  'assigned', 'started', 'review_requested', 'verdict', 'fix_started', 'done', 'merged',
+  'blocked', 'cancelled', 'failed', 'partial', 'paused', 'resumed',
+]
+export const NON_STATE_SQL = NON_STATE_KINDS.map((k) => `'${k}'`).join(', ')
 /** The task's last event as the busy check and the list read it (see NON_STATE_KINDS). */
 const LAST_STATE_EVENT = (alias: string) =>
   `SELECT id FROM task_events ${alias} WHERE ${alias}.task_id = t.id
