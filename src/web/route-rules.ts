@@ -356,5 +356,8 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', path: '/api/decisions/:id', module: 'decisions', class: 'KRITIKUS', note: 'the owner\'s answer on a decision row (approve, reject, discuss): session only in every access mode (the handler), the one write on the AcrovelIQ host' },
   { method: 'POST', path: '/api/task-actions', module: 'task-actions', class: 'KRITIKUS', note: 'the owner creates a task (Feladatkezelés V1): session only in every access mode (the handler), Idempotency-Key required, a message to the main agent; an AcrovelIQ host write' },
   { method: 'POST', path: '/api/task-actions/:id', module: 'task-actions', class: 'KRITIKUS', note: 'the owner assigns, sets the priority, pauses or resumes a task: session only in every access mode (the handler), a message to the main agent; an AcrovelIQ host write' },
+  { method: 'GET', path: '/api/debates', module: 'debates', class: 'OLVASO', note: 'Többmodelles V1: the debates, newest first; ?project=<registry id>' },
+  { method: 'GET', path: '/api/debates/:id', module: 'debates', class: 'OLVASO', note: 'Többmodelles V1: one debate with its turns' },
+  { method: 'POST', path: '/api/debates/:id/turns/:token', module: 'debates', class: 'ERZEKENY', note: 'Többmodelles V1: Acrobot hands in its round with the round\'s one-time token; the main agent\'s own token only (the handler), once per token; the controller posts it to the thread' },
   { method: 'POST', path: '/api/decisions/:id/discord-reply', module: 'decisions', class: 'KRITIKUS', note: 'the main agent attaches the Discord message the owner answered in; decides nothing' },
 ]
