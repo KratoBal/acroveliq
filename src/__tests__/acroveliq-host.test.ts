@@ -182,14 +182,20 @@ describe('the AcrovelIQ page reads only what the list allows', () => {
   const START = APP.indexOf('// === AcrovelIQ (read-only view, task acroveliq-vp-v1) ===')
   const SECTION = START >= 0 ? APP.slice(START) : ''
 
-  it('every /api/ literal of the page section is an allowed GET', () => {
+  it('every /api/ literal of the page section is an allowed GET, and the decision write an allowed POST', () => {
     const literals = [...SECTION.matchAll(/'(\/api\/[^']*)'/g)].map((m) => m[1]!)
     expect(literals.length).toBeGreaterThanOrEqual(5)
     for (const lit of literals) {
+      // the one write (Balázs's decision B): POST '/api/decisions/' + id, and only POST
+      if (lit === '/api/decisions/') {
+        expect([acroveliqAllows('POST', `${lit}x`), acroveliqAllows('GET', `${lit}x`)], lit).toEqual([true, false])
+        continue
+      }
       // the timeline URL is built as '/api/tasks/' + id + '/timeline'
       const path = lit.endsWith('/') ? `${lit}x/timeline` : lit
       expect(acroveliqAllows('GET', path), lit).toBe(true)
     }
+    expect(literals).toContain('/api/decisions/')
   })
 
   it('the login overlay reaches the two auth calls it makes', () => {
