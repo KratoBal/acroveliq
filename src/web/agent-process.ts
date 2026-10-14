@@ -1163,6 +1163,15 @@ export function tmuxNeedsIndirection(tmuxArgs: string[], target: string | null |
   return host != null || runAsUser != null
 }
 
+// THE AGENT PANE IS STARTED WIDE. A detached `new-session` without -x/-y gets tmux's
+// default 80x24, and at 80 columns Claude Code cuts its idle footer: measured 2026-10-08
+// and again 2026-10-14, murena's footer ended in `· install gh for PR status · …`, the
+// pane read as not idle, and the router held its messages. Widening by hand (160) lasted
+// until the next restart, which made a fresh 80-column session. The height stays at
+// tmux's default 24 on purpose: pane-state reads the WHOLE capture for some signals, so
+// a taller pane would change what those detectors see. Only the width is the fix.
+export const AGENT_PANE_SIZE = ['-x', '200', '-y', '24'] as const
+
 function runTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): void {
   const { host } = resolveTarget(target, tmuxArgs)
   const inv = tmuxInvocationFor(tmuxArgs, target)
@@ -1305,7 +1314,7 @@ function startRemoteAgentProcess(
   const cmd = buildRemoteLaunchCommand({ workdir, model, continue: hasPriorSession })
 
   try {
-    runTmux(host, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
+    runTmux(host, ['new-session', '-d', '-s', session, ...AGENT_PANE_SIZE, cmd], { timeout: 10000 })
     logger.info({ name, session, host, workdir }, 'Remote agent tmux session started')
     // Fire-and-forget: scheduleIdentitySetup only schedules delayed timers and
     // resolves immediately; startRemoteAgentProcess stays synchronous (out of scope).
@@ -1843,7 +1852,7 @@ export async function startAgentProcess(name: string, opts: LaunchOpts = {}): Pr
     // not send the launch, with the router's ssh key and the OAuth token in cmd, to a
     // host the agent named (barracuda, review of #57 v2).
     const startTarget = launchTarget
-    runTmux(startTarget, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
+    runTmux(startTarget, ['new-session', '-d', '-s', session, ...AGENT_PANE_SIZE, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
 
