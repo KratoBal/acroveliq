@@ -84,6 +84,9 @@ The expected `docker inspect` values:
 
 ## Before the login step (not this PR)
 
+- **The activation condition (barracuda, #138 review):** the exit code is 1 only on FAIL; NEM_MERHETO exits 0. So before activation, **V2 and V3 must not stay NEM_MERHETO**, unless Balázs accepts that explicitly, in writing, for those lines.
+- **F2 after the login:** the runner's own home (`/home/gpt`, with `auth.json` in it) is not a system path, so F2 will report it. That is then expected, not a fault. The login PR names it explicitly in the probe (the own home is allowed, nothing else), or the probe stays red forever and the red loses its meaning.
+
 - **The controller's channel:** a network of its own between this container and the controller, never one of the fleet's. Then N1 runs on that network too, and ports 3420 and 3425 must not answer there either (plan v2).
 - **Who can read the login:** like the deploy executor's secrets, `~/.codex` in a volume is readable by anyone who can run `docker` on the host. Install the login only after the fleet's SSH user is out of the `docker` group (the B8 gate).
 - **V3:** with a logged-in model, measure whether the shell tool can be switched off. If the sandbox never starts (see above), also measure what `codex exec` does with a command.

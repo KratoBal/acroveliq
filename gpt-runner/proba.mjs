@@ -21,6 +21,9 @@ import { pathToFileURL } from 'node:url'
 
 /** The uids and gids the fleet uses (marveen 1000, the agents 1001-1006) and root. */
 export const FLEET_IDS = [0, 1000, 1001, 1002, 1003, 1004, 1005, 1006]
+/** The ONE id the runner may have (compose `user:`). An allowlist, not a denylist: a new agent's
+ *  uid (1007) or a mistyped `user:` line must not pass (barracuda, #138 review). */
+export const RUNNER_ID = 10002
 /** Ports that must NOT answer from the runner: the dashboard, its second port, the usual
  *  databases, Coolify, the deploy executor. 22/80/443 on the gateway are public anyway. */
 export const CLOSED_PORTS = [3420, 3425, 5432, 6379, 8000, 8080, 8787]
@@ -32,7 +35,8 @@ export const FLEET_MARKERS = /marveen|acropora|agents\/|store\/|\.env(\.|$)|toke
 
 /** The ids of the Groups/Uid/Gid lines of /proc/self/status. */
 export function idsFromStatus(status) {
-  const line = (name) => (status.match(new RegExp(`^${name}:\\s*(.*)$`, 'm')) || [, ''])[1].trim().split(/\s+/).filter(Boolean).map(Number)
+  // [ \t]*, not \s*: an empty Groups line (no supplementary group) must not run on into the next
+  const line = (name) => (status.match(new RegExp(`^${name}:[ \\t]*(.*)$`, 'm')) || [, ''])[1].trim().split(/\s+/).filter(Boolean).map(Number)
   return { uid: line('Uid'), gid: line('Gid'), groups: line('Groups') }
 }
 
@@ -40,7 +44,10 @@ export function idsFromStatus(status) {
 export function checkIds(ids) {
   const all = [...ids.uid, ...ids.gid, ...ids.groups]
   const hit = all.filter((n) => FLEET_IDS.includes(n))
-  return hit.length ? ['FAIL', `flotta-azonosito a folyamaton: ${[...new Set(hit)].join(',')}`] : ['OK', `uid ${ids.uid[0]}, gid ${ids.gid[0]}, kiegeszito csoport: ${ids.groups.join(',') || 'nincs'}`]
+  if (hit.length) return ['FAIL', `flotta-azonosito a folyamaton: ${[...new Set(hit)].join(',')}`]
+  const other = [...new Set(all.filter((n) => n !== RUNNER_ID))]
+  if (other.length || !ids.uid.length || !ids.gid.length) return ['FAIL', `az elvart ${RUNNER_ID}:${RUNNER_ID} helyett: ${other.join(',') || 'hianyzo Uid/Gid sor'}`]
+  return ['OK', `uid es gid ${RUNNER_ID}, kiegeszito csoport: ${ids.groups.filter((n) => n !== RUNNER_ID).join(',') || 'nincs'}`]
 }
 
 /** CAP: no effective/permitted/bounding capability, and no_new_privs set. */
