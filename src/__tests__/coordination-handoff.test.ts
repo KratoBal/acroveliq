@@ -4,7 +4,7 @@ import { getDb, initDatabase } from '../db.js'
 import { validateHandoffRecord } from '../task-handoff.js'
 import { upsertTask } from '../task-usage.js'
 import { tryHandleTaskHandoffs } from '../web/routes/task-handoffs.js'
-import { tryHandleTaskUsage } from '../web/routes/task-usage.js'
+import { TASK_BODY_KEYS, tryHandleTaskUsage } from '../web/routes/task-usage.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 /*
@@ -159,6 +159,31 @@ describe('a coordination task cannot lose its type on an update', () => {
 */
 describe('POST /api/tasks names the keys it does not store', () => {
   beforeAll(() => { initDatabase(':memory:') })
+  /*
+    THE LIST AGAINST THE TABLE (barracuda, #120 note; task task-body-keys-teszt).
+    TASK_BODY_KEYS is kept by hand next to what the POST reads. MI PIROSÍT: a new
+    column of the tasks table that the list forgets (it would come back as ignored and
+    never be stored); a key on the list the table does not have; a listed key that the
+    POST does not actually store.
+  */
+  it('TASK-BODY-KEYS: every column the caller may set is a body key, and every body key is stored', async () => {
+    const SERVER_SET = ['created_at', 'updated_at']
+    const columns = (getDb().prepare('PRAGMA table_info(tasks)').all() as { name: string }[]).map((c) => c.name)
+    const body: Record<string, unknown> = {
+      id: 'bk-1', project: 'acropora', type: 'experiment', parent_task: 'bk-parent', variant: 'v1', brief_ref: 'brief.md',
+      title: 'Cím', goal: 'Cél', acceptance: ['zöld'], assignee: 'murena', reviewer: 'barracuda',
+      authorization_ref: 'msg 1', verification_profile: 'code_fleet', kanban_card_id: 'card-1', priority: 'high',
+    }
+    const r = await postTask(body)
+    const row = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get('bk-1') as Record<string, unknown>
+    expect([
+      columns.filter((c) => !SERVER_SET.includes(c)).sort(),
+      Object.keys(body).sort(),
+      r,
+      Object.entries(row).filter(([k, v]) => !SERVER_SET.includes(k) && (v === null || v === undefined)).map(([k]) => k),
+    ]).toEqual([[...TASK_BODY_KEYS].sort(), [...TASK_BODY_KEYS].sort(), { status: 201, body: { id: 'bk-1', ignored: [] } }, []])
+  })
+
   it('TASK-IGNORED: Hungarian keys come back as ignored with 201; the English ones store and ignore nothing', async () => {
     const hu = await postTask({ id: 'ign-hu', cim: 'Cím', cel: 'Cél', felelos: 'murena' })
     const huRow = getDb().prepare('SELECT title, assignee FROM tasks WHERE id = ?').get('ign-hu')
