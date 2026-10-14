@@ -4,6 +4,8 @@
 //   npx tsx scripts/access-preflight.ts                         # kikenyszerit, az elmúlt 1 nap
 //   npx tsx scripts/access-preflight.ts --mode legacy-szukitett --napok 3
 //   npx tsx scripts/access-preflight.ts --db /utvonal/masik.db           # another database (tests)
+//   npx tsx scripts/access-preflight.ts --json                            # one JSON line, for a machine
+//                                                                         # (scripts/access-preflight-napi.py)
 //
 // The access check logs every denial, enforced or not, in access_decisions
 // (src/web/access-enforcement.ts). This lists the logged-only ones
@@ -41,6 +43,11 @@ const rows = getDb()
   )
   .all(since) as Row[]
 
+// The daily run reads this, not the text: a text format is for a person and may change.
+if (process.argv.includes('--json')) {
+  console.log(JSON.stringify({ mode, since, rows }))
+  process.exit(rows.length === 0 ? 0 : 1)
+}
 if (rows.length === 0) {
   console.log(`${mode}: nincs tiltandó hívás ${since} óta. A kapcsoló ebből a szempontból átállítható.`)
   process.exit(0)

@@ -53,4 +53,18 @@ describe('access preflight', () => {
       'ACCESS-PREFLIGHT',
     ).toEqual([1, ['legacy', 'murena'], 1, ['legacy'], ['legacy', 'murena', 'korall'], 0])
   })
+
+  it('ACCESS-PREFLIGHT-JSON: --json gives the same rows as one JSON line, with the same exit code', () => {
+    const db = database([
+      ['legacy', 'POST', '/api/schedules', 'would-deny', 0],
+      ['murena', 'PATCH', '/api/approvals/:id', 'would-deny', 0],
+    ])
+    const full = preflight(db, '--json')
+    const empty = preflight(database([]), '--mode', 'legacy-szukitett', '--json')
+    const parsed = JSON.parse(full.out.trim().split('\n').at(-1)!)
+    expect(
+      [full.code, parsed.mode, parsed.rows.map((r: { actor: string; path: string; count: number }) => [r.actor, r.path, r.count]), empty.code, JSON.parse(empty.out.trim().split('\n').at(-1)!).rows],
+      'ACCESS-PREFLIGHT-JSON',
+    ).toEqual([1, 'kikenyszerit', [['legacy', '/api/schedules', 2], ['murena', '/api/approvals/:id', 2]], 0, []])
+  })
 })
