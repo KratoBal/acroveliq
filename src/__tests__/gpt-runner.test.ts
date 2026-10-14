@@ -293,7 +293,9 @@ describe('gpt-runner host firewall (host/tuzfal.sh) against a stateful fake ipta
 S="$FAKE_STATE"; touch "$S"
 w=""; if [ "$1" = "-w" ]; then w="W "; shift 2; fi
 echo "$w$*" >> "$S.calls"
-op="$1"; chain="$2"; shift 2
+# -t nat: its chains are stored as nat:<chain>; -S prints the plain name, like iptables
+tb=""; if [ "$1" = "-t" ]; then [ "$2" = filter ] || tb="$2:"; shift 2; fi
+op="$1"; name="$2"; chain="$tb$2"; shift 2
 case "$op" in
   -N) grep -qx "N|$chain" "$S" && exit 1; echo "N|$chain" >> "$S" ;;
   -F) grep -v "^R|$chain|" "$S" > "$S.t" || true; mv "$S.t" "$S" ;;
@@ -305,7 +307,7 @@ case "$op" in
       else
         awk -v want="R|$chain|$*" '!done && $0 == want { done = 1; next } { print }' "$S" > "$S.t"
       fi; mv "$S.t" "$S" ;;
-  -S) echo "-P $chain ACCEPT"; grep "^R|$chain|" "$S" | cut -d'|' -f3- | sed "s/^/-A $chain /" ;;
+  -S) echo "-P $name ACCEPT"; grep -F "R|$chain|" "$S" | grep "^R|$chain|" | cut -d'|' -f3- | sed "s/^/-A $name /" ;;
 esac
 `
   const setup = (state = '') => {
@@ -334,6 +336,8 @@ esac
     expect([chain(dir, 'INPUT'), chain(dir, 'OUTPUT'), chain(dir, 'DOCKER-USER'), chain(dir, 'GPTF-TOVABB'), chain(dir, 'GPTF-GEP'), chain(dir, 'GPTF-GEPROL'), chain(dir, 'GPTF-PRIVAT'), chain(dir, 'GPTF-BE')]).toEqual([
       ['-i gptki0 -j GPTF-GEP'], ['-o gptki0 -j GPTF-GEPROL'], ['-j GPTF-TOVABB'], ['-i gptki0 -j GPTF-PRIVAT', '-o gptki0 -j GPTF-BE'], ['-j DROP'], ['-j DROP'], PRIVATE, BE_CLOSED,
     ])
+    // nat: our jump first in POSTROUTING, the chain empty while the channel is closed
+    expect([chain(dir, 'nat:POSTROUTING'), chain(dir, 'nat:GPTF-NAT'), chain(dir, 'POSTROUTING')]).toEqual([['-o gptki0 -j GPTF-NAT'], [], []])
   }))
 
   it('FW-QUIET: the second and third run (the per-minute timer) change nothing, print nothing, flush nothing', () => run('', (dir) => {
@@ -477,6 +481,28 @@ esac
     for (const [p, want] of cases) if (want) expect(verdict(p.out === 'gptki0' ? be : priv, p)).toBe('tovabb')
   }))
 
+  it('FW-NAT: while the channel is open, exactly its flow is kept from Docker\'s MASQUERADE (first in nat POSTROUTING); a docker rule above is moved below; closing empties it FIRST', () => run(
+    'R|nat:POSTROUTING|-s 192.168.250.0/24 ! -o br-flotta -j MASQUERADE\n', (dir) => {
+      writeFileSync(join(dir, 'env'), CHANNEL_ENV)
+      fleetAt(dir, '10.0.2.4 ')
+      fw(dir)
+      const natRule = '-s 10.0.2.4/32 -d 10.0.5.10/32 -p tcp -m tcp --dport 8790 -j ACCEPT'
+      const open = [chain(dir, 'nat:POSTROUTING'), chain(dir, 'nat:GPTF-NAT')]
+      // the nat ACCEPT matches only the channel flow (the evaluator reads -j ACCEPT rules)
+      const nat = chain(dir, 'nat:GPTF-NAT')
+      const flow = { src: '10.0.2.4', dst: '10.0.5.10', proto: 'tcp', dport: 8790, state: 'NEW' } as Pkt
+      expect([accepts(nat, flow), accepts(nat, { ...flow, src: '10.0.2.9' }), accepts(nat, { ...flow, dport: 22 }), accepts(nat, { ...flow, dst: '10.0.5.11' })]).toEqual([true, false, false, false])
+      fleetAt(dir, '10.0.2.9 ')
+      const closing = calls(dir).length
+      fw(dir)
+      const cc = calls(dir).slice(closing)
+      const natDel = cc.findIndex((x) => x.startsWith('W -t nat -D GPTF-NAT '))
+      const firstOther = cc.findIndex((x) => /^W -(A|D) GPTF-(TOVABB|BE) /.test(x))
+      expect([open, chain(dir, 'nat:GPTF-NAT'), natDel >= 0 && natDel < firstOther]).toEqual([
+        [['-o gptki0 -j GPTF-NAT', '-s 192.168.250.0/24 ! -o br-flotta -j MASQUERADE'], [natRule]], [], true,
+      ])
+    }))
+
   it('FW-ADDRESS-CLOSES: the fleet container without the fixed address (or unreadable) CLOSES the channel: GPTF-BE closed, no ACCEPT; back at the address it opens; the ACCEPTs leave first and come last', () => run('', (dir) => {
     writeFileSync(join(dir, 'env'), CHANNEL_ENV)
     const closedTv = ['-i gptki0 -j GPTF-PRIVAT', '-o gptki0 -j GPTF-BE']
@@ -547,6 +573,8 @@ esac
     const inst = R('host/telepit-tuzfal.sh')
     expect(inst).toMatch(/iptables -w 5 -D INPUT -i "\$BRIDGE" -j GPTF-GEP[\s\S]*systemctl restart gpt-futtato-tuzfal\.service[\s\S]*grep -F GPTF-GEP \|\| \{ echo "STOP/)
     expect(inst).toMatch(/systemctl enable --now gpt-futtato-tuzfal\.service/)
+    // the nat jump (the channel's no-masquerade chain) is in the persistence measurement too
+    expect(inst).toMatch(/iptables -w 5 -t nat -D POSTROUTING -o "\$BRIDGE" -j GPTF-NAT[\s\S]*systemctl restart gpt-futtato-tuzfal\.service[\s\S]*iptables -w 5 -t nat -S POSTROUTING \| grep -F GPTF-NAT \|\| \{ echo "STOP: a nat POSTROUTING ugras hianyzik"/)
     expect(inst).toMatch(/systemctl enable --now gpt-futtato-tuzfal-ellenor\.timer/)
     // the one timer round: a rule above ours, the DOCKER-USER jump removed, wait, check, clean up
     expect(inst).toMatch(/iptables -w 5 -I INPUT 1 -m comment --comment gptf-ufw-proba\niptables -w 5 -D DOCKER-USER -j GPTF-TOVABB[\s\S]*sleep 5[\s\S]*"-A INPUT -i \$BRIDGE -j GPTF-GEP"[\s\S]*iptables -w 5 -D INPUT -m comment --comment gptf-ufw-proba[\s\S]*STOP: a timer/)
@@ -821,7 +849,7 @@ describe('gpt-runner controller channel on the host (host/csatorna.sh) against f
 ${log}
 case "$1 $2" in
   "ps -q") echo c1 ;;
-  "inspect -f") case "$4" in c1) echo "/marveen|/opt/marveen-docker/data/marveen " ;; marveen) printf 'fleetnet 10.0.2.4 10.0.2.1\\nmasik 192.168.250.2 192.168.250.1\\n' ;; esac ;;
+  "inspect -f") case "$4" in gpt-szolga) echo exited ;; c1) echo "/marveen|/opt/marveen-docker/data/marveen " ;; marveen) printf 'fleetnet 10.0.2.4 10.0.2.1\\nmasik 192.168.250.2 192.168.250.1\\n' ;; esac ;;
   "network inspect") case "$5" in fleetnet) echo 1 ;; masik) echo 3 ;; gpt-futtato-ki) echo "10.0.5.0/24 " ;; esac ;;
   "logs gpt-szolga") printf 'SZOLGA figyel 10.0.5.10:8790\\nFORRAS %s\\n' "$(cat "${dir}/forras")" ;;
   "exec marveen") cat "${dir}/forras"; echo ;;
@@ -832,6 +860,10 @@ exit 0
 `, { mode: 0o755 })
     writeFileSync(join(bin, 'iptables'), `#!/bin/bash
 ${log}
+case "$3 $4 $5 $6" in
+  "-t nat -S POSTROUTING") if [ -f "${dir}/nat-masodik" ]; then printf -- '-P POSTROUTING ACCEPT\\n-A POSTROUTING -s 192.168.250.0/24 ! -o br-x -j MASQUERADE\\n-A POSTROUTING -o gptki0 -j GPTF-NAT\\n'; else printf -- '-P POSTROUTING ACCEPT\\n-A POSTROUTING -o gptki0 -j GPTF-NAT\\n-A POSTROUTING -s 192.168.250.0/24 ! -o br-x -j MASQUERADE\\n'; fi; exit 0 ;;
+  "-t nat -S GPTF-NAT") printf -- '-N GPTF-NAT\\n'; [ -f "${dir}/nat-nincs" ] || printf -- '-A GPTF-NAT -s 10.0.2.4/32 -d 10.0.5.10/32 -p tcp -m tcp --dport 8790 -j ACCEPT\\n'; exit 0 ;;
+esac
 case "$4" in
   GPTF-BE) printf -- '-N GPTF-BE\\n-A GPTF-BE -m conntrack --ctstate INVALID -j DROP\\n-A GPTF-BE ! -s 10.0.2.4/32 -m conntrack --ctstate NEW -j DROP\\n-A GPTF-BE ! -d 10.0.5.10/32 -m conntrack --ctstate NEW -j DROP\\n' ;;
   GPTF-TOVABB) printf -- '-N GPTF-TOVABB\\n-A GPTF-TOVABB -i gptki0 -j GPTF-PRIVAT\\n-A GPTF-TOVABB -o gptki0 -j GPTF-BE\\n'; [ -f "${dir}/accept-nincs" ] || printf -- '-A GPTF-TOVABB -s 10.0.2.4/32 -d 10.0.5.10/32 -o gptki0 -p tcp -m tcp --dport 8790 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT\\n-A GPTF-TOVABB -s 10.0.5.10/32 -d 10.0.2.4/32 -i gptki0 -p tcp -m tcp --sport 8790 -m conntrack --ctstate ESTABLISHED -j ACCEPT\\n' ;;
@@ -857,7 +889,8 @@ grep -qxF "$hp" "${dir}/nyitott"
   it('CSAT-OK: the fleet address seen, the neighbour and the host closed with their controls open: done, and the service STOPPED at the end', () => run({}, (dir, r) => {
     expect([r.status, r.stdout]).toEqual([0, expect.stringContaining('== kesz: a csatorna mert, a szolgaltatas leallitva')])
     const c = calls(dir)
-    expect(c[c.length - 1]).toBe('docker compose --profile szolga stop gpt-szolga')
+    // the last two: the stop, then its state said
+    expect([c[c.length - 2], c[c.length - 1]]).toEqual(['docker compose --profile szolga stop gpt-szolga', 'docker inspect -f {{.State.Status}} gpt-szolga'])
     expect(r.stdout).toMatch(/^valasztott: fleetnet \(kontenerek: 1\); a vezerlo forrascime 10\.0\.2\.4, a kozzetett cim 10\.0\.2\.1:8790$/m)
     const env = readFileSync(join(dir, 'opt', '.env'), 'utf8')
     for (const l of ['GPT_FUTTATO_VEZERLO_CIM=10.0.2.4', 'GPT_FUTTATO_KOZZETETT_CIM=10.0.2.1', 'GPT_FUTTATO_SZOLGA_CIM=10.0.5.10', 'GPT_FUTTATO_KI_ALHALO=10.0.5.0/24', 'GPT_FUTTATO_KI_TARTOMANY=10.0.5.128/25', 'GPT_FUTTATO_FLOTTA_KONTENER=marveen']) expect(env.split('\n')).toContain(l)
@@ -872,10 +905,22 @@ grep -qxF "$hp" "${dir}/nyitott"
     expect([TOKEN_RE.test(tok), statSync(f).mode & 0o777, env.includes(`GPT_FUTTATO_SZOLGA_TOKEN_SHA256=${createHash('sha256').update(tok).digest('hex')}`), r.stdout.includes(tok), r.stderr.includes(tok), env.includes(tok)]).toEqual([true, 0o600, true, false, false, false])
   }))
 
-  it('CSAT-SOURCE: the service saw the GATEWAY (a docker-proxy in the way): STOP, and the service is stopped', () => run({ forras: '10.0.2.1' }, (dir, r) => {
-    expect([r.status, r.stdout]).toEqual([1, expect.stringContaining('STOP: a futtato nem a flotta kontener cimet (10.0.2.4) latta, hanem: 10.0.2.1')])
-    expect(calls(dir)[calls(dir).length - 1]).toBe('docker compose --profile szolga stop gpt-szolga')
+  it('CSAT-SOURCE: the service saw a GATEWAY (a docker-proxy or a MASQUERADE in the way): STOP, the service is stopped, and its state is said', () => run({ forras: '10.0.5.128' }, (dir, r) => {
+    expect([r.status, r.stdout]).toEqual([1, expect.stringContaining('STOP: a futtato nem a flotta kontener cimet (10.0.2.4) latta, hanem: 10.0.5.128')])
+    const c = calls(dir)
+    expect([c[c.length - 2], c[c.length - 1], /^a gpt-szolga allapota a leallitas utan: exited$/m.test(r.stdout)]).toEqual(['docker compose --profile szolga stop gpt-szolga', expect.stringMatching(/^docker inspect -f .* gpt-szolga$/), true])
   }))
+
+  it('CSAT-NAT: our no-masquerade chain is not first in nat POSTROUTING, or its rule is missing: STOP before the service starts', () => {
+    for (const [file, msg] of [['nat-masodik', 'STOP: a nat POSTROUTING elso szabalya nem a GPTF-NAT ugras'], ['nat-nincs', 'STOP: a GPTF-NAT-ban nincs meg a csatorna (maszkolas nelkuli) szabalya']] as const) {
+      const dir = setup({})
+      writeFileSync(join(dir, file), '')
+      try {
+        const r = go(dir)
+        expect([file, r.status, r.stdout.includes(msg), calls(dir).some((c) => c.includes('up -d gpt-szolga'))]).toEqual([file, 1, true, false])
+      } finally { rmSync(dir, { recursive: true, force: true }) }
+    }
+  })
 
   it('CSAT-NEIGHBOUR: another container on the fleet network reaches the port: STOP', () => run({ nyitott: ['10.0.2.4:3420', '10.0.2.1:8790'] }, (_dir, r) => {
     expect([r.status, r.stdout]).toEqual([1, expect.stringContaining('STOP: egy masik kontener a flotta-halon eleri a futtato szolgaltatasat')])

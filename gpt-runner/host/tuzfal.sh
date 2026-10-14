@@ -26,6 +26,11 @@
 # The private-range drops match only what is not a reply (! RELATED,ESTABLISHED): the runner's
 # answer to the controller goes back to a private address. A NEW connection from the runner is
 # still dropped, so it can never have an established flow of its own to a private address.
+#   GPTF-NAT     (nat POSTROUTING, first) while the channel is open: the channel flow is NOT
+#                masqueraded. Docker's own rule (-s <fleet subnet> ! -o <fleet bridge> -j MASQUERADE)
+#                rewrote the source to gptki0's address, so the service saw a gateway, not the
+#                fleet container (the v3 host run, 2026-10-15 00:2x: FORRAS 10.0.5.128). ACCEPT in
+#                the nat table ends nat processing for that packet: no SNAT, nothing filtered.
 #   GPTF-TOVABB  the one DOCKER-USER jump, to GPTF-PRIVAT (-i) and GPTF-BE (-o); while the channel
 #                is open, also two ACCEPTs for exactly its one flow (past Docker's isolation).
 # Every other rule in our chains is a DROP, and the two ACCEPTs pass only what the DROP chains pass
@@ -54,7 +59,8 @@ FLOTTA="$(if [ -r "$ENV_FILE" ]; then sed -n 's/^GPT_FUTTATO_FLOTTA_KONTENER=\([
 
 # every call waits for the xtables lock (-w 5): Docker, ufw and this timer share it, and a call
 # that fails on a busy lock under set -e would stop the script half way (barracuda, #144)
-ipt() { "$IPT" -w 5 "$@"; }
+# IPT_TABLE=nat before a call selects the nat table for it (the default is filter)
+ipt() { "$IPT" -w 5 ${IPT_TABLE:+-t "$IPT_TABLE"} "$@"; }
 
 # "-S <chain>" prints "-P ..." / "-N ..." and then the rules as "-A <chain> <spec>"; every check
 # below compares that form, so the script writes ONLY when something differs (a quiet journal
@@ -141,6 +147,7 @@ allapot="$(cim_allapot)"
 # into the runner: no NEW connection, except the channel; each part of "except" is its own DROP
 be_rules=("-m conntrack --ctstate INVALID -j DROP")
 tovabb_rules=("-i $BRIDGE -j GPTF-PRIVAT" "-o $BRIDGE -j GPTF-BE")
+nat_rules=()
 if [ "$allapot" = rendben ]; then
   be_rules+=(
     "! -s $VEZERLO/32 -m conntrack --ctstate NEW -j DROP"
@@ -153,6 +160,7 @@ if [ "$allapot" = rendben ]; then
   # flow past it, both ways, and nothing else: each is a subset of what our DROP chains pass
   # anyway (GPTF-BE passes this NEW or ESTABLISHED flow, GPTF-PRIVAT passes a reply), so their
   # order against the two jumps changes no verdict. Isolation itself is not loosened.
+  nat_rules+=("-s $VEZERLO/32 -d $SZOLGA/32 -p tcp -m tcp --dport $SZOLGA_PORT -j ACCEPT")
   tovabb_rules+=(
     "-s $VEZERLO/32 -d $SZOLGA/32 -o $BRIDGE -p tcp -m tcp --dport $SZOLGA_PORT -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT"
     "-s $SZOLGA/32 -d $VEZERLO/32 -i $BRIDGE -p tcp -m tcp --sport $SZOLGA_PORT -m conntrack --ctstate ESTABLISHED -j ACCEPT"
@@ -165,7 +173,9 @@ fi
 if [ "$allapot" = rendben ]; then
   ensure_chain GPTF-BE "${be_rules[@]}"
   ensure_chain GPTF-TOVABB "${tovabb_rules[@]}"
+  IPT_TABLE=nat ensure_chain GPTF-NAT "${nat_rules[@]}"
 else
+  IPT_TABLE=nat ensure_chain GPTF-NAT
   ensure_chain GPTF-TOVABB "${tovabb_rules[@]}"
   ensure_chain GPTF-BE "${be_rules[@]}"
 fi
@@ -176,6 +186,9 @@ ensure_first OUTPUT "-o $BRIDGE -j GPTF-GEPROL"
 # DOCKER-USER exists once Docker has started (After=docker.service); create it if not, Docker keeps it
 ipt -N DOCKER-USER 2>/dev/null || true
 ensure_first DOCKER-USER "-j GPTF-TOVABB"
+# the channel's no-masquerade chain, FIRST in nat POSTROUTING (before Docker's MASQUERADE); an
+# empty GPTF-NAT (channel closed) changes nothing
+IPT_TABLE=nat ensure_first POSTROUTING "-o $BRIDGE -j GPTF-NAT"
 # the jump of the first version (before the channel), now inside GPTF-TOVABB: removed AFTER the
 # new jump is in place, so the private ranges are never open
 while ipt -C DOCKER-USER -i "$BRIDGE" -j GPTF-PRIVAT 2>/dev/null; do
