@@ -42,7 +42,7 @@ import { allTasks, type ListedTask } from './task-usage.js'
 import { latestTaskHandoff } from './task-handoff.js'
 
 /** Last-event kinds after which a task is not open any more. */
-export const CLOSED_KINDS = new Set(['done', 'merged', 'cancelled', 'failed', 'partial'])
+export const CLOSED_KINDS = new Set(['done', 'merged', 'deployed', 'cancelled', 'failed', 'partial'])
 
 /** The keyword that marks a hot memory as waiting on a decision. */
 export const DECISION_TAG = 'dontesre-var'
