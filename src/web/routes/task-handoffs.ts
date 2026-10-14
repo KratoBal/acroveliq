@@ -12,7 +12,9 @@ import {
   verifyCodeState,
   type CodeStateProbe,
 } from '../../task-handoff.js'
+import { projectResolver, repoFits } from '../../projects.js'
 import { json, readBody } from '../http-helpers.js'
+import { taskCoreSettings } from './task-usage.js'
 import { claimActor } from '../actor-claims.js'
 import type { RouteContext } from './types.js'
 
@@ -75,8 +77,28 @@ export async function tryHandleTaskHandoffs(ctx: RouteContext): Promise<boolean>
       json(res, { error: `record.task.id (${checked.record.task.id}) is not ${taskId}` }, 400)
       return true
     }
+    // PROJEKTEK V1: the record's project is its task's, and its code.repo one of that project's
+    // repos. A record that names no project takes its task's (the validator's default would
+    // say acropora); one that names another is the measured case (a task acropora, its handoff
+    // acroveliq) and is said: naplo marks it in the answer, kenyszerit refuses it.
+    const task = getDb().prepare('SELECT project FROM tasks WHERE id = ?').get(taskId) as { project: string } | undefined
+    const warnings: string[] = []
+    if (task) {
+      const resolve = projectResolver(getDb())
+      const rawProject = (body.record as { project?: unknown } | null)?.project
+      if (typeof rawProject !== 'string' || !rawProject.trim()) checked.record.project = task.project
+      else if (resolve(rawProject) !== resolve(task.project))
+        warnings.push(`record.project ${rawProject} is not the task's project (${task.project})`)
+      const repo = checked.record.code?.repo
+      const repoReason = typeof repo === 'string' && repo ? repoFits(getDb(), task.project, repo) : null
+      if (repoReason) warnings.push(`code.repo: ${repoReason}`)
+    }
+    if (warnings.length && taskCoreSettings.projectMode === 'kenyszerit') {
+      json(res, { error: 'handoff refused', reasons: warnings }, 409)
+      return true
+    }
     const id = insertTaskHandoff(getDb(), agent, checked.record, Math.floor(Date.now() / 1000))
-    json(res, { id }, 201)
+    json(res, warnings.length && taskCoreSettings.projectMode !== 'off' ? { id, project_warnings: warnings } : { id }, 201)
     return true
   }
 

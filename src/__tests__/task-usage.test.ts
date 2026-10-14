@@ -777,7 +777,7 @@ describe('TC-Lite L1: the timeline and busy', () => {
     expect([busy.status, busy.body.map((t: { id: string }) => t.id), timeline.status, timeline.body.items.length, unknown.status,
       noAssignee.status, badProfile.status, JSON.parse(acceptance.acceptance), timeline.body.fields, timeline.body.paused]).toEqual([
       200, [id], 200, 1, 404, 400, 400, ['zöld kapu'],
-      { title: 'Cím', goal: null, assignee: 'polip-' + id, reviewer: null, authorization_ref: null, verification_profile: null, priority: null },
+      { title: 'Cím', goal: null, assignee: 'polip-' + id, reviewer: null, authorization_ref: null, verification_profile: null, priority: null, project: 'acropora', project_id: 'acropora' },
       false,
     ])
   })

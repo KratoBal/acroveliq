@@ -121,6 +121,7 @@ export const ACROVELIQ_ROUTES: readonly AcroveliqRoute[] = [
   { method: 'POST', path: '/api/auth/login', why: 'login' },
   { method: 'GET', path: '/api/tasks', why: 'AcrovelIQ: task list' },
   { method: 'GET', path: '/api/tasks/:id/timeline', why: 'AcrovelIQ: task sheet' },
+  { method: 'GET', path: '/api/projects', why: 'AcrovelIQ: the project switcher (Projektek V1)' },
   { method: 'GET', path: '/api/agents', why: 'AcrovelIQ: agent descriptions' },
   { method: 'GET', path: '/api/agents/activity', why: 'AcrovelIQ: agent state' },
   { method: 'GET', path: '/api/messages/backlog', why: 'AcrovelIQ: message backlog' },
