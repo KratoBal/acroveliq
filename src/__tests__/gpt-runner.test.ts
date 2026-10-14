@@ -60,13 +60,25 @@ describe('gpt-runner probe: the pure checks', () => {
     const r = classifyReadable(['/usr/lib/x.so', '/app/proba.mjs', '/tmp/kanari-proba.txt', '/home/marveen/marveen/store/x', '/opt/acropora-commerce-stage/backend/apps/backend/.env', '/etc/ssl/certs/a.pem'])
     expect(r.outside).toEqual(['/home/marveen/marveen/store/x', '/opt/acropora-commerce-stage/backend/apps/backend/.env'])
     expect(r.marked).toEqual(expect.arrayContaining(['/home/marveen/marveen/store/x', '/opt/acropora-commerce-stage/backend/apps/backend/.env']))
-    expect(classifyReadable(['/usr/bin/node', '/etc/passwd', '/tmp/kanari-proba.txt'])).toEqual({ outside: [], marked: [] })
+    expect(classifyReadable(['/usr/bin/node', '/etc/passwd', '/tmp/kanari-proba.txt'])).toEqual({ outside: [], marked: [], own: [] })
   })
 
   it("F2-DOCKERENV: Docker's own /.dockerenv is allowed by EXACT path only (the first live run's false hit)", () => {
     expect(SYSTEM_EXACT).toEqual(['/.dockerenv'])
     expect(classifyReadable(['/.dockerenv']).outside).toEqual([])
     expect(classifyReadable(['/.dockerenv.bak', '/.dockerenvx/a', '/.dockerinit']).outside).toEqual(['/.dockerenv.bak', '/.dockerenvx/a', '/.dockerinit'])
+  })
+
+  it("F2-OWN-HOME: the runner's own home is counted apart, not FAIL; a fleet-marked file there still is", () => {
+    const lock = '/home/gpt/.codex/tmp/arg0/codex-arg0NEeGcj/.lock'
+    const r = classifyReadable([lock, '/usr/bin/node'], '/home/gpt')
+    expect([r.outside, r.marked, r.own]).toEqual([[], [], [lock]])
+    // the danger the home must not swallow: a credential (auth.json) there is fleet-marked
+    expect(classifyReadable(['/home/gpt/.codex/auth.json'], '/home/gpt').marked).toEqual(['/home/gpt/.codex/auth.json'])
+    // a prefix trap: /home/gptx is NOT the home; no home given: the home is outside as before
+    expect(classifyReadable(['/home/gptx/a'], '/home/gpt').outside).toEqual(['/home/gptx/a'])
+    expect(classifyReadable([lock], null).outside).toEqual([lock])
+    expect(classifyReadable(['/etc/x'], '/').own).toEqual([])
   })
 
   it('N1-HOST-PORTS: on the host the public ports are tested too (the first live run reached 10.0.5.1:8000)', () => {
@@ -189,9 +201,13 @@ describe('gpt-runner probe: a live run here, in the fleet container, must come o
     try {
       mkdirSync(join(dir, 'sub'))
       writeFileSync(join(dir, 'sub', 'plain.txt'), 'x')
+      // the runner's own home, with one file in it: F2 must count it apart (the main path reads HOME)
+      mkdirSync(join(dir, 'home', '.codex'), { recursive: true })
+      writeFileSync(join(dir, 'home', '.codex', '.lock'), '')
       const r = spawnSync(process.execPath, [join(__dirname, '..', '..', 'gpt-runner', 'proba.mjs')], {
-        env: { ...process.env, PROBA_CSAK_HELYI: '1', PROBA_GYOKER: dir }, encoding: 'utf8', timeout: 60_000,
+        env: { ...process.env, PROBA_CSAK_HELYI: '1', PROBA_GYOKER: dir, HOME: join(dir, 'home') }, encoding: 'utf8', timeout: 60_000,
       })
+      expect(r.stdout).toContain(`sajat home (${join(dir, 'home')}): 1 fajl`)
       const line = (id: string) => (r.stdout.match(new RegExp(`^PROBA ${id} (\\S+)`, 'm')) || [])[1]
       const expectedG0 = checkIds(idsFromStatus(readFileSync('/proc/self/status', 'utf8')))[0]
       expect([line('G0'), line('F2'), line('N1'), /OSSZESITES ok=\d+ fail=[1-9]/.test(r.stdout)]).toEqual([expectedG0, 'OK', 'NEM_MERHETO', true])

@@ -19,7 +19,7 @@ export const SANDBOX_FORMS: string[][]
 export function idsFromStatus(status: string): { uid: number[]; gid: number[]; groups: number[] }
 export function checkIds(ids: { uid: number[]; gid: number[]; groups: number[] }): [Verdict, string]
 export function checkCaps(status: string): [Verdict, string]
-export function classifyReadable(paths: string[]): { outside: string[]; marked: string[] }
+export function classifyReadable(paths: string[], ownHome?: string | null): { outside: string[]; marked: string[]; own: string[] }
 export function judgeNetwork(
   results: Array<{ host: string; port: number; open: boolean }>,
   control: { host: string; port: number; open: boolean },
