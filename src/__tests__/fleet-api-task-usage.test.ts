@@ -206,6 +206,7 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
     restart: [number, unknown]
     message: [number, unknown]
     paused?: boolean
+    serverSaysFree?: boolean
   }
   const goodFields = { title: 'L5', goal: 'kiadas', assignee: 'nautilus', reviewer: 'barracuda', authorization_ref: 'msg 1', verification_profile: 'code_fleet' }
   const fake = (over: Partial<Fake> = {}): Fake => ({
@@ -223,7 +224,15 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
       if (method === 'GET' && path === '/api/tasks/t5/handoffs/latest?verify=1')
         return [200, { id: 18, agent: 'acrobot', created_at: 1, record: { next_step: 'olvasd' },
           check: f.handoffOk ? { ok: true, mismatches: [] } : { ok: false, mismatches: ['code.head: a rekord abc, az ag most def'] } }]
-      if (method === 'GET' && path === '/api/tasks?assignee=nautilus&busy=1') return [200, f.busy]
+      if (method === 'GET' && path === '/api/tasks?assignee=nautilus&busy=1') {
+        // the server's rule, modelled: t5 keeps the agent busy while its last state event is assigned,
+        // started or fix_started (task-usage.ts BUSY_KINDS); f.busy can name it explicitly instead
+        if (f.busy.some((t) => t.id === 't5') || f.serverSaysFree) return [200, f.busy]
+        const states = f.items.filter((i) => i.source === 'event' && !(NON_STATE_KINDS as readonly string[]).includes(String(i.kind)))
+        const last = states[states.length - 1]
+        const t5busy = !!last && ['assigned', 'started', 'fix_started'].includes(String(last.kind))
+        return [200, t5busy ? [...f.busy, { id: 't5', last_kind: String(last.kind), busy: true }] : f.busy]
+      }
       if (method === 'POST' && path === '/api/tasks/t5/events') {
         f.items.push({ at: 1, source: 'event', id: 1, kind: b?.kind, actor: b?.actor, ref: b?.ref, data: b?.data ?? null })
         return [201, { id: 41 }]
@@ -315,8 +324,9 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
   })
 
   // A new stage of the same task, handed out to the same agent (acrobot 30669; measured 2026-10-14 15:28: the
-  // dashboard showed no active task, the hand-out skipped assigned, and acrobot wrote it by hand, event 819)
-  it('FLEET-KIADAS-REFREE: a task whose last state event is review_requested, verdict or merged is claimed again; assigned, started or fix_started is not', async () => {
+  // dashboard showed no active task, the hand-out skipped assigned, and acrobot wrote it by hand, event 819).
+  // The rule is the server's busy flag (barracuda #132), not a list in the script.
+  it('FLEET-KIADAS-REFREE: a task that no longer keeps its agent busy is claimed again; one that does is not', async () => {
     const before: Item[] = [
       { at: 1, source: 'event', id: 1, kind: 'assigned', actor: 'acrobot', ref: 'nautilus', data: { agent: 'nautilus' } },
       { at: 2, source: 'session', agent: 'nautilus', session_id: 'sess-old' },
@@ -324,8 +334,8 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
       { at: 4, source: 'event', id: 2, kind: 'started', actor: 'nautilus', ref: '', data: null },
     ]
     const ev = (id: number, kind: string, actor = 'nautilus'): Item => ({ at: 4 + id, source: 'event', id, kind, actor, ref: '', data: null })
-    const outcome = async (tail: Item[]) => {
-      install(fake({ items: [...before, ...tail] }))
+    const outcome = async (tail: Item[], over: Partial<Fake> = {}) => {
+      install(fake({ items: [...before, ...tail], ...over }))
       const r = await run(['kiadas', 't5', 'nautilus'])
       const assigned = requests.find((q) => q.path === '/api/tasks/t5/events')?.body as Record<string, unknown> | undefined
       return [r.code, writes(), assigned?.kind ?? null, /4 ujra foglal/.test(r.out), /5 kihagyva/.test(r.out), /6 kihagyva/.test(r.out)]
@@ -336,28 +346,27 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
       await outcome([ev(3, 'review_requested')]),
       await outcome([ev(3, 'review_requested'), ev(4, 'verdict', 'barracuda')]),
       await outcome([ev(3, 'merged', 'acrobot')]),
-      // a non-state event after the free one does not hide it (task-usage.ts NON_STATE_KINDS)
-      await outcome([ev(3, 'review_requested'), ev(4, 'decision', 'acrobot'), ev(5, 'project_changed', 'acrobot')]),
-    ], 'FLEET-KIADAS-REFREE claimed').toEqual([claimed, claimed, claimed, claimed])
+      await outcome([ev(3, 'merged', 'acrobot'), ev(4, 'deployed', 'acrobot')]),
+      await outcome([ev(3, 'blocked')]),
+      await outcome([ev(3, 'done')]),
+    ], 'FLEET-KIADAS-REFREE claimed').toEqual([claimed, claimed, claimed, claimed, claimed, claimed])
     expect([
       await outcome([]), // last state: started
       await outcome([ev(3, 'review_requested'), ev(4, 'fix_started')]),
-      await outcome([ev(3, 'merged', 'acrobot'), ev(4, 'assigned', 'acrobot')].map((i) => (i.kind === 'assigned' ? { ...i, ref: 'nautilus', data: { agent: 'nautilus' } } : i))),
-      await outcome([ev(3, 'merged', 'acrobot'), ev(4, 'started')]),
-    ], 'FLEET-KIADAS-REFREE kept').toEqual([kept, kept, kept, kept])
+      await outcome([ev(3, 'merged', 'acrobot'), { ...ev(4, 'assigned', 'acrobot'), ref: 'nautilus', data: { agent: 'nautilus' } }]),
+    ], 'FLEET-KIADAS-REFREE kept').toEqual([kept, kept, kept])
+    // the server decides, not the timeline: the same review_requested history the server still counts as
+    // busy is skipped, and a started history it counts as free is claimed
+    expect([
+      await outcome([ev(3, 'review_requested')], { busy: [{ id: 't5', last_kind: 'review_requested', busy: true }] }),
+      await outcome([], { serverSaysFree: true }),
+    ], 'FLEET-KIADAS-REFREE server').toEqual([kept, claimed])
     // the hand-out's second run after the re-claim writes nothing (the claim is the last state event now)
     install(fake({ items: [...before, ev(3, 'review_requested')] }))
     await run(['kiadas', 't5', 'nautilus'])
     requests = []
     const again = await run(['kiadas', 't5', 'nautilus'])
     expect([again.code, writes()], 'FLEET-KIADAS-REFREE repeat').toEqual([0, []])
-  })
-
-  it('FLEET-KIADAS-REFREE-KINDS: the hand-out\'s non-state list is task-usage.ts NON_STATE_KINDS (a new kind cannot drift)', () => {
-    const src = readFileSync(join(process.cwd(), 'scripts', 'fleet-api.sh'), 'utf-8')
-    const m = src.match(/^NON_STATE=\(([^)]*)\)$/m)
-    const listed = m ? [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]) : null
-    expect(listed, 'FLEET-KIADAS-REFREE-KINDS').toEqual([...NON_STATE_KINDS])
   })
 
   it('FLEET-KIADAS-REPEAT-CLOSED: an unreadable timeline item stops with 1 before any write (no second assigned, restart, message)', async () => {

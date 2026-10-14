@@ -581,9 +581,11 @@ print(json.dumps(b))')"
     #   2  az atado rekord, visszamerve (handoff-read)                         -> 3 tovabbadva
     #   3  az agensnek nincs MASIK foglalt feladata; --parallel "<indok>" atengedi -> 5
     #   4  assigned esemeny, csak ha a feladat meg nincs ennek az agensnek kiadva, VAGY ugyan nala
-    #      van, de az utolso allapot-esemenye review_requested, verdict vagy merged: akkor a
-    #      feladat szabadnak latszik (a foglaltsag es a vezerlopult is igy olvassa), es egy uj
-    #      szakasz kiadasa ujra foglalja. assigned, started vagy fix_started utan nem ir (ismetles).
+    #      van, de a szerver szerint nem foglalja (a 3. lepes busy=1 listajan nincs rajta): az
+    #      utolso allapot-esemenye nem assigned, started vagy fix_started (review_requested, verdict,
+    #      merged, deployed, done, blocked ...), es a vezerlopult is szabadnak mutatja. Egy uj szakasz
+    #      kiadasa ilyenkor ujra foglalja. A szabalyt a szerver adja (task-usage.ts BUSY_KINDS,
+    #      NON_STATE_KINDS es a szunet), a szkriptben nincs masolata.
     #   4b a panel tetlen (idle vagy stopped) ES nincs neki szolo fuggo uzenet -> 8, restart nincs
     #   5  friss inditas a feladat munkamenet-azonositojaval, ha nincs --continue
     #      es a feladaton meg nincs az agensnek munkamenete                    -> 6
@@ -663,6 +665,10 @@ print("1 rendben: %s, felelos %s, profil %s, projekt %s" % (sys.argv[2], agent, 
     BUSY="$(printf '%s' "$KI_JSON" | python3 -c '
 import json,sys
 print(" ".join("%s(%s)" % (t["id"], t.get("last_kind")) for t in json.load(sys.stdin) if t["id"] != sys.argv[1]))' "$TASK")" || exit 1
+    # Is THIS task among the ones keeping the agent busy? (step 4: a free task is claimed again)
+    THIS_BUSY="$(printf '%s' "$KI_JSON" | python3 -c '
+import json,sys
+print(int(any(t.get("id")==sys.argv[1] for t in json.load(sys.stdin))))' "$TASK")" || exit 1
     if [ -n "$BUSY" ]; then
       if [ -z "$PARALLEL" ]; then
         echo "FAIL 3: $AGENT foglalt: $BUSY"
@@ -674,7 +680,7 @@ print(" ".join("%s(%s)" % (t["id"], t.get("last_kind")) for t in json.load(sys.s
       echo "3 rendben: $AGENT nem foglalt"
     fi
     # Mi tortent mar a feladaton? (4, 5 es 6 ismetlesre ebbol dont)
-    read -r HAS_ASSIGNED HAS_SESSION HAS_MESSAGE FREE_KIND < <(printf '%s' "$TIMELINE" | python3 -c '
+    read -r HAS_ASSIGNED HAS_SESSION HAS_MESSAGE < <(printf '%s' "$TIMELINE" | python3 -c '
 import json,sys
 agent=sys.argv[1]
 items=json.load(sys.stdin)["items"]
@@ -684,31 +690,26 @@ if pauses: items=items[pauses[-1]+1:]
 assigned=[i for i in items if i["source"]=="event" and i["kind"]=="assigned"]
 last=assigned[-1] if assigned else None
 to_me = bool(last) and ((last.get("data") or {}).get("agent")==agent or last.get("ref")==agent)
-# The task looks free once its last STATE event is one of these, even though it is still this
-# agent'"'"'s (task-usage.ts BUSY_KINDS): a new stage handed out to the same agent claims it again,
-# or the dashboard shows no active task while the agent works (acrobot, 2026-10-14 15:28,
-# manual assigned 819). The non-state kinds are task-usage.ts NON_STATE_KINDS.
-NON_STATE=("decision","coord_open","coord_close","owner_action","project_changed")
-FREE=("review_requested","verdict","merged")
-states=[i for i in items if i["source"]=="event" and i["kind"] not in NON_STATE]
-free = states[-1]["kind"] if to_me and states and states[-1]["kind"] in FREE else "-"
 session=any(i["source"]=="session" and i["agent"]==agent for i in items)
 message=any(i["source"]=="message" and i.get("to")==agent for i in items)
-print(int(to_me and free=="-"), int(session), int(message), free)' "$AGENT")
+print(int(to_me), int(session), int(message))' "$AGENT")
     # ZARVA hibazik: ures ertek mellett a 4, 5 es 6 ujra lefutna (dupla assigned, restart, uzenet)
     case "${HAS_ASSIGNED:-}${HAS_SESSION:-}${HAS_MESSAGE:-}" in
       [01][01][01]) ;;
       *) echo "FAIL: az idovonalbol nem olvashato, mi tortent mar a feladaton; nem irok semmit"; exit 1 ;;
     esac
-    case "${FREE_KIND:-}" in
-      -|review_requested|verdict|merged) ;;
-      *) echo "FAIL: az idovonalbol nem olvashato, mi tortent mar a feladaton; nem irok semmit"; exit 1 ;;
+    case "${THIS_BUSY:-}" in
+      0|1) ;;
+      *) echo "FAIL: a foglaltsag-valaszbol nem olvashato, foglalja-e ez a feladat; nem irok semmit"; exit 1 ;;
     esac
-    # 4. assigned
-    if [ "${HAS_ASSIGNED:-0}" = "1" ]; then
+    # 4. assigned. A task already handed to this agent is skipped only while it keeps the agent
+    # busy: after review_requested, verdict, merged, deployed, blocked ... it reads as free (busy
+    # check and dashboard), and the next stage must claim it again (acrobot, 2026-10-14 15:28,
+    # the dashboard showed no active task; manual assigned 819; barracuda #132).
+    if [ "${HAS_ASSIGNED:-0}" = "1" ] && [ "$THIS_BUSY" = "1" ]; then
       echo "4 kihagyva: a feladat mar ki van adva $AGENT agensnek"
     else
-      [ "$FREE_KIND" != "-" ] && echo "4 ujra foglal: a feladat $AGENT agensnel van, de az utolso allapot-esemenye $FREE_KIND, tehat szabadnak latszik"
+      [ "${HAS_ASSIGNED:-0}" = "1" ] && echo "4 ujra foglal: a feladat $AGENT agensnel van, de a szerver szerint nem foglalja (az utolso allapot-esemenye nem assigned, started vagy fix_started)"
       DATA="$(AGENT="$AGENT" PARALLEL="$PARALLEL" python3 -c 'import json,os
 d={"agent":os.environ["AGENT"]}
 if os.environ["PARALLEL"]: d["parallel"]=os.environ["PARALLEL"]
