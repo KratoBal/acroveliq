@@ -71,6 +71,10 @@ export const TASK_EVENT_KINDS = [
   'paused',
   'resumed',
   'owner_action',
+  // TC-03 minimum (task deployed-esemeny): a merged change is RUNNING. Written by
+  // `fleet-api.sh deployed` after it measured it (the live fleet tree's HEAD, or the
+  // production image tag); the done guard does not ask for it (a separate decision).
+  'deployed',
 ] as const
 export type TaskEventKind = (typeof TASK_EVENT_KINDS)[number]
 
@@ -375,7 +379,7 @@ const WORK_CLOSE: ReadonlySet<TaskEventKind> = new Set(['review_requested', 'don
   go on with a new started), so it closes the WORK windows only, whoever writes it: admin
   and coord windows overlap as a matter of course and never make a task invalid.
 */
-const TASK_END: ReadonlySet<TaskEventKind> = new Set(['done', 'merged', 'cancelled', 'failed', 'partial'])
+const TASK_END: ReadonlySet<TaskEventKind> = new Set(['done', 'merged', 'deployed', 'cancelled', 'failed', 'partial'])
 const WORK_STOP: ReadonlySet<TaskEventKind> = new Set(['blocked', 'paused'])
 /*
   A PAUSE (Feladatkezelés V1) also closes the admin windows: the hand-out's window must not
@@ -964,7 +968,7 @@ export const NON_STATE_KINDS: readonly TaskEventKind[] = ['decision', 'coord_ope
 /** Every other kind, named: a new kind must be put in one of the two lists (a test holds it; barracuda, #110 and #113). */
 export const STATE_KINDS: readonly TaskEventKind[] = [
   'assigned', 'started', 'review_requested', 'verdict', 'fix_started', 'done', 'merged',
-  'blocked', 'cancelled', 'failed', 'partial', 'paused', 'resumed',
+  'blocked', 'cancelled', 'failed', 'partial', 'paused', 'resumed', 'deployed',
 ]
 export const NON_STATE_SQL = NON_STATE_KINDS.map((k) => `'${k}'`).join(', ')
 /** The task's last event as the busy check and the list read it (see NON_STATE_KINDS). */
@@ -978,7 +982,7 @@ const LAST_STATE_EVENT = (alias: string) =>
   last state event it would end the pause silently. A task is paused while the latest of
   its pause, resume and end events is the pause. A paused task keeps nobody busy.
 */
-export const PAUSE_ENDERS: readonly TaskEventKind[] = ['resumed', 'done', 'merged', 'cancelled', 'failed', 'partial']
+export const PAUSE_ENDERS: readonly TaskEventKind[] = ['resumed', 'done', 'merged', 'deployed', 'cancelled', 'failed', 'partial']
 const PAUSED_SQL = (alias: string) =>
   `(SELECT ${alias}.kind FROM task_events ${alias} WHERE ${alias}.task_id = t.id
      AND ${alias}.kind IN ('paused', ${PAUSE_ENDERS.map((k) => `'${k}'`).join(', ')})

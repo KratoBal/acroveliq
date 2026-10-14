@@ -255,7 +255,7 @@ describe('the task\'s end by someone else', () => {
 describe('the other ends of a task (task-zaro-munkaablak)', () => {
   // the measured case: started then blocked left the work window open, and the same
   // agent's next task turned its calls into overlaps (2026-10-14, on the built functions)
-  it.each(['blocked', 'cancelled', 'failed', 'partial'] as const)(
+  it.each(['blocked', 'cancelled', 'failed', 'partial', 'deployed'] as const)(
     'TASK-USAGE-END: %s by someone else closes murena\'s work window, so her next task is not an overlap',
     (kind) => {
       task('m1')

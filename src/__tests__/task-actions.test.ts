@@ -239,13 +239,13 @@ describe('assign and priority: an event and a message each; a repeat changes not
   })
 
   it('GET /api/tasks closed is open-matters\' CLOSED_KINDS: done and merged closed, coord_close and blocked open', async () => {
-    for (const [id, kinds] of [['d', ['done']], ['m', ['merged']], ['k', ['coord_open', 'coord_close']], ['b', ['started', 'blocked']]] as const) {
+    for (const [id, kinds] of [['d', ['done']], ['m', ['merged']], ['dep', ['merged', 'deployed']], ['k', ['coord_open', 'coord_close']], ['b', ['started', 'blocked']]] as const) {
       existing(id)
       kinds.forEach((k, i) => ev(id, k as TaskEventKind, 'acrobot', NOW() - 50 + i))
     }
     const list = await call(tryHandleTaskUsage, 'GET', '/api/tasks', undefined, ACRO)
     const closed = Object.fromEntries(list.body.map((t: { id: string; closed: boolean }) => [t.id, t.closed]))
-    expect(closed).toEqual({ d: true, m: true, k: false, b: false })
+    expect(closed).toEqual({ d: true, m: true, dep: true, k: false, b: false })
     // and it agrees with what open-matters lists as open
     const open = new Set(allTasks(getDb()).filter((t) => t.last_kind === null || !CLOSED_KINDS.has(t.last_kind)).map((t) => t.id))
     for (const t of list.body) expect(open.has(t.id), t.id).toBe(!t.closed)
