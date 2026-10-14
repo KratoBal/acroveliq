@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
-  HOST_PORTS, SYSTEM_EXACT, networkTargets, globalIpv6, checkIpv6, checkIds, checkCaps, classifyReadable, judgeNetwork, judgeSandboxRun, codexSandboxChecks,
+  HOST_PORTS, SYSTEM_EXACT, networkTargets, globalIpv6, checkIpv6, checkHome, RUNNER_HOME, checkIds, checkCaps, classifyReadable, judgeNetwork, judgeSandboxRun, codexSandboxChecks,
   idsFromStatus, summarize, PINNED_CODEX, FLEET_IDS,
 } from '../../gpt-runner/proba.mjs'
 
@@ -79,6 +79,11 @@ describe('gpt-runner probe: the pure checks', () => {
     expect(classifyReadable(['/home/gptx/a'], '/home/gpt').outside).toEqual(['/home/gptx/a'])
     expect(classifyReadable([lock], null).outside).toEqual([lock])
     expect(classifyReadable(['/etc/x'], '/').own).toEqual([])
+  })
+
+  it('HOME: exactly the runner home; a wider or another HOME is FAIL', () => {
+    expect(RUNNER_HOME).toBe('/home/gpt')
+    expect([checkHome('/home/gpt')[0], checkHome('/home')[0], checkHome('/')[0], checkHome('/home/gpt/')[0], checkHome(undefined)[0]]).toEqual(['OK', 'FAIL', 'FAIL', 'FAIL', 'FAIL'])
   })
 
   it('N1-HOST-PORTS: on the host the public ports are tested too (the first live run reached 10.0.5.1:8000)', () => {
@@ -205,9 +210,15 @@ describe('gpt-runner probe: a live run here, in the fleet container, must come o
       mkdirSync(join(dir, 'home', '.codex'), { recursive: true })
       writeFileSync(join(dir, 'home', '.codex', '.lock'), '')
       const r = spawnSync(process.execPath, [join(__dirname, '..', '..', 'gpt-runner', 'proba.mjs')], {
-        env: { ...process.env, PROBA_CSAK_HELYI: '1', PROBA_GYOKER: dir, HOME: join(dir, 'home') }, encoding: 'utf8', timeout: 60_000,
+        env: { ...process.env, PROBA_CSAK_HELYI: '1', PROBA_GYOKER: dir, HOME: join(dir, 'home'), PROBA_ELVART_HOME: join(dir, 'home') }, encoding: 'utf8', timeout: 60_000,
       })
       expect(r.stdout).toContain(`sajat home (${join(dir, 'home')}): 1 fajl`)
+      expect(r.stdout).toMatch(/^PROBA HOME OK /m)
+      // another HOME than the expected one: FAIL, and no own-home category for it
+      const wide = spawnSync(process.execPath, [join(__dirname, '..', '..', 'gpt-runner', 'proba.mjs')], {
+        env: { ...process.env, PROBA_CSAK_HELYI: '1', PROBA_GYOKER: dir, HOME: dir, PROBA_ELVART_HOME: join(dir, 'home') }, encoding: 'utf8', timeout: 60_000,
+      })
+      expect([/^PROBA HOME FAIL /m.test(wide.stdout), wide.stdout.includes(`sajat home (${dir}): 0 fajl`)]).toEqual([true, true])
       const line = (id: string) => (r.stdout.match(new RegExp(`^PROBA ${id} (\\S+)`, 'm')) || [])[1]
       const expectedG0 = checkIds(idsFromStatus(readFileSync('/proc/self/status', 'utf8')))[0]
       expect([line('G0'), line('F2'), line('N1'), /OSSZESITES ok=\d+ fail=[1-9]/.test(r.stdout)]).toEqual([expectedG0, 'OK', 'NEM_MERHETO', true])
