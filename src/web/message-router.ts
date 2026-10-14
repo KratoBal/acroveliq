@@ -21,7 +21,7 @@ import { readAgentRemoteHost, readAgentVoiceConfig } from './agent-config.js'
 import {
   agentSessionName,
   isSessionReadyForPrompt,
-  isSessionReadyForQueuedPrompt,
+  queuedPromptRefusalForSession,
   clearStaleParkedInput,
   sendPromptToSession,
   sessionExistsOnHost,
@@ -32,6 +32,8 @@ import { detectPaneState, type PaneState } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
+import { forgetSkipReason, recordDeliveryDiag, skipReasonChanged } from './delivery-diag.js'
+import type { BusyPaneReport } from './busy-pane-emit.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
 
 // A message that cannot be delivered within this window (target session never
@@ -647,6 +649,7 @@ export async function runMessageRouterTick(): Promise<void> {
       // what still blocks: a permission question, a menu, a placeholder, typed or parked
       // text, a saturated context.
       let queueDelivery = false
+      let queueRefusal: string | null = null
       const ready = await isSessionReadyForPrompt(session, host)
       if (!ready) {
         // A self-drafted feedback modal ("Bug report drafted ... 0 to dismiss")
@@ -662,9 +665,15 @@ export async function runMessageRouterTick(): Promise<void> {
           routerLoggedMisses.delete(msg.id)
           continue // cleared; deliver on the next tick
         }
-        queueDelivery = await isSessionReadyForQueuedPrompt(session, host)
+        queueRefusal = await queuedPromptRefusalForSession(session, host)
+        queueDelivery = queueRefusal === null
       }
       if (!ready && !queueDelivery) {
+        // which look keeps it waiting, once per change (delivery-diag.ts)
+        const reason = queueRefusal ?? 'unknown'
+        if (skipReasonChanged(msg.id, reason)) {
+          recordDeliveryDiag({ agent: msg.to_agent, msg: msg.id, path: 'skipped', result: 'waiting', reason })
+        }
         // ---- session-stuck detection (card 2922e380 thread a) ----
         // Track how long this session has been continuously not-ready.
         const stuckStart = agentStuckSince.get(msg.to_agent)
@@ -798,9 +807,24 @@ export async function runMessageRouterTick(): Promise<void> {
         // the context that explains the tag semantics.
         // Into a running turn: no idle wait (it would only burn the budget, then send anyway),
         // and the landing check that knows 'busy' is not proof (busyTarget).
+        let report: BusyPaneReport | null = null
         const sent = queueDelivery
-          ? await sendPromptToSession(session, prefix + wrapped, host, { waitForIdle: false, busyTarget: true })
+          ? await sendPromptToSession(session, prefix + wrapped, host, {
+              waitForIdle: false,
+              busyTarget: true,
+              onBusyReport: (r) => {
+                report = r
+              },
+            })
           : await sendPromptToSession(session, prefix + wrapped, host)
+        const r = report as BusyPaneReport | null
+        recordDeliveryDiag({
+          agent: msg.to_agent,
+          msg: msg.id,
+          path: queueDelivery ? 'queued' : 'idle',
+          result: sent,
+          ...(r ? { reason: r.reason, stage: r.stage, chunk: r.chunk, chunks: r.chunks, retries: r.retries } : {}),
+        })
         // delivered = the keystrokes went into the pane; a send that typed nothing stays pending
         if (sent !== 'sent') {
           logger.info({ id: msg.id, to: msg.to_agent, sent }, 'Agent message not typed into the pane; stays pending')
@@ -816,6 +840,7 @@ export async function runMessageRouterTick(): Promise<void> {
         }
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
+        forgetSkipReason(msg.id)
         logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, category, traceId: traceCtx?.trace_id, queued: queueDelivery }, 'Agent message delivered')
       } catch (err) {
         // An inject throw is usually transient (pane un-ready at the instant of
@@ -824,6 +849,7 @@ export async function runMessageRouterTick(): Promise<void> {
         // surface the failure to the orchestrator so it is never silent.
         const failCount = (routerInjectFailures.get(msg.id) ?? 0) + 1
         routerInjectFailures.set(msg.id, failCount)
+        recordDeliveryDiag({ agent: msg.to_agent, msg: msg.id, path: queueDelivery ? 'queued' : 'idle', result: 'threw' })
         if (!shouldGiveUpOnInject(failCount, MAX_INJECT_FAILURES)) {
           logger.warn({ err, id: msg.id, failCount }, 'Failed to inject agent message, will retry next tick')
           continue

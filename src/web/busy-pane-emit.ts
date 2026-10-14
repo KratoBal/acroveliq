@@ -21,7 +21,7 @@
 //
 // I/O is injected (BusyPaneIo) so the decision sequence is tested against a scripted pane
 // that turns into a permission dialog mid-typing.
-import { decideSubmitFollowup, liveInputBoxText, paneShowsOnlyLiveInput } from '../pane-state.js'
+import { decideSubmitFollowup, detectsPastePlaceholder, liveBoxHoldsOnly, liveInputRefusal } from '../pane-state.js'
 
 /** Characters per send-keys write, as on the idle path. */
 export const SEND_KEYS_CHUNK = 80
@@ -62,6 +62,22 @@ export interface BusyPaneIo {
    * (the router sends the whole one again). Not called when nothing was typed.
    */
   abandon?(typed: string): void
+  /** How the send ended, without its content (delivery-diag.ts): called once, on every return. */
+  report?(r: BusyPaneReport): void
+}
+
+/** Where a busy-pane send stopped: the look that failed, by name. No message text. */
+export interface BusyPaneReport {
+  result: 'sent' | 'not-landed'
+  /** the look that refused (liveInputRefusal names, 'not-ours', 'placeholder', 'parked-after-retries') */
+  reason?: string
+  /** 'chunk' (before typing a chunk), 'before-enter', 'after-enter' (incl. retries) */
+  stage?: 'chunk' | 'before-enter' | 'after-enter'
+  /** 1-based index of the chunk whose look refused (stage 'chunk') */
+  chunk?: number
+  chunks: number
+  /** retry Enters pressed before the end */
+  retries: number
 }
 
 export interface BusyPaneEmitConfig {
@@ -75,11 +91,21 @@ export function payloadHead(oneLine: string): string {
   return oneLine.slice(0, 24)
 }
 
-/** The pane shows only the live input box, and the head of our text stands in it. */
-function ourTextInLiveBox(pane: string | null, head: string): boolean {
-  if (pane == null || !paneShowsOnlyLiveInput(pane)) return false
-  const box = liveInputBoxText(pane)
-  return box != null && head.length >= 16 && box.includes(head)
+/**
+ * Why the box may not take the Enter, or null when it may: the pane shows only the live input
+ * box, and what it shows of the box is our text and nothing else (every visible row a piece of
+ * it). Not the head: under a long message the box grows taller than the pane and its head
+ * scrolls out (nautilus, 2026-10-14).
+ */
+function ourTextRefusal(pane: string | null, text: string): string | null {
+  return liveInputRefusal(pane) ?? (liveBoxHoldsOnly(pane!, text) ? null : 'not-ours')
+}
+
+/** The name of the look that made decideSubmitFollowup give up in busyTarget mode. */
+function followupRefusal(pane: string | null): string {
+  const live = liveInputRefusal(pane)
+  if (live) return live
+  return detectsPastePlaceholder(pane!) ? 'placeholder' : 'parked-after-retries'
 }
 
 /**
@@ -90,28 +116,36 @@ function ourTextInLiveBox(pane: string | null, head: string): boolean {
 export async function emitIntoBusyPane(oneLine: string, io: BusyPaneIo, cfg: BusyPaneEmitConfig): Promise<'sent' | 'not-landed'> {
   const chunks = splitForSendKeys(oneLine)
   let typed = ''
-  const notLanded = (): 'not-landed' => {
+  let retries = 0
+  const notLanded = (stage: BusyPaneReport['stage'], reason: string, chunk?: number): 'not-landed' => {
     if (typed.length > 0) io.abandon?.(typed)
+    io.report?.({ result: 'not-landed', reason, stage, ...(chunk != null ? { chunk } : {}), chunks: chunks.length, retries })
     return 'not-landed'
   }
   for (let i = 0; i < chunks.length; i++) {
-    const pane = io.capture()
-    if (pane == null || !paneShowsOnlyLiveInput(pane)) return notLanded()
+    const refusal = liveInputRefusal(io.capture())
+    if (refusal) return notLanded('chunk', refusal, i + 1)
     io.typeChunk(chunks[i]!)
     typed += chunks[i]!
     if (i < chunks.length - 1) await io.delay(cfg.chunkGapMs)
   }
   const head = payloadHead(oneLine)
-  if (!ourTextInLiveBox(io.capture(), head)) return notLanded()
+  const beforeEnter = ourTextRefusal(io.capture(), oneLine)
+  if (beforeEnter) return notLanded('before-enter', beforeEnter)
   io.enter()
   for (let attempt = 0; ; attempt++) {
     await io.delay(cfg.pollMs)
     const pane = io.capture()
-    const action = decideSubmitFollowup(pane, head, attempt, cfg.maxRetries, { busyTarget: true })
-    if (action === 'done') return 'sent'
-    if (action !== 'retry-enter') return notLanded()
+    const action = decideSubmitFollowup(pane, head, attempt, cfg.maxRetries, { busyTarget: true, payload: oneLine })
+    if (action === 'done') {
+      io.report?.({ result: 'sent', chunks: chunks.length, retries })
+      return 'sent'
+    }
+    if (action !== 'retry-enter') return notLanded('after-enter', followupRefusal(pane))
     // the retry Enter gets the same fresh look as the first one
-    if (!ourTextInLiveBox(io.capture(), head)) return notLanded()
+    const beforeRetry = ourTextRefusal(io.capture(), oneLine)
+    if (beforeRetry) return notLanded('after-enter', beforeRetry)
     io.enter()
+    retries++
   }
 }

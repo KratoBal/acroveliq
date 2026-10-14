@@ -19,7 +19,7 @@ import {
   stripAllAnsi,
   paneShowsContextSaturation,
   idleConsideringDimGhost,
-  paneAcceptsQueuedPrompt,
+  queuedPromptRefusal,
   detectsFirstRunGate,
   detectsModelConsentDialog,
   detectsFeedbackDraftModal,
@@ -32,7 +32,7 @@ import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import { atomicWriteFileSync, atomicWriteInTree, atomicWriteGroupPrivate, agentTreeRootOf } from './atomic-write.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
-import { emitIntoBusyPane } from './busy-pane-emit.js'
+import { emitIntoBusyPane, type BusyPaneReport } from './busy-pane-emit.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -2328,7 +2328,7 @@ export async function sendPromptToSession(
   session: string,
   text: string,
   host: string | null = null,
-  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode; busyTarget?: boolean } = {},
+  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode; busyTarget?: boolean; onBusyReport?: (r: BusyPaneReport) => void } = {},
 ): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'not-landed'> {
   const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
   // PANEWRITERS805: the three modal dismissals are probe+act keystroke writers
@@ -2416,6 +2416,7 @@ export async function sendPromptToSession(
         enter: () => runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 }),
         delay,
         abandon: (typed) => recordAbandonedPrompt(session, typed),
+        report: opts.onBusyReport,
       },
       { chunkGapMs: 30, pollMs: SUBMIT_RETRY_POLL_MS, maxRetries: SUBMIT_RETRY_MAX_ATTEMPTS },
     )
@@ -2565,13 +2566,24 @@ export async function sendPromptToSession(
  * plain box shows text. An idle pane answers false (it takes isSessionReadyForPrompt).
  */
 export async function isSessionReadyForQueuedPrompt(session: string, host: string | null = null): Promise<boolean> {
-  const accepts = (plain: string | null): boolean =>
-    plain != null &&
-    (paneAcceptsQueuedPrompt(plain) ||
-      (detectPaneState(plain) === 'busy' && paneAcceptsQueuedPrompt(plain, captureParkedInputView(session, host))))
-  if (!accepts(capturePane(session, host))) return false
+  return (await queuedPromptRefusalForSession(session, host)) === null
+}
+
+/**
+ * isSessionReadyForQueuedPrompt with the refusing look named (queuedPromptRefusal), for the
+ * delivery diagnostics; a refusal only on the confirming second capture ends in '@confirm'.
+ */
+export async function queuedPromptRefusalForSession(session: string, host: string | null = null): Promise<string | null> {
+  const refusal = (plain: string | null): string | null => {
+    const r = queuedPromptRefusal(plain)
+    // a box that shows text may hold only the dim placeholder: read the dim-stripped view
+    return r === 'box-not-free' ? queuedPromptRefusal(plain, captureParkedInputView(session, host)) : r
+  }
+  const first = refusal(capturePane(session, host))
+  if (first) return first
   await delay(PANE_READY_CONFIRM_DELAY_MS)
-  return accepts(capturePane(session, host))
+  const second = refusal(capturePane(session, host))
+  return second ? `${second}@confirm` : null
 }
 
 // How long to wait between the two capture samples when the first one

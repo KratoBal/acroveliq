@@ -13,7 +13,7 @@
 //     box gets no Enter, or a placeholder is Ctrl-C'd (clear-and-resend) into a live turn;
 //   - the old (idle-target) follow-up changes.
 import { describe, it, expect } from 'vitest'
-import { paneAcceptsQueuedPrompt, decideSubmitFollowup } from '../pane-state.js'
+import { paneAcceptsQueuedPrompt, queuedPromptRefusal, decideSubmitFollowup } from '../pane-state.js'
 
 const SEP = '─'.repeat(80)
 const FOOTER = '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents'
@@ -89,6 +89,30 @@ describe('paneAcceptsQueuedPrompt', () => {
       paneAcceptsQueuedPrompt(BUSY_TYPED, BUSY_TYPED),
       paneAcceptsQueuedPrompt(BUSY_TYPED, null),
     ]).toEqual([true, false, false])
+  })
+})
+
+// The diagnostics name the refusing look (delivery-diag.ts). RED if a name drifts from the
+// boolean it stands behind, or two different blockers share a name.
+describe('queuedPromptRefusal: the refusing look by name', () => {
+  it('QUEUE-REASON: every fixture gets its own look name, and null exactly where it is accepted', () => {
+    const cases: Array<[string, string, string | null]> = [
+      ['BUSY_EMPTY', BUSY_EMPTY, null],
+      ['BUSY_QUEUED', BUSY_QUEUED, null],
+      ['IDLE', IDLE, 'not-busy'],
+      ['BUSY_ACCEPT_EDITS', BUSY_ACCEPT_EDITS, 'not-bypass'],
+      ['BUSY_PLACEHOLDER', BUSY_PLACEHOLDER, 'placeholder'],
+      ['BUSY_SATURATED', BUSY_SATURATED, 'context-saturated'],
+      ['BUSY_BOX_AND_QUESTION', BUSY_BOX_AND_QUESTION, 'permission-question'],
+      ['BUSY_BOX_AND_MENU', BUSY_BOX_AND_MENU, 'menu'],
+      ['BUSY_TYPED', BUSY_TYPED, 'box-not-free'],
+      ['BUSY_NO_BOX', BUSY_NO_BOX, 'no-box'],
+      ['BUSY_PERMISSION', BUSY_PERMISSION, 'permission-question'],
+    ]
+    expect(cases.map(([n, p]) => [n, queuedPromptRefusal(p)])).toEqual(cases.map(([n, , r]) => [n, r]))
+    // the name and the boolean never disagree
+    expect(cases.every(([, p]) => (queuedPromptRefusal(p) === null) === paneAcceptsQueuedPrompt(p))).toBe(true)
+    expect([queuedPromptRefusal(BUSY_TYPED, BUSY_EMPTY), queuedPromptRefusal(null), queuedPromptRefusal('  ')]).toEqual([null, 'no-capture', 'no-capture'])
   })
 })
 

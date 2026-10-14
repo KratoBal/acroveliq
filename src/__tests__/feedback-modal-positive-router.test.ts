@@ -68,7 +68,7 @@ vi.mock('../web/agent-process.js', () => ({
   agentSessionName: (name: string) => `agent-${name}`,
   isSessionReadyForPrompt: (...a: unknown[]) => mockIsReady(...(a as [])),
   // a modal-held pane is not a running turn: it never takes a queued message
-  isSessionReadyForQueuedPrompt: vi.fn(async () => false),
+  queuedPromptRefusalForSession: vi.fn(async () => 'not-busy'),
   clearStaleParkedInput: vi.fn(() => false),
   sendPromptToSession: (...a: unknown[]) => mockSendPrompt(...(a as [])),
   sessionExistsOnHost: (...a: unknown[]) => mockSessionExistsOnHost(...a),
