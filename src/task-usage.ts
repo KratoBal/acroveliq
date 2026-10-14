@@ -23,12 +23,13 @@
 // THE WINDOWS come from the events (`task_events`, plus the kanban card's own
 // moves when the task id is a card id):
 //   - work:   from the actor's `started` or `fix_started` to its own next
-//             `review_requested`, or the task's `done` or `merged` by anyone;
+//             `review_requested`, or the task's end (`done`, `merged`, `cancelled`,
+//             `failed`, `partial`) or `blocked` by anyone;
 //   - review: from a `review_requested` to the `verdict` that answers it, for
 //             the verdict's actor;
-//   - admin:  from the actor's `assigned` to the task's `merged` or `done`;
+//   - admin:  from the actor's `assigned` to the task's end;
 //   - coord:  from the actor's `coord_open` to its own `coord_close` (or the task's
-//             `done`/`merged`). The channel session marks the hand-out and the
+//             end). The channel session marks the hand-out and the
 //             take-over of a coordination unit this way (koord-munkamenet, acrobot
 //             msg 29883). A registered SESSION would claim the whole long channel
 //             session, so the mark is a window, not a session.
@@ -351,6 +352,19 @@ export interface TaskWindow {
 
 const WORK_OPEN: ReadonlySet<TaskEventKind> = new Set(['started', 'fix_started'])
 const WORK_CLOSE: ReadonlySet<TaskEventKind> = new Set(['review_requested', 'done', 'merged'])
+/*
+  THE OTHER ENDS OF A TASK (TC-Lite L1 added them, the windows did not learn them). A task
+  that ended in cancelled, failed or partial kept every window open, and one that was
+  blocked kept its worker's work window open: measured 2026-10-14 on the built functions,
+  `started` then `blocked` left the work window at to=null, and the same agent's next task
+  turned each of its calls into an overlap, so that task was not valid (survey
+  feladatkezeles-v1, section 3; task task-zaro-munkaablak). Now cancelled, failed and
+  partial end the task like done: every window closes. blocked is not an end (the work may
+  go on with a new started), so it closes the WORK windows only, whoever writes it: admin
+  and coord windows overlap as a matter of course and never make a task invalid.
+*/
+const TASK_END: ReadonlySet<TaskEventKind> = new Set(['done', 'merged', 'cancelled', 'failed', 'partial'])
+const WORK_STOP: ReadonlySet<TaskEventKind> = new Set(['blocked'])
 
 /** The windows of one task's events (already in time order). */
 export function taskWindows(events: readonly TaskEvent[]): TaskWindow[] {
@@ -390,7 +404,11 @@ export function taskWindows(events: readonly TaskEvent[]): TaskWindow[] {
     // the task's end closes every open window, whoever writes it: acrobot
     // usually merges, and a worker who wrote no close of its own would keep
     // its window open into its next task (barracuda, #18)
-    if (kind === 'merged' || kind === 'done') {
+    if (WORK_STOP.has(kind)) {
+      for (const window of openWork.values()) window.to ??= at
+      openWork.clear()
+    }
+    if (TASK_END.has(kind)) {
       for (const window of [...openAdmin.values(), ...openWork.values(), ...openCoord.values()]) window.to ??= at
       openAdmin.clear()
       openWork.clear()
