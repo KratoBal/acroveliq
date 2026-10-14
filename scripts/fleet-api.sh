@@ -969,10 +969,15 @@ print(json.dumps({"kind":"deployed","actor":"acrobot","ref":ref,"data":data}))')
     CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
     [ "$CODE" = "200" ] || { echo "FAIL http=${CODE:-?} $(printf '%s' "$JSON" | head -c 200)"; exit 1; }
     printf '%s' "$JSON" | python3 -c '
-import json,sys
+import json,sys,time
 d=json.load(sys.stdin)
 rows=[d["task"]]+d["variants"] if "variants" in d else [d]
 M=lambda n: "%.2fM" % (n/1e6)
+HM=lambda ts: time.strftime("%m-%d %H:%M", time.localtime(ts)) if ts else "nincs"
+# HOW FAR THE DATA GOES (task-usage-continue-res): token_usage holds what the collector has
+# read (hourly and at start). A window reaching past its last run is not counted yet, and a 0
+# read then is not a fact: 2026-10-14 a task that ran 100 calls read 0 until the collector ran.
+LR=(d.get("collector_last_run") or {}).get("at")
 def line(name,t):
     return "  %-10s %5d hivas  in %8s  ki %8s  cache-olv %8s  cache-ir %8s" % (name,t["calls"],M(t["input"]),M(t["output"]),M(t["cache_read"]),M(t["cache_write"]))
 bad=False
@@ -983,6 +988,16 @@ for u in rows:
     for k,v in u["by_capacity"].items():
         if v["calls"]: print(line(k,v))
     print("  hozzarendeles: munkamenet %d, idoablak %d; idotartam %s mp" % (u["by_mode"]["session"],u["by_mode"]["window"],u["duration_seconds"]))
+    ing=u.get("ingested")
+    if ing is not None:
+        lc=ing.get("last_call") or {}
+        print("  beolvasva: a gyujto utoljara %s; utolso beolvasott hivas: %s" % (
+            HM(LR) if LR else "ISMERETLEN (ebben a dashboard-folyamatban meg nem futott le)",
+            ", ".join("%s %s" % (a, HM(t)) for a, t in sorted(lc.items())) or "-"))
+        au=ing.get("activity_until")
+        if au and (not LR or au > LR):
+            print("  FIGYELEM: a feladat ablaka eddig tart: %s, a gyujto utolso futasa: %s. Az azutani hivasok meg nincsenek" % (HM(au), HM(LR) if LR else "nincs"))
+            print("    beolvasva, a szam HIANYOS lehet (a 0 is). Teljes szam: POST /api/token-usage/collect (fo agens), vagy a kovetkezo orai kor.")
     if u["repeated_of"]: print("  ismetelt munka, elozmeny: %s" % u["repeated_of"])
     for k,v in u["unassigned"].items():
         if v["calls"]: print("  %s: nem rendelheto, %d hivas az atfedo ablakban (cache-olv %s)" % (k,v["calls"],M(v["cache_read"])))

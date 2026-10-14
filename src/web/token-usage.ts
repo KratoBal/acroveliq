@@ -316,6 +316,14 @@ async function parseJsonlFile(
   return { calls: collapseByMessageId(calls), linesRead: lineNum }
 }
 
+// The collector's last finished run in THIS process (startup and the hourly poll, web.ts).
+// token_usage only holds what it has read, so a task's usage read before the next run misses
+// every later call and can say 0 (task task-usage-continue-res: 2026-10-14, 0 calls for a task
+// that ran 100). The usage route shows it, so the reader knows how far the numbers go.
+export interface TokenCollection { at: number; inserted: number; files: number }
+let lastCollection: TokenCollection | null = null
+export const lastTokenCollection = (): TokenCollection | null => lastCollection
+
 export async function collectTokenUsage(): Promise<{ inserted: number; files: number }> {
   const db = getDb()
   const sources = discoverAgentSources()
@@ -372,6 +380,7 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
     }
   }
 
+  lastCollection = { at: Math.floor(Date.now() / 1000), inserted: totalInserted, files: totalFiles }
   return { inserted: totalInserted, files: totalFiles }
 }
 
