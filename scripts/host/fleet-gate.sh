@@ -67,12 +67,13 @@ DOCSTORE_KEY=""
 ENV_GET_KEY=""
 ENV_GET_NAMES=""
 QUOTE_SYNC_KEY=""
+APP_LOG_KEYS=""
 BACKUP_GET=""     # what this host may hand out: dump:<db> or docstore
 BACKUP_PUT=""  # what this host may store from the other one
 host_config() {
   case "$HOST" in
     acropora-prod-01)
-      OPS="ps system-df df uptime reboot-required apt-check sshd-match builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-sum backup-put backup-prune quote-templates-sync"
+      OPS="ps system-df df uptime reboot-required apt-check sshd-match builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-sum backup-put backup-prune quote-templates-sync app-log"
       # psql-ro connects as fleet_ro, a read-only role with per-table, per-column
       # SELECT grants only (#63; no pg_read_all_data, no superuser):
       # docs/fleet-gate.md, "Telepítés, gépenként"
@@ -83,6 +84,8 @@ host_config() {
       ENV_GET_KEY="t9gxx94ecwekwruxngps5i6v"
       ENV_GET_NAMES="MEDUSA_ADMIN_URL MEDUSA_PROJECTION_SCHEDULE_ENABLED"
       QUOTE_SYNC_KEY="t9gxx94ecwekwruxngps5i6v"
+      # app-log: api, web, partner (the Coolify app uuids, scripts/eles-verziok.sh)
+      APP_LOG_KEYS="t9gxx94ecwekwruxngps5i6v dnt6jzza68wnuamvi93whn28 iknrqjk9xeyydc5fibrk5tbp"
       BACKUP_GET="dump:acropora dump:medusa docstore"
       BACKUP_PUT="dump:acropora_ai"
       ;;
@@ -377,6 +380,24 @@ case "$OP" in
     # not exec: the trap must still remove the file after docker returns
     "$DOCKER" exec -i -w /app -e "APPLY=$apply" "$C" node --input-type=module -e "$PROG" < "$DATA"
     exit $?
+    ;;
+  app-log)
+    # app-log <key> [lines]: the last lines of one production app's log, with
+    # timestamps, stdout and stderr together (Balázs, 2026-10-14 06:53 UTC: the
+    # Coolify API's log endpoint needs read:sensitive, which also hands out the
+    # environment's VALUES, so the fleet does not get it). No follow, no free
+    # --since: a fixed number of lines, 500 by default, at most 5000.
+    [ "$NARGS" -eq 1 ] || [ "$NARGS" -eq 2 ] || deny "'app-log': <kulcs> [sorok]"
+    in_targets "${W[1]}" "$APP_LOG_KEYS" || deny "'app-log': ez az alkalmazás nincs a listán"
+    lines="${W[2]:-500}"
+    case "$lines" in
+      [1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) ;;
+      *) deny "'app-log': a sorok száma 1 és 5000 közötti egész" ;;
+    esac
+    [ "$lines" -le 5000 ] || deny "'app-log': a sorok száma 1 és 5000 közötti egész"
+    C="$(resolve "${W[1]}")" || exit 2
+    allow app-log "${W[1]}" "$lines"
+    exec "$DOCKER" logs --timestamps --tail "$lines" "$C" 2>&1
     ;;
   coolify-deployments|coolify-deploy-log)
     # coolify-deployments <app uuid>: the app's last five deployments

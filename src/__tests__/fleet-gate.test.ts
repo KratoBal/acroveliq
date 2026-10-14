@@ -33,6 +33,8 @@ const STAGE = 'acropora-ai-stage-01'
 const OS_DB = 'iwm34jaqp9xmwb72qkrqkwhy'
 const AI_DB = 'cpnjvtte02yakzs9vb0jffky'
 const API = 't9gxx94ecwekwruxngps5i6v'
+const WEB = 'dnt6jzza68wnuamvi93whn28'
+const PARTNER = 'iknrqjk9xeyydc5fibrk5tbp'
 
 /** One case's world: stubs that log every call, a backup root, a document store. */
 function world(host: string) {
@@ -61,7 +63,7 @@ function world(host: string) {
   const docker = stub(
     'docker',
     `case "$*" in
-  "ps --format {{.Names}}") printf '%s\\n' ${OS_DB}-163020 ${AI_DB}-091011 ${API}-120000 coolify-db xdfswedgxuehokvymhjotpfs-1 ;;
+  "ps --format {{.Names}}") printf '%s\\n' ${OS_DB}-163020 ${AI_DB}-091011 ${API}-120000 coolify-db xdfswedgxuehokvymhjotpfs-1 ${WEB}-120100 ;;
   "ps -a --format {{.Names}}") printf '%s\\n' restore-proba-ai-old coolify-db ;;
   "ps --format {{.Names}}|{{.Image}}|{{.Status}}") echo "${OS_DB}-163020|img|Up" ;;
   *" pg_dump "*) printf 'DUMPDATA' ;;
@@ -71,6 +73,7 @@ function world(host: string) {
   *" find /data/document-store -type f") find "${store}/document-store" -type f ;;
   "exec ${API}-120000 env") printf '%s\\n' MEDUSA_ADMIN_URL=https://admin.example SECRET_KEY=titkos-ertek MEDUSA_PROJECTION_SCHEDULE_ENABLED=true ;;
   *" psql -X -q "*) cat > "${sql}"; echo sor ;;
+  "logs --timestamps --tail "*) echo "2026-10-14T06:00:00Z naplo-sor"; echo "2026-10-14T06:00:01Z hiba-sor" >&2 ;;
   "exec -i -w /app -e APPLY="?" ${API}-120000 node --input-type=module -e "*) cat > "${data}"; echo szinkron ;;
   # the initdb's temporary server answers on the socket only: there the probe
   # looks ready at once, over TCP it is down on the first ask and up on the next
@@ -204,6 +207,21 @@ describe('fleet-gate: what passes', () => {
       [], // the temporary input file is gone after a run
       2,
       [], // and after a refusal
+    ])
+  })
+
+  it('GATE-APP-LOG: the last lines of a listed production app, timestamps on, stderr merged; 500 by default, at most 5000', () => {
+    const p = world(PROD)
+    const def = p.run(`app-log ${API}`)
+    const web = p.run(`app-log ${WEB} 5000`)
+    const call = (r: { calls: string[] }) => r.calls.filter((c) => c.startsWith('docker')).at(-1)
+    expect([def.code, def.out, call(def), web.code, call(web), def.calls.some((c) => c.startsWith('logger') && c.includes(`op=app-log ${API} 500`))], 'GATE-APP-LOG').toEqual([
+      0,
+      '2026-10-14T06:00:00Z naplo-sor\n2026-10-14T06:00:01Z hiba-sor\n',
+      `docker [logs] [--timestamps] [--tail] [500] [${API}-120000]`,
+      0,
+      `docker [logs] [--timestamps] [--tail] [5000] [${WEB}-120100]`,
+      true,
     ])
   })
 
@@ -434,6 +452,19 @@ describe('fleet-gate: what does not pass', () => {
       [p, 'env-names x'],
       [s, 'psql-ro coolify-db coolify', 'select 1;'],
       [p, 'x'.repeat(201)],
+      [p, 'app-log'], // no app
+      [p, `app-log ${OS_DB}`], // a database container is not an app on the list
+      [p, 'app-log coolify-db'],
+      [p, `app-log ${API} 0`],
+      [p, `app-log ${API} 5001`],
+      [p, `app-log ${API} 99999`],
+      [p, `app-log ${API} 0500`], // a leading zero is not a number the gate takes
+      [p, `app-log ${API} abc`],
+      [p, `app-log ${API} -5`],
+      [p, `app-log ${API} 10 --follow`],
+      [p, `app-log ${API} --follow`],
+      [s, `app-log ${API}`], // prod only
+      [p, `app-log ${PARTNER}`], // listed, but no running container by that key: refused, not another one
     ]
     const wrong: string[] = []
     for (const [w, command, input] of refused) {
