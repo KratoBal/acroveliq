@@ -150,3 +150,24 @@ describe('a coordination task cannot lose its type on an update', () => {
     expect((await postTask({ id, type: 'coordination', title: 'uj cim' })).status).toBeLessThan(300)
   })
 })
+
+/*
+  A NAMED, NOT SWALLOWED KEY (task aktualis-munka-ures, acrobot's decision 2026-10-14).
+  MI PIROSÍT: a key the record does not read is dropped with no word (a "felelos" task had
+  no assignee, so it never showed as current work); the English keys show up as ignored;
+  the answer stops being 201 (the existing callers are not measured yet).
+*/
+describe('POST /api/tasks names the keys it does not store', () => {
+  beforeAll(() => { initDatabase(':memory:') })
+  it('TASK-IGNORED: Hungarian keys come back as ignored with 201; the English ones store and ignore nothing', async () => {
+    const hu = await postTask({ id: 'ign-hu', cim: 'Cím', cel: 'Cél', felelos: 'murena' })
+    const huRow = getDb().prepare('SELECT title, assignee FROM tasks WHERE id = ?').get('ign-hu')
+    const en = await postTask({ id: 'ign-en', title: 'Cím', goal: 'Cél', assignee: 'murena' })
+    const enRow = getDb().prepare('SELECT title, assignee FROM tasks WHERE id = ?').get('ign-en')
+    expect([hu.status, hu.body, huRow, en.status, en.body, enRow]).toEqual([
+      201, { id: 'ign-hu', ignored: ['cim', 'cel', 'felelos'] }, { title: null, assignee: null },
+      201, { id: 'ign-en', ignored: [] }, { title: 'Cím', assignee: 'murena' },
+    ])
+  })
+})
+
