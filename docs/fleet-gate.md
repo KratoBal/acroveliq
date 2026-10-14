@@ -166,7 +166,7 @@ Várt az élesen, a fenti szűk listával: `ki|fleet_ro|fleet_ro`; `szerep|f|t|f
 másik Postgres-fürt: a `fleet_ro` ott még nem létezik, és a jogai sem azonosak az élesével. A stage valós adat
 másolata, ezért ugyanaz a szabály áll: táblánkénti és oszloponkénti jog, `pg_read_all_data` nélkül. A lista
 csak azt fedi, amit a termékajánlás mérése kér (vásárolhatóság: aktív, UNAS-státusz, érdeklődéses jelző,
-webshopban eladható); minden további oszlop új döntés. A superuser nevét a konténer maga mondja meg
+webshopban eladható), a UNAS nyers válaszából pedig egy nézeten át csak két kulcsot; minden további oszlop új döntés. A superuser nevét a konténer maga mondja meg
 (a hivatalos Postgres-kép `POSTGRES_USER` változója), nem találjuk ki:
 
 ```bash
@@ -193,18 +193,40 @@ ALTER ROLE fleet_ro SET idle_in_transaction_session_timeout = '60s';
 GRANT USAGE ON SCHEMA public TO fleet_ro;
 GRANT SELECT (id, "isActive", "webshopSellable") ON "Product" TO fleet_ro;
 GRANT SELECT ("productId", channel, "externalStatus") ON "ChannelListing" TO fleet_ro;
-GRANT SELECT ("productId", "rawPayload") ON "UnasProductSnapshot" TO fleet_ro;
 GRANT SELECT (migration_name, started_at, finished_at, rolled_back_at, applied_steps_count) ON _prisma_migrations TO fleet_ro;
+-- a UNAS nyers válaszból CSAK a mérés két kulcsa, egy nézeten át (lásd lent): a rawPayload oszlopra nincs jog
+CREATE VIEW fleet_ro_unas_termek AS
+  SELECT s."productId",
+         jsonb_path_query_first(s."rawPayload", '$.Statuses.Status ? (@.Type == "base").Value') #>> '{}' AS alap_statusz,
+         s."rawPayload"->>'Inquire' AS inquire
+  FROM "UnasProductSnapshot" s;
+GRANT SELECT ON fleet_ro_unas_termek TO fleet_ro;
 SQL
 docker exec "$C" psql -U fleet_ro -d acropora_staging -Atc "select current_user, pg_has_role(current_user, 'pg_execute_server_program', 'member')"
                                              # fleet_ro|f
 docker exec "$C" psql -U "$U" -d acropora_staging -Atc "select count(*) from information_schema.column_privileges where grantee = 'fleet_ro'"
-                                             # 13
+                                             # 14
+docker exec "$C" psql -U "$U" -d acropora_staging -Atc "select pg_get_userbyid(c.relowner), has_column_privilege('fleet_ro', '\"UnasProductSnapshot\"', 'rawPayload', 'select') from pg_class c where c.relname = 'fleet_ro_unas_termek'"
+                                             # a superuser neve|f
 ```
 
-A `rawPayload` a UNAS termék-válasz egésze (ár, készlet, leírás, státuszok, az `Inquire` jelző); személyes adat nincs
-benne, de egy oszlop, tehát egészében olvasható. A kapu a sort csak a fenti két lépés UTÁN használja: amíg a szerep
-nincs meg, a `psql-ro dbpcyjbsbl2gfwtpn1ppw4vc acropora_staging` hibát ad, nem lát többet.
+**Miért nézet, és nem a `rawPayload` oszlop** (acrobot mérése, 2026-10-14 14:3x, az élő UNAS-ból, 1898 termék;
+barracuda, #119): a kliens `ContentType=full` alakkal kéri a terméket, és a tárolt válasz a kliens által nem olvasott
+ágakat is hordozza (`Statistics`, `Datas`, `Stocks`; a `Statistics` forgalmi adat lehet, a `Datas` szabad mező). A
+nézettel ezt nem kell bizonyítani: a `fleet_ro` csak a termék azonosítóját, a UNAS alapstátuszát és az `Inquire`
+jelzőt látja. A nézet a superuseré (a nézet a tulajdonosa jogával olvas), a `fleet_ro` csak `SELECT`-et kap rá, a
+`UnasProductSnapshot` táblára semmit. A `Statuses.Status` egy termékben objektum vagy lista: a `jsonb_path_query_first`
+laza módja mindkettőt bejárja.
+
+**A nézet a Prisma migrációkon KÍVÜL él.** Egy stage adatbázis-újraépítés (`migrate reset`, a teszt adatbázis
+újratöltése) eltünteti, és vele a rajta álló jogot. Ilyenkor a `psql-ro` hívás nem üres eredményt ad, hanem hibát
+(`relation "fleet_ro_unas_termek" does not exist`); ellenőrizni egy sorral lehet:
+`select to_regclass('public.fleet_ro_unas_termek') is not null;` (`t`, ha áll). Újraépítés után a fenti tranzakció
+CSAK a `CREATE VIEW` és az utána álló `GRANT` sorával futtatandó újra (a szerep és a tábla-jogok a fürtben maradnak,
+ha a fürt maga megmaradt; ha nem, az egész blokk).
+
+A kapu a sort csak a fenti lépések UTÁN használja: amíg a szerep nincs meg, a
+`psql-ro dbpcyjbsbl2gfwtpn1ppw4vc acropora_staging` hibát ad, nem lát többet.
 
 A szerepnek **nincs jelszava, és nem is kap**: a kapu `docker exec`-kel, a konténeren BELÜL, a
 helyi socketen csatlakozik, és a hivatalos Postgres-kép a helyi socketet engedi. Ha a fenti
