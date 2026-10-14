@@ -5,10 +5,21 @@
 # fleet's container); the persistence is measured by removing the rules and letting the unit
 # put them back, and by the unit's enablement and its docker binding.
 set -euo pipefail
+# a silent stop under set -e is the worst kind (barracuda, #140 review 1; it happened on the host today)
+trap 'echo "STOP: a telepito a(z) $LINENO. sorban megallt ennel a parancsnal: $BASH_COMMAND" >&2' ERR
 SRC=/opt/gpt-futtato/src/gpt-runner
 BRIDGE=gptki0
 
 command -v systemctl >/dev/null || { echo "STOP: nincs systemd a gepen, a tartos inditas ezzel a unittal nem oldhato meg"; exit 1; }
+
+# 0. what else shapes the firewall (barracuda, #140 review 3 and 4): another iptables backend than
+# Docker's would leave our DOCKER-USER jump in an unwired chain; ufw/firewalld may reorder INPUT
+echo "== tuzfal-kornyezet"
+iptables -V
+docker info 2>/dev/null | grep -iE 'firewall|iptables' || echo "(a docker info nem nevez meg tuzfal-hatteret)"
+for fw in ufw firewalld; do
+  if systemctl is-active --quiet "$fw" 2>/dev/null; then echo "FIGYELEM: a $fw fut; egy ujratoltese az INPUT-ot atrendezheti, a unit ilyenkor nem fut ujra"; else echo "$fw: nem fut"; fi
+done
 
 # 1. the script and the unit, root-owned
 install -o root -g root -m 755 "$SRC/host/tuzfal.sh" /opt/gpt-futtato/tuzfal.sh
@@ -26,6 +37,7 @@ systemctl restart gpt-futtato-tuzfal.service
 echo "== a szabalyok a unit ujrafuttatasa utan"
 iptables -S INPUT | grep -F GPTF-GEP || { echo "STOP: az INPUT ugras hianyzik"; exit 1; }
 iptables -S DOCKER-USER | grep -F GPTF-PRIVAT || { echo "STOP: a DOCKER-USER ugras hianyzik"; exit 1; }
+iptables -S FORWARD | grep -F -- '-j DOCKER-USER' || echo "FIGYELEM: a FORWARD nem ugrik a DOCKER-USER-re ebben az iptables-hatterben; a privat-tartomany szabaly igy nem hat (a proba N1-je megmutatja)"
 iptables -S GPTF-GEP
 iptables -S GPTF-PRIVAT
 echo "== a unit kotesei (boot es docker-ujrainditas)"
@@ -34,7 +46,8 @@ systemctl show -p WantedBy -p PartOf -p After -p ActiveState gpt-futtato-tuzfal.
 systemctl show -p WantedBy gpt-futtato-tuzfal.service | grep -q 'docker.service' || echo "FIGYELEM: a docker.service nem huzza be a unitot (WantedBy)"
 
 # 3. the host's own IPv4 addresses for the probe (gateway, public, tailnet): all must be closed
-GEP=$(hostname -I | tr ' ' '\n' | grep -v ':' | grep -v '^$' | paste -sd, -)
+GEP=$(hostname -I | tr ' ' '\n' | { grep -v ':' || true; } | { grep -v '^$' || true; } | paste -sd, -)
+[ -n "$GEP" ] || echo "FIGYELEM: a gepnek nincs IPv4 cime a hostname -I szerint; a proba csak az atjarot nezi"
 sed -i '/^GPT_FUTTATO_GEP_CIMEK=/d' /opt/gpt-futtato/.env
 echo "GPT_FUTTATO_GEP_CIMEK=$GEP" >> /opt/gpt-futtato/.env
 cat /opt/gpt-futtato/.env

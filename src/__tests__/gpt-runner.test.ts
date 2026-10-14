@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
-  HOST_PORTS, SYSTEM_EXACT, networkTargets, checkIds, checkCaps, classifyReadable, judgeNetwork, judgeSandboxRun, codexSandboxChecks,
+  HOST_PORTS, SYSTEM_EXACT, networkTargets, globalIpv6, checkIpv6, checkIds, checkCaps, classifyReadable, judgeNetwork, judgeSandboxRun, codexSandboxChecks,
   idsFromStatus, summarize, PINNED_CODEX, FLEET_IDS,
 } from '../../gpt-runner/proba.mjs'
 
@@ -84,6 +84,14 @@ describe('gpt-runner probe: the pure checks', () => {
     expect(judgeNetwork(closed, { host: 'api.openai.com', port: 443, open: true })[0]).toBe('OK')
     expect(judgeNetwork(closed, { host: 'api.openai.com', port: 443, open: false })[0]).toBe('NEM_MERHETO')
     expect(judgeNetwork([...closed, { host: '172.17.0.1', port: 3425, open: true }], { host: 'api.openai.com', port: 443, open: true })).toEqual(['FAIL', 'valaszolt: 172.17.0.1:3425'])
+  })
+
+  it('IPV6: a global IPv6 address is reported (the host rules are IPv4 only); link-local and lo are not', () => {
+    const lo = '00000000000000000000000000000001 01 80 10 80       lo'
+    const ll = 'fe800000000000000000000000000002 1a 40 20 80     eth0'
+    const glob = '20010db8000000000000000000000005 1a 40 00 00     eth0'
+    expect([globalIpv6(''), globalIpv6([lo, ll].join('\n')), globalIpv6([lo, ll, glob].join('\n'))]).toEqual([[], [], ['eth0:20010db8000000000000000000000005']])
+    expect([checkIpv6([lo, ll].join('\n'))[0], checkIpv6([lo, glob].join('\n'))[0]]).toEqual(['OK', 'FAIL'])
   })
 
   it('summarize counts each verdict; NEM_MERHETO is never OK', () => {
@@ -271,5 +279,10 @@ esac
     expect(inst).toMatch(/systemctl enable --now gpt-futtato-tuzfal\.service/)
     expect(/systemctl (restart|stop) docker/.test(inst)).toBe(false)
     expect(inst).toMatch(/\^PROBA N1 NEM_MERHETO[\s\S]*STOP/)
+    // barracuda, #140 review: no silent stop; the backend, the FORWARD wiring and ufw/firewalld said
+    expect(inst).toMatch(/^trap '.*STOP.*\$LINENO.*' ERR$/m)
+    expect(inst).toMatch(/iptables -V/)
+    expect(inst).toMatch(/iptables -S FORWARD \| grep -F -- '-j DOCKER-USER' \|\| echo "FIGYELEM/)
+    expect(inst).toMatch(/for fw in ufw firewalld/)
   })
 })
