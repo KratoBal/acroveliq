@@ -36,7 +36,8 @@
 #         (a lejarat a KATEGORIABOL jon, nem adhato meg hivaskor -- lasd a parancsnal)
 #   bash scripts/fleet-api.sh approval-get <id>
 #   bash scripts/fleet-api.sh task-new <task_id> [projekt] [szulo] [valtozat] [brief]
-#   bash scripts/fleet-api.sh task-new <task_id> - < feladat.json   # cim, cel, felelos, profil...
+#   bash scripts/fleet-api.sh task-new <task_id> - < feladat.json   # ANGOL kulcsok: title, goal, assignee, reviewer, verification_profile, priority...
+#         (egy ismeretlen kulcsot, pl. a magyar "felelos"-t, a szerver NEM tarol: a valasz "ignored"-ban sorolja, a parancs figyelmeztet)
 #   bash scripts/fleet-api.sh task-event <task_id> <fajta> <szereplo> [ido] [hivatkozas] [--data - < adat.json]
 #   bash scripts/fleet-api.sh task-timeline <task_id>
 #   bash scripts/fleet-api.sh open-matters         # a nyitott ugyek osszefoglaloja (koord-munkamenet)
@@ -357,8 +358,25 @@ if not isinstance(d, dict):
     sys.exit("FAIL: a STDIN egy JSON objektum legyen")
 d["id"]=sys.argv[1]
 print(json.dumps(d))' "$TASK")" || exit 1
-      post /tasks "$BODY"
-      exit $?
+      # A post a parancs-behelyettesitesben fut: a sajat `exit`-je csak az alhejbol lep ki,
+      # ezert a kodot itt kell tovabbadni, kulonben egy elbukott hivas utan is 0 jonne.
+      OUT="$(post /tasks "$BODY")"; RC=$?
+      printf '%s\n' "$OUT"
+      [ "$RC" -eq 0 ] || exit "$RC"
+      # A szerver az el nem olvasott kulcsokat az "ignored" listaban nevezi meg (aktualis-munka-ures):
+      # egy "felelos" kulcsu feladatnak nincs felelose, tehat SOHA nem lesz Aktualis munka.
+      # Figyelmeztetes a stderr-re, a kilepes 0 marad (acrobot dontese, 2026-10-14).
+      python3 -c '
+import json,sys
+try:
+    d=json.loads(sys.argv[1])
+except ValueError:
+    sys.exit(0)
+ig=d.get("ignored") if isinstance(d, dict) else None
+if ig:
+    print("FIGYELEM: a szerver ezeket a kulcsokat NEM tarolta (ismeretlen mezo): %s. Angol kulcsok kellenek: title, goal, acceptance, assignee, reviewer, authorization_ref, verification_profile, kanban_card_id, priority, project, type, parent_task, variant, brief_ref." % ", ".join(map(str, ig)), file=sys.stderr)
+' "$OUT"
+      exit 0
     fi
     argc_max 5 "$#" "fleet-api.sh task-new <task_id> [projekt] [szulo_feladat] [valtozat] [brief_hivatkozas]"
     TASK="${1:?task id required}"
