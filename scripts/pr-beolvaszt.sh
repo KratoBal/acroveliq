@@ -127,6 +127,13 @@ if [ -z "$TASK" ]; then
     exit 2
   fi
 fi
+# PROJEKTEK V1 (Balazs, A valtozat): a PR repoja a feladat projektjee-e. Naplo modban CSAK kiir,
+# nem allit meg (a szerver a merged esemenyt amugy is megjeloli, ha nem az).
+if [ -n "$TASK" ]; then
+  PCHK="$(bash "$(dirname "${BASH_SOURCE[0]}")/fleet-api.sh" project-repo "$TASK" "$REPO" 2>&1)" \
+    || PCHK="FIGYELEM (projekt): az ellenorzes nem futott: $(printf '%s' "$PCHK" | head -c 160)"
+  echo "$PCHK" >&2
+fi
 TOK="$(cat /home/marveen/marveen/store/.github-token)"
 
 # === A TARTAS-LISTA ===

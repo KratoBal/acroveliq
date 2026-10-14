@@ -544,3 +544,62 @@ describe('fleet-api.sh deployed (TC-03 minimum)', () => {
       .toEqual([5, 0, 0, 1, true])
   })
 })
+
+// Projektek V1, PR C (task t-20261014-acroveliiq-projektkezeles-d3f1). WHAT TURNS THIS RED:
+//   - task-new creates a NEW task without a project (it would fall under acropora and the os
+//     filter would stay empty: barracuda, 30541), or stops an EXISTING task's update for it;
+//   - the server's project_warning is swallowed;
+//   - task-project does not go to POST /api/tasks/:id/project;
+//   - project-repo stays silent on a repo outside the project, or does not say an unknown project.
+describe('fleet-api.sh, Projektek V1', () => {
+  const PROJ = [
+    { id: 'acropora', name: 'Flotta és közös', repos: ['KratoBal/marveen', 'KratoBal/acropora-os'], aliases: [], legacy_mixed: true },
+    { id: 'os', name: 'Acropora OS', repos: ['KratoBal/acropora-os'], aliases: [], legacy_mixed: false },
+  ]
+  const fake = (exists: boolean, fields: Record<string, unknown> = {}, postBody: unknown = { id: 'p1', ignored: [] }) => {
+    requests = []
+    router = (method, path) => {
+      if (method === 'GET' && path === '/api/tasks/p1/timeline') return exists ? [200, { task: 'p1', fields, items: [] }] : [404, { error: 'no task p1' }]
+      if (method === 'GET' && path === '/api/projects') return [200, PROJ]
+      if (method === 'POST' && path === '/api/tasks') return [201, postBody]
+      if (method === 'POST' && path === '/api/tasks/p1/project') return [200, { id: 'p1', project: 'os', from: 'acropora' }]
+      return [599, { error: `unexpected ${method} ${path}` }]
+    }
+  }
+  const posts = () => requests.filter((r) => r.method === 'POST').map((r) => [r.path, r.body])
+  afterAll(() => { router = null })
+
+  it('PROJ-TASK-NEW: a new task needs a project, in both forms; an existing one does not; the warning reaches stderr', async () => {
+    fake(false)
+    const json = await run(['task-new', 'p1', '-'], JSON.stringify({ title: 'x' }))
+    const jsonPosts = posts().length
+    fake(false)
+    const positional = await run(['task-new', 'p1'])
+    const positionalPosts = posts().length
+    fake(false)
+    const ok = await run(['task-new', 'p1', '-'], JSON.stringify({ title: 'x', project: 'os' }))
+    const okBody = posts()[0]?.[1] as Record<string, unknown> | undefined
+    fake(true, {}, { id: 'p1', ignored: [], project_warning: 'project kept: the task is os' })
+    const existing = await run(['task-new', 'p1', '-'], JSON.stringify({ title: 'y' }))
+    expect([json.code, jsonPosts, /projekt kell.*acropora\|os/.test(json.out), positional.code, positionalPosts, ok.code, okBody?.project, existing.code, /FIGYELEM \(projekt\): project kept/.test(existing.out)],
+      'PROJ-TASK-NEW').toEqual([4, 0, true, 4, 0, 0, 'os', 0, true])
+  })
+
+  it('PROJ-TASK-PROJECT and PROJ-REPO: the change goes to its route; the repo check says in, out and unknown', async () => {
+    fake(true)
+    const change = await run(['task-project', 'p1', 'os', 'OS munka'])
+    const changePost = posts()
+    fake(true, { project: 'os', project_id: 'os' })
+    const inside = await run(['project-repo', 'p1', 'KratoBal/acropora-os'])
+    fake(true, { project: 'os', project_id: 'os' })
+    const outside = await run(['project-repo', 'p1', 'KratoBal/marveen'])
+    fake(true, { project: 'webshop', project_id: null })
+    const unknown = await run(['project-repo', 'p1', 'KratoBal/marveen'])
+    fake(false)
+    const down = await run(['project-repo', 'p1', 'KratoBal/marveen'])
+    expect([change.code, changePost, /^PROJEKT rendben: a KratoBal\/acropora-os a\(z\) os projekte$/m.test(inside.out), /FIGYELEM.*NEM a\(z\) os projekte/.test(outside.out), outside.code, /webshop\) nincs a nyilvantartasban/.test(unknown.out), down.code],
+      'PROJ-TASK-PROJECT / PROJ-REPO').toEqual([
+      0, [['/api/tasks/p1/project', { project: 'os', reason: 'OS munka' }]], true, true, 0, true, 1,
+    ])
+  })
+})
