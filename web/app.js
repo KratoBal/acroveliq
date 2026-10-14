@@ -16957,7 +16957,7 @@ const AQ_PRIORITY = { urgent: 'Sürgős', high: 'Magas', normal: 'Normál', low:
 const AQ_PRIORITY_TONE = { urgent: 'red', high: 'orange', normal: 'grey', low: 'grey' }
 
 const aqState = { view: 'overview', filter: 'all', detail: null, data: null, loading: false, decision: null, decBusy: null, decMsg: null,
-  form: null, taskBusy: false, taskMsg: null, edit: null }
+  form: null, taskBusy: false, taskMsg: null, edit: null, project: '' }
 
 const aqEsc = (v) => escapeHtml(v === null || v === undefined ? '' : String(v))
 
@@ -17041,10 +17041,13 @@ function aqAgentState(act) {
   return { key: 'unknown', label: 'Nem ismert', tone: 'grey' }
 }
 
+// Projektek V1: the selected project is a SERVER filter (?project=); '' is every project
+const aqProjectQuery = () => (aqState.project ? '?project=' + encodeURIComponent(aqState.project) : '')
+
 async function aqLoadData() {
-  const [tasks, agents, activity, backlog, openMatters] = await Promise.all([
-    aqGet('/api/tasks'), aqGet('/api/agents'), aqGet('/api/agents/activity'), aqGet('/api/messages/backlog'),
-    aqGet('/api/open-matters'),
+  const [tasks, agents, activity, backlog, openMatters, projects] = await Promise.all([
+    aqGet('/api/tasks' + aqProjectQuery()), aqGet('/api/agents'), aqGet('/api/agents/activity'), aqGet('/api/messages/backlog'),
+    aqGet('/api/open-matters' + aqProjectQuery()), aqGet('/api/projects'),
   ])
   const taskList = tasks.ok && Array.isArray(tasks.value) ? tasks.value : []
   const actList = activity.ok && Array.isArray(activity.value) ? activity.value : []
@@ -17070,7 +17073,8 @@ async function aqLoadData() {
     }
   })
   const items = openMatters.ok && openMatters.value && openMatters.value.items ? openMatters.value.items : null
-  return { tasks: taskList, team, errors: { tasks, agents, activity, backlog, openMatters }, backlog: backlogList, items, at: Date.now() }
+  const projectList = projects.ok && Array.isArray(projects.value) ? projects.value : []
+  return { tasks: taskList, team, errors: { tasks, agents, activity, backlog, openMatters, projects }, backlog: backlogList, items, projects: projectList, at: Date.now() }
 }
 
 // Only the measurable technical kinds (brief, item 4): a parked dialog, an old
@@ -17097,8 +17101,32 @@ function aqStalls(data) {
 function aqSourceNote(data) {
   const missing = Object.entries(data.errors).filter(([, r]) => !r.ok)
   if (!missing.length) return ''
-  const names = { tasks: 'feladatlista', agents: 'ágenslista', activity: 'panel-állapot', backlog: 'üzenetsor', openMatters: 'nyitott ügyek' }
+  const names = { tasks: 'feladatlista', agents: 'ágenslista', activity: 'panel-állapot', backlog: 'üzenetsor', openMatters: 'nyitott ügyek', projects: 'projektlista' }
   return `<div class="aq-note aq-note-warn">Nem elérhető adatforrás: ${missing.map(([k, r]) => aqEsc(names[k] + ' (' + r.error + ')')).join(', ')}. Az ebből számolt értékek hiányoznak, nem nullák.</div>`
+}
+
+// Projektek V1. The project of a row is the server's reading of it (project_id); a stored value the
+// registry does not know is shown as such in the "Mind" view, or it would vanish from every project.
+function aqProjectName(data, id) {
+  const p = (data.projects || []).find((x) => x.id === id)
+  return p ? p.name : id
+}
+function aqProjectPill(data, t) {
+  if (t.project_id) return aqPill(aqProjectName(data, t.project_id), 'grey')
+  return t.project ? aqPill('Ismeretlen projekt: ' + t.project, 'red') : ''
+}
+// the old tasks stay where they were (Balázs, variant A): the page says the wide project also holds them
+function aqLegacyNote(data) {
+  const p = (data.projects || []).find((x) => x.id === aqState.project)
+  return p && p.legacy_mixed
+    ? `<p class="aq-note">A ${aqEsc(p.name)} projekt korábbi, vegyes besorolású feladatokat is tartalmaz: a projektek bevezetése előtti feladatok mind itt állnak, akkor is, ha egy másik projekthez tartoznának.</p>`
+    : ''
+}
+function aqFillProjectSelect(data) {
+  const sel = document.getElementById('aqProject')
+  if (!sel) return
+  const want = aqState.project
+  sel.innerHTML = '<option value="">Mind</option>' + (data.projects || []).map((p) => `<option value="${aqEsc(p.id)}"${p.id === want ? ' selected' : ''}>${aqEsc(p.name)}</option>`).join('')
 }
 
 function aqStat(label, value, sub, tone) {
@@ -17116,7 +17144,7 @@ function aqTaskRow(t) {
     <span class="aq-row-main"><span class="aq-row-title">${aqEsc(t.title || t.id)}</span>
       <span class="aq-row-sub">${aqEsc(t.id)}${aqEsc(waits)}</span>
       <span class="aq-row-who">${aqEsc(who)}</span></span>
-    ${aqStatusPill(t)}</button>`
+    ${aqState.project ? '' : aqProjectPill(aqState.data || {}, t)} ${aqStatusPill(t)}</button>`
 }
 
 function aqAgentRow(a) {
@@ -17143,7 +17171,7 @@ function aqRenderOverview(data) {
   const working = data.team.filter((a) => a.state.key === 'working')
   const stalls = aqStalls(data)
   const actOk = data.errors.activity.ok
-  return `
+  return `${aqLegacyNote(data)}
     <div class="aq-stats">
       ${aqStat('Aktív feladat', data.errors.tasks.ok ? active.length : '—', 'Task Core, utolsó esemény szerint', 'orange')}
       ${aqStat('Dolgozó ágens', actOk ? `${working.length} / ${data.team.length}` : '—', 'élő panel-állapot', 'blue')}
@@ -17223,6 +17251,8 @@ function aqTaskForm(data) {
   return `<section class="aq-card aq-form">
     <h2>Új feladat</h2>
     <p class="aq-muted">A követelmény feltárása a Discordon marad; itt a feladat rekordja jön létre. Kiadni (ágenst indítani) Acrobot fog.</p>
+    <label class="aq-label" for="aqfProject">Projekt (kötelező)</label>
+    <select id="aqfProject" class="aq-input" data-aq-field="project">${opt('', 'Válassz projektet', f.project)}${(data.projects || []).map((p) => opt(p.id, p.name, f.project)).join('')}</select>
     <label class="aq-label" for="aqfTitle">Cím</label>
     <input id="aqfTitle" class="aq-input" data-aq-field="title" maxlength="200" value="${aqEsc(f.title)}">
     <label class="aq-label" for="aqfGoal">Mi a cél, mi számít késznek?</label>
@@ -17253,6 +17283,7 @@ function aqRenderTasks(data) {
   return `
     ${aqState.form ? aqTaskForm(data) : `<div class="aq-dec-actions"><button type="button" class="aq-dec-btn aq-dec-yes" data-aq-new>Új feladat</button></div>`}
     ${created}
+    ${aqLegacyNote(data)}
     <div class="aq-stats">
       ${aqStat('Folyamatban', groups.active || 0, null)}
       ${aqStat('Ellenőrzésben', groups.review || 0, null)}
@@ -17409,6 +17440,7 @@ async function aqRenderTaskDetail(data, id) {
       <p class="aq-muted">${aqEsc(f.goal || 'Nincs megadott cél.')}</p>
       <div class="aq-pills">${aqStatusPill(task)} ${aqPill('Felelős: ' + (f.assignee || 'Acrobot osztja ki'), 'grey')} ${aqPill('Reviewer: ' + (f.reviewer || '—'), 'grey')}
         ${f.priority ? aqPill('Prioritás: ' + (AQ_PRIORITY[f.priority] || f.priority), AQ_PRIORITY_TONE[f.priority] || 'grey') : ''}
+        ${f.project_id ? aqPill('Projekt: ' + aqProjectName(data, f.project_id), 'grey') : f.project ? aqPill('Ismeretlen projekt: ' + f.project, 'red') : ''}
         ${f.verification_profile ? aqPill('Profil: ' + f.verification_profile, 'grey') : ''} ${aqPill(task.id, 'grey')}</div>
       ${aqPhases(items, task)}</section>
     <div class="aq-grid aq-grid-detail">
@@ -17495,10 +17527,16 @@ const aqRefusal = (out, what) => out.status === 403
 async function aqTaskCreateClick() {
   const f = aqState.form
   if (!f || aqState.taskBusy) return
+  // before the busy mark: a refusal here must not leave the buttons disabled
+  if (!f.project) {
+    aqState.taskMsg = { form: true, ok: false, text: 'Válassz projektet: új feladat csak projekttel jöhet létre.' }
+    await aqRender()
+    return
+  }
   aqState.taskBusy = true
   aqState.taskMsg = null
   await aqRender()
-  const out = await aqTaskWrite(null, { title: f.title, goal: f.goal, assignee: f.assignee || null, priority: f.priority, brief_ref: f.brief_ref || undefined }, f.key)
+  const out = await aqTaskWrite(null, { project: f.project, title: f.title, goal: f.goal, assignee: f.assignee || null, priority: f.priority, brief_ref: f.brief_ref || undefined }, f.key)
   aqState.taskBusy = false
   if (out.ok && out.value && out.value.task) {
     aqState.form = null
@@ -17682,6 +17720,7 @@ async function aqRender() {
   else if (aqState.view === 'decisions') html = aqRenderDecisions(d)
   else html = aqRenderOverview(d)
   if (seq !== aqRenderSeq) return
+  aqFillProjectSelect(d)
   body.innerHTML = aqSourceNote(d) + html
   const stamp = document.getElementById('aqStamp')
   if (stamp) stamp.textContent = 'frissítve ' + new Date(d.at).toLocaleTimeString('hu-HU', { timeZone: 'Europe/Budapest' })
@@ -17720,6 +17759,13 @@ function aqWire() {
   if (aqWired) return
   aqWired = true
   document.getElementById('aqRefresh')?.addEventListener('click', () => loadAcroveliq())
+  // Projektek V1: switching the project reloads from the server with ?project=
+  document.getElementById('aqProject')?.addEventListener('change', (e) => {
+    aqState.project = e.target.value || ''
+    aqState.detail = null
+    aqState.filter = 'all'
+    loadAcroveliq()
+  })
   document.getElementById('aqTabs')?.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-aq-view]')
     if (!btn) return
@@ -17745,7 +17791,8 @@ function aqWire() {
   })
   document.getElementById('aqBody')?.addEventListener('click', (e) => {
     if (e.target.closest('[data-aq-new]')) {
-      aqState.form = { key: aqNewKey(), title: '', goal: '', assignee: '', priority: 'normal', brief_ref: '' }
+      // the selected project is the default; with "Mind" the owner picks one
+      aqState.form = { key: aqNewKey(), project: aqState.project || '', title: '', goal: '', assignee: '', priority: 'normal', brief_ref: '' }
       aqState.taskMsg = null
       aqRender()
       return
