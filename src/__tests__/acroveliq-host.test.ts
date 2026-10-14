@@ -343,7 +343,7 @@ describe('/api/open-matters on the AcrovelIQ surface gives the Döntéseim group
   })
 
   const ROW = {
-    id: 'd1', task_id: 't', summary: 's', reason: 'r', consequence: 'c', status: 'pending', requested_at: 1,
+    id: 'd1', requested_by: 'acrobot', task_id: 't', summary: 's', reason: 'r', consequence: 'c', status: 'pending', requested_at: 1,
     timeout_at: 2, resolved_at: null, resolved_by: null, discuss_requested_at: null, discord_message: null,
   }
   it('the view picks: a field added to the builder later does not reach the surface', () => {
@@ -357,7 +357,7 @@ describe('/api/open-matters on the AcrovelIQ surface gives the Döntéseim group
         dontes: {
           pending: [{ ...ROW, action_payload: 'titok', agent_id: 'acrobot' }],
           discuss: [], discord_replied: [], expired: [], recent: [],
-          recent_discord: [{ task: 't', handoff: 6, what: 'w', quote: 'q', discord_message: '1559851364950220852', at: 7, record: 'titok' }],
+          recent_discord: [{ task: 't', handoff: 6, what: 'w', quote: 'q', discord_messages: ['1559851364950220852'], at: 7, record: 'titok' }],
           later: [{ id: 'x' }],
         },
       },
@@ -370,7 +370,7 @@ describe('/api/open-matters on the AcrovelIQ surface gives the Döntéseim group
         balazs_questions: [{ task: 't', handoff: 5, index: 0, from: 'Balazs', what: 'c' }],
         dontes: {
           pending: [ROW], discuss: [], discord_replied: [], expired: [], recent: [],
-          recent_discord: [{ task: 't', handoff: 6, what: 'w', quote: 'q', discord_message: '1559851364950220852', at: 7 }],
+          recent_discord: [{ task: 't', handoff: 6, what: 'w', quote: 'q', discord_messages: ['1559851364950220852'], at: 7 }],
         },
       },
     })

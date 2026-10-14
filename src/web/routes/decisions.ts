@@ -1,6 +1,6 @@
-import { MAIN_AGENT_ID } from '../../config.js'
+import { DECISION_OWNER_USER, MAIN_AGENT_ID } from '../../config.js'
 import { getDb } from '../../db.js'
-import { attachDiscordReply, decide, DECISION_ACTIONS, type DecisionAction } from '../../decisions.js'
+import { attachDiscordReply, decide, decisionOwner, DECISION_ACTIONS, type DecisionAction } from '../../decisions.js'
 import { callerOfContext } from '../field-gate.js'
 import { json, readBody } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
@@ -8,11 +8,12 @@ import type { RouteContext } from './types.js'
 // Dontéseim V1 (task dontesek-v1-backend). See src/decisions.ts.
 //
 //   POST /api/decisions/:id                {action: approve|reject|discuss}
-//        the owner's answer on a decision row. ONLY the logged-in session, in every
-//        access mode and on both surfaces: a device key, an agent token or the shared
-//        token gets a 403 even where the access mode only logs (Balázs's requirement 1,
-//        2026-10-14 08:52:26 UTC, msg 1559851364950220852). This is the one write the
-//        AcrovelIQ host lets through (acroveliq-host.ts).
+//        the owner's answer on a decision row. ONLY the logged-in session of the
+//        configured owner (DECISION_OWNER_USER; unset: nobody), in every access mode and
+//        on both surfaces: another dashboard user, a device key, an agent token or the
+//        shared token gets a 403 even where the access mode only logs (Balázs's
+//        requirement 1, 2026-10-14 08:52:26 UTC, msg 1559851364950220852; barracuda's
+//        review of #104). This is the one write the AcrovelIQ host lets through.
 //   POST /api/decisions/:id/discord-reply  {message_id}
 //        the main agent attaches the Discord message the owner answered in. Decides
 //        nothing. Only the main agent's own token, only on the dashboard surface.
@@ -52,11 +53,12 @@ export async function tryHandleDecisions(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  const user = ctx.auth?.kind === 'session' ? (ctx.auth.user ?? '').trim() : ''
-  if (caller?.column !== 'S' || !user) {
-    json(res, { error: 'a decision is made from the owner\'s logged-in session only' }, 403)
+  const who = decisionOwner(ctx.auth, caller?.column, DECISION_OWNER_USER)
+  if (!who.ok) {
+    json(res, { error: who.error }, 403)
     return true
   }
+  const user = who.user
   const b = await body(ctx)
   const action = typeof b?.action === 'string' ? b.action : ''
   if (!(DECISION_ACTIONS as readonly string[]).includes(action)) {

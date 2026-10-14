@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, DECISION_OWNER_USER } from '../../config.js'
 import {
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
   createAgentMessage, setApprovalTelegramMessageId, getDb,
@@ -13,7 +13,7 @@ import { resolveOwnerChatId } from '../../owner-chat.js'
 import { sendTelegramMessage } from '../telegram.js'
 import { claimActor } from '../actor-claims.js'
 import { callerOfContext } from '../field-gate.js'
-import { checkDecisionPayload, decide, DECISION_CATEGORY, DECISION_TIMEOUT_SECONDS } from '../../decisions.js'
+import { checkDecisionPayload, decide, decisionOwner, DECISION_CATEGORY, DECISION_TIMEOUT_SECONDS } from '../../decisions.js'
 import {
   approvalDiscordConfig,
   approvalDiscordEnabled,
@@ -295,11 +295,12 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // same way as POST /api/decisions/:id (state, Task Core event and memory together).
     const decisionRow = getApproval(idMatch[1])
     if (decisionRow?.category === DECISION_CATEGORY) {
-      const user = ctx.auth?.kind === 'session' ? (ctx.auth.user ?? '').trim() : ''
-      if (callerOfContext(ctx.auth)?.column !== 'S' || !user) {
-        json(res, { error: 'a decision is made from the owner\'s logged-in session only' }, 403)
+      const who = decisionOwner(ctx.auth, callerOfContext(ctx.auth)?.column, DECISION_OWNER_USER)
+      if (!who.ok) {
+        json(res, { error: who.error }, 403)
         return true
       }
+      const user = who.user
       if (status === 'timeout') {
         json(res, { error: 'a decision row times out by itself, it is not set to timeout' }, 400)
         return true

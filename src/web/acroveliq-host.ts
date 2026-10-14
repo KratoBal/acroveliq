@@ -182,7 +182,7 @@ export function acroveliqActivityView(rows: readonly object[]): Record<string, u
 export function acroveliqOpenMattersView(out: OpenMatters): { generated_at: number; items: OpenMatters['items'] } {
   const memory = (m: OpenMattersMemory): OpenMattersMemory => ({ id: m.id, content: m.content, created_at: m.created_at })
   const row = (d: DecisionView): DecisionView => ({
-    id: d.id, task_id: d.task_id, summary: d.summary, reason: d.reason, consequence: d.consequence, status: d.status,
+    id: d.id, requested_by: d.requested_by, task_id: d.task_id, summary: d.summary, reason: d.reason, consequence: d.consequence, status: d.status,
     requested_at: d.requested_at, timeout_at: d.timeout_at, resolved_at: d.resolved_at, resolved_by: d.resolved_by,
     discuss_requested_at: d.discuss_requested_at, discord_message: d.discord_message,
   })
@@ -197,7 +197,7 @@ export function acroveliqOpenMattersView(out: OpenMatters): { generated_at: numb
         pending: dt.pending.map(row), discuss: dt.discuss.map(row), discord_replied: dt.discord_replied.map(row),
         expired: dt.expired.map(row), recent: dt.recent.map(row),
         recent_discord: dt.recent_discord.map((h: HandoffDecisionView) => ({
-          task: h.task, handoff: h.handoff, what: h.what, quote: h.quote, discord_message: h.discord_message, at: h.at,
+          task: h.task, handoff: h.handoff, what: h.what, quote: h.quote, discord_messages: [...h.discord_messages], at: h.at,
         })),
       },
     },

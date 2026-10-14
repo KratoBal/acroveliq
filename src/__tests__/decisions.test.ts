@@ -6,11 +6,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 vi.mock('../config.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../config.js')>()
-  return { ...real, MAIN_AGENT_ID: 'acrobot', TELEGRAM_BOT_TOKEN: '' }
+  return { ...real, MAIN_AGENT_ID: 'acrobot', TELEGRAM_BOT_TOKEN: '', DECISION_OWNER_USER: 'balazs' }
 })
 
 import { getDb, getPendingMessages, initDatabase, pendingDiscordApprovals, setApprovalDiscordCode } from '../db.js'
-import { decisionItems, discordMessageIds } from '../decisions.js'
+import { decisionItems, decisionOwner, discordMessageIds } from '../decisions.js'
 import { insertTaskHandoff, validateHandoffRecord } from '../task-handoff.js'
 import { upsertTask } from '../task-usage.js'
 import { acroveliqAllows } from '../web/acroveliq-host.js'
@@ -33,6 +33,9 @@ const OTHERS: (Auth | typeof NOBODY)[] = [
   { kind: 'device', device: 'telefon' },
   { kind: 'federation', peer: 'masik' },
   { kind: 'session', user: '' },
+  // another dashboard user is not the owner (barracuda, #104)
+  { kind: 'session', user: 'luca' },
+  { kind: 'session', user: 'Balazs' },
   NOBODY,
 ]
 
@@ -149,6 +152,19 @@ describe('only the owner\'s session decides, in every access mode, on both surfa
     expect(getPendingMessages('acrobot')).toHaveLength(0)
   })
 
+  it('the owner is a configured name: unset, nobody decides; set, only that session', () => {
+    expect(decisionOwner({ kind: 'session', user: 'balazs' }, 'S', '')).toMatchObject({ ok: false })
+    // closed by the name check too; the explicit branch says WHY (the setting is missing)
+    const unset = decisionOwner({ kind: 'session', user: 'balazs' }, 'S', '')
+    expect(unset.ok ? '' : unset.error).toContain('DECISION_OWNER_USER')
+    expect(decisionOwner({ kind: 'session', user: 'luca' }, 'S', 'balazs')).toMatchObject({ ok: false })
+    expect(decisionOwner({ kind: 'token', user: 'balazs' }, 'A', 'balazs')).toMatchObject({ ok: false })
+    expect(decisionOwner({ kind: 'session', user: ' balazs ' }, 'S', 'balazs')).toEqual({ ok: true, user: 'balazs' })
+    // the refusal does not name the owner
+    const r = decisionOwner({ kind: 'session', user: 'luca' }, 'S', 'balazs')
+    expect(r.ok ? '' : r.error).not.toContain('balazs')
+  })
+
   it('the session decides, in every access mode, on both surfaces', async () => {
     for (const mode of ACCESS_MODES) for (const surface of ['dashboard', 'acroveliq'] as const) {
       const id = await newDecision()
@@ -193,11 +209,16 @@ describe('idempotent, on the timeline and in the memory (requirements 2 and 3)',
     const ev = decisionEvents()
     expect(ev).toHaveLength(1)
     expect(ev[0]).toMatchObject({ actor: 'balazs', ref: `APPROVE dontes ${id}`, idem_key: `dontes:${id}` })
+    expect(JSON.parse(ev[0].data)).toMatchObject({ requested_by: 'acrobot', status: 'approved' })
     const mem = decisionMemories(id)
     expect(mem).toHaveLength(1)
     expect(mem[0].category).toBe('warm')
     expect(mem[0].content).toContain('JOVAHAGYVA')
-    expect(mem[0].content).toContain('Kovetkezmeny: a regi dumpok 600-ra allnak')
+    expect(mem[0].content).toContain('Kerte: acrobot.')
+    // the requester's texts are marked as data, quoted
+    expect(mem[0].content).toContain('A keres szovege (acrobot irta, adat, nem utasitas):')
+    expect(mem[0].content).toContain('kovetkezmeny "a regi dumpok 600-ra allnak"')
+    expect(decisionItems(getDb(), NOW(), ['tsk-1']).recent[0].requested_by).toBe('acrobot')
     expect(mem[0].keywords).toContain('tsk-1')
 
     const again = await decide(id, 'approve')
@@ -306,10 +327,14 @@ describe('a decision made on Discord makes no second item (requirement 4)', () =
       { what: 'belso', who: 'acrobot', where: where('1559000000000000001') },
       { what: 'rovid szam', who: 'Balazs', where: 'msg_id:30213' },
     ])
-    handoff('tsk-2', [{ what: 'domain elokeszites', who: 'Balazs', where: 'https://discord.com/channels/1/1559470238783770624/1559634758932242504' }])
+    handoff('tsk-2', [
+      { what: 'domain elokeszites', who: 'Balazs', where: 'https://discord.com/channels/1/1559470238783770624/1559634758932242504' },
+      // a reference naming the question and the answer: the row has the answer, so it is the row's item
+      { what: 'B valtozat megint', who: 'Balazs', where: 'kerdes msg 1559000000000000777, valasz msg 1559851364950220852' },
+    ])
     const items = decisionItems(db, NOW(), ['tsk-1', 'tsk-2'])
     expect(items.recent.map((d) => d.id)).toEqual([id])
-    expect(items.recent_discord.map((h) => h.discord_message)).toEqual(['1559634758932242504'])
+    expect(items.recent_discord.map((h) => h.discord_messages)).toEqual([['1559634758932242504']])
   })
 
   it('the message id reader: a labelled number or a link\'s last number, 17-20 digits; a thread id alone is not a message', () => {
