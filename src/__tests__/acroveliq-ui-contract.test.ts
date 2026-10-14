@@ -30,10 +30,10 @@ describe('AcrovelIQ UI wiring', () => {
     expect(SECTION).toMatch(/async function loadAcroveliq\(/)
   })
 
-  it('reads with GETs and writes only the decision: one POST, to /api/decisions/:id, one of three actions', () => {
+  it('reads with GETs and writes only the decision and the task actions: one POST each, to their own routes', () => {
     expect(SECTION.length).toBeGreaterThan(1000)
-    // two fetches: aqGet (no options) and aqDecide
-    expect(SECTION.match(/fetch\(/g)).toEqual(['fetch(', 'fetch('])
+    // three fetches: aqGet (no options), aqDecide and aqTaskWrite
+    expect(SECTION.match(/fetch\(/g)).toEqual(['fetch(', 'fetch(', 'fetch('])
     expect(SECTION).toContain('const res = await fetch(url)\n')
     const DEC = SECTION.slice(SECTION.indexOf('async function aqDecide('), SECTION.indexOf('\n}\n', SECTION.indexOf('async function aqDecide(')))
     expect(DEC).toContain("fetch('/api/decisions/' + encodeURIComponent(id), {")
@@ -42,10 +42,17 @@ describe('AcrovelIQ UI wiring', () => {
     // an action outside the three is refused before any request
     expect(DEC).toContain('Object.prototype.hasOwnProperty.call(AQ_DECISION_ACTIONS, action)')
     expect(SECTION).toContain("const AQ_DECISION_ACTIONS = { approve: 'Jóváhagyom', reject: 'Elutasítom', discuss: 'Megbeszélést kérek' }")
+    // the task write (Feladatkezelés V1, decision B): /api/task-actions with the form's key,
+    // or /api/task-actions/<id> with one of the four actions, refused before any request otherwise
+    const TW = SECTION.slice(SECTION.indexOf('async function aqTaskWrite('), SECTION.indexOf('\n}\n', SECTION.indexOf('async function aqTaskWrite(')))
+    expect(TW).toContain("fetch(id ? '/api/task-actions/' + encodeURIComponent(id) : '/api/task-actions', {")
+    expect(TW).toContain('Object.prototype.hasOwnProperty.call(AQ_TASK_ACTIONS, body && body.action)')
+    expect(TW).toContain("headers['Idempotency-Key'] = key")
+    expect(SECTION).toContain("const AQ_TASK_ACTIONS = { assign: 'Felelős', priority: 'Prioritás', pause: 'Szünet', resume: 'Folytatás' }")
     // nowhere else a method, and no other verb at all
-    expect(SECTION.match(/method\s*:/g)).toEqual(['method:'])
+    expect(SECTION.match(/method\s*:/g)).toEqual(['method:', 'method:'])
     expect(SECTION).not.toMatch(/'(PUT|PATCH|DELETE)'|"(PUT|PATCH|DELETE)"/)
-    expect(SECTION.match(/'POST'/g)).toEqual(["'POST'"])
+    expect(SECTION.match(/'POST'/g)).toEqual(["'POST'", "'POST'"])
   })
 
   it('reads the five measured sources and the per-task timeline', () => {

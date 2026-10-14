@@ -102,6 +102,8 @@ const at = (sec: number | null): string => (sec ? TIME.format(new Date(sec * 100
 export function waitsOn(t: Pick<ListedTask, 'last_kind' | 'last_ref' | 'assignee' | 'reviewer'> & { paused?: boolean }): string {
   // a paused task waits on the owner whatever its last state (a review may finish during it)
   if (t.paused) return 'Balazs (szunetel, a folytatas az ove)'
+  // not handed out yet and nobody named: Feladatkezelés V1 leaves the assignment to acrobot
+  if (!t.assignee && (t.last_kind === null || t.last_kind === 'owner_action' || t.last_kind === 'resumed')) return 'acrobot (kiosztas)'
   switch (t.last_kind) {
     case 'review_requested': return t.reviewer ?? '? (nincs reviewer)'
     case 'verdict':

@@ -7530,6 +7530,20 @@ body {
 .aq-dec-no { background: var(--aq-red-soft); color: var(--aq-red-ink); }
 .aq-dec-talk { background: var(--aq-blue-soft); color: var(--aq-blue-ink); }
 .aq-note-ok { background: var(--aq-green-soft); color: var(--aq-green-ink); }
+/* Feladatkezelés V1: the new-task form, the task's manage card, its phases, the priority tag */
+.aq-form .aq-label, .aq-card .aq-form-row .aq-label { display: block; margin: 12px 0 4px; }
+.aq-input { width: 100%; box-sizing: border-box; background: var(--aq-row); color: var(--aq-ink); border: 1px solid var(--aq-line); border-radius: 10px; padding: 9px 12px; font: inherit; font-size: 14px; }
+.aq-input:disabled { opacity: 0.55; }
+.aq-textarea { min-height: 96px; resize: vertical; }
+.aq-form-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.aq-phases { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 12px; }
+.aq-phase { border-radius: 999px; padding: 4px 10px; font-size: 12px; background: var(--aq-grey-soft); color: var(--aq-faint); }
+.aq-phase-on { background: var(--aq-green-soft); color: var(--aq-green-ink); font-weight: 600; }
+.aq-row-tag[class*="aq-prio-"] { width: auto; min-width: 42px; padding: 0 8px; font-size: 11px; }
+.aq-prio-urgent { background: var(--aq-red-soft); color: var(--aq-red-ink); }
+.aq-prio-high { background: var(--aq-orange-soft); color: var(--aq-orange-ink); }
+.aq-prio-normal, .aq-prio-low { background: var(--aq-grey-soft); color: var(--aq-grey-ink); }
+@media (max-width: 600px) { .aq-form-row { grid-template-columns: minmax(0, 1fr); } }
 .aq-tl { list-style: none; margin-top: 8px; }
 .aq-tl-item { display: flex; gap: 14px; padding-bottom: 16px; position: relative; }
 .aq-tl-item:not(:last-child)::before { content: ''; position: absolute; left: 19px; top: 40px; bottom: 2px; width: 1px; background: var(--aq-line); }
