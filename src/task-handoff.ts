@@ -230,6 +230,10 @@ export function validateHandoffRecord(
     if (!Array.isArray(raw.open_questions)) missing.push('open_questions')
     else raw.open_questions.forEach((q: any, i: number) => {
       for (const f of ['from', 'what']) if (!q || !isText(q[f])) missing.push(`open_questions[${i}].${f}`)
+      // `from` is whom the answer comes from: the task's own id there hid a question that
+      // waited on Balazs from the Dontéseim page (koord-pr81; survey 2026-10-14, section 1)
+      if (q && isText(q.from) && isText(task?.id) && q.from.trim() === task.id.trim())
+        missing.push(`open_questions[${i}].from (whom the answer comes from, not the task's own id)`)
     })
   }
 

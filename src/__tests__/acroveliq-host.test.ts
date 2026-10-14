@@ -146,20 +146,28 @@ describe('acroveliqAllows: the positive list', () => {
       ['GET', '/avatars/01_robot.png'], ['GET', '/icons/other.png'], ['GET', '/lang/de.js'],
       ['OPTIONS', '/api/kanban'], ['GET', '/API/tasks'], ['POST', '/api/open-matters'], ['GET', '/api/open-matters/x'],
       ['GET', '/api/memories'], ['GET', '/api/memories/2303'],
+      // the one write is POST /api/decisions/:id; its neighbours stay shut (Dontéseim V1, requirement 6)
+      ['PATCH', '/api/approvals/x'], ['POST', '/api/approvals'], ['POST', '/api/approvals/x'],
+      ['POST', '/api/decisions'], ['POST', '/api/decisions/'], ['GET', '/api/decisions/x'], ['PUT', '/api/decisions/x'],
+      ['PATCH', '/api/decisions/x'], ['DELETE', '/api/decisions/x'], ['POST', '/api/decisions/x/discord-reply'],
+      ['POST', '/api/decisions/x/y'], ['POST', '/api/agents/acrobot/restart'], ['POST', '/api/memories'],
+      ['POST', '/api/kanban'], ['POST', '/api/messages'], ['POST', '/api/schedules'],
     ]) expect(acroveliqAllows(method!, path!), `${method} ${path}`).toBe(false)
   })
 
-  it('every /api/ row is a read or public route rule, matched by the very pattern it names', () => {
+  it('every /api/ row is a read or public route rule, matched by the very pattern it names; the decision write is the one exception', () => {
     for (const row of ACROVELIQ_ROUTES.filter((r) => r.path.startsWith('/api/'))) {
       const concrete = row.path.replace(/:[A-Za-z_]+/g, 'x')
       const rule = matchRouteRule(row.method, concrete)
       expect(rule?.path, `${row.method} ${row.path}`).toBe(row.path)
-      expect(['OLVASO', 'NYILVANOS'], `${row.method} ${row.path} is ${rule?.class}`).toContain(rule!.class)
+      const allowed = row.method === 'POST' && row.path === '/api/decisions/:id' ? ['KRITIKUS'] : ['OLVASO', 'NYILVANOS']
+      expect(allowed, `${row.method} ${row.path} is ${rule?.class}`).toContain(rule!.class)
     }
   })
 
-  it('the one non-GET row is the login', () => {
-    expect(ACROVELIQ_ROUTES.filter((r) => r.method !== 'GET').map((r) => `${r.method} ${r.path}`)).toEqual(['POST /api/auth/login'])
+  it('the non-GET rows are the login and the decision, nothing else (Balázs, 2026-10-14, decision B)', () => {
+    expect(ACROVELIQ_ROUTES.filter((r) => r.method !== 'GET').map((r) => `${r.method} ${r.path}`))
+      .toEqual(['POST /api/auth/login', 'POST /api/decisions/:id'])
   })
 
   it('every static row names a file the dashboard ships', () => {
@@ -293,7 +301,7 @@ describe('/api/open-matters on the AcrovelIQ surface gives the Döntéseim group
     expect(aq.status).toBe(200)
     const view = JSON.parse(aq.body)
     expect(Object.keys(view).sort()).toEqual(['generated_at', 'items'])
-    expect(Object.keys(view.items).sort()).toEqual(['balazs_questions', 'decisions', 'owes'])
+    expect(Object.keys(view.items).sort()).toEqual(['balazs_questions', 'decisions', 'dontes', 'owes'])
     expect(view.items.decisions.map((m: { content: string }) => m.content)).toEqual(['dontesre var: domain'])
     expect(view.items.owes.map((m: { content: string }) => m.content)).toEqual(['osszefoglalo jar'])
     expect(view.items.balazs_questions.map((q: { what: string }) => q.what)).toEqual(['mehet-e elesbe'])
@@ -334,6 +342,10 @@ describe('/api/open-matters on the AcrovelIQ surface gives the Döntéseim group
     expect((await call('/api/open-matters', 'dashboard', { kind: 'token', actor: 'nautilus', project: 'acropora' })).status).toBe(200)
   })
 
+  const ROW = {
+    id: 'd1', task_id: 't', summary: 's', reason: 'r', consequence: 'c', status: 'pending', requested_at: 1,
+    timeout_at: 2, resolved_at: null, resolved_by: null, discuss_requested_at: null, discord_message: null,
+  }
   it('the view picks: a field added to the builder later does not reach the surface', () => {
     const out = {
       generated_at: 1, text: 'szoveg', counts: {}, omitted: {},
@@ -342,6 +354,12 @@ describe('/api/open-matters on the AcrovelIQ surface gives the Döntéseim group
         decisions: [{ id: 3, content: 'b', created_at: 4, agent_id: 'acrobot' }],
         balazs_questions: [{ task: 't', handoff: 5, index: 0, from: 'Balazs', what: 'c', agent: 'murena' }],
         tasks: [{ id: 'x' }],
+        dontes: {
+          pending: [{ ...ROW, action_payload: 'titok', agent_id: 'acrobot' }],
+          discuss: [], discord_replied: [], expired: [], recent: [],
+          recent_discord: [{ task: 't', handoff: 6, what: 'w', quote: 'q', discord_message: '1559851364950220852', at: 7, record: 'titok' }],
+          later: [{ id: 'x' }],
+        },
       },
     } as unknown as Parameters<typeof acroveliqOpenMattersView>[0]
     expect(acroveliqOpenMattersView(out)).toEqual({
@@ -350,6 +368,10 @@ describe('/api/open-matters on the AcrovelIQ surface gives the Döntéseim group
         owes: [{ id: 1, content: 'a', created_at: 2 }],
         decisions: [{ id: 3, content: 'b', created_at: 4 }],
         balazs_questions: [{ task: 't', handoff: 5, index: 0, from: 'Balazs', what: 'c' }],
+        dontes: {
+          pending: [ROW], discuss: [], discord_replied: [], expired: [], recent: [],
+          recent_discord: [{ task: 't', handoff: 6, what: 'w', quote: 'q', discord_message: '1559851364950220852', at: 7 }],
+        },
       },
     })
   })

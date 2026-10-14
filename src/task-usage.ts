@@ -61,6 +61,9 @@ export const TASK_EVENT_KINDS = [
   // koord-munkamenet: the channel session's start and end mark of a coordination unit
   'coord_open',
   'coord_close',
+  // Dontéseim V1: the owner's decision on a decision row. Written by the server only
+  // (POST /api/decisions/:id); the events route refuses it from any caller.
+  'decision',
 ] as const
 export type TaskEventKind = (typeof TASK_EVENT_KINDS)[number]
 

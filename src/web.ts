@@ -59,6 +59,7 @@ import { tryHandleMigrate } from './web/routes/migrate.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
 import { tryHandleTaskHandoffs } from './web/routes/task-handoffs.js'
 import { tryHandleOpenMatters } from './web/routes/open-matters.js'
+import { tryHandleDecisions } from './web/routes/decisions.js'
 import { tryHandleTaskUsage } from './web/routes/task-usage.js'
 import { tryHandleSchedules } from './web/routes/schedules.js'
 import { tryHandleConnectors } from './web/routes/connectors.js'
@@ -231,6 +232,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleKanban(routeCtx)) return
       if (await tryHandleTaskHandoffs(routeCtx)) return
       if (await tryHandleOpenMatters(routeCtx)) return
+      if (await tryHandleDecisions(routeCtx)) return
       if (await tryHandleTaskUsage(routeCtx)) return
       if (await tryHandleSchedules(routeCtx)) return
       if (await tryHandleConnectorsHu(routeCtx)) return
