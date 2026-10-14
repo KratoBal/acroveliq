@@ -656,6 +656,12 @@ export interface TaskUsage {
   /** First event to last event, seconds; null without two events. */
   duration_seconds: number | null
   repeated_of: string | null
+  /**
+   * How far the numbers can go: `activity_until` is where the task's own windows end (an open
+   * one: the query time), `last_call` each of its agents' last call in token_usage. A window
+   * reaching past the collector's last run (the route's `collector_last_run`) is not counted yet.
+   */
+  ingested: { activity_until: number | null; last_call: Record<string, number | null> }
 }
 
 /** One task's usage. `now` closes the still-open windows. */
@@ -674,6 +680,15 @@ export function taskUsage(db: Database.Database, taskId: string, now: number): T
   }[]
   const sessions = new Map(sessionRows.map((r) => [`${r.agent}|${r.session_id}`, r.task_id]))
   const ownSessions = sessionRows.filter((r) => r.task_id === taskId)
+
+  // HOW FAR THE DATA GOES: token_usage holds what the collector has read (hourly and at start),
+  // so a call after its last run is not here yet. Each of the task's agents' last ingested call,
+  // and how far the task's own windows reach (an open one: now).
+  const ingestedAgents = [...new Set([...own.map((w) => w.agent), ...ownSessions.map((r) => r.agent)])].sort()
+  const lastCallOf = db.prepare('SELECT MAX(timestamp) AS t FROM token_usage WHERE agent = ?')
+  const lastCall: Record<string, number | null> = {}
+  for (const agent of ingestedAgents) lastCall[agent] = (lastCallOf.get(agent) as { t: number | null }).t ?? null
+  const activityUntil = own.length ? Math.max(...own.map((w) => w.to ?? now)) : null
 
   // the candidate calls: the task's sessions, and its agents inside its windows
   const calls = new Map<number, UsageCall>()
@@ -752,6 +767,7 @@ export function taskUsage(db: Database.Database, taskId: string, now: number): T
     duration_seconds:
       ownEvents.length >= 2 ? ownEvents[ownEvents.length - 1]!.at - ownEvents[0]!.at : null,
     repeated_of: repeatedOf,
+    ingested: { activity_until: activityUntil, last_call: lastCall },
   }
 }
 

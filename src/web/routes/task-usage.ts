@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { PROJECT_CHECK_MODE_SETTING, STORE_DIR, TASK_CORE_MODE_SETTING } from '../../config.js'
 import { getDb } from '../../db.js'
 import { logger } from '../../logger.js'
+import { lastTokenCollection } from '../token-usage.js'
 import {
   REVIEW_REF_KINDS,
   TASK_EVENT_KINDS,
@@ -296,7 +297,9 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `no task ${taskId}` }, 404)
       return true
     }
-    json(res, url.searchParams.get('variants') === '1' ? usage : usage.task)
+    // the collector's last run, so a reader of a 0 sees whether the calls can be here yet
+    const collector_last_run = lastTokenCollection()
+    json(res, url.searchParams.get('variants') === '1' ? { ...usage, collector_last_run } : { ...usage.task, collector_last_run })
     return true
   }
 

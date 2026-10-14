@@ -113,6 +113,34 @@ describe('the M1 window (#1657)', () => {
   })
 })
 
+describe('how far the data goes (task-usage-continue-res)', () => {
+  // 2026-10-14: a task that ran 100 calls read 0, because the collector had not run since its
+  // window opened. The usage says where the task's windows end and each agent's last ingested call.
+  it('TASK-USAGE-INGESTED: the windows\' end (now while open), and each agent\'s last call in token_usage, outside the window too', () => {
+    task('closed')
+    event('closed', 'started', 'murena', T('08:00:00'))
+    event('closed', 'review_requested', 'murena', T('09:00:00'))
+    call('murena', T('08:10:00'))
+    call('murena', T('10:30:00')) // after the window: still the agent's last ingested call
+    task('open')
+    event('open', 'started', 'nautilus', T('11:00:00'))
+    call('nautilus', T('11:05:00'))
+    task('none')
+    const closed = taskUsage(db, 'closed', NOW)!
+    const open = taskUsage(db, 'open', NOW)!
+    const none = taskUsage(db, 'none', NOW)!
+    expect([closed.ingested, open.ingested, none.ingested], 'TASK-USAGE-INGESTED').toEqual([
+      { activity_until: T('09:00:00'), last_call: { murena: T('10:30:00') } },
+      { activity_until: NOW, last_call: { nautilus: T('11:05:00') } },
+      { activity_until: null, last_call: {} },
+    ])
+    // an agent with a window and no ingested call at all: null, not a missing key
+    task('dry')
+    event('dry', 'started', 'korall', T('12:00:00'))
+    expect(taskUsage(db, 'dry', NOW)!.ingested.last_call).toEqual({ korall: null })
+  })
+})
+
 describe('overlapping windows', () => {
   it('TASK-USAGE-OVERLAP: a call in two tasks\' windows goes to neither, and both are invalid', () => {
     task('a')
@@ -356,7 +384,8 @@ describe('the route', () => {
     const usage = await send(`/api/tasks/${id}/usage`, 'GET')
     const stored = getDb().prepare('SELECT at FROM task_events WHERE task_id = ?').get(id) as { at: number }
     expect([unknown.status, created.status, badKind.status, badKind.body.missing.length, ok.status, usage.status,
-      usage.body.task.project, stored.at], 'TASK-USAGE-ROUTE').toEqual([404, 201, 400, 2, 201, 200, 'acropora', 1760252580])
+      usage.body.task.project, stored.at, 'collector_last_run' in usage.body, usage.body.collector_last_run, usage.body.ingested.last_call],
+    'TASK-USAGE-ROUTE').toEqual([404, 201, 400, 2, 201, 200, 'acropora', 1760252580, true, null, { murena: null }])
   })
 
   it('event times: seconds, a digit string, ISO, or now; anything else refused', () => {
