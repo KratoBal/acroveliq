@@ -1731,6 +1731,7 @@ export type StuckInputAction =
   | 'reinject-recorded' // clear + re-inject the EXACT text the sender typed (registry-proven)
   | 'enter'            // a single bare Enter -- ONLY safe at rowCount <= 1
   | 'hold'             // do nothing this tick (multi-row truncated / truncation-guard)
+  | 'clear-abandoned'  // clear text a busy-pane send left behind when it did not land; never submit
 
 export interface StuckInputActionFacts {
   /** attempt > MAIN_STUCK_ENTER_ATTEMPTS -- past the Enter-first budget. */
@@ -1763,6 +1764,13 @@ export interface StuckInputActionFacts {
    * not a human draft) and the FULL CONTENT (so the re-inject is lossless, not
    * a tail fragment). When true the head-lost/multi-row dead end is escapable. */
   recordedMatch: boolean
+  /**
+   * The parked scrape matches what a busy-pane send typed and then ABANDONED
+   * ('not-landed', busy-pane-emit.ts). The router sends that message again
+   * whole, so this text is cleared, never submitted. Optional: callers that do
+   * not track it (parkedMainInputHasRemedy) leave it out.
+   */
+  abandonedMatch?: boolean
 }
 
 /**
@@ -1782,6 +1790,10 @@ export interface StuckInputActionFacts {
  */
 export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputAction {
   const multiRow = f.rowCount > 1
+  // FIRST: half a message a busy-pane send left behind must not reach the
+  // agent -- any submitting move below (Enter, reinject-plain) would hand it
+  // over, and the router then sends the whole message again (barracuda, #117).
+  if (f.abandonedMatch) return 'clear-abandoned'
   // Complete channel block: chat_id-safe verbatim re-inject. Multi-row is itself
   // a reason to escalate now (a plain Enter would corrupt it).
   if (f.blockComplete) {

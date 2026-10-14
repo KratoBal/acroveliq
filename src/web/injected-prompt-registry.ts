@@ -40,6 +40,16 @@ export interface InjectedPromptRecord {
 
 const records = new Map<string, InjectedPromptRecord>()
 
+// ABANDONED TYPING (task kezbesites-busy-panelre, barracuda's #117 note): a send
+// into a busy pane that stops before landing ('not-landed', busy-pane-emit.ts)
+// leaves what it typed in the box ON PURPOSE (no keys while a dialog may be
+// up). That text is NOT a message to submit: the router keeps the message
+// pending and sends it again whole. Without this record the stuck-input
+// recovery would read the half frame as machine-origin parked input and SUBMIT
+// it -- the agent would get half a message, then the whole one. Here it is the
+// opposite of an injected record: a match means CLEAR, never send.
+const abandoned = new Map<string, InjectedPromptRecord>()
+
 /** Collapse whitespace so a wrapped screen scrape compares against the source. */
 export function normalizeForMatch(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
@@ -63,6 +73,35 @@ export function recordInjectedPrompt(session: string, text: string, now: number 
     if (oldestKey != null) records.delete(oldestKey)
   }
   records.set(session, { text, at: now })
+  // a newer typing supersedes an abandoned one: a parked RE-delivery must be
+  // submitted, not cleared as the earlier half
+  abandoned.delete(session)
+}
+
+/** Remember text typed into a busy pane by a send that did not land (clear it, never submit it). */
+export function recordAbandonedPrompt(session: string, text: string, now: number = Date.now()): void {
+  if (session.length === 0 || text.length === 0) return
+  if (!abandoned.has(session) && abandoned.size >= MAX_RECORDS) {
+    const oldest = [...abandoned.entries()].sort((a, b) => a[1].at - b[1].at)[0]
+    if (oldest) abandoned.delete(oldest[0])
+  }
+  abandoned.set(session, { text, at: now })
+}
+
+/** The abandoned typing of this pane, or null if absent/expired. */
+export function getAbandonedPrompt(session: string, now: number = Date.now()): InjectedPromptRecord | null {
+  const rec = abandoned.get(session)
+  if (rec == null) return null
+  if (now - rec.at > RECORD_TTL_MS) {
+    abandoned.delete(session)
+    return null
+  }
+  return rec
+}
+
+/** Forget the abandoned typing once it is cleared from the box. */
+export function clearAbandonedPrompt(session: string): void {
+  abandoned.delete(session)
 }
 
 /** The last prompt typed into this pane, or null if absent/expired. */
@@ -103,4 +142,5 @@ export function matchesInjectedPrompt(parked: string | null, record: InjectedPro
 /** Test-only: drop all records between unit tests. */
 export function _resetInjectedPromptsForTest(): void {
   records.clear()
+  abandoned.clear()
 }

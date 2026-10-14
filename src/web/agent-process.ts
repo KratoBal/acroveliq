@@ -55,7 +55,7 @@ import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureSkillsPathTrapSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
-import { recordInjectedPrompt } from './injected-prompt-registry.js'
+import { recordAbandonedPrompt, recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
@@ -2415,6 +2415,7 @@ export async function sendPromptToSession(
         typeChunk: (chunk) => runTmux(host, ['send-keys', '-t', session, '-l', chunk], { timeout: 5000 }),
         enter: () => runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 }),
         delay,
+        abandon: (typed) => recordAbandonedPrompt(session, typed),
       },
       { chunkGapMs: 30, pollMs: SUBMIT_RETRY_POLL_MS, maxRetries: SUBMIT_RETRY_MAX_ATTEMPTS },
     )
