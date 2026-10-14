@@ -21,6 +21,7 @@
 //      `host=` names ACROVELIQ_HOST. A client can add a header, so a header can
 //      only ever turn the filter ON, never off. This is the second layer.
 
+import type { DecisionView, HandoffDecisionView } from '../decisions.js'
 import type { OpenMatters, OpenMattersMemory } from '../open-matters.js'
 
 /** Lowercased host without port and trailing dot; '' for an empty or unparsable value. */
@@ -126,6 +127,11 @@ export const ACROVELIQ_ROUTES: readonly AcroveliqRoute[] = [
   // below (acroveliqOpenMattersView), and only Balázs's session (the handler: 403
   // for a device key or any token there)
   { method: 'GET', path: '/api/open-matters', why: 'AcrovelIQ: Döntéseim (picked view)' },
+  // THE ONE WRITE (Balázs's decision B, 2026-10-14 08:52:26 UTC, msg 1559851364950220852):
+  // the three Dontéseim actions on a decision row, and nothing else. The handler takes the
+  // session only and refuses every row that is not a decision; the discord-reply route
+  // under it is a longer path and does not match this pattern.
+  { method: 'POST', path: '/api/decisions/:id', why: 'AcrovelIQ: Döntéseim, approve / reject / discuss (session only)' },
 ]
 
 function pathMatches(pattern: string, path: string): boolean {
@@ -175,12 +181,25 @@ export function acroveliqActivityView(rows: readonly object[]): Record<string, u
 // handoff question and the waiting cards; the view does not read them.
 export function acroveliqOpenMattersView(out: OpenMatters): { generated_at: number; items: OpenMatters['items'] } {
   const memory = (m: OpenMattersMemory): OpenMattersMemory => ({ id: m.id, content: m.content, created_at: m.created_at })
+  const row = (d: DecisionView): DecisionView => ({
+    id: d.id, requested_by: d.requested_by, task_id: d.task_id, summary: d.summary, reason: d.reason, consequence: d.consequence, status: d.status,
+    requested_at: d.requested_at, timeout_at: d.timeout_at, resolved_at: d.resolved_at, resolved_by: d.resolved_by,
+    discuss_requested_at: d.discuss_requested_at, discord_message: d.discord_message,
+  })
+  const dt = out.items.dontes
   return {
     generated_at: out.generated_at,
     items: {
       owes: out.items.owes.map(memory),
       decisions: out.items.decisions.map(memory),
       balazs_questions: out.items.balazs_questions.map((q) => ({ task: q.task, handoff: q.handoff, index: q.index, from: q.from, what: q.what })),
+      dontes: {
+        pending: dt.pending.map(row), discuss: dt.discuss.map(row), discord_replied: dt.discord_replied.map(row),
+        expired: dt.expired.map(row), recent: dt.recent.map(row),
+        recent_discord: dt.recent_discord.map((h: HandoffDecisionView) => ({
+          task: h.task, handoff: h.handoff, what: h.what, quote: h.quote, discord_messages: [...h.discord_messages], at: h.at,
+        })),
+      },
     },
   }
 }

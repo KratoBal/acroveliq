@@ -37,6 +37,7 @@
 
 import type Database from 'better-sqlite3'
 
+import { decisionItems, type DecisionItems } from './decisions.js'
 import { allTasks, type ListedTask } from './task-usage.js'
 import { latestTaskHandoff } from './task-handoff.js'
 
@@ -73,8 +74,8 @@ export interface OpenMatters {
   text: string
   counts: { owes: number; tasks: number; questions: number; decisions: number; cards: number }
   omitted: { owes: number[]; tasks: string[]; questions: string[]; decisions: number[]; cards: string[] }
-  /** The three groups that wait on Balazs or are owed to him, in full (not budgeted). */
-  items: { owes: OpenMattersMemory[]; decisions: OpenMattersMemory[]; balazs_questions: OpenMattersQuestion[] }
+  /** The groups that wait on Balazs or are owed to Balazs, in full (not budgeted). `dontes`: the decision rows (Dontéseim V1, src/decisions.ts). */
+  items: { owes: OpenMattersMemory[]; decisions: OpenMattersMemory[]; balazs_questions: OpenMattersQuestion[]; dontes: DecisionItems }
 }
 
 const tableExists = (db: Database.Database, name: string): boolean =>
@@ -232,6 +233,11 @@ export function buildOpenMatters(db: Database.Database, opts: OpenMattersOptions
     text: lines.join('\n') + '\n',
     counts: { owes: owes.length, tasks: tasks.length, questions: questions.length, decisions: decisions.length, cards: cards.length },
     omitted,
-    items: { owes, decisions, balazs_questions: questions.filter((q) => fromBalazs(q.from)) },
+    items: {
+      owes, decisions, balazs_questions: questions.filter((q) => fromBalazs(q.from)),
+      dontes: tableExists(db, 'approvals')
+        ? decisionItems(db, opts.now, tasks.map((t) => t.id))
+        : { pending: [], discuss: [], discord_replied: [], expired: [], recent: [], recent_discord: [] },
+    },
   }
 }

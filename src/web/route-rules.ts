@@ -350,4 +350,7 @@ export const ROUTE_RULES: RouteRule[] = [
   // after the inventory: TC-Lite L1 (2026-10-13), two reads
   { method: 'GET', path: '/api/tasks', module: 'task-usage', class: 'OLVASO', note: 'bare: every task with its last event (AcrovelIQ); ?assignee=<a>[&busy=1]: an agent\'s tasks; an unknown parameter is 400' },
   { method: 'GET', path: '/api/tasks/:id/timeline', module: 'task-usage', class: 'OLVASO' },
+  // after the inventory: Dontéseim V1 (task dontesek-v1-backend, 2026-10-14)
+  { method: 'POST', path: '/api/decisions/:id', module: 'decisions', class: 'KRITIKUS', note: 'the owner\'s answer on a decision row (approve, reject, discuss): session only in every access mode (the handler), the one write on the AcrovelIQ host' },
+  { method: 'POST', path: '/api/decisions/:id/discord-reply', module: 'decisions', class: 'KRITIKUS', note: 'the main agent attaches the Discord message the owner answered in; decides nothing' },
 ]

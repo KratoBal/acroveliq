@@ -357,10 +357,14 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | POST | `/api/tasks/:id/sessions` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
 | GET | `/api/tasks` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | GET | `/api/tasks/:id/timeline` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
+| POST | `/api/decisions/:id` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | decision-decide |  |
+| POST | `/api/decisions/:id/discord-reply` | KRITIKUS | ✗ | ✓ | ✗ | ✗ | ✗ | decision-discord-reply |  |
 
 ## A csoportok indoka
 
 - **approval-decide**: a human decides, not a language model: only from the session (plan 2.4); the owner's Discord reply is checked on the server and decides as the session (PR 4, approval-discord.ts)
+- **decision-decide**: Dontéseim V1: the owner decides from the owner's own session (Balázs, 2026-10-14 08:52:26 UTC, requirement 1); the handler holds it in every access mode
+- **decision-discord-reply**: Dontéseim V1: the main agent attaches the Discord message the owner answered in; it decides nothing, the owner confirms on the page
 - **approval-request**: anyone may ask; the decision is the gate
 - **federation-wire**: the federation wire endpoints: peers reach them with their own scoped token (handled apart), not fleet tokens
 - **message-send**: anyone may send; the stored sender is the token's owner, never the body's `from` (PR 3b); the shared token sends as `legacy-ismeretlen`, marked unverified

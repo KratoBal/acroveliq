@@ -89,6 +89,18 @@ const GROUPS: Group[] = [
     why: 'a human decides, not a language model: only from the session (plan 2.4); the owner\'s Discord reply is checked on the server and decides as the session (PR 4, approval-discord.ts)',
   },
   {
+    name: 'decision-decide',
+    match: is('POST', '/api/decisions/:id'),
+    grants: g('yes', 'no', 'no', 'no', 'no'),
+    why: 'Dontéseim V1: the owner decides from the owner\'s own session (Balázs, 2026-10-14 08:52:26 UTC, requirement 1); the handler holds it in every access mode',
+  },
+  {
+    name: 'decision-discord-reply',
+    match: is('POST', '/api/decisions/:id/discord-reply'),
+    grants: g('no', 'yes', 'no', 'no', 'no'),
+    why: 'Dontéseim V1: the main agent attaches the Discord message the owner answered in; it decides nothing, the owner confirms on the page',
+  },
+  {
     name: 'approval-request',
     match: is('POST', '/api/approvals'),
     grants: g('yes', 'yes', 'yes', 'yes', 'yes'),
