@@ -27,6 +27,7 @@ import {
   type TaskCoreMode,
   type TaskEventKind,
 } from '../../task-usage.js'
+import { CLOSED_KINDS, waitsOn } from '../../open-matters.js'
 import { json, readBody } from '../http-helpers.js'
 import { claimActor } from '../actor-claims.js'
 import type { RouteContext } from './types.js'
@@ -38,8 +39,9 @@ import type { RouteContext } from './types.js'
 //                                         title?, goal?, acceptance?, assignee?, reviewer?, authorization_ref?,
 //                                         verification_profile?, kanban_card_id?, priority?}
 //   GET  /api/tasks?assignee=<a>[&busy=1] an agent's tasks; with busy=1 only those that keep it busy
-//   GET  /api/tasks                       every task with its last event (the AcrovelIQ list); an unknown
-//                                         query parameter is 400, not the whole list
+//   GET  /api/tasks                       every task with its last event, whom it waits on (waits_on) and
+//                                         whether it is closed (closed: open-matters' CLOSED_KINDS; the
+//                                         AcrovelIQ list); an unknown query parameter is 400, not the list
 //   POST /api/tasks/<task>/events         an event: {kind, actor, at?, ref?, data?, idem_key?} (at: seconds or
 //                                         ISO, default now; the key also as an Idempotency-Key header)
 //   POST /api/tasks/<task>/sessions       a session of the task: {agent, session_id}
@@ -130,7 +132,9 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
         json(res, { error: 'assignee required' }, 400)
         return true
       }
-      json(res, allTasks(getDb()))
+      // waits_on and closed: the open-matters reading (one place, not a copy on the page). A task the
+      // page shows closed is exactly one open-matters does not list as open (barracuda, #116).
+      json(res, allTasks(getDb()).map((t) => ({ ...t, waits_on: waitsOn(t), closed: t.last_kind !== null && CLOSED_KINDS.has(t.last_kind) })))
       return true
     }
     const tasks = assigneeTasks(getDb(), assignee)

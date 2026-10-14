@@ -16933,18 +16933,30 @@ const AQ_KIND = {
   assigned: 'Kiosztva', started: 'Munka elkezdve', review_requested: 'Review kérve', verdict: 'Review ítélet',
   fix_started: 'Javítás elkezdve', done: 'Kész', merged: 'Beolvasztva', blocked: 'Blokkolva',
   cancelled: 'Megszakítva', failed: 'Sikertelen', partial: 'Részben kész',
+  coord_open: 'Koordináció kezdete', coord_close: 'Koordináció vége', decision: 'Döntés',
+  paused: 'Szüneteltetve', resumed: 'Folytatva', owner_action: 'Balázs módosította',
 }
 // filter group of a task by its LAST event
+// (owner_action is the last kind only of a task with no state event yet: created, waiting for its hand-out).
+// The 'closed' entries colour the timeline only: whether a TASK is closed is the server's `closed`
+// (open-matters' CLOSED_KINDS), so the list never calls closed what open-matters counts open
+// (barracuda, #116: coord_close ends the coordination window, not the task).
 const AQ_GROUP = {
-  assigned: 'active', started: 'active', fix_started: 'active',
+  assigned: 'active', started: 'active', fix_started: 'active', coord_open: 'active', coord_close: 'active',
   review_requested: 'review', verdict: 'review', merged: 'review',
   blocked: 'blocked', failed: 'blocked',
   done: 'closed', cancelled: 'closed', partial: 'closed',
+  resumed: 'waiting', owner_action: 'waiting', paused: 'paused',
 }
-const AQ_GROUP_LABEL = { all: 'Mind', active: 'Folyamatban', review: 'Ellenőrzés', blocked: 'Blokkolt', closed: 'Lezárt', none: 'Nincs esemény' }
-const AQ_GROUP_TONE = { active: 'orange', review: 'blue', blocked: 'red', closed: 'green', none: 'grey' }
+const AQ_GROUP_LABEL = { all: 'Mind', waiting: 'Kiosztásra vár', active: 'Folyamatban', review: 'Ellenőrzés', paused: 'Szünetel', blocked: 'Blokkolt', closed: 'Lezárt', none: 'Nincs esemény' }
+const AQ_GROUP_TONE = { waiting: 'orange', active: 'orange', review: 'blue', paused: 'grey', blocked: 'red', closed: 'green', none: 'grey' }
+// Feladatkezelés V1: the owner's four task actions (POST /api/task-actions[/:id], session only)
+const AQ_TASK_ACTIONS = { assign: 'Felelős', priority: 'Prioritás', pause: 'Szünet', resume: 'Folytatás' }
+const AQ_PRIORITY = { urgent: 'Sürgős', high: 'Magas', normal: 'Normál', low: 'Alacsony' }
+const AQ_PRIORITY_TONE = { urgent: 'red', high: 'orange', normal: 'grey', low: 'grey' }
 
-const aqState = { view: 'overview', filter: 'all', detail: null, data: null, loading: false, decision: null, decBusy: null, decMsg: null }
+const aqState = { view: 'overview', filter: 'all', detail: null, data: null, loading: false, decision: null, decBusy: null, decMsg: null,
+  form: null, taskBusy: false, taskMsg: null, edit: null }
 
 const aqEsc = (v) => escapeHtml(v === null || v === undefined ? '' : String(v))
 
@@ -16970,9 +16982,21 @@ function aqDuration(s) {
   return Math.round(s / 86400) + ' nap'
 }
 
-const aqGroupOf = (t) => (t.last_kind ? AQ_GROUP[t.last_kind] || 'none' : 'none')
+// a paused task is paused whatever its last state (a review may be recorded during the pause);
+// closed is the server's `closed` and nothing else
+const aqGroupOf = (t) => {
+  if (t.paused) return 'paused'
+  if (t.closed) return 'closed'
+  const g = t.last_kind ? AQ_GROUP[t.last_kind] : null
+  return g && g !== 'closed' ? g : 'none'
+}
 const aqPill = (text, tone) => `<span class="aq-pill aq-pill-${tone}">${aqEsc(text)}</span>`
-const aqStatusPill = (t) => aqPill(t.last_kind ? AQ_KIND[t.last_kind] || t.last_kind : 'Nincs esemény', AQ_GROUP_TONE[aqGroupOf(t)])
+const aqStatusPill = (t) => {
+  const g = aqGroupOf(t)
+  if (g === 'paused') return aqPill('Szünetel', AQ_GROUP_TONE.paused)
+  if (g === 'waiting') return aqPill(t.assignee ? 'Kiadásra vár' : 'Kiosztásra vár (acrobot)', AQ_GROUP_TONE.waiting)
+  return aqPill(t.last_kind ? AQ_KIND[t.last_kind] || t.last_kind : 'Nincs esemény', AQ_GROUP_TONE[g])
+}
 
 function aqInitials(name) {
   return String(name || '?').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 2).toUpperCase() || '?'
@@ -17081,12 +17105,16 @@ function aqStat(label, value, sub, tone) {
 }
 
 function aqTaskRow(t) {
-  const who = [t.assignee, t.reviewer ? 'review: ' + t.reviewer : null].filter(Boolean).join(' · ')
+  const who = [t.assignee || 'Acrobot osztja ki', t.reviewer ? 'review: ' + t.reviewer : null].filter(Boolean).join(' · ')
+  // the row tag is the priority when the task has one (Figma 7:2), else the id's initials
+  const tag = t.priority && AQ_PRIORITY[t.priority] ? AQ_PRIORITY[t.priority] : aqTaskTag(t.id)
+  // whom it waits on and since when: the server's open-matters reading (waits_on), not a guess here
+  const waits = t.waits_on && !t.closed ? ' · vár: ' + t.waits_on + (t.last_at ? ', ' + aqAgo(t.last_at) : '') : (t.last_at ? ' · ' + aqAgo(t.last_at) : '')
   return `<button type="button" class="aq-row" data-aq-task="${aqEsc(t.id)}">
-    <span class="aq-row-tag">${aqEsc(aqTaskTag(t.id))}</span>
+    <span class="aq-row-tag${t.priority ? ' aq-prio-' + aqEsc(t.priority) : ''}">${aqEsc(tag)}</span>
     <span class="aq-row-main"><span class="aq-row-title">${aqEsc(t.title || t.id)}</span>
-      <span class="aq-row-sub">${aqEsc(t.id)}${t.last_at ? ' · ' + aqEsc(aqAgo(t.last_at)) : ''}</span>
-      <span class="aq-row-who">${aqEsc(who || 'nincs felelős')}</span></span>
+      <span class="aq-row-sub">${aqEsc(t.id)}${aqEsc(waits)}</span>
+      <span class="aq-row-who">${aqEsc(who)}</span></span>
     ${aqStatusPill(t)}</button>`
 }
 
@@ -17182,13 +17210,48 @@ function aqRenderAgentDetail(data, name) {
       ${[...a.tasks, ...a.reviews.filter((r) => !a.tasks.includes(r))].map(aqTaskRow).join('') || '<p class="aq-empty">Nincs hozzá kötött Task Core-feladat.</p>'}</section>`
 }
 
+// The new-task form (Feladatkezelés V1). Its values live in aqState.form, so a refresh while
+// typing does not wipe them; its idempotency key is made when it opens, so a double submit
+// makes one task.
+function aqTaskForm(data) {
+  const f = aqState.form
+  if (!f) return ''
+  const names = data.team.map((a) => a.name)
+  const opt = (value, label, current) => `<option value="${aqEsc(value)}"${value === current ? ' selected' : ''}>${aqEsc(label)}</option>`
+  const msg = aqState.taskMsg && aqState.taskMsg.form ? `<p class="aq-note ${aqState.taskMsg.ok ? 'aq-note-ok' : 'aq-note-warn'}">${aqEsc(aqState.taskMsg.text)}</p>` : ''
+  return `<section class="aq-card aq-form">
+    <h2>Új feladat</h2>
+    <p class="aq-muted">A követelmény feltárása a Discordon marad; itt a feladat rekordja jön létre. Kiadni (ágenst indítani) Acrobot fog.</p>
+    <label class="aq-label" for="aqfTitle">Cím</label>
+    <input id="aqfTitle" class="aq-input" data-aq-field="title" maxlength="200" value="${aqEsc(f.title)}">
+    <label class="aq-label" for="aqfGoal">Mi a cél, mi számít késznek?</label>
+    <textarea id="aqfGoal" class="aq-input aq-textarea" data-aq-field="goal" maxlength="4000">${aqEsc(f.goal)}</textarea>
+    <div class="aq-form-row">
+      <div><label class="aq-label" for="aqfAssignee">Felelős</label>
+        <select id="aqfAssignee" class="aq-input" data-aq-field="assignee">${opt('', 'Acrobot osztja ki', f.assignee)}${names.map((n) => opt(n, n, f.assignee)).join('')}</select></div>
+      <div><label class="aq-label" for="aqfPriority">Prioritás</label>
+        <select id="aqfPriority" class="aq-input" data-aq-field="priority">${Object.entries(AQ_PRIORITY).map(([k, v]) => opt(k, v, f.priority)).join('')}</select></div>
+    </div>
+    <label class="aq-label" for="aqfBrief">Discord-szál vagy üzenet (nem kötelező)</label>
+    <input id="aqfBrief" class="aq-input" data-aq-field="brief_ref" maxlength="500" value="${aqEsc(f.brief_ref)}">
+    <div class="aq-dec-actions">
+      <button type="button" class="aq-dec-btn aq-dec-yes" data-aq-form-submit${aqState.taskBusy ? ' disabled' : ''}>Feladat létrehozása</button>
+      <button type="button" class="aq-dec-btn aq-dec-talk" data-aq-form-cancel${aqState.taskBusy ? ' disabled' : ''}>Mégse</button>
+    </div>
+    ${msg}
+  </section>`
+}
+
 function aqRenderTasks(data) {
   if (!data.errors.tasks.ok) return '<p class="aq-empty">A feladatlista nem elérhető.</p>'
   const groups = {}
   for (const t of data.tasks) groups[aqGroupOf(t)] = (groups[aqGroupOf(t)] || 0) + 1
   const shown = aqState.filter === 'all' ? data.tasks : data.tasks.filter((t) => aqGroupOf(t) === aqState.filter)
-  const filters = ['all', 'active', 'review', 'blocked', 'closed', ...(groups.none ? ['none'] : [])]
+  const filters = ['all', 'waiting', 'active', 'review', 'paused', 'blocked', 'closed', ...(groups.none ? ['none'] : [])]
+  const created = aqState.taskMsg && aqState.taskMsg.created ? `<p class="aq-note aq-note-ok">${aqEsc(aqState.taskMsg.text)}</p>` : ''
   return `
+    ${aqState.form ? aqTaskForm(data) : `<div class="aq-dec-actions"><button type="button" class="aq-dec-btn aq-dec-yes" data-aq-new>Új feladat</button></div>`}
+    ${created}
     <div class="aq-stats">
       ${aqStat('Folyamatban', groups.active || 0, null)}
       ${aqStat('Ellenőrzésben', groups.review || 0, null)}
@@ -17259,6 +17322,77 @@ function aqStallReason(data, task, items) {
   return reasons
 }
 
+// The phases of a task, from its events (Feladatkezelés V1). A missing `assigned` does not break
+// it: a `started` means the task was handed out too (measured: not every hand-out writes one).
+const AQ_PHASES = [['created', 'Létrehozva'], ['assigned', 'Kiosztva'], ['working', 'Folyamatban'], ['review', 'Ellenőrzés'], ['merged', 'Beolvasztva'], ['done', 'Kész']]
+function aqPhases(items, task) {
+  const kinds = new Set(items.filter((i) => i.source === 'event').map((i) => i.kind))
+  const has = (...k) => k.some((x) => kinds.has(x))
+  const reached = {
+    created: true,
+    assigned: has('assigned', 'started', 'fix_started', 'review_requested', 'verdict', 'merged', 'done'),
+    working: has('started', 'fix_started', 'review_requested', 'verdict', 'merged', 'done'),
+    review: has('review_requested', 'verdict', 'merged'),
+    merged: has('merged'),
+    done: has('done'),
+  }
+  const side = task.paused ? ['Szünetel', 'grey'] : task.last_kind === 'blocked' ? ['Blokkolt', 'red']
+    : task.last_kind === 'cancelled' ? ['Megszakítva', 'grey'] : task.last_kind === 'failed' ? ['Sikertelen', 'red'] : null
+  return `<div class="aq-phases">${AQ_PHASES.map(([k, label]) => `<span class="aq-phase${reached[k] ? ' aq-phase-on' : ''}">${aqEsc(label)}</span>`).join('')}
+    ${side ? aqPill(side[0], side[1]) : ''}</div>`
+}
+
+// What the four actions may do now, as the server judges it (src/task-actions.ts); the server
+// still decides, and its refusal is shown under the buttons.
+function aqTaskAllowed(task, items) {
+  const last = task.last_kind
+  const ended = !!task.closed
+  const paused = !!task.paused
+  const working = last === 'started' || last === 'fix_started' ||
+    (last === 'assigned' && !!task.assignee && items.some((i) => i.source === 'session' && i.agent === task.assignee))
+  const resumeIdx = items.map((i) => i.source === 'event' && i.kind === 'resumed').lastIndexOf(true)
+  const handedOut = items.slice(resumeIdx + 1).some((i) => i.source === 'session' ||
+    (i.source === 'event' && ['assigned', 'started', 'fix_started', 'review_requested', 'verdict', 'merged'].includes(i.kind)))
+  return { ended, paused, working, priority: !ended, assign: !ended && (paused || !handedOut), pause: !ended && !paused && !working, resume: paused }
+}
+
+// The selects only edit; Mentés writes (a focused select changes on an arrow key, and each change
+// would be a write and a message: barracuda, #116).
+function aqTaskManage(data, task, f, items) {
+  const can = aqTaskAllowed(task, items)
+  const busy = aqState.taskBusy
+  const edit = aqState.edit && aqState.edit.id === task.id ? aqState.edit : null
+  const cur = { priority: f.priority || 'normal', assignee: f.assignee || '' }
+  const want = { priority: edit && edit.priority !== undefined ? edit.priority : cur.priority, assignee: edit && edit.assignee !== undefined ? edit.assignee : cur.assignee }
+  const changed = (can.priority && want.priority !== cur.priority) || (can.assign && want.assignee !== cur.assignee)
+  const names = data.team.map((a) => a.name)
+  const opt = (value, label, current) => `<option value="${aqEsc(value)}"${value === (current || '') ? ' selected' : ''}>${aqEsc(label)}</option>`
+  const msg = aqState.taskMsg && aqState.taskMsg.id === task.id ? `<p class="aq-note ${aqState.taskMsg.ok ? 'aq-note-ok' : 'aq-note-warn'}">${aqEsc(aqState.taskMsg.text)}</p>` : ''
+  const why = can.ended ? 'A feladat lezárult: nincs mit módosítani.'
+    : can.working ? 'A felelős most dolgozik rajta: a szünet nem szakíthat meg futó munkát. Ha mégis meg kell állítani, kérd Discordon.'
+    : !can.assign ? 'Már kiadva: a felelős cseréjéhez újraindítás kellene, ez Acroboté. Előbb szüneteltesd, vagy kérd Discordon.' : ''
+  return `<section class="aq-card"><h2>Kezelés</h2>
+    <div class="aq-form-row">
+      <div><label class="aq-label" for="aqtPriority">Prioritás</label>
+        <select id="aqtPriority" class="aq-input" data-aq-edit="priority" data-aq-id="${aqEsc(task.id)}"${can.priority && !busy ? '' : ' disabled'}>
+          ${Object.entries(AQ_PRIORITY).map(([k, v]) => opt(k, v, want.priority)).join('')}</select></div>
+      <div><label class="aq-label" for="aqtAssignee">Felelős</label>
+        <select id="aqtAssignee" class="aq-input" data-aq-edit="assignee" data-aq-id="${aqEsc(task.id)}"${can.assign && !busy ? '' : ' disabled'}>
+          ${opt('', 'Acrobot osztja ki', want.assignee)}${names.map((n) => opt(n, n, want.assignee)).join('')}</select></div>
+    </div>
+    <div class="aq-dec-actions">
+      <button type="button" class="aq-dec-btn aq-dec-yes" data-aq-save data-aq-id="${aqEsc(task.id)}"${changed && !busy ? '' : ' disabled'}>Mentés</button>
+      ${can.resume
+        ? `<button type="button" class="aq-dec-btn aq-dec-yes" data-aq-act="resume" data-aq-id="${aqEsc(task.id)}"${busy ? ' disabled' : ''}>Folytatás</button>`
+        : `<button type="button" class="aq-dec-btn aq-dec-talk" data-aq-act="pause" data-aq-id="${aqEsc(task.id)}"${can.pause && !busy ? '' : ' disabled'}>Szünet</button>`}
+    </div>
+    ${why ? `<p class="aq-muted">${aqEsc(why)}</p>` : ''}
+    ${can.paused ? '<p class="aq-muted">Szünet alatt új munka nem indul a feladaton; egy futó review befejeződhet. Folytatás után Acrobot adja ki újra.</p>' : ''}
+    ${msg}
+    <p class="aq-muted">Módosítani csak Balázs bejelentkezett munkamenetével lehet. Ágenst innen nem indítunk.</p>
+  </section>`
+}
+
 async function aqRenderTaskDetail(data, id) {
   const task = data.tasks.find((t) => t.id === id)
   const tl = await aqGet('/api/tasks/' + encodeURIComponent(id) + '/timeline')
@@ -17270,12 +17404,15 @@ async function aqRenderTaskDetail(data, id) {
     <button type="button" class="aq-back" data-aq-back>← Feladatok</button>
     <section class="aq-card"><h2>${aqEsc(f.title || task.id)}</h2>
       <p class="aq-muted">${aqEsc(f.goal || 'Nincs megadott cél.')}</p>
-      <div class="aq-pills">${aqStatusPill(task)} ${aqPill('Felelős: ' + (f.assignee || '—'), 'grey')} ${aqPill('Reviewer: ' + (f.reviewer || '—'), 'grey')}
-        ${f.verification_profile ? aqPill('Profil: ' + f.verification_profile, 'grey') : ''} ${aqPill(task.id, 'grey')}</div></section>
+      <div class="aq-pills">${aqStatusPill(task)} ${aqPill('Felelős: ' + (f.assignee || 'Acrobot osztja ki'), 'grey')} ${aqPill('Reviewer: ' + (f.reviewer || '—'), 'grey')}
+        ${f.priority ? aqPill('Prioritás: ' + (AQ_PRIORITY[f.priority] || f.priority), AQ_PRIORITY_TONE[f.priority] || 'grey') : ''}
+        ${f.verification_profile ? aqPill('Profil: ' + f.verification_profile, 'grey') : ''} ${aqPill(task.id, 'grey')}</div>
+      ${aqPhases(items, task)}</section>
     <div class="aq-grid aq-grid-detail">
       <section class="aq-card"><h2>Feladat-idővonal</h2><p class="aq-muted">Események, átadó rekordok, munkamenetek és üzenetek, időrendben</p>
         ${items.length ? `<ol class="aq-tl">${items.map((i, n) => aqTimelineItem(i, n + 1)).join('')}</ol>` : '<p class="aq-empty">Még nincs rögzített tétel.</p>'}</section>
       <div>
+        ${aqTaskManage(data, task, f, items)}
         <section class="aq-card"><h2>PR és review</h2><p class="aq-muted">A Task Core eseményeiből</p>${aqEvidence(items)}</section>
         <section class="aq-card"><h2>Elakadás</h2>
           ${reasons.length ? reasons.map((r) => `<div class="aq-stall-why">${aqEsc(r)}</div>`).join('') : '<p class="aq-empty">Nincs mérhető elakadás.</p>'}</section>
@@ -17325,6 +17462,90 @@ async function aqDecide(id, action) {
   } catch (err) {
     return { ok: false, error: String(err && err.message ? err.message : err) }
   }
+}
+
+// The task writes (Feladatkezelés V1): a new task to /api/task-actions with its form's key, or
+// one of the four actions to /api/task-actions/<id>. An action outside the four never reaches fetch.
+async function aqTaskWrite(id, body, key) {
+  if (id && !Object.prototype.hasOwnProperty.call(AQ_TASK_ACTIONS, body && body.action)) return { ok: false, error: 'ismeretlen művelet' }
+  if (!id && !key) return { ok: false, error: 'hiányzik az ismétlésvédelmi kulcs' }
+  try {
+    const headers = { 'Content-Type': 'application/json' }
+    if (!id) headers['Idempotency-Key'] = key
+    const res = await fetch(id ? '/api/task-actions/' + encodeURIComponent(id) : '/api/task-actions', {
+      method: 'POST', headers, body: JSON.stringify(body),
+    })
+    let out = null
+    try { out = await res.json() } catch { out = null }
+    if (res.ok) return { ok: true, value: out }
+    return { ok: false, status: res.status, error: (out && out.error) || 'HTTP ' + res.status }
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) }
+  }
+}
+
+const aqNewKey = () => (globalThis.crypto && typeof crypto.randomUUID === 'function')
+  ? crypto.randomUUID() : 'k-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12)
+const aqRefusal = (out, what) => out.status === 403
+  ? 'Csak Balázs bejelentkezett munkamenetével lehet (' + out.error + ').' : what + ' nem ment át: ' + out.error
+
+async function aqTaskCreateClick() {
+  const f = aqState.form
+  if (!f || aqState.taskBusy) return
+  aqState.taskBusy = true
+  aqState.taskMsg = null
+  await aqRender()
+  const out = await aqTaskWrite(null, { title: f.title, goal: f.goal, assignee: f.assignee || null, priority: f.priority, brief_ref: f.brief_ref || undefined }, f.key)
+  aqState.taskBusy = false
+  if (out.ok && out.value && out.value.task) {
+    aqState.form = null
+    aqState.taskMsg = { created: true, ok: true, text: (out.value.repeated ? 'Már létrehoztad: ' : 'Létrehozva: ') + out.value.task.id + '. Acrobot üzenetet kapott, a kiadás az övé.' }
+  } else {
+    aqState.taskMsg = { form: true, ok: false, text: aqRefusal(out, 'A létrehozás') }
+  }
+  await loadAcroveliq()
+}
+
+async function aqTaskActionClick(id, action, extra) {
+  if (!id || aqState.taskBusy) return
+  aqState.taskBusy = true
+  aqState.taskMsg = null
+  await aqRender()
+  const out = await aqTaskWrite(id, { action, ...(extra || {}) })
+  aqState.taskBusy = false
+  const done = { pause: 'Szünetel: új munka nem indul rajta.', resume: 'Folytatva: Acrobot adja ki újra.', priority: 'Prioritás rögzítve.', assign: 'Felelős rögzítve. A kiadás Acroboté.' }
+  aqState.taskMsg = out.ok
+    ? { id, ok: true, text: out.value && out.value.repeated ? 'Már ez az állapota, nem változott semmi.' : done[action] }
+    : { id, ok: false, text: aqRefusal(out, AQ_TASK_ACTIONS[action]) }
+  await loadAcroveliq()
+}
+
+// Mentés: what the selects changed, against the task as the list has it; the priority first, then
+// the assignee, each its own action (and event). The first refusal stops the second.
+async function aqTaskSaveClick(id) {
+  const edit = aqState.edit && aqState.edit.id === id ? aqState.edit : null
+  const task = aqState.data && aqState.data.tasks.find((t) => t.id === id)
+  if (!edit || !task || aqState.taskBusy) return
+  const steps = []
+  if (edit.priority !== undefined && edit.priority !== (task.priority || 'normal')) steps.push(['priority', { priority: edit.priority }])
+  if (edit.assignee !== undefined && edit.assignee !== (task.assignee || '')) steps.push(['assign', { assignee: edit.assignee || null }])
+  if (!steps.length) return
+  aqState.taskBusy = true
+  aqState.taskMsg = null
+  await aqRender()
+  const done = []
+  let failed = null
+  for (const [action, extra] of steps) {
+    const out = await aqTaskWrite(id, { action, ...extra })
+    if (!out.ok) { failed = aqRefusal(out, AQ_TASK_ACTIONS[action]); break }
+    done.push(AQ_TASK_ACTIONS[action])
+  }
+  aqState.taskBusy = false
+  aqState.edit = null
+  aqState.taskMsg = failed
+    ? { id, ok: false, text: (done.length ? done.join(' és ') + ' rögzítve; ' : '') + failed }
+    : { id, ok: true, text: done.join(' és ') + ' rögzítve.' + (steps.some(([a]) => a === 'assign') ? ' A kiadás Acroboté.' : '') }
+  await loadAcroveliq()
 }
 
 // The owner's Discord answer: a link when the server built one (it does, only from ids and
@@ -17503,7 +17724,35 @@ function aqWire() {
     aqState.detail = null
     aqRender()
   })
+  // the form's values are kept as typed, so a re-render (refresh, a click) does not wipe them
+  const keep = (e) => {
+    const el = e.target.closest('[data-aq-field]')
+    if (el && aqState.form) aqState.form[el.dataset.aqField] = el.value
+  }
+  document.getElementById('aqBody')?.addEventListener('input', keep)
+  document.getElementById('aqBody')?.addEventListener('change', (e) => {
+    keep(e)
+    // a select only edits; nothing is written until Mentés
+    const ed = e.target.closest('[data-aq-edit]')
+    if (!ed) return
+    if (!aqState.edit || aqState.edit.id !== ed.dataset.aqId) aqState.edit = { id: ed.dataset.aqId }
+    aqState.edit[ed.dataset.aqEdit] = ed.value
+    aqState.taskMsg = null
+    aqRender()
+  })
   document.getElementById('aqBody')?.addEventListener('click', (e) => {
+    if (e.target.closest('[data-aq-new]')) {
+      aqState.form = { key: aqNewKey(), title: '', goal: '', assignee: '', priority: 'normal', brief_ref: '' }
+      aqState.taskMsg = null
+      aqRender()
+      return
+    }
+    if (e.target.closest('[data-aq-form-cancel]')) { aqState.form = null; aqState.taskMsg = null; aqRender(); return }
+    if (e.target.closest('[data-aq-form-submit]')) { aqTaskCreateClick(); return }
+    const saveBtn = e.target.closest('[data-aq-save]')
+    if (saveBtn) { aqTaskSaveClick(saveBtn.dataset.aqId); return }
+    const actBtn = e.target.closest('[data-aq-act]')
+    if (actBtn) { aqTaskActionClick(actBtn.dataset.aqId, actBtn.dataset.aqAct); return }
     const decideBtn = e.target.closest('[data-aq-decide]')
     if (decideBtn) {
       aqDecideClick(decideBtn.dataset.aqId, decideBtn.dataset.aqDecide)

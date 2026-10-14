@@ -189,13 +189,18 @@ describe('the AcrovelIQ page reads only what the list allows', () => {
   const START = APP.indexOf('// === AcrovelIQ (read-only view, task acroveliq-vp-v1) ===')
   const SECTION = START >= 0 ? APP.slice(START) : ''
 
-  it('every /api/ literal of the page section is an allowed GET, and the decision write an allowed POST', () => {
+  it('every /api/ literal of the page section is an allowed GET, and the decision and task writes allowed POSTs', () => {
     const literals = [...SECTION.matchAll(/'(\/api\/[^']*)'/g)].map((m) => m[1]!)
     expect(literals.length).toBeGreaterThanOrEqual(5)
     for (const lit of literals) {
       // the one write (Balázs's decision B): POST '/api/decisions/' + id, and only POST
-      if (lit === '/api/decisions/') {
+      if (lit === '/api/decisions/' || lit === '/api/task-actions/') {
         expect([acroveliqAllows('POST', `${lit}x`), acroveliqAllows('GET', `${lit}x`)], lit).toEqual([true, false])
+        continue
+      }
+      // the new-task write (Feladatkezelés V1): POST only
+      if (lit === '/api/task-actions') {
+        expect([acroveliqAllows('POST', lit), acroveliqAllows('GET', lit)], lit).toEqual([true, false])
         continue
       }
       // the timeline URL is built as '/api/tasks/' + id + '/timeline'
@@ -203,6 +208,7 @@ describe('the AcrovelIQ page reads only what the list allows', () => {
       expect(acroveliqAllows('GET', path), lit).toBe(true)
     }
     expect(literals).toContain('/api/decisions/')
+    expect(literals).toEqual(expect.arrayContaining(['/api/task-actions', '/api/task-actions/']))
   })
 
   it('the login overlay reaches the two auth calls it makes', () => {

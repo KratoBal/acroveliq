@@ -30,6 +30,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 
 import { createAgentMessage } from './db.js'
+import { CLOSED_KINDS } from './open-matters.js'
 import {
   NON_STATE_SQL,
   TASK_PRIORITIES,
@@ -48,7 +49,8 @@ export interface TaskActionResult {
   body: Record<string, unknown>
 }
 
-const ENDED: ReadonlySet<string> = new Set(['done', 'merged', 'cancelled', 'failed', 'partial'])
+/** An ended task is a closed one, as open-matters reads it: one list (barracuda, #116). */
+const ENDED: ReadonlySet<string> = CLOSED_KINDS
 const WORKING: ReadonlySet<string> = new Set(['started', 'fix_started'])
 /** Events that mean the task has been handed out (or worked on). */
 const HANDED_OUT: readonly TaskEventKind[] = ['assigned', 'started', 'fix_started', 'review_requested', 'verdict', 'merged']
@@ -225,6 +227,8 @@ export function ownerTaskAction(
   mainAgent: string,
   isAgent: (name: string) => boolean,
 ): TaskActionResult {
+  // the route checks the action too; this function does not take an unknown one as a resume either
+  if (!(TASK_ACTIONS as readonly string[]).includes(action)) return { status: 400, body: { error: `action: one of ${TASK_ACTIONS.join(', ')}` } }
   const task = db.prepare('SELECT id, assignee, priority FROM tasks WHERE id = ?').get(id) as
     | { id: string; assignee: string | null; priority: string | null }
     | undefined
@@ -288,7 +292,7 @@ export function ownerTaskAction(
     )
   }
 
-  // resume
+  // resume (the only action left: the check above)
   if (!paused) {
     const ever = db.prepare("SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'paused' LIMIT 1").get(id)
     return ever ? { status: 200, body: { task: taskSnapshot(db, id), repeated: true } } : { status: 409, body: { error: 'the task is not paused' } }
