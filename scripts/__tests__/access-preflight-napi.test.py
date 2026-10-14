@@ -112,11 +112,13 @@ check('the dashboard entry is written, no message', e.sent('naplo').count('--END
 e.done()
 
 e = Env()
-r = e.run({'legacy-szukitett': answer('legacy-szukitett', [row('legacy'), row('legacy', '/api/y')]),
+r = e.run({'legacy-szukitett': answer('legacy-szukitett', [row('legacy'), row('legacy', '/api/voice/directive', count=39)]),
            'kikenyszerit': answer('kikenyszerit', [row('legacy')])})
 check('only legacy rows: exit 0, RENDBEN, counted in the report',
       r.returncode == 0 and ' RENDBEN ' in e.last() and 'legacy 1; legacy-szukitett 2 sor' in e.sent('naplo'))
 check('only legacy rows: no message', e.sent('uzenet') == '')
+check('the legacy calls are listed per route in the daily entry, the most frequent first',
+      '  legacy "GET" "/api/voice/directive" 39x\n  legacy "GET" "/api/x" 3x' in e.sent('naplo'))
 e.done()
 
 e = Env()

@@ -102,6 +102,12 @@ def classify(results):
     named = [row for row in enforce if row.get('actor') != 'legacy']
     facts = {
         'legacy_szukitett': len(results['legacy-szukitett']),
+        # the shared token's calls per route, every day: one that does not wear off over the
+        # days (the voice hook's /api/voice/directive, say) is the sign (acrobot, 30211)
+        'legacy_utvonalak': sorted(
+            (row for row in results['legacy-szukitett'] if row.get('actor') == 'legacy'),
+            key=lambda row: (-int(row.get('count') or 0), str(row.get('path')), str(row.get('method'))),
+        ),
         'kikenyszerit': len(enforce),
         'nevvel': named,
         'legacy_maradek': len(enforce) - len(named),
@@ -126,6 +132,12 @@ def report_text(verdict, facts, errors, out_txt):
                          f"({int(row.get('count') or 0)}x, {adat(row.get('reason'))})")
         if len(facts['nevvel']) > 20:
             lines.append(f"  ... es meg {len(facts['nevvel']) - 20} sor")
+    if facts['legacy_utvonalak']:
+        lines.append('A kozos token (legacy) hivasai utvonalankent, az elmult napon (ADATOK):')
+        for row in facts['legacy_utvonalak'][:30]:
+            lines.append(f"  legacy {adat(row.get('method'))} {adat(row.get('path'))} {int(row.get('count') or 0)}x")
+        if len(facts['legacy_utvonalak']) > 30:
+            lines.append(f"  ... es meg {len(facts['legacy_utvonalak']) - 30} utvonal")
     lines.append(f'Kimenet: {out_txt}')
     return '\n'.join(lines)
 
