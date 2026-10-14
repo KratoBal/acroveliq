@@ -215,13 +215,16 @@ describe('fleet-gate: what passes', () => {
     const def = p.run(`app-log ${API}`)
     const web = p.run(`app-log ${WEB} 5000`)
     const call = (r: { calls: string[] }) => r.calls.filter((c) => c.startsWith('docker')).at(-1)
-    expect([def.code, def.out, call(def), web.code, call(web), def.calls.some((c) => c.startsWith('logger') && c.includes(`op=app-log ${API} 500`))], 'GATE-APP-LOG').toEqual([
+    expect([def.code, def.out, call(def), web.code, call(web), def.calls.some((c) => c.startsWith('logger') && c.includes(`op=app-log ${API} 500 ${API}-120000`)), def.err, web.err], 'GATE-APP-LOG').toEqual([
       0,
       '2026-10-14T06:00:00Z naplo-sor\n2026-10-14T06:00:01Z hiba-sor\n',
       `docker [logs] [--timestamps] [--tail] [500] [${API}-120000]`,
       0,
       `docker [logs] [--timestamps] [--tail] [5000] [${WEB}-120100]`,
       true,
+      // the container read, on stderr only: the log on stdout stays the container's
+      `fleet-gate: app-log konténer: ${API}-120000\n`,
+      `fleet-gate: app-log konténer: ${WEB}-120100\n`,
     ])
   })
 
