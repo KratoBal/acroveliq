@@ -215,6 +215,8 @@ def compile_patterns(rules):
 # was flagged as a bare request -- measured on acrobot at least six times on
 # 2026-10-14 ("Felismert muvelet-kategoria: jovahagyas"). It asks for nothing.
 #
+# Measured live (acrobot, store/provenance-flagged.log, 15:1x): the hook's prompt starts
+# DIRECTLY with <task-notification>, the notice is not in it; so the notice is optional.
 # Recognised by STRUCTURE, never by a word: the whole prompt is (optionally) the
 # notice below, verbatim up to whitespace, followed by one or more
 # <task-notification> blocks whose children are only the known tags, with no '<'
