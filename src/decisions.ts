@@ -34,6 +34,7 @@
 
 import type Database from 'better-sqlite3'
 
+import { DISCORD_GUILD_ID } from './config.js'
 import { createAgentMessage, saveAgentMemory, type Approval } from './db.js'
 import { addTaskEvent } from './task-usage.js'
 import { latestTaskHandoff } from './task-handoff.js'
@@ -236,8 +237,11 @@ export function decide(
  * nothing (P0-1: a language model does not turn words into a decision); the row shows
  * "answered on Discord" until the owner confirms it on the page.
  */
-export function attachDiscordReply(db: Database.Database, id: string, messageId: string): DecisionResult {
+export function attachDiscordReply(db: Database.Database, id: string, messageId: string, channelId: string | null = null): DecisionResult {
   if (!DISCORD_MESSAGE_ID.test(messageId)) return { status: 400, body: { error: 'message_id: a Discord message id, 17-20 digits' } }
+  // the channel (or thread) is optional and only builds the link; a wrong shape is refused, not dropped
+  if (channelId !== null && !DISCORD_MESSAGE_ID.test(channelId))
+    return { status: 400, body: { error: 'channel_id: a Discord channel or thread id, 17-20 digits' } }
   const row = getRow(db, id)
   if (!row) return { status: 404, body: { error: 'no such approval' } }
   if (row.category !== DECISION_CATEGORY) return { status: 409, body: { error: `not a decision row (category ${row.category})` } }
@@ -248,7 +252,8 @@ export function attachDiscordReply(db: Database.Database, id: string, messageId:
     | { id: string } | undefined
   if (other) return { status: 409, body: { error: `message ${messageId} belongs to approval ${other.id} already: one message, one item` } }
   try {
-    db.prepare('UPDATE approvals SET discord_reply_ref = ? WHERE id = ? AND discord_reply_ref IS NULL').run(messageId, id)
+    db.prepare('UPDATE approvals SET discord_reply_ref = ?, discord_reply_channel = ? WHERE id = ? AND discord_reply_ref IS NULL')
+      .run(messageId, channelId, id)
   } catch {
     return { status: 409, body: { error: `message ${messageId} was attached elsewhere meanwhile` } }
   }
@@ -270,6 +275,8 @@ export interface DecisionView {
   resolved_by: string | null
   discuss_requested_at: number | null
   discord_message: string | null
+  /** a link to the owner's Discord answer, when the guild and the channel are known; else null */
+  discord_url: string | null
 }
 
 export interface HandoffDecisionView {
@@ -299,7 +306,14 @@ export interface DecisionItems {
 
 const normalizedWho = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
 
-export function decisionItems(db: Database.Database, now: number, openTaskIds: readonly string[]): DecisionItems {
+/** The link to a Discord message, or null when a part is missing or not an id. */
+export function discordMessageUrl(guild: string | null | undefined, channel: string | null | undefined, message: string | null | undefined): string | null {
+  return guild && channel && message && [guild, channel, message].every((part) => DISCORD_MESSAGE_ID.test(part))
+    ? `https://discord.com/channels/${guild}/${channel}/${message}`
+    : null
+}
+
+export function decisionItems(db: Database.Database, now: number, openTaskIds: readonly string[], guild: string = DISCORD_GUILD_ID): DecisionItems {
   const rows = db
     .prepare(`SELECT * FROM approvals WHERE category = ? AND (status = 'pending' OR resolved_at >= ?)
               ORDER BY requested_at DESC, id`)
@@ -311,6 +325,7 @@ export function decisionItems(db: Database.Database, now: number, openTaskIds: r
       status: r.status, requested_at: r.requested_at, timeout_at: r.timeout_at, resolved_at: r.resolved_at,
       resolved_by: r.resolved_by, discuss_requested_at: r.discuss_requested_at ?? null,
       discord_message: r.discord_reply_ref ?? r.decision_ref ?? null,
+      discord_url: r.discord_reply_ref ? discordMessageUrl(guild, r.discord_reply_channel, r.discord_reply_ref) : null,
     }
   }
   const out: DecisionItems = { pending: [], discuss: [], discord_replied: [], expired: [], recent: [], recent_discord: [] }

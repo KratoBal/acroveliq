@@ -975,7 +975,7 @@ export function initDatabase(dbPathOverride?: string): void {
   // Dontéseim V1 (task dontesek-v1-backend): a decision row's "discuss it" mark (the
   // row stays pending), and the Discord message the owner answered it in.
   for (const column of ['discord_code TEXT', 'decision_ref TEXT', 'discord_message_id TEXT',
-    'discuss_requested_at INTEGER', 'discord_reply_ref TEXT']) {
+    'discuss_requested_at INTEGER', 'discord_reply_ref TEXT', 'discord_reply_channel TEXT']) {
     try {
       db.exec(`ALTER TABLE approvals ADD COLUMN ${column}`)
     } catch {
@@ -3515,6 +3515,8 @@ export interface Approval {
   discord_message_id?: string | null
   discuss_requested_at?: number | null
   discord_reply_ref?: string | null
+  /** the channel or thread of discord_reply_ref, for the link (optional) */
+  discord_reply_channel?: string | null
 }
 
 export function createApproval(params: {

@@ -14,7 +14,7 @@ import type { RouteContext } from './types.js'
 //        shared token gets a 403 even where the access mode only logs (Balázs's
 //        requirement 1, 2026-10-14 08:52:26 UTC, msg 1559851364950220852; barracuda's
 //        review of #104). This is the one write the AcrovelIQ host lets through.
-//   POST /api/decisions/:id/discord-reply  {message_id}
+//   POST /api/decisions/:id/discord-reply  {message_id, channel_id?}
 //        the main agent attaches the Discord message the owner answered in. Decides
 //        nothing. Only the main agent's own token, only on the dashboard surface.
 
@@ -48,7 +48,9 @@ export async function tryHandleDecisions(ctx: RouteContext): Promise<boolean> {
     }
     const b = await body(ctx)
     const messageId = typeof b?.message_id === 'string' ? b.message_id.trim() : ''
-    const out = attachDiscordReply(getDb(), id, messageId)
+    // the channel or thread the message is in: optional, only for the link on the page
+    const channelId = typeof b?.channel_id === 'string' && b.channel_id.trim() ? b.channel_id.trim() : null
+    const out = attachDiscordReply(getDb(), id, messageId, channelId)
     json(res, out.body, out.status)
     return true
   }

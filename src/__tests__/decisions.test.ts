@@ -337,6 +337,24 @@ describe('a decision made on Discord makes no second item (requirement 4)', () =
     expect(items.recent_discord.map((h) => h.discord_messages)).toEqual([['1559634758932242504']])
   })
 
+  it('the link to the answer: with the channel and the guild, a discord.com link; without either, none; a wrong channel id is refused', async () => {
+    const withChannel = (id: string, body: Record<string, unknown>) =>
+      call(tryHandleDecisions, 'POST', `/api/decisions/${id}/discord-reply`, body, A)
+    const a = await newDecision()
+    const b = await newDecision()
+    const c = await newDecision()
+    expect((await withChannel(c, { message_id: '1559851364950220852', channel_id: 'javascript:1' })).status).toBe(400)
+    expect(row(c).discord_reply_ref).toBeNull()
+    expect((await withChannel(a, { message_id: '1559851364950220852', channel_id: '1540270627926183997' })).status).toBe(200)
+    expect((await withChannel(b, { message_id: '1559851364950220999' })).status).toBe(200)
+    const url = (items: ReturnType<typeof decisionItems>, id: string) => items.discord_replied.find((d) => d.id === id)?.discord_url
+    const guild = decisionItems(getDb(), NOW(), ['tsk-1'], '1538520890822885418')
+    const noGuild = decisionItems(getDb(), NOW(), ['tsk-1'], '')
+    expect([url(guild, a), url(guild, b), url(noGuild, a)]).toEqual([
+      'https://discord.com/channels/1538520890822885418/1540270627926183997/1559851364950220852', null, null,
+    ])
+  })
+
   it('the message id reader: a labelled number or a link\'s last number, 17-20 digits; a thread id alone is not a message', () => {
     expect(discordMessageIds('Acroveliq szal 1559470238783770624, msg 1559847481821626421')).toEqual(['1559847481821626421'])
     expect(discordMessageIds('message_id 1559139791860123456')).toEqual(['1559139791860123456'])
