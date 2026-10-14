@@ -47,6 +47,10 @@
 # 664 diff.patch could be swapped by any agent before review; barracuda, 2026-10-13).
 umask 022
 set -uo pipefail
+# fixed places, one line each: tests replace them in a copy
+GIT_AUTH=/home/marveen/marveen/scripts/git-auth.sh
+GH_API=https://api.github.com
+TOKEN_FILE=/home/marveen/marveen/store/.github-token
 USAGE="usage: [REVIEW_CSOMAG_REPO=<sajat klon>] review-csomag.sh <os|commerce|marveen|ai> <PR> <task_id> [cimke]
        review-csomag.sh docs <fajl> <task_id> [cimke]"
 ZONA="${REVIEW_CSOMAG_DIR:-/home/marveen/marveen/review-csomagok}"
@@ -160,10 +164,41 @@ fi
 claim_folder "$D" || exit 1
 [ "${REVIEW_CSOMAG_GUARD_ONLY:-0}" = 1 ] && { echo "ok: $D pr: $PRREF umask=$(umask)"; exit 0; }
 cd "$REPO" || exit 1
-if ! ferr=$(bash /home/marveen/marveen/scripts/git-auth.sh fetch origin main "pull/$PR/head:pr-$PR" -f 2>&1 >/dev/null); then
+if ! ferr=$(bash "$GIT_AUTH" fetch origin main "pull/$PR/head:pr-$PR" -f 2>&1 >/dev/null); then
   echo "FAIL: fetch ($REPO): $ferr" >&2; exit 1
 fi
 H=$(git rev-parse "pr-$PR"); M=$(git rev-parse origin/main); B=$(git merge-base "$M" "$H")
+
+# The fetched head must be the PR's head NOW (task review-csomag-fej-egyezes, acrobot 30276).
+# Right after a push GitHub's pull/<N>/head ref can still name the previous commit: #106 v2
+# (2026-10-14) was packaged from 73f560c while the PR stood at 857d6ca, its README named the
+# old head, and the stale diff looked like a fresh round. The API's head.sha follows the
+# branch at once, so the two are compared, and a difference stops BEFORE anything is
+# written. The token is read inside python from its file and goes to curl on stdin: not on
+# any command line (P0-1).
+if [ ! -r "$TOKEN_FILE" ]; then
+  echo "FAIL: a PR fejet nem tudom ellenorizni: a token nem olvashato ($TOKEN_FILE)" >&2
+  rmdir "$D" 2>/dev/null; exit 1
+fi
+API_HEAD="$(TOKEN_FILE="$TOKEN_FILE" URL="$GH_API/repos/$SLUG/pulls/$PR" python3 -c '
+import json, os, subprocess, sys
+tok = open(os.environ["TOKEN_FILE"]).read().strip()
+r = subprocess.run(["curl", "-s", "-H", "@-", "-H", "Accept: application/vnd.github+json", os.environ["URL"]],
+                   input="Authorization: Bearer " + tok + chr(10), capture_output=True, text=True)
+try:
+    sha = json.loads(r.stdout)["head"]["sha"]
+except Exception:
+    sys.exit(1)
+print(sha)
+')"
+if ! [[ "$API_HEAD" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "FAIL: a PR fejet nem tudom ellenorizni: az API nem adott head.sha-t ($SLUG#$PR)" >&2
+  rmdir "$D" 2>/dev/null; exit 1
+fi
+if [ "$H" != "$API_HEAD" ]; then
+  echo "FAIL: a letoltott fej ($H) nem a PR mostani feje ($API_HEAD): a GitHub pull refje meg nem frissult. Nem csomagolok elavult diffet; probald ujra nehany masodperc mulva." >&2
+  rmdir "$D" 2>/dev/null; exit 1
+fi
 if [ -e "$D/diff.patch" ]; then
   n=2; while [ -e "$D/diff-v$n.patch" ]; do n=$((n + 1)); done
   OUT="$D/diff-v$n.patch"
