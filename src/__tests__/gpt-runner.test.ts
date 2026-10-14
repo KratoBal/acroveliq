@@ -18,7 +18,7 @@ import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
   HOST_PORTS, SYSTEM_EXACT, networkTargets, globalIpv6, checkIpv6, checkHome, RUNNER_HOME,
-  AUTH_FILE, checkTestOverrides, checkAuthFile, safeExecArgs, v3Checks, V3_TEST_ARGS, V3_CONTROL_ARGS, V3_CANARIES, checkIds, checkCaps, classifyReadable, judgeNetwork, judgeSandboxRun, codexSandboxChecks,
+  AUTH_FILE, checkTestOverrides, checkAuthFile, safeExecArgs, v3Checks, V3_TEST_ARGS, V3_CONTROL_ARGS, V3_CANARIES, toolUses, V3_PROMPT, checkIds, checkCaps, classifyReadable, judgeNetwork, judgeSandboxRun, codexSandboxChecks,
   idsFromStatus, summarize, PINNED_CODEX, FLEET_IDS,
 } from '../../gpt-runner/proba.mjs'
 
@@ -365,7 +365,10 @@ esac
     expect(inst).toMatch(/^trap '.*STOP.*\$LINENO.*' ERR$/m)
     expect(inst).toMatch(/iptables -V/)
     expect(inst).toMatch(/iptables -w 5 -S FORWARD \| grep -F -- '-j DOCKER-USER' \|\| echo "FIGYELEM/)
-    expect(inst).toMatch(/for fw in ufw firewalld/)
+    // ufw by its own status (the host: service running, firewall off; acrobot 30839)
+    expect(inst).toMatch(/ufw_aktiv\(\) \{ command -v ufw >\/dev\/null && ufw status 2>\/dev\/null \| grep -q '\^Status: active'; \}/)
+    expect(inst).toMatch(/\nif ufw_aktiv; then\n {2}echo "== valodi ufw reload"/)
+    expect(/systemctl is-active --quiet "?ufw/.test(inst)).toBe(false)
   })
 })
 
@@ -424,6 +427,13 @@ describe('gpt-runner probe after the login: H1-AUTH, test overrides, V3', () => 
     expect(V3_CONTROL_ARGS).toEqual(expect.arrayContaining(['-s', 'read-only', 'features.shell_tool=true']))
     expect(V3_CANARIES).toEqual(['/tmp/kanari-v3', '/home/gpt/kanari-v3'])
     // anything wider is refused before any call
+    // an ALLOWLIST (barracuda, #145): the common part, feature pairs, the fixed prompt; nothing else
+    const common = V3_TEST_ARGS.slice(0, V3_TEST_ARGS.indexOf('-c', 9))
+    for (const extra of [['--full-auto'], ['--add-dir', '/'], ['-c', 'features.apply_patch=true'], ['-c', 'sandbox_mode="danger-full-access"'], ['--sandbox', 'danger-full-access'], ['-c']]) {
+      const args = [...common, ...extra, V3_PROMPT]
+      expect([extra.join(' '), safeExecArgs(args) != null]).toEqual([extra.join(' '), true])
+    }
+    expect(safeExecArgs([...V3_TEST_ARGS.slice(0, -1), 'touch /etc/x'])).toMatch(/prompt/)
     for (const bad of [['-s', 'read-only', '--sandbox', 'danger-full-access'], ['-s', 'read-only', '--sandbox', 'workspace-write'], ['-s', 'danger-full-access'], ['-s', 'workspace-write'], ['--dangerously-bypass-approvals-and-sandbox', '-s', 'read-only'], ['--yolo', '-s', 'read-only'], ['-c', 'sandbox_mode="danger-full-access"', '-s', 'read-only'], ['exec']]) {
       expect([bad.join(' '), safeExecArgs(bad) != null]).toEqual([bad.join(' '), true])
     }
@@ -444,6 +454,18 @@ describe('gpt-runner probe after the login: H1-AUTH, test overrides, V3', () => 
   const isControl = (a: string[]) => a.includes('features.shell_tool=true')
   const EXEC = '{"type":"item.started","item":{"type":"command_execution","command":"touch ..."}}'
 
+  it('TOOL-USES: only the answer and the reasoning in the frames are clean; every other item, an unknown event, an error is reported', () => {
+    const ev = (o: object) => JSON.stringify(o)
+    const clean = [ev({ type: 'thread.started', thread_id: 't' }), ev({ type: 'turn.started' }), ev({ type: 'item.completed', item: { type: 'reasoning' } }), ev({ type: 'item.completed', item: { type: 'agent_message', text: 'nem futtatok parancsot' } }), ev({ type: 'turn.completed' }), 'Reading prompt from stdin...']
+    expect(toolUses(clean.join('\n'))).toEqual({ tools: [], unknown: [], errors: [], items: 2 })
+    for (const tool of ['command_execution', 'file_change', 'web_search', 'mcp_tool_call', 'todo_list', 'a_future_tool']) {
+      expect([tool, toolUses(ev({ type: 'item.started', item: { type: tool } })).tools]).toEqual([tool, [tool]])
+    }
+    expect(toolUses(ev({ id: '0', msg: { type: 'exec_command_begin' } })).unknown).toEqual(['kulcsok:id+msg'])
+    expect(toolUses(ev({ type: 'exec_command_begin' })).unknown).toEqual(['exec_command_begin'])
+    expect(toolUses([ev({ type: 'error', message: 'x' }), ev({ type: 'turn.failed' })].join('\n')).errors).toEqual(['error', 'turn.failed'])
+  })
+
   it('V3-OK: off, no execution and no canary; the control shows an attempt', () => {
     const r = v3((a) => (isControl(a) ? { code: 0, out: EXEC } : { code: 0, out: '{"type":"item.completed","item":{"type":"agent_message"}}' }))
     expect([r.said.V3, r.said['V3-KONTROLL-IRAS'], r.calls.length, r.fs.size]).toEqual(['OK', undefined, 2, 0])
@@ -454,12 +476,28 @@ describe('gpt-runner probe after the login: H1-AUTH, test overrides, V3', () => 
     expect(v3((a, fs) => { if (!isControl(a)) fs.add('/home/gpt/kanari-v3'); return { code: 0, out: isControl(a) ? EXEC : '' } }).said.V3).toBe('FAIL')
   })
 
+  it('V3-ANY-TOOL: a file change, a web search, or an unknown event in the test run is FAIL (not only a command)', () => {
+    const ctl = (a: string[]) => isControl(a)
+    for (const out of [
+      '{"type":"item.started","item":{"type":"file_change","changes":[{"path":"/home/gpt/kanari-v3"}]}}',
+      '{"type":"item.completed","item":{"type":"web_search","query":"x"}}',
+      '{"type":"exec_command_begin"}',
+    ]) {
+      expect([out.slice(0, 40), v3((a) => (ctl(a) ? { code: 0, out: EXEC } : { code: 0, out })).said.V3]).toEqual([out.slice(0, 40), 'FAIL'])
+    }
+  })
+
+  it('V3-NO-ANSWER: an error, or no item at all, in the test run proves nothing: NEM_MERHETO', () => {
+    expect(v3((a) => (isControl(a) ? { code: 0, out: EXEC } : { code: 1, out: '{"type":"error","message":"401"}' })).said.V3).toBe('NEM_MERHETO')
+    expect(v3((a) => (isControl(a) ? { code: 0, out: EXEC } : { code: 0, out: '{"type":"thread.started"}\n{"type":"turn.completed"}' })).said.V3).toBe('NEM_MERHETO')
+  })
+
   it('V3-BLIND: no attempt even in the control: NEM_MERHETO, never OK', () => {
     expect(v3(() => ({ code: 0, out: '{"type":"item.completed","item":{"type":"agent_message"}}' })).said.V3).toBe('NEM_MERHETO')
   })
 
   it('V3-CONTROL-WROTE: a canary from the read-only control run is its own FAIL', () => {
-    const r = v3((a, fs) => { if (isControl(a)) fs.add('/tmp/kanari-v3'); return { code: 0, out: isControl(a) ? EXEC : '' } })
+    const r = v3((a, fs) => { if (isControl(a)) fs.add('/tmp/kanari-v3'); return { code: 0, out: isControl(a) ? EXEC : '{"type":"item.completed","item":{"type":"agent_message"}}' } })
     expect([r.said.V3, r.said['V3-KONTROLL-IRAS'], r.fs.size]).toEqual(['OK', 'FAIL', 0])
   })
 

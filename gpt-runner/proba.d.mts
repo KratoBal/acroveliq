@@ -38,7 +38,9 @@ export const V3_CANARIES: string[]
 export const V3_PROMPT: string
 export const V3_TEST_ARGS: string[]
 export const V3_CONTROL_ARGS: string[]
-export const EXEC_EVENT: RegExp
+export const ALLOWED_ITEM_TYPES: string[]
+export const ALLOWED_EVENT_TYPES: string[]
+export function toolUses(jsonl: string): { tools: string[]; unknown: string[]; errors: string[]; items: number }
 export function safeExecArgs(args: string[]): string | null
 export function v3Checks(say: Say, run: Run, io: { exists: (p: string) => boolean; remove: (p: string) => void; loggedIn: boolean }): void
 export function summarize(lines: Array<[string, string, string]>): { ok: number; fail: number; nem: number }
