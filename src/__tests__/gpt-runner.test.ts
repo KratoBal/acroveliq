@@ -1,0 +1,169 @@
+// The GPT runner container (gpt-runner/; task t-20261014-gpt-futtato-kontener).
+//
+// WHAT TURNS THIS RED:
+//   - a check of the probe calls a fleet uid/group, a capability, a readable fleet file, an
+//     answering internal port, or a sandbox that let the network through anything but FAIL;
+//   - a negative network test or a sandbox result without its control is called OK instead of
+//     NEM_MERHETO (a probe that could not have failed is not a proof);
+//   - "the sandbox never started the command" is called OK (blocked) instead of NEM_MERHETO;
+//   - the compose file loses a limit, gains a bind mount, a secret, a host port, the docker
+//     socket, a fleet path, a second network, root, or a restart policy (the GPT side is off);
+//   - the base image is no longer forced to a digest, or the Codex version drifts between
+//     package.json, the lockfile and the probe;
+//   - the probe, run here in the fleet's own container, does not come out red.
+import { describe, it, expect } from 'vitest'
+import { readFileSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import {
+  checkIds, checkCaps, classifyReadable, judgeNetwork, judgeSandboxRun, codexSandboxChecks,
+  idsFromStatus, summarize, PINNED_CODEX, FLEET_IDS,
+} from '../../gpt-runner/proba.mjs'
+
+const R = (p: string) => readFileSync(join(__dirname, '..', '..', 'gpt-runner', p), 'utf8')
+const STATUS = (o: Partial<Record<string, string>>) =>
+  ['Uid:\t10002\t10002\t10002\t10002', 'Gid:\t10002\t10002\t10002\t10002', 'Groups:\t', 'NoNewPrivs:\t1', 'CapPrm:\t0000000000000000', 'CapEff:\t0000000000000000', 'CapBnd:\t0000000000000000']
+    .map((l) => { const k = l.split(':')[0]; return o[k] != null ? `${k}:\t${o[k]}` : l }).join('\n')
+
+describe('gpt-runner probe: the pure checks', () => {
+  it('G0: the runner uid is clean; a fleet uid, gid or supplementary group is FAIL', () => {
+    expect(checkIds(idsFromStatus(STATUS({})))[0]).toBe('OK')
+    expect([
+      checkIds(idsFromStatus(STATUS({ Uid: '1004\t1004\t1004\t1004' })))[0],
+      checkIds(idsFromStatus(STATUS({ Gid: '1001\t1001\t1001\t1001' })))[0],
+      checkIds(idsFromStatus(STATUS({ Groups: '10002 1015 1001' })))[0],
+      checkIds(idsFromStatus(STATUS({ Uid: '0\t0\t0\t0' })))[0],
+    ]).toEqual(['FAIL', 'FAIL', 'FAIL', 'FAIL'])
+    expect(FLEET_IDS).toEqual(expect.arrayContaining([0, 1000, 1001, 1004, 1006]))
+  })
+
+  it('CAP: any effective, permitted or bounding capability, or no_new_privs off, is FAIL', () => {
+    expect(checkCaps(STATUS({}))[0]).toBe('OK')
+    expect([
+      checkCaps(STATUS({ CapEff: '0000000000000400' }))[0],
+      checkCaps(STATUS({ CapPrm: '00000000a80425fb' }))[0],
+      checkCaps(STATUS({ CapBnd: '000001ffffffffff' }))[0],
+      checkCaps(STATUS({ NoNewPrivs: '0' }))[0],
+      checkCaps('Uid:\t1\n')[0],
+    ]).toEqual(['FAIL', 'FAIL', 'FAIL', 'FAIL', 'FAIL'])
+  })
+
+  it('F2: a readable file off the system paths, or with a fleet marker, is reported', () => {
+    const r = classifyReadable(['/usr/lib/x.so', '/app/proba.mjs', '/tmp/kanari-proba.txt', '/home/marveen/marveen/store/x', '/opt/acropora-commerce-stage/backend/apps/backend/.env', '/etc/ssl/certs/a.pem'])
+    expect(r.outside).toEqual(['/home/marveen/marveen/store/x', '/opt/acropora-commerce-stage/backend/apps/backend/.env'])
+    expect(r.marked).toEqual(expect.arrayContaining(['/home/marveen/marveen/store/x', '/opt/acropora-commerce-stage/backend/apps/backend/.env']))
+    expect(classifyReadable(['/usr/bin/node', '/etc/passwd', '/tmp/kanari-proba.txt'])).toEqual({ outside: [], marked: [] })
+  })
+
+  it('N1: an answering port is FAIL; all closed counts as OK only when the control answered', () => {
+    const closed = [{ host: '10.0.2.4', port: 3420, open: false }]
+    expect(judgeNetwork(closed, { host: 'api.openai.com', port: 443, open: true })[0]).toBe('OK')
+    expect(judgeNetwork(closed, { host: 'api.openai.com', port: 443, open: false })[0]).toBe('NEM_MERHETO')
+    expect(judgeNetwork([...closed, { host: '172.17.0.1', port: 3425, open: true }], { host: 'api.openai.com', port: 443, open: true })).toEqual(['FAIL', 'valaszolt: 172.17.0.1:3425'])
+  })
+
+  it('summarize counts each verdict; NEM_MERHETO is never OK', () => {
+    expect(summarize([['a', 'OK', ''], ['b', 'NEM_MERHETO', ''], ['c', 'FAIL', ''], ['d', 'OK', '']])).toEqual({ ok: 2, fail: 1, nem: 1 })
+  })
+})
+
+describe('gpt-runner probe: the Codex sandbox (V2) against a fake codex', () => {
+  type Run = { code: number; out: string }
+  const go = async (sandbox: (args: string[]) => Run, outsideCode = 0) => {
+    const said: Array<[string, string]> = []
+    const run = (cmd: string, args: string[]): Run => {
+      if (cmd === 'node') return { code: outsideCode, out: 'BELUL\n' }
+      if (args[0] === 'sandbox' && args[1] === '--help') return { code: 0, out: 'Usage: codex sandbox ...' }
+      if (args[0] === 'exec') return { code: 0, out: 'Usage: codex exec ...' }
+      return sandbox(args)
+    }
+    const log = console.log
+    console.log = () => {}
+    try { await codexSandboxChecks((id: string, v: string) => said.push([id, v]), run) } finally { console.log = log }
+    return Object.fromEntries(said)
+  }
+  const isNet = (a: string[]) => a.includes('node')
+
+  it('V2-BLOCKED: the command ran (marker) and could not connect, while outside it could: OK', async () => {
+    const r = await go((a) => (isNet(a) ? { code: 3, out: 'BELUL\n' } : { code: 1, out: 'BELUL\nsh: cannot create' }))
+    expect([r.V2, r['V2-IRAS'], r.V3]).toEqual(['OK', 'OK', 'NEM_MERHETO'])
+  })
+
+  it('V2-ALLOWED: the command reached the network from inside the sandbox: FAIL; a write that worked: FAIL', async () => {
+    const r = await go(() => ({ code: 0, out: 'BELUL\nIRT\n' }))
+    expect([r.V2, r['V2-IRAS']]).toEqual(['FAIL', 'FAIL'])
+  })
+
+  it('V2-NEVER-STARTED: no marker (bwrap could not make a namespace) is NEM_MERHETO, never OK', async () => {
+    const r = await go(() => ({ code: 1, out: 'bwrap: No permissions to create new namespace' }))
+    expect([r.V2, r['V2-IRAS']]).toEqual(['NEM_MERHETO', 'NEM_MERHETO'])
+  })
+
+  it('V2-NO-CONTROL: blocked inside but also blocked outside proves nothing: NEM_MERHETO', async () => {
+    const r = await go((a) => (isNet(a) ? { code: 3, out: 'BELUL\n' } : { code: 1, out: 'BELUL\n' }), 3)
+    expect(r.V2).toBe('NEM_MERHETO')
+  })
+
+  it('V2-FORMS: an unknown first form falls through to the second; both unknown is NEM_MERHETO', async () => {
+    const r = await go((a) => (a[1] === '--' ? { code: 2, out: 'error: unexpected argument' } : isNet(a) ? { code: 3, out: 'BELUL\n' } : { code: 1, out: 'BELUL\n' }))
+    expect(r.V2).toBe('OK')
+    const none = await go(() => ({ code: 2, out: "error: unrecognized subcommand 'sandbox'" }))
+    expect(none.V2).toBe('NEM_MERHETO')
+    expect(judgeSandboxRun({ code: 2, out: 'Usage: codex sandbox' })).toBe('usage')
+  })
+})
+
+describe('gpt-runner container definition', () => {
+  const compose = R('compose.yaml')
+  const dockerfile = R('Dockerfile')
+
+  it('COMPOSE-LIMITS: not root, no capability, no new privileges, read-only root, resource limits, no restart', () => {
+    expect(compose).toMatch(/user: "10002:10002"/)
+    expect(compose).toMatch(/cap_drop:\n\s+- ALL\n/)
+    expect(compose).toMatch(/- no-new-privileges:true/)
+    expect(compose).toMatch(/read_only: true/)
+    expect(compose).toMatch(/pids_limit: \d+/)
+    expect(compose).toMatch(/mem_limit: \d+m/)
+    expect(compose).toMatch(/cpus: [\d.]+/)
+    expect(compose).toMatch(/restart: "no"/)
+  })
+
+  it('COMPOSE-NOTHING-OF-THE-FLEET: no bind mount, secret, host port, docker socket, fleet path, privileged mode; one outward network', () => {
+    const code = compose.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n')
+    for (const bad of [/type: bind/, /^\s*secrets:/m, /^\s*ports:/m, /docker\.sock/, /marveen-docker/, /\/home\/marveen/, /privileged/, /network_mode/, /external: true/, /cap_add/]) {
+      expect([bad.source, bad.test(code)]).toEqual([bad.source, false])
+    }
+    const nets = code.split(/^networks:/m)[1]!.split(/^volumes:/m)[0]!
+    expect(nets.match(/^ {2}\w[\w-]*:/gm)).toEqual(['  ki:'])
+  })
+
+  it('PINS: the base image must be a digest; one Codex version in package.json, the lockfile and the probe', () => {
+    expect(dockerfile).toMatch(/\*@sha256:\?{64}\)/)
+    expect(dockerfile).toMatch(/npm ci --ignore-scripts/)
+    expect(dockerfile).toMatch(/^USER 10002:10002$/m)
+    const pkg = JSON.parse(R('package.json'))
+    const lock = JSON.parse(R('package-lock.json'))
+    expect([pkg.dependencies['@openai/codex'], lock.packages['node_modules/@openai/codex'].version, PINNED_CODEX]).toEqual(['0.159.3', '0.159.3', '0.159.3'])
+    expect(lock.packages['node_modules/@openai/codex-linux-x64'].integrity).toMatch(/^sha512-/)
+  })
+})
+
+describe('gpt-runner probe: a live run here, in the fleet container, must come out red', () => {
+  it('PROBE-HERE: the fleet uid and the fleet paths are found; the canary is found; exit 1', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gpt-probe-'))
+    try {
+      mkdirSync(join(dir, 'sub'))
+      writeFileSync(join(dir, 'sub', 'plain.txt'), 'x')
+      const r = spawnSync(process.execPath, [join(__dirname, '..', '..', 'gpt-runner', 'proba.mjs')], {
+        env: { ...process.env, PROBA_CSAK_HELYI: '1', PROBA_GYOKER: dir }, encoding: 'utf8', timeout: 60_000,
+      })
+      const line = (id: string) => (r.stdout.match(new RegExp(`^PROBA ${id} (\\S+)`, 'm')) || [])[1]
+      const expectedG0 = checkIds(idsFromStatus(readFileSync('/proc/self/status', 'utf8')))[0]
+      expect([line('G0'), line('F2'), line('N1'), /OSSZESITES ok=\d+ fail=[1-9]/.test(r.stdout)]).toEqual([expectedG0, 'OK', 'NEM_MERHETO', true])
+      expect(r.status).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
