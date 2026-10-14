@@ -90,6 +90,40 @@ describe('the half a busy-pane send left behind', () => {
     expect([calls.clear, calls.enter, calls.send, getAbandonedPrompt(SESSION)]).toEqual([1, 0, 0, null])
   })
 
+  /*
+    THE RECORD LIVES ON EVENTS, NOT ON TIME (barracuda, #118 review). MI PIROSÍT: a
+    long turn (15 min) outlives the record and the half is submitted after all; an
+    idle pane with an empty box keeps a stale record; a busy pane drops it; the
+    safety cap is shorter than the long turns.
+  */
+  it('STUB-LONG-TURN: abandoned, then a 15-minute busy turn, then idle with the half: cleared, not sent', async () => {
+    recordAbandonedPrompt(SESSION, HALF, Date.now() - 15 * 60_000)
+    await recoverOnce()
+    expect([calls.clear, calls.enter + calls.send]).toEqual([1, 0])
+  })
+
+  it('STUB-EVENT-END: an idle pane with an empty box ends the record; a busy pane keeps it', async () => {
+    const SPINNER = '✳ Forming… (12m 7s · ↓ 6.1k tokens)'
+    const emptyBox = (busy: boolean) =>
+      ['  ⎿  …', '', ...(busy ? [SPINNER, ''] : []), SEP, '❯ ', SEP, '  Opus 5 · ctx 40%', '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents'].join('\n')
+    const tick = () =>
+      recoverStuckInputForSession(SESSION, { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }, { confirmMs: 0, dedupMs: 0, maxAttempts: 5 }, true)
+    recordAbandonedPrompt(SESSION, HALF)
+    paneNow = emptyBox(true)
+    await tick()
+    const keptWhileBusy = getAbandonedPrompt(SESSION) !== null
+    paneNow = emptyBox(false)
+    await tick()
+    expect([keptWhileBusy, getAbandonedPrompt(SESSION), calls.clear + calls.enter + calls.send]).toEqual([true, null, 0])
+  })
+
+  it('STUB-CAP: the safety cap is longer than any measured turn (alive at 2 hours, gone after 3)', () => {
+    recordAbandonedPrompt(SESSION, HALF, Date.now() - 2 * 60 * 60_000)
+    const at2h = getAbandonedPrompt(SESSION) !== null
+    recordAbandonedPrompt(SESSION, HALF, Date.now() - 3 * 60 * 60_000 - 1000)
+    expect([at2h, getAbandonedPrompt(SESSION)]).toEqual([true, null])
+  })
+
   it('STUB-PREAMBLE: a half that only got through the common preamble does not clear a later, longer real message', async () => {
     // every inter-agent frame starts the same way: the abandoned half is that start only
     const preambleHalf = HALF.slice(0, 40)

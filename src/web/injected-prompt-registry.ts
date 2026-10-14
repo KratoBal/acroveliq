@@ -49,6 +49,15 @@ const records = new Map<string, InjectedPromptRecord>()
 // it -- the agent would get half a message, then the whole one. Here it is the
 // opposite of an injected record: a match means CLEAR, never send.
 const abandoned = new Map<string, InjectedPromptRecord>()
+// NOT the 10-minute TTL of the injected records (barracuda, #118): a not-landed
+// send happens IN a running turn, and the recovery acts only after the turn ends
+// -- turns run 15-40 minutes (#105: nautilus 39), so a time-based expiry would
+// drop the record exactly in the long turns this exists for, and the half would
+// be submitted after all. The record ends on EVENTS: cleared by the recovery, a
+// newer recorded typing or a landed send, or an idle pane with an empty box (the
+// half is gone some other way). This cap is only a safety net, longer than any
+// measured turn.
+const ABANDONED_MAX_AGE_MS = 3 * 60 * 60 * 1000
 
 /** Collapse whitespace so a wrapped screen scrape compares against the source. */
 export function normalizeForMatch(text: string): string {
@@ -92,7 +101,7 @@ export function recordAbandonedPrompt(session: string, text: string, now: number
 export function getAbandonedPrompt(session: string, now: number = Date.now()): InjectedPromptRecord | null {
   const rec = abandoned.get(session)
   if (rec == null) return null
-  if (now - rec.at > RECORD_TTL_MS) {
+  if (now - rec.at > ABANDONED_MAX_AGE_MS) {
     abandoned.delete(session)
     return null
   }

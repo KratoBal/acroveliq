@@ -320,6 +320,11 @@ export async function recoverStuckInputForSession(
   // (phantom prompt-injection). See captureParkedInputView / stripGhostSuggestion.
   const pane = captureParkedInputView(session)
   const sig = pane != null ? stuckInputSignature(pane) : null
+  // An idle pane with an empty box: an abandoned half (busy-pane-emit) is gone
+  // some other way (a hand clear, the parked-input janitor), so its record ends
+  // here -- the record lives on events, not on time (barracuda, #118). A busy
+  // pane keeps it: the half waits behind the running turn.
+  if (pane != null && detectPaneState(pane) === 'idle') clearAbandonedPrompt(session)
   const decision = decideStuckInputRecovery(sig, prev, Date.now(), thresholds)
   if (decision.recover && pane != null) {
     const attempt = decision.next.attempts
