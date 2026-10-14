@@ -32,6 +32,7 @@ import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import { atomicWriteFileSync, atomicWriteInTree, atomicWriteGroupPrivate, agentTreeRootOf } from './atomic-write.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
+import { emitIntoBusyPane } from './busy-pane-emit.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -2328,7 +2329,7 @@ export async function sendPromptToSession(
   text: string,
   host: string | null = null,
   opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode; busyTarget?: boolean } = {},
-): Promise<'sent' | 'aborted-busy' | 'skipped-locked'> {
+): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'not-landed'> {
   const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
   // PANEWRITERS805: the three modal dismissals are probe+act keystroke writers
   // that ran BEFORE the lane lock -- so they could press Escape/Enter into a
@@ -2400,7 +2401,24 @@ export async function sendPromptToSession(
   // is the per-session critical section. Held under a per-pane in-process mutex
   // (session-send-lock): normal delivery is fail-open (a stuck holder must not
   // silence the fleet); a `recover` caller skips instead of racing a live send.
-  const emitToPane = async (): Promise<'sent'> => {
+  const emitToPane = async (): Promise<'sent' | 'not-landed'> => {
+  // Into a running turn (the router's queued delivery): every keystroke after a fresh look
+  // at the pane, and 'not-landed' when a dialog shows up or the text does not leave the box
+  // (busy-pane-emit.ts; barracuda, #117 review). No injected-prompt record here: a message
+  // that did not land stays pending and the router sends it again, so the stuck-input
+  // recovery must not submit a second copy from a record.
+  if (opts.busyTarget) {
+    return emitIntoBusyPane(
+      text.replace(/\r?\n/g, ' '),
+      {
+        capture: () => capturePane(session, host),
+        typeChunk: (chunk) => runTmux(host, ['send-keys', '-t', session, '-l', chunk], { timeout: 5000 }),
+        enter: () => runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 }),
+        delay,
+      },
+      { chunkGapMs: 30, pollMs: SUBMIT_RETRY_POLL_MS, maxRetries: SUBMIT_RETRY_MAX_ATTEMPTS },
+    )
+  }
   // Pre-flight buffer-clear when a stale preamble is detected. Reading
   // the pane is best-effort: a capture failure here means we cannot
   // prove the buffer is clean, but proceeding without the clear is no
@@ -2474,9 +2492,7 @@ export async function sendPromptToSession(
   for (let attempt = 0; ; attempt++) {
     await delay(SUBMIT_RETRY_POLL_MS)
     const pane = capturePane(session, host)
-    // busyTarget: typed into a running turn on purpose (isSessionReadyForQueuedPrompt), so
-    // 'busy' is not proof of landing and a placeholder is never Ctrl-C'd (decideSubmitFollowup)
-    const action = decideSubmitFollowup(pane, payloadHint, attempt, SUBMIT_RETRY_MAX_ATTEMPTS, { busyTarget: opts.busyTarget === true })
+    const action = decideSubmitFollowup(pane, payloadHint, attempt, SUBMIT_RETRY_MAX_ATTEMPTS)
     if (action === 'done') break
     if (action === 'give-up') {
       logger.warn({ session, attempt }, 'sendPromptToSession: prompt still parked after retries')
@@ -2532,7 +2548,7 @@ export async function sendPromptToSession(
     // is visible rather than silently degrading into re-interleaving.
     logger.warn({ session }, 'sendPromptToSession: delivery lock wait budget elapsed; sent WITHOUT the per-pane lock (fail-open) -- a holder may be wedged')
   }
-  return 'sent'
+  return lockResult.value ?? 'sent'
 }
 
 /**

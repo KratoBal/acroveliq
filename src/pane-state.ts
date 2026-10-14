@@ -910,22 +910,44 @@ function inputBoxIsFree(box: string): boolean {
 }
 
 /**
+ * Pure: does the pane show only the live input box, with nothing on top of it that a
+ * keystroke would answer? No permission question, no menu hint, no feedback-draft or
+ * model-consent dialog, a known footer and a live box under it. The look taken before
+ * EVERY keystroke typed into a busy pane (busy-pane-emit.ts; barracuda, #117 review: a
+ * permission question can appear mid-typing in a running turn).
+ */
+export function paneShowsOnlyLiveInput(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  if (detectsFeedbackDraftModal(pane) || detectsModelConsentDialog(pane)) return false
+  const lines = pane.split('\n')
+  if (PERMISSION_QUESTION_RX.test(lines.slice(-PERMISSION_QUESTION_REGION_LINES).join('\n'))) return false
+  const footerRegion = lines.slice(-MENU_FOOTER_REGION_LINES).join('\n')
+  if (MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)) return false
+  if (!IDLE_FOOTER_RX.test(pane)) return false
+  return liveInputBox(pane) != null
+}
+
+/** The live input box's text (between its two separators above the footer), or null. */
+export function liveInputBoxText(pane: string): string | null {
+  return liveInputBox(pane)
+}
+
+/**
  * Pure: may a message be typed into this BUSY pane, for Claude Code to queue? `plain` is
  * the `capture-pane -p` view; `dimStripped` the dim-stripped view (captureParkedInputView)
  * or null, used only when the plain box shows text, to tell a ghost from real input.
- * An idle pane answers false: it takes the normal path.
+ * An idle pane answers false: it takes the normal path. Only in bypass-permissions mode:
+ * there a permission question is rare (an `ask` rule or a hook can still raise one, which
+ * is why busy-pane-emit looks again before every key; this narrows the window, it does not
+ * replace that look).
  */
 export function paneAcceptsQueuedPrompt(plain: string, dimStripped: string | null = null): boolean {
   if (!plain || !plain.trim()) return false
   if (detectPaneState(plain) !== 'busy') return false
+  if (detectPermissionMode(plain) !== 'bypass permissions') return false
   if (detectsPastePlaceholder(plain)) return false
   if (paneShowsContextSaturation(plain)) return false
-  if (detectsFeedbackDraftModal(plain) || detectsModelConsentDialog(plain)) return false
-  const lines = plain.split('\n')
-  if (PERMISSION_QUESTION_RX.test(lines.slice(-PERMISSION_QUESTION_REGION_LINES).join('\n'))) return false
-  const footerRegion = lines.slice(-MENU_FOOTER_REGION_LINES).join('\n')
-  if (MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)) return false
-  if (!IDLE_FOOTER_RX.test(plain)) return false
+  if (!paneShowsOnlyLiveInput(plain)) return false
   const box = liveInputBox(plain)
   if (box == null) return false
   if (inputBoxIsFree(box)) return true
@@ -1211,6 +1233,8 @@ export function decideSubmitFollowup(
   // would interrupt the live turn -- give up and leave it to the stuck-input recovery,
   // which acts once the pane is idle; an empty box (or the queue hint) means it landed.
   if (opts.busyTarget) {
+    // a dialog took the screen after the Enter: no more keys, and not proof of landing
+    if (!paneShowsOnlyLiveInput(pane)) return 'give-up'
     if (detectsPastePlaceholder(pane)) return 'give-up'
     const box = liveInputBox(pane)
     // the box wraps a long line, so only the head of the text is sure to stand on one row

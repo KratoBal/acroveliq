@@ -55,6 +55,9 @@ const LIVE_BUSY = [
   '  claude-opus-5-5 | 5h 14% | 7d 50%',
   '  ⏵⏵ bypass permissions on (shift+tab to cycle) · install gh for PR status · ← for agents',
 ].join('\n')
+// the same running turn, but not in bypass-permissions mode (barracuda, #117: there a
+// permission question is far more likely, so the busy path is not offered)
+const BUSY_ACCEPT_EDITS = pane(['  ⎿  … tool output …', '', SPINNER, ''], ['❯ '], ['  Opus 5 · ctx 40%', '  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents'])
 const BUSY_NO_BOX = ['  ⎿  … tool output …', SPINNER, FOOTER].join('\n')
 
 describe('paneAcceptsQueuedPrompt', () => {
@@ -74,6 +77,10 @@ describe('paneAcceptsQueuedPrompt', () => {
 
   it('QUEUE-GUARDS: a permission question or a menu hint refuses even with a free live box', () => {
     expect([paneAcceptsQueuedPrompt(BUSY_BOX_AND_QUESTION), paneAcceptsQueuedPrompt(BUSY_BOX_AND_MENU)]).toEqual([false, false])
+  })
+
+  it('QUEUE-BYPASS-ONLY: a running turn outside bypass-permissions mode is not offered the busy path', () => {
+    expect(paneAcceptsQueuedPrompt(BUSY_ACCEPT_EDITS)).toBe(false)
   })
 
   it('QUEUE-GHOST: text the dim-stripped view does not show is a ghost; text it still shows is real', () => {
@@ -98,6 +105,11 @@ describe('decideSubmitFollowup into a busy pane', () => {
       decideSubmitFollowup(parked, HINT, 3, 3, busy),
       decideSubmitFollowup(null, HINT, 0, 3, busy),
     ]).toEqual(['done', 'done', 'retry-enter', 'give-up', 'give-up'])
+  })
+
+  it('BUSY-DIALOG-AFTER-ENTER: a permission dialog on screen is not landed and gets no key (give-up)', () => {
+    const dialog = ['  ⎿  … tool output …', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No', '', ' ↑/↓ to navigate · Esc to cancel'].join('\n')
+    expect(decideSubmitFollowup(dialog, HINT, 0, 3, busy)).toBe('give-up')
   })
 
   it('BUSY-NO-CTRL-C: a placeholder in a running turn is left alone (give-up), never clear-and-resend', () => {

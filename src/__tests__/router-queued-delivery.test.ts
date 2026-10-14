@@ -99,11 +99,15 @@ describe('message router: delivery into a busy pane', () => {
     expect([mockSendPrompt.mock.calls.length, mockMarkDelivered.mock.calls.length, mockMarkFailed.mock.calls.length]).toEqual([0, 0, 0])
   })
 
-  it('ROUTER-TYPED-NOTHING: a send that typed nothing is neither delivered nor failed', async () => {
-    mockGetPendingMessages.mockReturnValue([msg(4)])
-    mockIsQueueReady.mockResolvedValue(true)
-    mockSendPrompt.mockResolvedValue('skipped-locked')
-    await runMessageRouterTick()
-    expect([mockSendPrompt.mock.calls.length, mockMarkDelivered.mock.calls.length, mockMarkFailed.mock.calls.length]).toEqual([1, 0, 0])
+  it('ROUTER-TYPED-NOTHING: a send that typed nothing, or did not land (a dialog came up), is neither delivered nor failed', async () => {
+    for (const outcome of ['skipped-locked', 'not-landed']) {
+      vi.clearAllMocks()
+      mockGetPendingMessages.mockReturnValue([msg(4)])
+      mockIsReady.mockResolvedValue(false)
+      mockIsQueueReady.mockResolvedValue(true)
+      mockSendPrompt.mockResolvedValue(outcome)
+      await runMessageRouterTick()
+      expect([outcome, mockSendPrompt.mock.calls.length, mockMarkDelivered.mock.calls.length, mockMarkFailed.mock.calls.length]).toEqual([outcome, 1, 0, 0])
+    }
   })
 })
