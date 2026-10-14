@@ -349,9 +349,12 @@ export function toolUses(jsonl) {
     if (type === 'error' || type === 'turn.failed') { errors.push(type); continue }
     if (!ALLOWED_EVENT_TYPES.includes(type)) { unknown.add(type || `kulcsok:${Object.keys(ev).join('+')}`); continue }
     const it = ev.item?.type
-    if (it != null) {
+    if (type.startsWith('item.')) {
+      // an item event must name its item's type; one that does not is unknown, not "nothing"
+      // (fail-closed, barracuda #145)
+      if (typeof it !== 'string' || !it) { unknown.add(`${type}:tipus-nelkul`); continue }
       items++
-      if (!ALLOWED_ITEM_TYPES.includes(it)) tools.add(String(it))
+      if (!ALLOWED_ITEM_TYPES.includes(it)) tools.add(it)
     }
   }
   return { tools: [...tools], unknown: [...unknown], errors, items }
