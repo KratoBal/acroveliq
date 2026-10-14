@@ -29,12 +29,19 @@ const STATUS = (o: Partial<Record<string, string>>) =>
 describe('gpt-runner probe: the pure checks', () => {
   it('G0: the runner uid is clean; a fleet uid, gid or supplementary group is FAIL', () => {
     expect(checkIds(idsFromStatus(STATUS({})))[0]).toBe('OK')
+    // an empty Groups line (the container's real case) reads as no group, not as the next line
+    expect(idsFromStatus(STATUS({})).groups).toEqual([])
     expect([
       checkIds(idsFromStatus(STATUS({ Uid: '1004\t1004\t1004\t1004' })))[0],
       checkIds(idsFromStatus(STATUS({ Gid: '1001\t1001\t1001\t1001' })))[0],
       checkIds(idsFromStatus(STATUS({ Groups: '10002 1015 1001' })))[0],
       checkIds(idsFromStatus(STATUS({ Uid: '0\t0\t0\t0' })))[0],
-    ]).toEqual(['FAIL', 'FAIL', 'FAIL', 'FAIL'])
+      // an allowlist, not a denylist: a new agent's uid, a mistyped user line, an extra group
+      checkIds(idsFromStatus(STATUS({ Uid: '1007\t1007\t1007\t1007' })))[0],
+      checkIds(idsFromStatus(STATUS({ Gid: '10003\t10003\t10003\t10003' })))[0],
+      checkIds(idsFromStatus(STATUS({ Groups: '10002 10010' })))[0],
+      checkIds({ uid: [], gid: [], groups: [] })[0],
+    ]).toEqual(['FAIL', 'FAIL', 'FAIL', 'FAIL', 'FAIL', 'FAIL', 'FAIL', 'FAIL'])
     expect(FLEET_IDS).toEqual(expect.arrayContaining([0, 1000, 1001, 1004, 1006]))
   })
 

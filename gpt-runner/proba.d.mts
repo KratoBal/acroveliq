@@ -5,6 +5,7 @@ export type RunResult = { code: number; out: string }
 export type Run = (cmd: string, args: string[]) => RunResult
 
 export const FLEET_IDS: number[]
+export const RUNNER_ID: number
 export const CLOSED_PORTS: number[]
 export const PINNED_CODEX: string
 export const SYSTEM_PREFIXES: string[]
