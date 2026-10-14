@@ -1,0 +1,89 @@
+# The GPT runner container (variant B)
+
+Balázs's decision (2026-10-14 16:38 UTC, Acroveliq thread, message 1559968751112167476):
+- the GPT runner gets **a container of its own**, not the fleet's;
+- the environment and the Codex install are approved **with six conditions**;
+- the ChatGPT login and any credential are **not** approved yet.
+
+The plan this follows: `exchange/acroveliq/gpt-futtato-elkulonites-terv-2026-10-14.md` (point 1: the checks, point 4: variant B).
+
+**What this PR does:** it defines the container and the probe that proves its isolation. That is all the container does: it runs the probe once, writes the result to its log, and stops. The GPT side stays off (condition 6). There is no login, no `auth.json`, no secret, and no channel to the fleet.
+
+## What the container is
+
+| Condition (Balázs) | Where it is |
+|---|---|
+| 1. No fleet file, volume, credential or internal service | `compose.yaml`: no bind mount, no `secrets:`, no docker socket, no host port. One network, `gpt-futtato-ki`, outward only, which no fleet container joins. The only volume is its own empty `gpt-futtato-codex-home`. |
+| 2. Not root, least privilege, resource limits | `user: 10002:10002` (not root; not 1000, which is marveen on the host and the image's `node`); `cap_drop: ALL`; `no-new-privileges`; `read_only: true` with a tmpfs `/tmp`; `pids_limit: 128`, `mem_limit: 512m`, `cpus: 1.0`. |
+| 3. Network isolation by real negative tests | probe N1: TCP to the dashboard's and the usual internal ports on the gateway, on the fleet container's addresses and on the fleet's names, all must fail, **while the control (api.openai.com:443) answers**. Without the control the line is NEM_MERHETO, not OK. |
+| 4. Codex's command and network abilities measured on the installed version | probe VER (the pinned version), V2 (a network attempt and a write attempt **inside `codex sandbox`**, with a marker that tells "the sandbox never started the command" from "it ran and was blocked"), V3 (the shell tool cannot be switched off without a logged-in model: NEM_MERHETO until the login; the `codex exec --help` flags go into the log). |
+| 5. No general execution or file access to the fleet | probes F1 (the fleet's paths do not exist), F2 (every readable file is on a system path; the walk must find its own canary), H1 (no credential), V1 (no sudo, no tmux socket), G0 (no fleet uid or group), CAP (no capability, no_new_privs). |
+| 6. The GPT side stays off | the image's only command is the probe; `restart: "no"`. |
+
+**Codex version:**
+- **0.159.3**, pinned in `package.json` and `package-lock.json`, with integrity hashes.
+- Why this one: it is the newest release that was at least two weeks old on 2026-10-14 (released 2026-09-30).
+- A change of version means a new probe run, because V2 is valid for one version only.
+
+**Expected V2 result:**
+- The vendor's sandbox on Linux is bubblewrap + seccomp in a new user namespace (the openai/codex repo, `codex-rs/linux-sandbox/README.md`).
+- Docker's default seccomp profile and `cap_drop: ALL` usually block creating one.
+- So V2 may well come out as **"the sandbox never started the command"**. That is a measurement, not a failure of the probe.
+- It means the container is the isolation, not Codex's sandbox. What `codex exec` then does with a command (refuses or runs it unsandboxed) can only be measured with a logged-in model. That measurement is part of the activation step, not this one.
+
+## Probe output
+
+One line per check:
+
+```
+PROBA <id> <OK|FAIL|NEM_MERHETO> <detail>
+PROBA-NAPLO <what> <text>          (help texts, raw sandbox outputs)
+OSSZESITES ok=<n> fail=<n> nem_merheto=<n>
+```
+
+- The exit code is 1 when any line is FAIL.
+- NEM_MERHETO means that the check could not prove anything, and it says why (e.g. no control). It is **never** counted as OK.
+
+## Install on the host (the owner, as root; nothing here is run by the fleet)
+
+```
+/opt/gpt-futtato/            root:root 755
+  compose.yaml               copy of gpt-runner/compose.yaml, root 644
+  .env                       root 644, two lines (see below)
+  src/                       git clone of KratoBal/marveen at the reviewed commit, root-owned
+```
+
+```
+# 0. uid 10002 must not be a user on the host (the volume files belong to it)
+getent passwd 10002                       # empty
+
+# 1. the pinned base image and the fleet container's addresses for the N1 test
+docker buildx imagetools inspect node:22-bookworm-slim        # the "Digest:" line
+docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}},{{end}}' <the fleet container>
+cat > /opt/gpt-futtato/.env <<'EOF'
+GPT_FUTTATO_NODE_IMAGE=node:22-bookworm-slim@sha256:<digest>
+GPT_FUTTATO_FLOTTA_CIMEK=<the addresses from the line above, comma separated>
+EOF
+
+# 2. build and run the probe once
+cd /opt/gpt-futtato && docker compose build && docker compose up
+docker logs gpt-futtato
+
+# 3. the configuration side, for the PR record (the probe is the proof, this is the cross-check)
+docker inspect gpt-futtato --format '{{json .Mounts}} {{json .HostConfig.CapDrop}} {{.HostConfig.ReadonlyRootfs}} {{json .HostConfig.SecurityOpt}} {{.Config.User}} {{.HostConfig.Memory}} {{.HostConfig.PidsLimit}} {{.HostConfig.NanoCpus}} {{json .NetworkSettings.Networks}}'
+```
+
+The expected `docker inspect` values:
+- `Mounts`: only the `gpt-futtato-codex-home` volume and the tmpfs;
+- `CapDrop`: `["ALL"]`;
+- `ReadonlyRootfs`: `true`;
+- `SecurityOpt`: `["no-new-privileges:true"]`;
+- `User`: `10002:10002`;
+- `Memory`: 536870912, `PidsLimit`: 128, `NanoCpus`: 1000000000;
+- `Networks`: only `gpt-futtato-ki`.
+
+## Before the login step (not this PR)
+
+- **The controller's channel:** a network of its own between this container and the controller, never one of the fleet's. Then N1 runs on that network too, and ports 3420 and 3425 must not answer there either (plan v2).
+- **Who can read the login:** like the deploy executor's secrets, `~/.codex` in a volume is readable by anyone who can run `docker` on the host. Install the login only after the fleet's SSH user is out of the `docker` group (the B8 gate).
+- **V3:** with a logged-in model, measure whether the shell tool can be switched off. If the sandbox never starts (see above), also measure what `codex exec` does with a command.

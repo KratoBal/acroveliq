@@ -1,0 +1,8 @@
+{
+  "name": "gpt-futtato-codex",
+  "private": true,
+  "description": "The Codex CLI at one exact version, for the GPT runner container (task t-20261014-gpt-futtato-kontener)",
+  "dependencies": {
+    "@openai/codex": "0.159.3"
+  }
+}
