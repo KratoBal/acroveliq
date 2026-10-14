@@ -881,6 +881,80 @@ export function isReadyForPrompt(pane: string): boolean {
   return paneLooksIdle(pane)
 }
 
+// ---- delivery into a BUSY pane (task kezbesites-busy-panelre) -------------
+// Since #105 a turn longer than a minute reads 'busy', and the router wrote only
+// into an idle pane: an agent working in long, back-to-back turns got no message
+// for many minutes (2026-10-14: murena 20+ min, nautilus 39 min with 7 waiting),
+// and the dashboard showed "undelivered" for an agent that was simply working.
+// Claude Code QUEUES a line typed and submitted during a running turn ("Press up
+// to edit queued messages") and hands it to the model at the turn's end -- acrobot
+// tried it by hand on murena that day. So a busy pane may take a message, as long
+// as nothing else is in the way.
+//
+// What may NOT take one, and why each is checked here rather than trusted to
+// 'busy' alone:
+//   - a permission question or any menu: the keystrokes would answer it;
+//   - a paste placeholder, or text typed/parked in the box: ours would join it;
+//   - a saturated context: the turn will not end on its own;
+//   - the feedback-draft and model-consent dialogs: Enter picks an option;
+//   - no live input box under a known footer: nothing proves where the text lands.
+// The dim ghost suggestion and the queue hint are NOT parked text (both are
+// rendered dim; the queue hint is also matched by name).
+
+/** True when every line of the live input box is empty, a bare prompt, or the queue hint. */
+function inputBoxIsFree(box: string): boolean {
+  return box
+    .split('\n')
+    .filter((l) => !QUEUED_MESSAGES_HINT_RX.test(l))
+    .every((l) => /^\s*\u276F?\s*$/.test(l))
+}
+
+/**
+ * Pure: does the pane show only the live input box, with nothing on top of it that a
+ * keystroke would answer? No permission question, no menu hint, no feedback-draft or
+ * model-consent dialog, a known footer and a live box under it. The look taken before
+ * EVERY keystroke typed into a busy pane (busy-pane-emit.ts; barracuda, #117 review: a
+ * permission question can appear mid-typing in a running turn).
+ */
+export function paneShowsOnlyLiveInput(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  if (detectsFeedbackDraftModal(pane) || detectsModelConsentDialog(pane)) return false
+  const lines = pane.split('\n')
+  if (PERMISSION_QUESTION_RX.test(lines.slice(-PERMISSION_QUESTION_REGION_LINES).join('\n'))) return false
+  const footerRegion = lines.slice(-MENU_FOOTER_REGION_LINES).join('\n')
+  if (MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)) return false
+  if (!IDLE_FOOTER_RX.test(pane)) return false
+  return liveInputBox(pane) != null
+}
+
+/** The live input box's text (between its two separators above the footer), or null. */
+export function liveInputBoxText(pane: string): string | null {
+  return liveInputBox(pane)
+}
+
+/**
+ * Pure: may a message be typed into this BUSY pane, for Claude Code to queue? `plain` is
+ * the `capture-pane -p` view; `dimStripped` the dim-stripped view (captureParkedInputView)
+ * or null, used only when the plain box shows text, to tell a ghost from real input.
+ * An idle pane answers false: it takes the normal path. Only in bypass-permissions mode:
+ * there a permission question is rare (an `ask` rule or a hook can still raise one, which
+ * is why busy-pane-emit looks again before every key; this narrows the window, it does not
+ * replace that look).
+ */
+export function paneAcceptsQueuedPrompt(plain: string, dimStripped: string | null = null): boolean {
+  if (!plain || !plain.trim()) return false
+  if (detectPaneState(plain) !== 'busy') return false
+  if (detectPermissionMode(plain) !== 'bypass permissions') return false
+  if (detectsPastePlaceholder(plain)) return false
+  if (paneShowsContextSaturation(plain)) return false
+  if (!paneShowsOnlyLiveInput(plain)) return false
+  const box = liveInputBox(plain)
+  if (box == null) return false
+  if (inputBoxIsFree(box)) return true
+  const ghostBox = dimStripped != null ? liveInputBox(dimStripped) : null
+  return ghostBox != null && inputBoxIsFree(ghostBox)
+}
+
 /**
  * Idle check that tolerates DIM-only "parked text". Claude Code >=2.1.202
  * renders a placeholder hint (e.g. "Try refactor...") in dim (SGR-2 faint)
@@ -1150,8 +1224,25 @@ export function decideSubmitFollowup(
   payloadHint: string,
   attempt: number,
   maxAttempts: number,
+  opts: { busyTarget?: boolean } = {},
 ): SubmitFollowupAction {
   if (pane == null) return 'give-up'
+  // A send INTO a busy pane (paneAcceptsQueuedPrompt): busy is the normal state here, so
+  // it does not mean "landed". The box decides: our text still in it gets an Enter (in a
+  // running turn that queues it); a paste placeholder is NEVER cleared with Ctrl-C, which
+  // would interrupt the live turn -- give up and leave it to the stuck-input recovery,
+  // which acts once the pane is idle; an empty box (or the queue hint) means it landed.
+  if (opts.busyTarget) {
+    // a dialog took the screen after the Enter: no more keys, and not proof of landing
+    if (!paneShowsOnlyLiveInput(pane)) return 'give-up'
+    if (detectsPastePlaceholder(pane)) return 'give-up'
+    const box = liveInputBox(pane)
+    // the box wraps a long line, so only the head of the text is sure to stand on one row
+    const head = payloadHint.slice(0, 24)
+    const parked = box != null && !inputBoxIsFree(box) && head.length >= 16 && box.includes(head)
+    if (!parked) return 'done'
+    return attempt >= maxAttempts ? 'give-up' : 'retry-enter'
+  }
   if (!shouldRetrySubmit(pane, payloadHint)) return 'done'
   if (attempt >= maxAttempts) return 'give-up'
   // A placeholder will NOT submit on a plain Enter (proven empirically: Enter
