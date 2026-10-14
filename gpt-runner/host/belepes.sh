@@ -26,9 +26,14 @@ trap cleanup EXIT
 rc=0
 { docker compose run --rm --entrypoint codex gpt-futtato login --device-auth 2>&1 | tee "$LOG"; } || rc=$?
 if [ "$rc" != 0 ]; then
-  if grep -qE "Device code login is not enabled|Error logging in with device code" "$LOG" 2>/dev/null; then
-    echo "STOP: az eszkozkodos belepes nincs engedelyezve a ChatGPT-fiokban, vagy a kod lejart."
+  # three causes, three different next steps (2026-10-14 20:13 UTC: a network/TLS error was
+  # reported as the account setting, because the generic "Error logging in" matched first)
+  if grep -q "Device code login is not enabled" "$LOG" 2>/dev/null; then
+    echo "STOP: az eszkozkodos belepes nincs engedelyezve a ChatGPT-fiokban."
     echo "      Engedelyezd a fiok biztonsagi beallitasaiban, es futtasd ujra ezt a lepest."
+  elif grep -qiE "error sending request|certificate|tls|dns error|connection (refused|reset)|timed out" "$LOG" 2>/dev/null; then
+    echo "STOP: halozati vagy tanusitvany-hiba a konteneren belul; a ChatGPT-fiokban NINCS teendo."
+    echo "      A proba TLS sora mutatja, melyik host nem ert el a rendszer-CA-val."
   else
     echo "STOP: a belepes nem sikerult (kilepes $rc); a hiba fent lathato."
   fi

@@ -43,6 +43,10 @@ export const ALLOWED_EVENT_TYPES: string[]
 export function toolUses(jsonl: string): { tools: string[]; unknown: string[]; errors: string[]; items: number }
 export function safeExecArgs(args: string[]): string | null
 export function v3Checks(say: Say, run: Run, io: { exists: (p: string) => boolean; remove: (p: string) => void; loggedIn: boolean }): void
+export const SYSTEM_CA: string
+export const TLS_HOSTS: string[]
+export function judgeTls(results: Array<{ host: string; ok: boolean; why: string }>): [Verdict, string]
+export function tlsSystemCa(host: string, port?: number, caPath?: string, timeoutMs?: number): Promise<{ host: string; ok: boolean; why: string }>
 export function summarize(lines: Array<[string, string, string]>): { ok: number; fail: number; nem: number }
 export function codexSandboxChecks(say: Say, run: Run): Promise<void>
 export function main(): Promise<void>

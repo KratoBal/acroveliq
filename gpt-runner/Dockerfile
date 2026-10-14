@@ -15,6 +15,12 @@ FROM ${NODE_IMAGE}
 ARG NODE_IMAGE
 RUN case "$NODE_IMAGE" in *@sha256:????????????????????????????????????????????????????????????????) ;; *) echo "NODE_IMAGE must be pinned: <image>@sha256:<64 hex>" >&2; exit 1 ;; esac
 ENV NODE_ENV=production
+# the system CA store: the slim image has none (the node image purges ca-certificates after its
+# own download), and Node brings its own store, so a Node check passed while Codex (Rust) failed
+# the login's TLS ("error sending request", 2026-10-14 20:13 UTC)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY gpt-runner/package.json gpt-runner/package-lock.json ./
 # no install scripts: the Codex binary is the platform package of the lockfile, not a download

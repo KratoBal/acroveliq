@@ -15,6 +15,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, lstatSync, readFileSync, writeFileSync, rmSync, accessSync, constants } from 'node:fs'
 import net from 'node:net'
+import tls from 'node:tls'
 import dns from 'node:dns/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -134,6 +135,18 @@ export function checkIpv6(ifInet6) {
   return g6.length ? ['FAIL', `globalis IPv6 cim (a host-szabalyok csak IPv4-esek): ${g6.join(', ')}`] : ['OK', 'nincs globalis IPv6 cim; a host-tuzfal IPv4-es szabalyai lefedik a kimeno utat']
 }
 
+/** The system CA store, which Codex (Rust) uses; Node has its own, so a plain Node TLS call
+ *  would pass without it (the login failed on exactly that, 2026-10-14 20:13 UTC). */
+export const SYSTEM_CA = '/etc/ssl/certs/ca-certificates.crt'
+/** The hosts the login and the model calls reach. */
+export const TLS_HOSTS = ['api.openai.com', 'auth.openai.com']
+
+/** TLS: every handshake verified against the SYSTEM CA store only. */
+export function judgeTls(results) {
+  const bad = results.filter((r) => !r.ok)
+  return bad.length ? ['FAIL', `TLS a rendszer-CA-val nem sikerult: ${bad.map((r) => `${r.host} (${r.why})`).join(', ')}`] : ['OK', `TLS a rendszer-CA-val rendben: ${results.map((r) => r.host).join(', ')}`]
+}
+
 export function summarize(lines) {
   const n = (s) => lines.filter((l) => l[1] === s).length
   return { ok: n('OK'), fail: n('FAIL'), nem: n('NEM_MERHETO') }
@@ -148,6 +161,20 @@ function tcpOpen(host, port, timeoutMs = 3000) {
     s.setTimeout(timeoutMs, () => done(false))
     s.once('connect', () => done(true))
     s.once('error', () => done(false))
+  })
+}
+
+/** A TLS handshake checked against `caPath` ONLY (Node's own store replaced), so it fails like
+ *  Codex does when the system store is missing. Fails closed: no file, an error, or a timeout. */
+export function tlsSystemCa(host, port = 443, caPath = SYSTEM_CA, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    let ca
+    try { ca = readFileSync(caPath) } catch { resolve({ host, ok: false, why: `nincs rendszer-CA (${caPath})` }); return }
+    const s = tls.connect({ host, port, servername: host, ca, rejectUnauthorized: true })
+    const done = (ok, why) => { s.destroy(); resolve({ host, ok, why }) }
+    s.setTimeout(timeoutMs, () => done(false, 'idotullepes'))
+    s.once('secureConnect', () => done(s.authorized === true, s.authorized ? 'rendben' : String(s.authorizationError)))
+    s.once('error', (e) => done(false, e.code || e.message))
   })
 }
 
@@ -251,7 +278,11 @@ export async function main() {
   // the host's own addresses (public, tailnet), for the host-side firewall (PROBA_GEP_CIMEK)
   const hostAddrs = (process.env.PROBA_GEP_CIMEK || '').split(',').map((s) => s.trim()).filter(Boolean)
   const tries = await Promise.all(networkTargets(gw, hostAddrs, [...fleetHosts, ...resolved]).map((t) => tcpOpen(t.host, t.port)))
-  const control = await tcpOpen('api.openai.com', 443, 5000)
+  // the control is a TLS handshake verified with the SYSTEM CA, not a bare TCP connect: a TCP
+  // control passed while Codex's TLS failed (2026-10-14 20:13 UTC); both hosts Codex uses
+  const tlsResults = await Promise.all(TLS_HOSTS.map((h) => tlsSystemCa(h)))
+  say('TLS', ...judgeTls(tlsResults))
+  const control = { host: 'api.openai.com', port: 443, open: tlsResults[0].ok }
   say('N1', ...judgeNetwork(tries, control))
   say('N1-CIMEK', 'OK', `atjaro ${gw || '-'}; gep-cimek ${hostAddrs.join(',') || '- (PROBA_GEP_CIMEK ures)'}; portok ${HOST_PORTS.join(',')}; flotta-cimek ${fleetHosts.join(',') || '- (PROBA_FLOTTA_CIMEK ures)'}; nevfeloldas: ${resolved.join(',') || 'egyik nev sem oldodott fel'}`)
   if (!fleetHosts.length) say('N1-FLOTTA', 'NEM_MERHETO', 'a flotta konteneranak cimei nincsenek megadva (PROBA_FLOTTA_CIMEK), csak az atjarot es a neveket probaltam')

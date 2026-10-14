@@ -16,8 +16,10 @@ import { readFileSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { rootCertificates, createServer as createTlsServer } from 'node:tls'
 import {
   HOST_PORTS, SYSTEM_EXACT, networkTargets, globalIpv6, checkIpv6, checkHome, RUNNER_HOME,
+  SYSTEM_CA, TLS_HOSTS, judgeTls, tlsSystemCa,
   AUTH_FILE, checkTestOverrides, checkAuthFile, safeExecArgs, v3Checks, V3_TEST_ARGS, V3_CONTROL_ARGS, V3_CANARIES, toolUses, V3_PROMPT, checkIds, checkCaps, classifyReadable, judgeNetwork, judgeSandboxRun, codexSandboxChecks,
   idsFromStatus, summarize, PINNED_CODEX, FLEET_IDS,
 } from '../../gpt-runner/proba.mjs'
@@ -534,9 +536,19 @@ esac
     } finally { rmSync(dir, { recursive: true, force: true }) }
   }
 
-  it('LOGIN-NOT-ENABLED: the device-code error is named for Balázs, the one-time-code log is removed', () => {
-    const r = runHost('belepes.sh', { LOGIN_OUT: 'Error logging in with device code: device code login is not enabled for this account', LOGIN_RC: '1', PERM: '' })
-    expect([r.code, /nincs engedelyezve a ChatGPT-fiokban/.test(r.out), r.left]).toEqual([1, true, []])
+  it('LOGIN-NOT-ENABLED: the account-setting error is named as that, the one-time-code log is removed', () => {
+    const r = runHost('belepes.sh', { LOGIN_OUT: 'Device code login is not enabled; falling back to browser login.', LOGIN_RC: '1', PERM: '' })
+    expect([r.code, /nincs engedelyezve a ChatGPT-fiokban/.test(r.out), /halozati/.test(r.out), r.left]).toEqual([1, true, false, []])
+  })
+
+  it('LOGIN-NETWORK: the 2026-10-14 20:13 error (a request that could not be sent) is a network or certificate error, not the account', () => {
+    const r = runHost('belepes.sh', { LOGIN_OUT: 'Error logging in with device code: error sending request for url (https://auth.openai.com/api/accounts/deviceauth/usercode)', LOGIN_RC: '1', PERM: '' })
+    expect([r.code, /halozati vagy tanusitvany-hiba/.test(r.out), /fiokban NINCS teendo/.test(r.out), /nincs engedelyezve/.test(r.out)]).toEqual([1, true, true, false])
+  })
+
+  it('LOGIN-OTHER: any other failure points at the error above, no guessed cause', () => {
+    const r = runHost('belepes.sh', { LOGIN_OUT: 'Error logging in with device code: something new', LOGIN_RC: '1', PERM: '' })
+    expect([r.code, /a hiba fent lathato/.test(r.out), /nincs engedelyezve|halozati/.test(r.out)]).toEqual([1, true, false])
   })
 
   it('LOGIN-OK: only the place, the mode, the owner and the file NAMES are printed; 600 10002 is required', () => {
@@ -566,5 +578,65 @@ esac
       const r = runHost('utana-meres.sh', { PROBE_OUT: out })
       expect([out.slice(0, 40), r.code, /KIKAPCSOLVA MARAD/.test(r.out)]).toEqual([out.slice(0, 40), 0, true])
     }
+  })
+})
+
+// any CA bundle that is NOT the self-signed test cert: the system one here, or Node's own list
+const SYSTEM_CA_FALLBACK = () => {
+  for (const p of ['/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt']) { try { readFileSync(p); return p } catch { /* next */ } }
+  const p = join(mkdtempSync(join(tmpdir(), 'gpt-ca-')), 'node.pem')
+  writeFileSync(p, rootCertificates.join('\n'))
+  return p
+}
+
+describe('gpt-runner TLS with the system CA store (the login failed on it, 2026-10-14 20:13 UTC)', () => {
+  it('TLS-JUDGE: every host must handshake with the system CA; one failure is FAIL and named', () => {
+    expect(TLS_HOSTS).toEqual(['api.openai.com', 'auth.openai.com'])
+    expect(SYSTEM_CA).toBe('/etc/ssl/certs/ca-certificates.crt')
+    expect(judgeTls([{ host: 'api.openai.com', ok: true, why: 'rendben' }, { host: 'auth.openai.com', ok: true, why: 'rendben' }])[0]).toBe('OK')
+    expect(judgeTls([{ host: 'api.openai.com', ok: true, why: 'rendben' }, { host: 'auth.openai.com', ok: false, why: 'nincs rendszer-CA' }])).toEqual(['FAIL', 'TLS a rendszer-CA-val nem sikerult: auth.openai.com (nincs rendszer-CA)'])
+  })
+
+  it('TLS-FAILS-CLOSED: no CA file, or a peer that does not speak TLS, is not ok (no Node default store behind it)', async () => {
+    const missing = await tlsSystemCa('127.0.0.1', 9, '/nonexistent/ca.crt')
+    expect([missing.ok, missing.why]).toEqual([false, 'nincs rendszer-CA (/nonexistent/ca.crt)'])
+    const net = await import('node:net')
+    const server = net.createServer((s) => s.end('not tls\n'))
+    await new Promise<void>((res) => server.listen(0, '127.0.0.1', () => res()))
+    try {
+      const port = (server.address() as { port: number }).port
+      const dir = mkdtempSync(join(tmpdir(), 'gpt-ca-'))
+      writeFileSync(join(dir, 'ca.crt'), '')
+      const r = await tlsSystemCa('127.0.0.1', port, join(dir, 'ca.crt'), 3000)
+      rmSync(dir, { recursive: true, force: true })
+      expect(r.ok).toBe(false)
+    } finally { server.close() }
+  })
+
+  it('TLS-USES-THE-GIVEN-CA: a self-signed server passes ONLY with its own cert as the CA file (Node store would refuse it)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gpt-tls-'))
+    try {
+      const gen = spawnSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost', '-keyout', join(dir, 'k.pem'), '-out', join(dir, 'c.pem')], { encoding: 'utf8', timeout: 30_000 })
+      expect(gen.status).toBe(0)
+      const server = createTlsServer({ key: readFileSync(join(dir, 'k.pem')), cert: readFileSync(join(dir, 'c.pem')) }, (s) => s.end())
+      await new Promise<void>((res) => server.listen(0, '127.0.0.1', () => res()))
+      try {
+        const port = (server.address() as { port: number }).port
+        const withOwn = await tlsSystemCa('localhost', port, join(dir, 'c.pem'), 5000)
+        writeFileSync(join(dir, 'other.pem'), readFileSync(SYSTEM_CA_FALLBACK()))
+        const withOther = await tlsSystemCa('localhost', port, join(dir, 'other.pem'), 5000)
+        expect([withOwn.ok, withOther.ok]).toEqual([true, false])
+      } finally { server.close() }
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('TLS-IMAGE: the image installs the system CA store, without recommends, and cleans the apt lists', () => {
+    expect(R('Dockerfile')).toMatch(/apt-get install -y --no-install-recommends ca-certificates[\s\S]*rm -rf \/var\/lib\/apt\/lists\/\*/)
+  })
+
+  it('TLS-IS-THE-CONTROL: the N1 control is the system-CA TLS result, not a bare TCP connect', () => {
+    const src = R('proba.mjs')
+    expect(src).toMatch(/const tlsResults = await Promise\.all\(TLS_HOSTS\.map\(\(h\) => tlsSystemCa\(h\)\)\)\n {2}say\('TLS', \.\.\.judgeTls\(tlsResults\)\)\n {2}const control = \{ host: 'api\.openai\.com', port: 443, open: tlsResults\[0\]\.ok \}/)
+    expect(/tcpOpen\('api\.openai\.com'/.test(src)).toBe(false)
   })
 })
