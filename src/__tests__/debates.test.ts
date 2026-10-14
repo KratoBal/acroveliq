@@ -178,6 +178,50 @@ describe('steering and the clocks', () => {
       .toEqual(['leallitva', 'expired', 409, true])
   })
 
+  // barracuda #137: állj runs in the poller, the hand-in on the HTTP route; they interleave, and in
+  // PR 2 the GPT run takes minutes, exactly when Balázs would stop it
+  it('DEB-STOP-RACE: állj during GPT\'s run: its answer does not go out, no new round opens, the debate stays stopped', async () => {
+    const id = await start('vita os gpt: kérdés', true)
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    const slow: DebateDeps = { ...deps(true), runGpt: async () => { await gate; return { text: 'késő GPT', final: false } } }
+    const submitting = submitAcrobotTurn(db(), slow, cfg, id, tokenOf(told[0]!), 'Acrobot 1', false)
+    await new Promise((r) => setTimeout(r, 10)) // the hand-in is now inside the GPT run
+    await handleOwnerMessage(db(), slow, cfg, THREAD, { id: 'race-stop', content: 'állj' }, OWNER)
+    const toldAfterStop = told.length
+    release()
+    const out = await submitting
+    const turns = debateTurns(db(), id)
+    expect([
+      out.status, getDebate(db(), id)!.status,
+      posts.some((p) => p.text.includes('késő GPT')),
+      turns.filter((t) => t.status === 'open').length,
+      turns.filter((t) => t.speaker === 'gpt').map((t) => [t.status, /leállítás után/.test(t.text ?? '')]),
+      told.length - toldAfterStop,
+    ], 'DEB-STOP-RACE').toEqual([200, 'leallitva', false, 0, [['skipped', true]], 0])
+  })
+
+  it('DEB-STOP-STAYS: a stopped or closed debate is not written back to running or waiting by a late phase end', async () => {
+    const id = await start()
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    const slowPost: DebateDeps = { ...deps(false), post: async (t, x) => { if (x.startsWith('[Acrobot]')) await gate; posts.push({ thread: t, text: x }); return 'p' } }
+    const submitting = submitAcrobotTurn(db(), slowPost, cfg, id, tokenOf(told[0]!), 'válasz', false)
+    await new Promise((r) => setTimeout(r, 10))
+    await handleOwnerMessage(db(), deps(false), cfg, THREAD, { id: 'stay-close', content: 'zárd le' }, OWNER)
+    release()
+    await submitting
+    expect([getDebate(db(), id)!.status, posts.some((p) => /Balázs döntésére vár/.test(p.text))], 'DEB-STOP-STAYS').toEqual(['lezarva', false])
+  })
+
+  it('DEB-IDLE: running with no open round and nothing written for a turn\'s time stops as megakadt', async () => {
+    const id = await start()
+    db().prepare(`UPDATE debate_turns SET status = 'expired' WHERE debate_id = ?`).run(id) // as if the round was never opened
+    now += cfg.turnTimeoutSeconds + 1
+    const stopped = await sweepDebates(db(), deps(false), cfg)
+    expect([stopped, getDebate(db(), id)!.status, posts.some((p) => /nincs nyitott kör/.test(p.text))], 'DEB-IDLE').toEqual([[id], 'megakadt', true])
+  })
+
   it('DEB-OWNER-MESSAGE: during a phase it is kept for the next speaker and moves nothing; after the phase it opens a new one', async () => {
     const id = await start()
     await handleOwnerMessage(db(), deps(false), cfg, THREAD, { id: 'm1', content: 'Figyelj a határidőre.' }, OWNER)

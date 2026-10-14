@@ -249,9 +249,18 @@ function localDayStart(now: number): number {
 // Writing
 // ---------------------------------------------------------------------------
 
-function touch(db: Database.Database, id: string, status: DebateStatus, now: number): void {
-  db.prepare('UPDATE debates SET status = ?, updated_at = ? WHERE id = ?').run(status, now, id)
+/**
+ * Writes a status, unless the debate was stopped or closed meanwhile: `állj` runs in the poller,
+ * a round's hand-in on the HTTP route, and the two can interleave (barracuda #137). False when it
+ * did not write.
+ */
+function touch(db: Database.Database, id: string, status: DebateStatus, now: number): boolean {
+  return db.prepare(`UPDATE debates SET status = ?, updated_at = ? WHERE id = ? AND status NOT IN ('leallitva', 'lezarva')`)
+    .run(status, now, id).changes === 1
 }
+
+/** Re-read after every await: only a running debate goes on posting or giving the floor. */
+const running = (db: Database.Database, id: string): boolean => getDebate(db, id)?.status === 'fut'
 
 async function say(db: Database.Database, deps: DebateDeps, debate: Debate, label: string, text: string): Promise<string[]> {
   const ids: string[] = []
@@ -310,10 +319,10 @@ function gptPrompt(db: Database.Database, debate: Debate, kind: TurnKind, round:
 /** Runs GPT's turn now; false if it could not speak (no runner, the daily cap, an error), said in the thread. */
 async function gptTurn(db: Database.Database, deps: DebateDeps, cfg: DebateConfig, debate: Debate, round: number, kind: TurnKind, prompt?: string): Promise<GptAnswer | null> {
   const now = deps.now()
-  const skip = async (why: string) => {
+  const skip = async (why: string, quiet = false) => {
     db.prepare(`INSERT INTO debate_turns (debate_id, phase, round, speaker, kind, status, text, created_at)
                 VALUES (?, ?, ?, 'gpt', ?, 'skipped', ?, ?)`).run(debate.id, debate.phase, round, kind, why, now)
-    await say(db, deps, debate, '[vezérlő]', why)
+    if (!quiet && running(db, debate.id)) await say(db, deps, debate, '[vezérlő]', why)
     return null
   }
   if (!deps.runGpt) return skip('GPT most nem szólhat: a GPT-futtató nincs bekapcsolva (külön jóváhagyásra vár).')
@@ -325,6 +334,8 @@ async function gptTurn(db: Database.Database, deps: DebateDeps, cfg: DebateConfi
   } catch {
     return skip('GPT most nem szólhat: a futtató hibát adott (a naplóban).')
   }
+  // stopped (or timed out) while GPT was thinking: its answer does not go out (barracuda #137)
+  if (!running(db, debate.id)) return skip('GPT válasza a leállítás után érkezett, nem került ki.', true)
   const ids = await say(db, deps, debate, '[GPT]', answer.text)
   db.prepare(`INSERT INTO debate_turns (debate_id, phase, round, speaker, kind, status, text, final, posted_ids, created_at, answered_at)
               VALUES (?, ?, ?, 'gpt', ?, 'answered', ?, ?, ?, ?, ?)`)
@@ -343,12 +354,13 @@ function phaseSpeakers(db: Database.Database, debate: Debate): Set<Speaker> {
 async function endPhase(db: Database.Database, deps: DebateDeps, cfg: DebateConfig, debate: Debate, forceSummary = false): Promise<void> {
   const both = phaseSpeakers(db, debate).size === 2
   if (both || forceSummary) {
+    if (!touch(db, debate.id, 'fut', deps.now())) return
     if (debate.gpt_invited) await gptTurn(db, deps, cfg, debate, 0, 'summary')
+    if (!running(db, debate.id)) return
     openAcrobotTurn(db, deps, debate, 0, 'summary')
-    touch(db, debate.id, 'fut', deps.now())
     return
   }
-  touch(db, debate.id, 'var_balazsra', deps.now())
+  if (!touch(db, debate.id, 'var_balazsra', deps.now())) return
   await say(db, deps, debate, '[vezérlő]', 'A szakasz véget ért, Balázs döntésére vár. „folytasd”: új szakasz; „összegezd”, „zárd le”, „állj”.')
 }
 
@@ -391,11 +403,13 @@ export async function submitAcrobotTurn(
   if (claimed.changes !== 1) return { status: 409, body: { error: 'this round is taken: one answer a round' } }
   const posted = await say(db, deps, debate, '[Acrobot]', text)
   db.prepare('UPDATE debate_turns SET posted_ids = ? WHERE id = ?').run(JSON.stringify(posted), turn.id)
+  const stoppedNow = () => ({ status: 200 as const, body: { debate: debate.id, round: turn.round, posted, next: getDebate(db, debate.id)!.status } })
+  if (!running(db, debate.id)) return stoppedNow()
 
   if (turn.kind === 'summary') {
-    touch(db, debate.id, 'var_balazsra', deps.now())
-    await say(db, deps, debate, '[vezérlő]', 'Összegzés kész, Balázs döntésére vár.')
-    return { status: 200, body: { debate: debate.id, round: turn.round, posted, next: 'var_balazsra' } }
+    if (touch(db, debate.id, 'var_balazsra', deps.now()))
+      await say(db, deps, debate, '[vezérlő]', 'Összegzés kész, Balázs döntésére vár.')
+    return stoppedNow()
   }
   // one model answered and said it is enough, or GPT is not in the debate
   if (final || !debate.gpt_invited) {
@@ -403,6 +417,7 @@ export async function submitAcrobotTurn(
     return { status: 200, body: { debate: debate.id, round: turn.round, posted, next: getDebate(db, debate.id)!.status } }
   }
   const answer = await gptTurn(db, deps, cfg, debate, turn.round, 'turn')
+  if (!running(db, debate.id)) return stoppedNow()
   if (!answer || answer.final || turn.round >= MAX_ROUNDS) {
     await endPhase(db, deps, cfg, debate)
     return { status: 200, body: { debate: debate.id, round: turn.round, posted, next: getDebate(db, debate.id)!.status } }
@@ -495,12 +510,18 @@ export async function sweepDebates(db: Database.Database, deps: DebateDeps, cfg:
     const late = db.prepare(`SELECT * FROM debate_turns WHERE debate_id = ? AND status = 'open' AND created_at <= ?`)
       .get(debate.id, now - cfg.turnTimeoutSeconds) as DebateTurn | undefined
     const overlong = debate.phase_started_at <= now - cfg.phaseTimeoutSeconds
-    if (!late && !overlong) continue
+    // running with no open round and nothing written for a turn's time: a post that threw after the
+    // start, for example; without this only the phase clock would catch it (barracuda #137)
+    const open = db.prepare(`SELECT COUNT(*) AS n FROM debate_turns WHERE debate_id = ? AND status = 'open'`).get(debate.id) as { n: number }
+    const idle = open.n === 0 && debate.updated_at <= now - cfg.turnTimeoutSeconds
+    if (!late && !overlong && !idle) continue
     expireOpen(db, debate.id)
     touch(db, debate.id, 'megakadt', now)
     await say(db, deps, debate, '[vezérlő]', late
       ? `A vita megakadt: Acrobot ${late.round ? `${late.round}. köre` : 'összegzése'} nem érkezett meg időben. „folytasd”: újra.`
-      : 'A vita megakadt: a szakasz túllépte az időkorlátot. „folytasd”: újra.')
+      : overlong
+        ? 'A vita megakadt: a szakasz túllépte az időkorlátot. „folytasd”: újra.'
+        : 'A vita megakadt: nincs nyitott kör, és egy környi ideje nem történt semmi. „folytasd”: újra.')
     stopped.push(debate.id)
   }
   return stopped
