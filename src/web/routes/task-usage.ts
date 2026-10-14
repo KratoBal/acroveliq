@@ -177,7 +177,13 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
         .filter((t) => !wantProject || t.project_id === wantProject))
       return true
     }
+    // the project filter holds here too: a caller asking ?assignee=x&project=os must not get all of
+    // x's tasks and read them as filtered (barracuda, #125); the busy check (kiadas) reads this branch
+    const projectOf = new Map((getDb().prepare('SELECT id, project FROM tasks WHERE assignee = ?').all(assignee) as { id: string; project: string }[])
+      .map((r) => [r.id, resolve(r.project)] as const))
     const tasks = assigneeTasks(getDb(), assignee)
+      .map((t) => ({ ...t, project_id: projectOf.get(t.id) ?? null }))
+      .filter((t) => !wantProject || t.project_id === wantProject)
     json(res, url.searchParams.get('busy') === '1' ? tasks.filter((t) => t.busy) : tasks)
     return true
   }
@@ -354,7 +360,11 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'a decision event is written by POST /api/decisions/:id only' }, 403)
       return true
     }
-    if (kind === 'paused' || kind === 'resumed' || kind === 'owner_action' || kind === 'project_changed') {
+    if (kind === 'project_changed') {
+      json(res, { error: 'a project_changed event is written by POST /api/tasks/:id/project only' }, 403)
+      return true
+    }
+    if (kind === 'paused' || kind === 'resumed' || kind === 'owner_action') {
       json(res, { error: `a ${kind} event is written by POST /api/task-actions only` }, 403)
       return true
     }

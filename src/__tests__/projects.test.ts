@@ -116,8 +116,9 @@ describe('the project is durable', () => {
     const ev = events('t1', 'project_changed').map((e) => [e.actor, JSON.parse(e.data).from, JSON.parse(e.data).to])
     expect([byAgent.status, bad.status, ok.status, again.body.repeated, owner.status, projectOf('t1'), ev])
       .toEqual([403, 400, 200, true, 200, 'commerce', [['acrobot', 'acropora', 'os'], ['balazs', 'os', 'commerce']]])
-    // nobody writes the event by hand
-    expect((await event('t1', 'project_changed', 'x')).status).toBe(403)
+    // nobody writes the event by hand, and the refusal names the real way
+    const byHand = await event('t1', 'project_changed', 'x')
+    expect([byHand.status, byHand.body.error]).toEqual([403, 'a project_changed event is written by POST /api/tasks/:id/project only'])
   })
 })
 
@@ -168,6 +169,14 @@ describe('the server filters', () => {
     const bad = await call(tryHandleTaskUsage, 'GET', '/api/tasks?project=acropora-os', undefined, ACRO)
     expect([os.body.map((t: { id: string }) => t.id).sort(), Object.fromEntries(all.body.map((t: { id: string; project_id: string }) => [t.id, t.project_id])), bad.status])
       .toEqual([['b', 'c'], { a: 'acropora', b: 'os', c: 'os', d: 'acropora' }, 400])
+    // the assignee branch filters too, busy included (barracuda, #125): not all of murena's tasks
+    addTaskEvent(getDb(), { task_id: 'a', kind: 'started', actor: 'murena', at: NOW(), ref: null }, NOW())
+    addTaskEvent(getDb(), { task_id: 'c', kind: 'started', actor: 'murena', at: NOW(), ref: null }, NOW())
+    const mine = await call(tryHandleTaskUsage, 'GET', '/api/tasks?assignee=murena&project=os', undefined, ACRO)
+    const busy = await call(tryHandleTaskUsage, 'GET', '/api/tasks?assignee=murena&busy=1&project=os', undefined, ACRO)
+    const allMine = await call(tryHandleTaskUsage, 'GET', '/api/tasks?assignee=murena', undefined, ACRO)
+    expect([mine.body.map((t: { id: string; project_id: string }) => `${t.id}:${t.project_id}`).sort(), busy.body.map((t: { id: string }) => t.id), allMine.body.length])
+      .toEqual([['b:os', 'c:os'], ['c'], 4])
   })
 
   it('open-matters ?project=: that project\'s open tasks and decision rows; memories and cards only under Flotta és közös; unknown 400', async () => {
