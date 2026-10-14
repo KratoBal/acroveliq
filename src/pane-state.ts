@@ -917,14 +917,73 @@ function inputBoxIsFree(box: string): boolean {
  * permission question can appear mid-typing in a running turn).
  */
 export function paneShowsOnlyLiveInput(pane: string): boolean {
-  if (!pane || !pane.trim()) return false
-  if (detectsFeedbackDraftModal(pane) || detectsModelConsentDialog(pane)) return false
+  return liveInputRefusal(pane) === null
+}
+
+/**
+ * Why the pane does NOT show only the live input box, by name, or null when it does. The names
+ * go to the delivery diagnostics (delivery-diag.ts), so a not-landed send says which look failed.
+ */
+export function liveInputRefusal(pane: string | null): string | null {
+  const dialog = dialogRefusal(pane)
+  if (dialog) return dialog
+  if (!IDLE_FOOTER_RX.test(pane!)) return 'no-footer'
+  // the box's BOTTOM (its lower separator above the footer) proves the live prompt; its top may
+  // have scrolled out of view under a long message (task kezbesites-busy-panelre, nautilus)
+  return liveInputBoxRows(pane!) != null ? null : 'no-box'
+}
+
+/** A dialog on screen (or no capture at all), by name: the look named first, whatever else fails. */
+function dialogRefusal(pane: string | null): string | null {
+  if (!pane || !pane.trim()) return 'no-capture'
+  if (detectsFeedbackDraftModal(pane) || detectsModelConsentDialog(pane)) return 'feedback-or-consent-dialog'
   const lines = pane.split('\n')
-  if (PERMISSION_QUESTION_RX.test(lines.slice(-PERMISSION_QUESTION_REGION_LINES).join('\n'))) return false
+  if (PERMISSION_QUESTION_RX.test(lines.slice(-PERMISSION_QUESTION_REGION_LINES).join('\n'))) return 'permission-question'
   const footerRegion = lines.slice(-MENU_FOOTER_REGION_LINES).join('\n')
-  if (MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)) return false
-  if (!IDLE_FOOTER_RX.test(pane)) return false
-  return liveInputBox(pane) != null
+  if (MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)) return 'menu'
+  return null
+}
+
+/**
+ * The visible rows of the live input box, bottom-anchored: the rows between its lower
+ * separator (above the footer) and its upper one, or the top of the capture when the box is
+ * taller than the pane and its upper separator has scrolled out. Measured need (nautilus,
+ * 2026-10-14): a 24-row pane loses the box's top above ~3200 characters (the 936-character
+ * safety preamble included), and a top-anchored read then saw no live box at all, so a send
+ * into a running turn stopped half-typed. Null when there is no lower separator under a footer.
+ */
+export function liveInputBoxRows(pane: string): string[] | null {
+  const lines = pane.split('\n')
+  const footerIdx = lines.findIndex((l) => IDLE_FOOTER_RX.test(l))
+  if (footerIdx < 0) return null
+  let bottomSep = -1
+  for (let i = footerIdx - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i]!)) { bottomSep = i; break }
+  }
+  if (bottomSep <= 0) return null
+  let topSep = -1
+  for (let i = bottomSep - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i]!)) { topSep = i; break }
+  }
+  return lines.slice(topSep + 1, bottomSep)
+}
+
+const collapseWs = (text: string) => text.replace(/\s+/g, ' ').trim()
+/** A box row without the prompt glyph and the wrap indent. */
+const boxRowText = (row: string) => collapseWs(row.replace(/^\s*\u276F/, ''))
+
+/**
+ * Does the visible box hold OUR text and nothing else? Every non-empty visible row must be a
+ * piece of `text` (a wrapped row is a contiguous slice of it), and at least one row must be
+ * long enough to be evidence. Bottom-anchored like liveInputBoxRows, so it holds when the box
+ * is taller than the pane and the head of the text is out of view.
+ */
+export function liveBoxHoldsOnly(pane: string, text: string): boolean {
+  const rows = liveInputBoxRows(pane)
+  if (rows == null) return false
+  const whole = collapseWs(text)
+  const pieces = rows.map(boxRowText).filter((r) => r.length > 0)
+  return pieces.length > 0 && pieces.some((r) => r.length >= 16) && pieces.every((r) => whole.includes(r))
 }
 
 /** The live input box's text (between its two separators above the footer), or null. */
@@ -942,17 +1001,26 @@ export function liveInputBoxText(pane: string): string | null {
  * replace that look).
  */
 export function paneAcceptsQueuedPrompt(plain: string, dimStripped: string | null = null): boolean {
-  if (!plain || !plain.trim()) return false
-  if (detectPaneState(plain) !== 'busy') return false
-  if (detectPermissionMode(plain) !== 'bypass permissions') return false
-  if (detectsPastePlaceholder(plain)) return false
-  if (paneShowsContextSaturation(plain)) return false
-  if (!paneShowsOnlyLiveInput(plain)) return false
-  const box = liveInputBox(plain)
-  if (box == null) return false
-  if (inputBoxIsFree(box)) return true
-  const ghostBox = dimStripped != null ? liveInputBox(dimStripped) : null
-  return ghostBox != null && inputBoxIsFree(ghostBox)
+  return queuedPromptRefusal(plain, dimStripped) === null
+}
+
+/** Why a busy pane may NOT take a queued message, by name, or null when it may (diagnostics). */
+export function queuedPromptRefusal(plain: string | null, dimStripped: string | null = null): string | null {
+  // a dialog hides the footer, so it would read 'not-bypass' below: name it first
+  const dialog = dialogRefusal(plain)
+  if (dialog) return dialog
+  if (!plain) return 'no-capture'
+  if (detectPaneState(plain) !== 'busy') return 'not-busy'
+  if (detectPermissionMode(plain) !== 'bypass permissions') return 'not-bypass'
+  if (detectsPastePlaceholder(plain)) return 'placeholder'
+  if (paneShowsContextSaturation(plain)) return 'context-saturated'
+  const live = liveInputRefusal(plain)
+  if (live) return live
+  const rows = liveInputBoxRows(plain)
+  if (rows == null) return 'no-box'
+  if (inputBoxIsFree(rows.join('\n'))) return null
+  const ghostRows = dimStripped != null ? liveInputBoxRows(dimStripped) : null
+  return ghostRows != null && inputBoxIsFree(ghostRows.join('\n')) ? null : 'box-not-free'
 }
 
 /**
@@ -1224,7 +1292,7 @@ export function decideSubmitFollowup(
   payloadHint: string,
   attempt: number,
   maxAttempts: number,
-  opts: { busyTarget?: boolean } = {},
+  opts: { busyTarget?: boolean; payload?: string } = {},
 ): SubmitFollowupAction {
   if (pane == null) return 'give-up'
   // A send INTO a busy pane (paneAcceptsQueuedPrompt): busy is the normal state here, so
@@ -1236,10 +1304,15 @@ export function decideSubmitFollowup(
     // a dialog took the screen after the Enter: no more keys, and not proof of landing
     if (!paneShowsOnlyLiveInput(pane)) return 'give-up'
     if (detectsPastePlaceholder(pane)) return 'give-up'
-    const box = liveInputBox(pane)
-    // the box wraps a long line, so only the head of the text is sure to stand on one row
+    // our text is still in the box: a visible row (long enough to be evidence) is a piece of
+    // it. Bottom-anchored, so it holds when the head has scrolled out of a tall box; without
+    // the whole text (an older caller) the head of the hint is the evidence, as before.
+    const rows = liveInputBoxRows(pane) ?? []
+    const whole = collapseWs(opts.payload ?? '')
     const head = payloadHint.slice(0, 24)
-    const parked = box != null && !inputBoxIsFree(box) && head.length >= 16 && box.includes(head)
+    const parked = opts.payload
+      ? rows.map(boxRowText).some((r) => r.length >= 16 && whole.includes(r))
+      : rows.join('\n').includes(head) && head.length >= 16 && !inputBoxIsFree(rows.join('\n'))
     if (!parked) return 'done'
     return attempt >= maxAttempts ? 'give-up' : 'retry-enter'
   }

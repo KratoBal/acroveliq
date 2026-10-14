@@ -25,8 +25,9 @@ describe('sendPromptToSession waitForIdle gate', () => {
     // watcher (an OPTIONAL prompt aborts instead of best-effort-typing into a
     // busy pane); waitForIdle stays the first, default-ON member. DELIVLOCK805
     // added lockMode (per-pane delivery mutex: deliver/recover/held); the router's
-    // queued delivery into a busy pane added busyTarget (task kezbesites-busy-panelre).
-    expect(sig).toMatch(/opts:\s*\{\s*waitForIdle\?:\s*boolean;\s*onBusyTimeout\?:\s*'send'\s*\|\s*'abort';\s*idleTimeoutMs\?:\s*number;\s*lockMode\?:\s*SendLockMode;\s*busyTarget\?:\s*boolean\s*\}/)
+    // queued delivery into a busy pane added busyTarget, and its diagnostics onBusyReport
+    // (task kezbesites-busy-panelre).
+    expect(sig).toMatch(/opts:\s*\{\s*waitForIdle\?:\s*boolean;\s*onBusyTimeout\?:\s*'send'\s*\|\s*'abort';\s*idleTimeoutMs\?:\s*number;\s*lockMode\?:\s*SendLockMode;\s*busyTarget\?:\s*boolean;\s*onBusyReport\?:\s*\(r: BusyPaneReport\) => void\s*\}/)
   })
 
   it('the gate defaults ON (waitForIdle !== false) so all other callers keep it', () => {

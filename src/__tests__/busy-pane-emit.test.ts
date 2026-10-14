@@ -127,6 +127,60 @@ describe('emitIntoBusyPane', () => {
   })
 })
 
+// The diagnostics leg (acrobot 30621): every return reports where the send stopped, by the
+// refusing look's name, with no text. RED if a return path reports nothing, reports twice,
+// names the wrong look or stage, or a report carries any part of the message.
+describe('emitIntoBusyPane: the report', () => {
+  const run = async (io: BusyPaneIo, text = TEXT) => {
+    const reports: unknown[] = []
+    const result = await emitIntoBusyPane(text, { ...io, report: (r) => reports.push(r) }, CFG)
+    return { result, reports }
+  }
+  const K = splitForSendKeys(TEXT).length
+
+  it('BUSY-REPORT: one report per send, naming the look and the stage', async () => {
+    const cases: Array<[string, BusyPaneIo, unknown]> = [
+      ['ok', scriptedPane({}).io, { result: 'sent', chunks: K, retries: 0 }],
+      ['retry', scriptedPane({ boxKeepsTextAfterEnters: 1 }).io, { result: 'sent', chunks: K, retries: 1 }],
+      ['midway', scriptedPane({ dialogAfterChunks: 1 }).io, { result: 'not-landed', reason: 'permission-question', stage: 'chunk', chunk: 2, chunks: K, retries: 0 }],
+      ['before-enter', scriptedPane({ dialogAfterChunks: K }).io, { result: 'not-landed', reason: 'permission-question', stage: 'before-enter', chunks: K, retries: 0 }],
+      ['after-enter', scriptedPane({ boxKeepsTextAfterEnters: 9, dialogAfterEnters: 1 }).io, { result: 'not-landed', reason: 'permission-question', stage: 'after-enter', chunks: K, retries: 0 }],
+      ['stuck', scriptedPane({ boxKeepsTextAfterEnters: 99 }).io, { result: 'not-landed', reason: 'parked-after-retries', stage: 'after-enter', chunks: K, retries: CFG.maxRetries }],
+      ['no-capture', { capture: () => null, typeChunk: () => {}, enter: () => {}, delay: async () => {} }, { result: 'not-landed', reason: 'no-capture', stage: 'chunk', chunk: 1, chunks: K, retries: 0 }],
+    ]
+    const got = []
+    for (const [name, io] of cases) {
+      const { reports } = await run(io)
+      got.push([name, reports])
+    }
+    expect(got).toEqual(cases.map(([name, , want]) => [name, [want]]))
+  })
+
+  it('BUSY-REPORT-NOT-OURS: foreign text in the box before the Enter is named not-ours', async () => {
+    let typedAny = false
+    const io: BusyPaneIo = {
+      capture: () => busyWithBox(typedAny ? 'valaki mas szovege ami nem a mienk, hosszan' : ''),
+      typeChunk: () => {
+        typedAny = true
+      },
+      enter: () => {},
+      delay: async () => {},
+    }
+    const { reports } = await run(io)
+    expect(reports).toEqual([{ result: 'not-landed', reason: 'not-ours', stage: 'before-enter', chunks: K, retries: 0 }])
+  })
+
+  it('BUSY-REPORT-NO-TEXT: no report carries any piece of the message', async () => {
+    const all: unknown[] = []
+    for (const io of [scriptedPane({}).io, scriptedPane({ dialogAfterChunks: 1 }).io, scriptedPane({ boxKeepsTextAfterEnters: 99 }).io]) {
+      all.push(...(await run(io)).reports)
+    }
+    const flat = JSON.stringify(all)
+    expect(all.length).toBe(3)
+    expect(['TEAM MEMBER', '30413', 'kalibraciot'].filter((w) => flat.includes(w))).toEqual([])
+  })
+})
+
 describe('splitForSendKeys: the idle path dash rule', () => {
   it('CHUNK-DASH: a boundary slides past dashes; a chunk that still starts with one gets a space; the text is kept', () => {
     const line = 'a'.repeat(80) + '-szal es tovabb'
