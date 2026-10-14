@@ -97,6 +97,24 @@ describe('fleet-api.sh task-usage', () => {
     'FLEET-TASK-USAGE').toEqual([0, '/api/tasks/m1/usage?variants=1', true, true, true, true, false, 3, true, true])
   })
 
+  // task-usage-continue-res: 2026-10-14 a task that ran 100 calls read 0 until the collector ran
+  it('FLEET-TASK-USAGE-INGESTED: says how far the data goes; warns when the window reaches past the last collection', async () => {
+    const at = (iso: string) => Math.floor(Date.parse(iso) / 1000)
+    const ing = (until: number | null) => ({ activity_until: until, last_call: { murena: at('2026-10-14T14:00:00Z') } })
+    const ask = async (body: unknown) => { answer = [200, body]; return run(['task-usage', 'm1']) }
+    const before = await ask({ ...usage('m1', null, true), ingested: ing(at('2026-10-14T14:30:00Z')), collector_last_run: { at: at('2026-10-14T15:00:00Z'), inserted: 3, files: 1 } })
+    const past = await ask({ ...usage('m1', null, true), ingested: ing(at('2026-10-14T15:30:00Z')), collector_last_run: { at: at('2026-10-14T15:00:00Z'), inserted: 3, files: 1 } })
+    const never = await ask({ ...usage('m1', null, true), ingested: ing(at('2026-10-14T14:30:00Z')), collector_last_run: null })
+    const old = await ask(usage('m1', null, true)) // a dashboard before this change
+    const hm = (iso: string) => { const d = new Date(iso); return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
+    expect([
+      before.code, before.out.includes(`beolvasva: a gyujto utoljara ${hm('2026-10-14T15:00:00Z')}; utolso beolvasott hivas: murena ${hm('2026-10-14T14:00:00Z')}`), /FIGYELEM/.test(before.out),
+      past.code, /FIGYELEM: a feladat ablaka eddig tart: .*a gyujto utolso futasa/.test(past.out), /HIANYOS lehet \(a 0 is\)/.test(past.out),
+      never.code, /a gyujto utoljara ISMERETLEN/.test(never.out), /FIGYELEM/.test(never.out),
+      old.code, /beolvasva/.test(old.out),
+    ], 'FLEET-TASK-USAGE-INGESTED').toEqual([0, true, false, 0, true, true, 0, true, true, 0, false])
+  })
+
   it('FLEET-TASK-USAGE-COORD: the coord line, and the concurrent other tasks said on their own line', async () => {
     const u = usage('koord', null, true)
     answer = [200, { ...u, by_capacity: { ...u.by_capacity, coord: totals(12, 4_000_000) },
