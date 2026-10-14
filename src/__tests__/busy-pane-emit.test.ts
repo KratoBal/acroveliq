@@ -36,16 +36,19 @@ const TEXT =
 type Step = 'chunk' | 'enter'
 
 /** A pane that follows the typing, and can be told to show the permission dialog from a point on. */
-function scriptedPane(opts: { dialogAfterChunks?: number; dialogAfterEnters?: number; boxKeepsTextAfterEnters?: number }) {
+function scriptedPane(opts: { dialogAfterChunks?: number; dialogAfterEnters?: number; dialogFromCapture?: number; boxKeepsTextAfterEnters?: number }) {
   let typed = ''
   let chunks = 0
   let enters = 0
+  let captures = 0
   const steps: Array<[Step, string]> = []
   const dialog = () =>
     (opts.dialogAfterChunks !== undefined && chunks >= opts.dialogAfterChunks) ||
-    (opts.dialogAfterEnters !== undefined && enters >= opts.dialogAfterEnters)
+    (opts.dialogAfterEnters !== undefined && enters >= opts.dialogAfterEnters) ||
+    (opts.dialogFromCapture !== undefined && captures >= opts.dialogFromCapture)
   const io: BusyPaneIo = {
     capture: () => {
+      captures++
       if (dialog()) return PERMISSION
       // after an Enter the line leaves the box (queued), unless told to stay for N Enters
       const keep = enters > 0 && enters <= (opts.boxKeepsTextAfterEnters ?? 0)
@@ -92,6 +95,15 @@ describe('emitIntoBusyPane', () => {
 
   it('BUSY-EMIT-RETRY-LOOKS-AGAIN: text still in the box after the Enter, then a dialog: no retry Enter, not landed', async () => {
     const { io, steps } = scriptedPane({ boxKeepsTextAfterEnters: 9, dialogAfterEnters: 1 })
+    expect(await emitIntoBusyPane(TEXT, io, CFG)).toBe('not-landed')
+    expect(steps.filter(([k]) => k === 'enter')).toEqual([['enter', 'box']])
+  })
+
+  it('BUSY-EMIT-RETRY-LOOK-ITSELF: the follow-up still sees our text, the dialog comes up just before the retry Enter: no retry Enter', async () => {
+    // captures: one before each chunk, one before the Enter, one follow-up (text still in
+    // the box), then the look before the retry Enter -- the dialog appears exactly there
+    const k = splitForSendKeys(TEXT).length
+    const { io, steps } = scriptedPane({ boxKeepsTextAfterEnters: 9, dialogFromCapture: k + 3 })
     expect(await emitIntoBusyPane(TEXT, io, CFG)).toBe('not-landed')
     expect(steps.filter(([k]) => k === 'enter')).toEqual([['enter', 'box']])
   })
