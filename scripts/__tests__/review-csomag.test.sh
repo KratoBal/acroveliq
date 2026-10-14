@@ -121,6 +121,54 @@ check '... and names the folder' 1 "$(d zart/nyitott.md t13 | grep -c "be ide: $
 check 'the same 640 file when its group IS the fleet -> 0' 0 "$(GRP="$(id -gn)" dr csoport/negyven.md t14)"
 check 'the same 750 folder when its group IS the fleet -> 0' 0 "$(GRP="$(id -gn)" dr zart/nyitott.md t15)"
 check 'no refused document left a packet' 0 "$(ls "$T/zona" | grep -cE '^doc-(t([0-9]|1[0-3]))?$')"
+echo 'task review-csomag-fej-egyezes: the fetched head must be the PR head the API names'
+# a copy whose three fixed places point here: git-auth is a stub that "fetches" local
+# commits, the API is a file:// tree, the token a file
+F="$T/frepo"; git init -q "$F"; git -C "$F" remote add origin https://github.com/KratoBal/marveen.git
+gc() { git -C "$F" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$1"; git -C "$F" rev-parse HEAD; }
+printf 'a\n' > "$F/a.txt"; git -C "$F" add a.txt; C1="$(gc egy)"
+printf 'b\n' >> "$F/a.txt"; git -C "$F" add a.txt; C2="$(gc ketto)"
+C3="$(gc harom)"
+cat > "$T/git-auth-stub.sh" <<STUB
+#!/usr/bin/env bash
+# fetch origin main pull/<N>/head:pr-<N> -f  ->  origin/main = C1, pr-<N> = the commit in fetched-head
+n="\${4#pull/}"; n="\${n%%/*}"
+git update-ref refs/remotes/origin/main $C1 && git branch -f "pr-\$n" "\$(cat $T/fetched-head)" >/dev/null
+STUB
+printf 'titok\n' > "$T/tok"
+api() { mkdir -p "$T/api/repos/KratoBal/marveen/pulls"; printf '%s' "$2" > "$T/api/repos/KratoBal/marveen/pulls/$1"; }
+sed -e "s|^GIT_AUTH=.*|GIT_AUTH=$T/git-auth-stub.sh|" -e "s|^GH_API=.*|GH_API=file://$T/api|" -e "s|^TOKEN_FILE=.*|TOKEN_FILE=$T/tok|" "$S" > "$T/csomag.sh"
+check 'the copy points at the stubs' 3 "$(grep -cE "^(GIT_AUTH=$T/git-auth-stub.sh|GH_API=file://$T/api|TOKEN_FILE=$T/tok)\$" "$T/csomag.sh")"
+pk() { REVIEW_CSOMAG_REPO="$F" REVIEW_CSOMAG_DIR="$T/zona" bash "$T/csomag.sh" marveen "$1" tcl-proba 2>&1; }
+pkr() { pk "$@" >"$T/pk.out"; echo $?; }
+printf '%s' "$C2" > "$T/fetched-head"
+api 120 "{\"head\":{\"sha\":\"$C2\"}}"
+check 'the fetched head is the API head -> 0' 0 "$(pkr 120)"
+check '... the README names that head' 1 "$(grep -c "^fej: $C2\$" "$T/zona/pr-marveen120/README.md")"
+check '... and the diff is written' 0 "$([ -s "$T/zona/pr-marveen120/diff.patch" ]; echo $?)"
+api 121 "{\"head\":{\"sha\":\"$C3\"}}"
+check 'the pull ref still names the old commit -> 1' 1 "$(pkr 121)"
+check '... and says it does not package a stale diff' 1 "$(grep -c 'Nem csomagolok elavult diffet' "$T/pk.out")"
+check '... and a first round leaves no folder' 1 "$([ -e "$T/zona/pr-marveen121" ] && echo 0 || echo 1)"
+api 120 "{\"head\":{\"sha\":\"$C3\"}}"
+check 'a later round with a stale pull ref -> 1' 1 "$(pkr 120)"
+check '... writes no diff-v2 and no README line' '0 0' "$([ -e "$T/zona/pr-marveen120/diff-v2.patch" ] && echo 1 || echo 0) $(grep -c '^v2:' "$T/zona/pr-marveen120/README.md")"
+check '... and keeps the folder of the earlier round' 0 "$([ -s "$T/zona/pr-marveen120/diff.patch" ]; echo $?)"
+printf '%s' "$C3" > "$T/fetched-head"
+check 'once the pull ref caught up -> 0, a v2 round' 0 "$(pkr 120)"
+check '... with the new head' 1 "$(grep -c "^v2: task_id tcl-proba, fej $C3," "$T/zona/pr-marveen120/README.md")"
+api 122 '{"message":"Not Found"}'
+check 'the API names no head -> 1' 1 "$(pkr 122)"
+check '... and says it cannot check' 1 "$(grep -c 'nem adott head.sha-t' "$T/pk.out")"
+chmod 000 "$T/tok"
+if [ -r "$T/tok" ]; then echo '  [SKIP] an unreadable token (this user reads a 000 file: root)'; else
+  check 'an unreadable token -> 1, no packet' 1 "$(pkr 123)"
+  check '... no folder' 1 "$([ -e "$T/zona/pr-marveen123" ] && echo 0 || echo 1)"
+  check '... and names the token as the reason (the API branch would close it too, but say why)' 1 "$(grep -c 'a token nem olvashato' "$T/pk.out")"
+fi
+chmod 600 "$T/tok"
+check 'the token is not on the command line: read inside python, sent on stdin' 1 \
+  "$(grep -c '"curl", "-s", "-H", "@-"' "$S")"
 
 echo
 [ "$fails" = 0 ] && { echo 'all pass'; exit 0; }
