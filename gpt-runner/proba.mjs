@@ -24,6 +24,15 @@ export const FLEET_IDS = [0, 1000, 1001, 1002, 1003, 1004, 1005, 1006]
 /** The ONE id the runner may have (compose `user:`). An allowlist, not a denylist: a new agent's
  *  uid (1007) or a mistyped `user:` line must not pass (barracuda, #138 review). */
 export const RUNNER_ID = 10002
+/** The ONE home the runner may have (the Dockerfile's HOME). F2 treats it as the runner's own;
+ *  a wider HOME (say /home) would pull fleet paths into that category, so any other value is
+ *  FAIL and gets no own-home category (barracuda, #142 review). PROBA_ELVART_HOME: tests only. */
+export const RUNNER_HOME = process.env.PROBA_ELVART_HOME || '/home/gpt'
+
+/** HOME: exactly the runner's home. */
+export function checkHome(home) {
+  return home === RUNNER_HOME ? ['OK', `HOME=${home}`] : ['FAIL', `HOME=${home || '(ures)'} az elvart ${RUNNER_HOME} helyett`]
+}
 /** Ports that must NOT answer from the runner: the dashboard, its second port, the usual
  *  databases, Coolify, the deploy executor. 22/80/443 on the gateway are public anyway. */
 export const CLOSED_PORTS = [3420, 3425, 5432, 6379, 8000, 8080, 8787]
@@ -179,7 +188,9 @@ export async function main() {
   const found = []
   walkReadable(root, found, ['/proc', '/sys', '/dev'])
   rmSync(canary, { force: true })
-  const { outside, marked, own } = classifyReadable(found, process.env.HOME || null)
+  say('HOME', ...checkHome(process.env.HOME))
+  // the own-home category only for the expected home; any other HOME is walked like the rest
+  const { outside, marked, own } = classifyReadable(found, process.env.HOME === RUNNER_HOME ? RUNNER_HOME : null)
   const ownNote = `sajat home (${process.env.HOME || '-'}): ${own.length} fajl${own.length ? ` (pl. ${own.slice(0, 3).join(', ')})` : ''}`
   if (!found.includes(canary)) say('F2', 'NEM_MERHETO', 'a bejaras a sajat kanarijat sem talalta meg')
   else if (outside.length || marked.length) say('F2', 'FAIL', `rendszeren kivul ${outside.length}, flotta-jelzesu ${marked.length}: ${[...outside, ...marked].slice(0, 8).join(', ')}; ${ownNote}`)

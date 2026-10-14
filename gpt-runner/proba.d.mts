@@ -6,6 +6,8 @@ export type Run = (cmd: string, args: string[]) => RunResult
 
 export const FLEET_IDS: number[]
 export const RUNNER_ID: number
+export const RUNNER_HOME: string
+export function checkHome(home: string | undefined): [Verdict, string]
 export const CLOSED_PORTS: number[]
 export const HOST_PORTS: number[]
 export const SYSTEM_EXACT: string[]
