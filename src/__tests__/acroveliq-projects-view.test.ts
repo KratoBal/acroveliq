@@ -116,4 +116,19 @@ describe('Projektek V1 page', () => {
     view.aqState.project = ''
     expect(view.aqLegacyNote(data())).toBe('')
   })
+
+  it('PROJ-VIEW-LEGACY-MIND: in "Mind" the wide project\'s rows are explained too: a note, the pill\'s title, the option name (acrobot and barracuda, #127)', () => {
+    const { view } = load()
+    const fleet = task({ id: 't-2', project: 'acropora', project_id: 'acropora' })
+    view.aqState.project = ''
+    view.aqState.data = data([task(), fleet])
+    expect(view.aqLegacyNote(data([task(), fleet]))).toContain('„Flotta és közös” címkéjű sorok között korábbi, vegyes besorolású feladatok is vannak')
+    expect(view.aqLegacyNote(data([task()]))).toBe('') // no such row, no note
+    const pill = view.aqProjectPill(data(), fleet)
+    expect(pill).toContain('title="A projektek bevezetése előtti feladatok mind itt állnak')
+    expect(pill).toContain('Flotta és közös (korábbi, vegyes feladatok is)')
+    expect(view.aqProjectPill(data(), task())).not.toContain('title=')
+    view.aqState.form = { key: 'kulcs-0001', project: '', title: '', goal: '', assignee: '', priority: 'normal', brief_ref: '' }
+    expect(view.aqRenderTasks(data())).toContain('<option value="acropora">Flotta és közös (korábbi, vegyes feladatok is)</option>')
+  })
 })

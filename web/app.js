@@ -17111,22 +17111,43 @@ function aqProjectName(data, id) {
   const p = (data.projects || []).find((x) => x.id === id)
   return p ? p.name : id
 }
+// the wide project's name carries the explanation wherever it is listed (Balázs, variant A: on the
+// page, plainly), in "Mind" too, not only when it is selected (barracuda and acrobot, #127)
+const AQ_LEGACY_SUFFIX = ' (korábbi, vegyes feladatok is)'
+const AQ_LEGACY_TITLE = 'A projektek bevezetése előtti feladatok mind itt állnak, akkor is, ha egy másik projekthez tartoznának.'
+function aqProjectLabel(p) {
+  return p.legacy_mixed ? p.name + AQ_LEGACY_SUFFIX : p.name
+}
 function aqProjectPill(data, t) {
-  if (t.project_id) return aqPill(aqProjectName(data, t.project_id), 'grey')
+  if (t.project_id) {
+    const p = (data.projects || []).find((x) => x.id === t.project_id)
+    if (p && p.legacy_mixed)
+      return `<span class="aq-pill aq-pill-grey" title="${aqEsc(AQ_LEGACY_TITLE)}">${aqEsc(aqProjectLabel(p))}</span>`
+    return aqPill(aqProjectName(data, t.project_id), 'grey')
+  }
   return t.project ? aqPill('Ismeretlen projekt: ' + t.project, 'red') : ''
 }
-// the old tasks stay where they were (Balázs, variant A): the page says the wide project also holds them
+// the old tasks stay where they were (Balázs, variant A): the page says the wide project also holds
+// them, when it is selected and in "Mind" (where its rows stand among the others)
 function aqLegacyNote(data) {
-  const p = (data.projects || []).find((x) => x.id === aqState.project)
+  const projects = data.projects || []
+  if (!aqState.project) {
+    const wide = projects.find((x) => x.legacy_mixed)
+    const has = wide && (data.tasks || []).some((t) => t.project_id === wide.id)
+    return has
+      ? `<p class="aq-note">A „${aqEsc(wide.name)}” címkéjű sorok között korábbi, vegyes besorolású feladatok is vannak: ${aqEsc(AQ_LEGACY_TITLE)}</p>`
+      : ''
+  }
+  const p = projects.find((x) => x.id === aqState.project)
   return p && p.legacy_mixed
-    ? `<p class="aq-note">A ${aqEsc(p.name)} projekt korábbi, vegyes besorolású feladatokat is tartalmaz: a projektek bevezetése előtti feladatok mind itt állnak, akkor is, ha egy másik projekthez tartoznának.</p>`
+    ? `<p class="aq-note">A ${aqEsc(p.name)} projekt korábbi, vegyes besorolású feladatokat is tartalmaz: ${aqEsc(AQ_LEGACY_TITLE)}</p>`
     : ''
 }
 function aqFillProjectSelect(data) {
   const sel = document.getElementById('aqProject')
   if (!sel) return
   const want = aqState.project
-  sel.innerHTML = '<option value="">Mind</option>' + (data.projects || []).map((p) => `<option value="${aqEsc(p.id)}"${p.id === want ? ' selected' : ''}>${aqEsc(p.name)}</option>`).join('')
+  sel.innerHTML = '<option value="">Mind</option>' + (data.projects || []).map((p) => `<option value="${aqEsc(p.id)}"${p.id === want ? ' selected' : ''}>${aqEsc(aqProjectLabel(p))}</option>`).join('')
 }
 
 function aqStat(label, value, sub, tone) {
@@ -17252,7 +17273,7 @@ function aqTaskForm(data) {
     <h2>Új feladat</h2>
     <p class="aq-muted">A követelmény feltárása a Discordon marad; itt a feladat rekordja jön létre. Kiadni (ágenst indítani) Acrobot fog.</p>
     <label class="aq-label" for="aqfProject">Projekt (kötelező)</label>
-    <select id="aqfProject" class="aq-input" data-aq-field="project">${opt('', 'Válassz projektet', f.project)}${(data.projects || []).map((p) => opt(p.id, p.name, f.project)).join('')}</select>
+    <select id="aqfProject" class="aq-input" data-aq-field="project">${opt('', 'Válassz projektet', f.project)}${(data.projects || []).map((p) => opt(p.id, aqProjectLabel(p), f.project)).join('')}</select>
     <label class="aq-label" for="aqfTitle">Cím</label>
     <input id="aqfTitle" class="aq-input" data-aq-field="title" maxlength="200" value="${aqEsc(f.title)}">
     <label class="aq-label" for="aqfGoal">Mi a cél, mi számít késznek?</label>
