@@ -146,6 +146,25 @@ describe('fleet-api.sh task-usage', () => {
     ])
   })
 
+  /*
+    AZ ELDOBOTT KULCS HANGOSAN (aktualis-munka-ures, acrobot döntése). MI PIROSÍT: az
+    ignored lista mellett nincs figyelmeztetés, vagy a kilépés nem 0; üres listánál is
+    figyelmeztet; egy elbukott hívás 0-val tér vissza (a post alhéjban fut).
+  */
+  it('FLEET-TASK-NEW-IGNORED: ignored keys warn on stderr with exit 0; none, no warning; a failed post still fails', async () => {
+    answer = [201, { id: 'tcl-y', ignored: ['felelos', 'cim'] }]
+    const warned = await run(['task-new', 'tcl-y', '-'], '{"cim":"Cím","felelos":"murena"}')
+    answer = [201, { id: 'tcl-z', ignored: [] }]
+    const clean = await run(['task-new', 'tcl-z', '-'], '{"title":"Cím","assignee":"murena"}')
+    answer = [500, { error: 'boom' }]
+    const failed = await run(['task-new', 'tcl-w', '-'], '{"title":"Cím"}')
+    expect([
+      warned.code, /FIGYELEM: a szerver ezeket a kulcsokat NEM tarolta \(ismeretlen mezo\): felelos, cim/.test(warned.out),
+      clean.code, /FIGYELEM/.test(clean.out),
+      failed.code !== 0, /FAIL http=500/.test(failed.out),
+    ], 'FLEET-TASK-NEW-IGNORED').toEqual([0, true, 0, false, true, true])
+  })
+
   it('FLEET-TASK-TIMELINE: one line per item, and the count', async () => {
     answer = [200, { task: 't1', items: [
       { at: 1760252580, source: 'event', id: 1, kind: 'started', actor: 'murena', ref: null, data: null },

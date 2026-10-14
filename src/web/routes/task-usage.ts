@@ -114,6 +114,12 @@ async function body(ctx: RouteContext): Promise<Record<string, unknown> | null> 
   }
 }
 
+/** The body keys POST /api/tasks reads; any other is reported back as `ignored`. */
+export const TASK_BODY_KEYS = [
+  'id', 'project', 'type', 'parent_task', 'variant', 'brief_ref', 'title', 'goal', 'acceptance',
+  'assignee', 'reviewer', 'authorization_ref', 'verification_profile', 'kanban_card_id', 'priority',
+] as const
+
 export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
   const { res, path, method, url } = ctx
   const now = Math.floor(Date.now() / 1000)
@@ -144,6 +150,11 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/tasks' && method === 'POST') {
     const b = await body(ctx)
+    // A KEY THE RECORD DOES NOT READ IS NAMED, NOT SWALLOWED (task aktualis-munka-ures,
+    // acrobot's decision 2026-10-14): fleet-api.sh's help once said "cim, cel, felelos",
+    // and a task posted that way had no assignee, so it never showed as the agent's
+    // current work. Still 201 -- the existing callers are not measured yet; refusing comes
+    // in a separate PR once `ignored` is empty everywhere.
     const id = text(b?.id)
     if (!b || !id) {
       json(res, { error: 'id required' }, 400)
@@ -196,7 +207,8 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       },
       now,
     )
-    json(res, { id }, 201)
+    const ignored = Object.keys(b).filter((key) => !(TASK_BODY_KEYS as readonly string[]).includes(key))
+    json(res, { id, ignored }, 201)
     return true
   }
 
