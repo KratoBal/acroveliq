@@ -55,9 +55,13 @@ sys.exit(spec['rc'])
 FAKE_SEND = '#!/usr/bin/env bash\n{{ printf "%s|" "$@"; echo; cat; echo "--END--"; }} >> "{log}"\n'
 
 
-def answer(mode, rows, rc=None):
+DB = {'path': None}  # set per Env: the store database the wrapper expects
+
+
+def answer(mode, rows, rc=None, database=None):
     return {'rc': (0 if not rows else 1) if rc is None else rc,
-            'out': json.dumps({'mode': mode, 'since': '2026-10-14', 'rows': rows})}
+            'out': json.dumps({'mode': mode, 'since': '2026-10-14', 'rows': rows,
+                               'database': database or DB['path'], 'newest': 1791900000})}
 
 
 def row(actor, path='/api/x', method='GET', count=3):
@@ -76,6 +80,7 @@ class Env:
         for n in ('naplo', 'uzenet'):
             open(os.path.join(self.bin, n + '.sh'), 'w').write(FAKE_SEND.format(log=self.log[n]))
         self.p = napi.paths(self.root)
+        DB['path'] = os.path.join(self.root, 'store', 'claudeclaw.db')
 
     def args(self, mod='futtat', timeout=30):
         return [mod, '--root', self.root, '--tsx', sys.executable, '--preflight', self.fake,
@@ -112,11 +117,16 @@ check('the dashboard entry is written, no message', e.sent('naplo').count('--END
 e.done()
 
 e = Env()
-r = e.run({'legacy-szukitett': answer('legacy-szukitett', [row('legacy'), row('legacy', '/api/y')]),
+r = e.run({'legacy-szukitett': answer('legacy-szukitett', [row('legacy', '/api/a'), row('legacy', '/api/z', count=39)]),
            'kikenyszerit': answer('kikenyszerit', [row('legacy')])})
 check('only legacy rows: exit 0, RENDBEN, counted in the report',
       r.returncode == 0 and ' RENDBEN ' in e.last() and 'legacy 1; legacy-szukitett 2 sor' in e.sent('naplo'))
 check('only legacy rows: no message', e.sent('uzenet') == '')
+check('the legacy calls are listed per route in the daily entry, the most frequent first',
+      '  legacy "GET" "/api/z" 39x\n  legacy "GET" "/api/a" 3x' in e.sent('naplo'))
+r2 = e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [])})
+check('the next run shows the previous legacy count', 'legacy 0; legacy-szukitett 0 sor (elmult 1 nap); elozo futas legacy: 1.' in e.sent('naplo'))
+check('and the newest logged denial', 'A legfrissebb naplozott tiltas: ' in e.sent('naplo') and 'nincs (a tabla ures)' not in e.sent('naplo'))
 e.done()
 
 e = Env()
@@ -128,16 +138,17 @@ check('the message goes to acrobot and names the call as data',
 e.done()
 
 print('2. a run that could not be evaluated is never clean')
-cases = {
-    'a crash: exit 1, no JSON': {'rc': 1, 'out': 'SqliteError: unable to open database file'},
-    'an undefined exit code': answer('kikenyszerit', [], rc=2),
-    'exit 0 with a list': answer('kikenyszerit', [row('murena')], rc=0),
-    'exit 1 with an empty list': answer('kikenyszerit', [], rc=1),
-    'the JSON of another mode': answer('legacy-szukitett', []),
+cases = {  # built after each Env, so the database path is that Env's
+    'a crash: exit 1, no JSON': lambda: {'rc': 1, 'out': 'SqliteError: unable to open database file'},
+    'an undefined exit code': lambda: answer('kikenyszerit', [], rc=2),
+    'exit 0 with a list': lambda: answer('kikenyszerit', [row('murena')], rc=0),
+    'exit 1 with an empty list': lambda: answer('kikenyszerit', [], rc=1),
+    'the JSON of another mode': lambda: answer('legacy-szukitett', []),
+    'another database (an empty list there is no proof)': lambda: answer('kikenyszerit', [], database='/tmp/masik.db'),
 }
 for name, bad in cases.items():
     e = Env()
-    r = e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': bad})
+    r = e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': bad()})
     check(f'{name}: exit 3, JELZES, message sent',
           r.returncode == 3 and ' JELZES ' in e.last() and 'nem ertekelheto' in e.sent('uzenet'))
     e.done()
