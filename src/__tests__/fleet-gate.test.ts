@@ -13,7 +13,10 @@
 //   - backup-put overwrites, or writes outside tavoli/; backup-get reads
 //     outside the listed backups;
 //   - a caller script (the ones the fleet runs over the key) still sends a raw
-//     docker or df command, or sends one the gate would refuse on its host.
+//     docker or df command, or sends one the gate would refuse on its host;
+//   - quote-templates-sync runs a program that is not root's own file, takes
+//     anything but plan or apply, or lets the caller's stdin become the program;
+//   - the install step's sha256 lines in docs/fleet-gate.md are not the files'.
 import { describe, it, expect, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -36,6 +39,12 @@ function world(host: string) {
   const dir = mkdtempSync(join(root, 'w-'))
   const log = join(dir, 'calls.log')
   const sql = join(dir, 'sql.txt')
+  const data = join(dir, 'data.txt')
+  // the quote-templates-sync program: a one-line stand-in, the test's own (as root's would be)
+  const lib = join(dir, 'lib')
+  mkdirSync(lib, { mode: 0o755 })
+  const prog = join(lib, 'quote-templates-sync.mjs')
+  writeFileSync(prog, 'console.log("PROGRAM")', { mode: 0o644 })
   const store = join(dir, 'store')
   mkdirSync(join(store, 'document-store', 'a'), { recursive: true })
   writeFileSync(join(store, 'document-store', 'a', '1.pdf'), 'x')
@@ -59,6 +68,7 @@ function world(host: string) {
   *" find /data/document-store -type f") find "${store}/document-store" -type f ;;
   "exec ${API}-120000 env") printf '%s\\n' MEDUSA_ADMIN_URL=https://admin.example SECRET_KEY=titkos-ertek MEDUSA_PROJECTION_SCHEDULE_ENABLED=true ;;
   *" psql -X -q "*) cat > "${sql}"; echo sor ;;
+  "exec -i -w /app -e APPLY="?" ${API}-120000 node --input-type=module -e "*) cat > "${data}"; echo szinkron ;;
   # the initdb's temporary server answers on the socket only: there the probe
   # looks ready at once, over TCP it is down on the first ask and up on the next
   *" pg_isready -h 127.0.0.1 "*) n=$(cat "${dir}/isready-tcp" 2>/dev/null || echo 0); echo $((n + 1)) > "${dir}/isready-tcp"; [ "$n" -ge 1 ] ;;
@@ -85,6 +95,8 @@ esac`,
       `KEYFILE=${join(dir, 'fleet.keys')}`,
       // the test cannot own a file as root: the expected owner is the test's own
       `KEYFILE_EXPECT="${OWNER}:644"`,
+      `QUOTE_SYNC_PROG=${prog}`,
+      `QUOTE_SYNC_OWNER="${OWNER}"`,
     ].join('\n') + '\n',
   )
   const run = (command: string | undefined, input = '') => {
@@ -97,7 +109,7 @@ esac`,
     writeFileSync(log, '')
     return { code: r.status, out: r.stdout.toString('latin1'), err: r.stderr.toString(), calls }
   }
-  return { dir, run, sql, backups: join(dir, 'backups') }
+  return { dir, run, sql, data, prog, lib, backups: join(dir, 'backups') }
 }
 
 const sha = (text: string) => createHash('sha256').update(Buffer.from(text, 'latin1')).digest('hex')
@@ -162,6 +174,25 @@ describe('fleet-gate: what passes', () => {
       `docker [exec] [-i] [-e] [PGOPTIONS=-c default_transaction_read_only=on] [${OS_DB}-163020] [psql] [-X] [-q] [-v] [ON_ERROR_STOP=1] [-U] [fleet_ro] [-d] [acropora]`,
       `docker [exec] [-i] [-e] [PGOPTIONS=-c default_transaction_read_only=on] [${OS_DB}-163020] [psql] [-X] [-q] [-v] [ON_ERROR_STOP=1] [-U] [fleet_ro] [-d] [acropora] [-tA] [-F] [ | ]`,
       2, // the Coolify database is not a psql-ro target: writing it is root on the host
+    ])
+  })
+
+  it('GATE-QUOTE-SYNC: plan and apply run the installed program in the api container; stdin is its data, unchanged', () => {
+    const p = world(PROD)
+    const json = '{"templates":[],"snippets":[{"name":"Szállítás"}]}'
+    // run() sends latin1: these are the UTF-8 bytes, as ssh would carry them
+    const bytes = Buffer.from(json, 'utf-8').toString('latin1')
+    const plan = p.run('quote-templates-sync plan', bytes)
+    const sentPlan = readFileSync(p.data, 'utf-8')
+    const apply = p.run('quote-templates-sync apply', bytes)
+    const call = (r: { calls: string[] }) => r.calls.find((c) => c.startsWith('docker [exec]'))
+    expect([plan.code, plan.out.trim(), sentPlan, call(plan), call(apply), apply.code], 'GATE-QUOTE-SYNC').toEqual([
+      0,
+      'szinkron',
+      json,
+      `docker [exec] [-i] [-w] [/app] [-e] [APPLY=0] [${API}-120000] [node] [--input-type=module] [-e] [console.log("PROGRAM")]`,
+      `docker [exec] [-i] [-w] [/app] [-e] [APPLY=1] [${API}-120000] [node] [--input-type=module] [-e] [console.log("PROGRAM")]`,
+      0,
     ])
   })
 
@@ -404,6 +435,45 @@ describe('fleet-gate: what does not pass', () => {
     expect(wrong, 'GATE-DENY').toEqual([])
   })
 
+  it('GATE-QUOTE-SYNC-DENY: no data, too much data, another word, the other host, or a program that is not root\'s alone: refused before docker', () => {
+    const json = '{"templates":[],"snippets":[]}'
+    const deny = (setUp: (w: ReturnType<typeof world>) => void, command: string, input: string, host = PROD) => {
+      const w = world(host)
+      setUp(w)
+      const r = w.run(command, input)
+      const docker = r.calls.filter((c) => c.startsWith('docker'))
+      return `${r.code} docker=${docker.length} ${r.err.includes('elutasítva') ? 'elutasítva' : r.err.trim()}`
+    }
+    const none = () => {}
+    const results = [
+      deny(none, 'quote-templates-sync plan', json, STAGE), // prod only
+      deny(none, 'quote-templates-sync', json),
+      deny(none, 'quote-templates-sync run', json),
+      deny(none, 'quote-templates-sync apply now', json),
+      deny(none, 'quote-templates-sync plan', ''),
+      deny(none, 'quote-templates-sync plan', 'x'.repeat(262145)),
+      deny((w) => chmodSync(w.prog, 0o664), 'quote-templates-sync plan', json), // group-writable program
+      deny((w) => chmodSync(w.prog, 0o646), 'quote-templates-sync plan', json), // world-writable program
+      deny((w) => chmodSync(w.lib, 0o775), 'quote-templates-sync plan', json), // a directory others may write: the file can be swapped
+      deny((w) => rmSync(w.prog), 'quote-templates-sync plan', json), // not installed
+      deny((w) => {
+        // a link to a file the caller could write
+        const target = join(w.dir, 'masik.mjs')
+        writeFileSync(target, 'x')
+        rmSync(w.prog)
+        spawnSync('ln', ['-s', target, w.prog])
+      }, 'quote-templates-sync plan', json),
+      deny((w) => {
+        rmSync(w.prog)
+        mkdirSync(w.prog, { mode: 0o755 }) // a directory, not a file
+      }, 'quote-templates-sync plan', json),
+      deny((w) => writeFileSync(join(w.dir, 'test.env'), readFileSync(join(w.dir, 'test.env'), 'utf-8') + 'QUOTE_SYNC_OWNER="root:root"\n'), 'quote-templates-sync plan', json), // another owner
+    ]
+    expect(results, 'GATE-QUOTE-SYNC-DENY').toEqual(Array(results.length).fill('2 docker=0 elutasítva'))
+    // and at the size limit itself it passes
+    expect(world(PROD).run('quote-templates-sync plan', 'x'.repeat(262144)).code, 'GATE-QUOTE-SYNC-DENY limit').toBe(0)
+  })
+
   it('GATE-OVERRIDE-TEST-ONLY: a host table function from the environment is ignored without --test-env', () => {
     const r = spawnSync('bash', [GATE], {
       env: { PATH: process.env.PATH, SSH_ORIGINAL_COMMAND: 'uptime', 'BASH_FUNC_host_config_override%%': '() { OPS="uptime"; }' },
@@ -427,6 +497,7 @@ describe('fleet-gate: the callers', () => {
     'scripts/szamla-dupla-ellenorzo.sh',
     'scripts/ai-db-nas-mentes.sh',
     'scripts/visszaallitasi-proba.sh',
+    'scripts/arajanlat-sablon-elesre.sh',
   ]
   const text = (file: string) => readFileSync(join(process.cwd(), file), 'utf-8')
 
@@ -460,6 +531,8 @@ describe('fleet-gate: the callers', () => {
       ['scripts/ai-db-nas-mentes.sh', STAGE, `pg-restore-list ${AI_DB}`, 'pg-restore-list "$AI_CONTAINER"'],
       ['scripts/visszaallitasi-proba.sh', STAGE, 'restore-probe', 'sssh restore-probe'],
       ['scripts/visszaallitasi-proba.sh', STAGE, `psql-ro ${AI_DB} acropora_ai tuples`, 'sssh psql-ro "$AI_LIVE" acropora_ai tuples'],
+      ['scripts/arajanlat-sablon-elesre.sh', PROD, 'quote-templates-sync plan', 'quote-templates-sync "$MODE" < "$FILE"'],
+      ['scripts/arajanlat-sablon-elesre.sh', PROD, 'quote-templates-sync apply', 'quote-templates-sync "$MODE" < "$FILE"'],
     ]
     const worlds: Record<string, ReturnType<typeof world>> = { [PROD]: world(PROD), [STAGE]: world(STAGE) }
     const wrong: string[] = []
@@ -469,5 +542,19 @@ describe('fleet-gate: the callers', () => {
       if (r.code !== 0) wrong.push(`${file} on ${host}: ${command} -> ${r.code} ${r.err.trim()}`)
     }
     expect(wrong, 'GATE-CALLERS-PASS').toEqual([])
+  })
+})
+
+describe('fleet-gate: the install step', () => {
+  it('GATE-INSTALL-SHA: the sha256 -c lines Balázs runs are the sha256 of the files in this tree', () => {
+    const docs = readFileSync(join(process.cwd(), 'docs', 'fleet-gate.md'), 'utf-8')
+    const fileSha = (rel: string) => createHash('sha256').update(readFileSync(join(process.cwd(), rel))).digest('hex')
+    expect(
+      [
+        docs.includes(`echo '${fileSha('scripts/host/fleet-gate.sh')}  /usr/local/sbin/fleet-gate' | sha256sum -c`),
+        docs.includes(`echo '${fileSha('scripts/host/quote-templates-sync.mjs')}  /usr/local/lib/fleet-gate/quote-templates-sync.mjs' | sha256sum -c`),
+      ],
+      'GATE-INSTALL-SHA',
+    ).toEqual([true, true])
   })
 })
