@@ -23,7 +23,7 @@ akkor az éles, ha a próba-sor (lent) minden sora zöld rajta.
 | `sshd-match` | áll-e még a kapu: pontosan egy `Match User fleet` blokk az `sshd_config`-ban; kulcs-beállítás (`AuthorizedKeysFile`, `AuthorizedKeysCommand`) a fő fájlban PONTOSAN EGY, a mi blokkunkban, a mi útvonalunkkal, és `ForceCommand` sehol; nincs másik, `fleet`-et vagy `all`-t érintő `Match`; `Include` csak a megszokott `/etc/ssh/sshd_config.d/*.conf`; az `sshd_config.d` alatt se `Match`, se kulcs-beállítás, se `ForceCommand` (az Include a fájl elején áll, ezért az ott álló megelőzné a miénket, akármilyen csoportot vagy címet nevez). A kulcsfájl `root:root 0644`, és MINDEN kulcssora kényszerített (`restrict,from=...,command=...`). Kiírja, és 1-gyel lép ki, ha bármelyik nem stimmel | mindkettő |
 | `builder-prune` | `docker builder prune -f` | mindkettő |
 | `image-prune-2h` | `docker image prune -a -f --filter until=2h` | csak stage |
-| `psql-ro <kulcs> <adatbázis> [plain\|tuples\|tuples-pipe\|tuples-spaced-pipe]` | psql a csak olvasó `fleet_ro` szereppel (a kapu listájából, nem a hívótól), az SQL a stdin-en; backslash az SQL-ben tilos | éles: OS; stage: AI |
+| `psql-ro <kulcs> <adatbázis> [plain\|tuples\|tuples-pipe\|tuples-spaced-pipe]` | psql a csak olvasó `fleet_ro` szereppel (a kapu listájából, nem a hívótól), az SQL a stdin-en; backslash az SQL-ben tilos | éles: OS; stage: AI és a stage OS (`acropora_staging`) |
 | `coolify-deployments <app uuid>`, `coolify-deploy-log <deployment uuid>` | a Coolify adatbázisának két rögzített olvasása (a kapu építi az SQL-t, a 24 jeles uuid az egyetlen argumentum) | stage |
 | `pg-dump <kulcs> <adatbázis> <felhasználó>` | `pg_dump -Fc` a stdout-ra | éles: OS, Commerce; stage: AI |
 | `pg-restore-list <kulcs>` | `pg_restore -l`, a dump a stdin-en | éles: OS, Commerce; stage: AI |
@@ -84,6 +84,7 @@ konténerben a saját superuserével:
 |---|---|---|---|
 | `acropora-prod-01` | `iwm34jaqp9xmwb72qkrqkwhy` | `acropora` | `acropora` |
 | `acropora-ai-stage-01` | `cpnjvtte02yakzs9vb0jffky` | `acropora_ai` | `acropora_ai` |
+| `acropora-ai-stage-01` | `dbpcyjbsbl2gfwtpn1ppw4vc` | `acropora_staging` | a konténer `POSTGRES_USER`-e (lásd 1b) |
 
 ```bash
 cd /root
@@ -135,6 +136,75 @@ docker exec "$C" psql -U acropora -d acropora -Atc "select count(*) from informa
 
 Ki mit olvas ezzel, és mi nem fér bele: a B8 lépéslap (változat 9) 1.4 szakasza. Ha egy flotta-hívó
 `permission denied`-et kap, az nem biztonsági hiba, hanem a lista szűk: a bővítés döntés, nem javítás.
+
+**Mi áll ma: a szerep jogainak mérése a kapun át** (csak olvas, backslash nélkül, bármelyik `psql-ro`
+célponton; a `fleet_ro` a saját jogait és a katalógust látja). Egy éles `permission denied` után ez dönti el,
+hogy a szerep a fenti szűk listával áll-e (akkor a jelenség a várt), vagy más:
+
+```bash
+cd /home/marveen/marveen && K=/home/marveen/.ssh/id_ed25519_acropora_monitor && G="ssh -i $K fleet@162.55.216.28 psql-ro iwm34jaqp9xmwb72qkrqkwhy acropora tuples-pipe"
+$G <<'SQL'
+select 'ki', current_user, session_user;
+select 'szerep', rolsuper, rolinherit, rolcreaterole, rolcreatedb from pg_roles where rolname = current_user;
+select 'tagja', m.roleid::regrole from pg_auth_members m where m.member = current_user::text::regrole;
+select 'read_all', pg_has_role(current_user, 'pg_read_all_data', 'member');
+select 'oszlopjog', table_name, string_agg(column_name, ',' order by column_name)
+  from information_schema.column_privileges where grantee = current_user and privilege_type = 'SELECT'
+  group by table_name order by table_name;
+select 'tabla', c.relname, has_table_privilege(current_user, c.oid, 'select'), has_any_column_privilege(current_user, c.oid, 'select')
+  from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relname in ('Product', 'ChannelListing', 'UnasProductSnapshot', 'Worksheet', 'User')
+  order by c.relname;
+SQL
+```
+
+Várt az élesen, a fenti szűk listával: `ki|fleet_ro|fleet_ro`; `szerep|f|t|f|f`; `tagja` sor nincs;
+`read_all|f`; a `oszlopjog` sorok a kilenc táblával; a `Product` és a `Worksheet` sora `f|f` (vagyis a
+`permission denied` rájuk a szándékolt állapot), a `User` sora `f|t`.
+
+**1b. A stage OS adatbázisa (`acropora_staging`), csak a termékadat méréséhez.** Másik konténer, tehát
+másik Postgres-fürt: a `fleet_ro` ott még nem létezik, és a jogai sem azonosak az élesével. A stage valós adat
+másolata, ezért ugyanaz a szabály áll: táblánkénti és oszloponkénti jog, `pg_read_all_data` nélkül. A lista
+csak azt fedi, amit a termékajánlás mérése kér (vásárolhatóság: aktív, UNAS-státusz, érdeklődéses jelző,
+webshopban eladható); minden további oszlop új döntés. A superuser nevét a konténer maga mondja meg
+(a hivatalos Postgres-kép `POSTGRES_USER` változója), nem találjuk ki:
+
+```bash
+cd /root
+C=$(docker ps --format '{{.Names}}' | grep '^dbpcyjbsbl2gfwtpn1ppw4vc' | head -1); echo "$C"
+U=$(docker exec "$C" printenv POSTGRES_USER); echo "$U"                         # egy név; ha üres: állj meg
+docker exec "$C" psql -U "$U" -d acropora_staging -Atc 'show server_version'    # 15 alatt: a fenti REVOKE CREATE sor ide is
+# ELŐTTE ugyanaz a két ellenőrzés, mint fent (SECURITY DEFINER függvény, PUBLIC által olvasható tábla):
+docker exec -i "$C" psql -U "$U" -d acropora_staging -At <<'SQL'
+select 'secdef', n.nspname || '.' || p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where p.prosecdef and n.nspname not in ('pg_catalog', 'information_schema') and has_function_privilege('public', p.oid, 'execute');
+select 'public-tabla', n.nspname || '.' || c.relname from pg_class c
+ join pg_namespace n on n.oid = c.relnamespace
+ where n.nspname not in ('pg_catalog', 'information_schema') and c.relkind in ('r','v','m','f','p')
+   and (has_table_privilege('public', c.oid, 'select') or has_any_column_privilege('public', c.oid, 'select'));
+SQL
+# Egy tranzakcióban; ha a fleet_ro mégis létezik ebben a fürtben, a CREATE ROLE hibát ad és semmi nem változik:
+# akkor a CREATE ROLE és a három ALTER ROLE sor nélkül futtasd újra.
+docker exec -i "$C" psql -U "$U" -d acropora_staging -v ON_ERROR_STOP=1 -1 <<'SQL'
+CREATE ROLE fleet_ro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+ALTER ROLE fleet_ro SET default_transaction_read_only = on;
+ALTER ROLE fleet_ro SET statement_timeout = '60s';
+ALTER ROLE fleet_ro SET idle_in_transaction_session_timeout = '60s';
+GRANT USAGE ON SCHEMA public TO fleet_ro;
+GRANT SELECT (id, "isActive", "webshopSellable") ON "Product" TO fleet_ro;
+GRANT SELECT ("productId", channel, "externalStatus") ON "ChannelListing" TO fleet_ro;
+GRANT SELECT ("productId", "rawPayload") ON "UnasProductSnapshot" TO fleet_ro;
+GRANT SELECT (migration_name, started_at, finished_at, rolled_back_at, applied_steps_count) ON _prisma_migrations TO fleet_ro;
+SQL
+docker exec "$C" psql -U fleet_ro -d acropora_staging -Atc "select current_user, pg_has_role(current_user, 'pg_execute_server_program', 'member')"
+                                             # fleet_ro|f
+docker exec "$C" psql -U "$U" -d acropora_staging -Atc "select count(*) from information_schema.column_privileges where grantee = 'fleet_ro'"
+                                             # 13
+```
+
+A `rawPayload` a UNAS termék-válasz egésze (ár, készlet, leírás, státuszok, az `Inquire` jelző); személyes adat nincs
+benne, de egy oszlop, tehát egészében olvasható. A kapu a sort csak a fenti két lépés UTÁN használja: amíg a szerep
+nincs meg, a `psql-ro dbpcyjbsbl2gfwtpn1ppw4vc acropora_staging` hibát ad, nem lát többet.
 
 A szerepnek **nincs jelszava, és nem is kap**: a kapu `docker exec`-kel, a konténeren BELÜL, a
 helyi socketen csatlakozik, és a hivatalos Postgres-kép a helyi socketet engedi. Ha a fenti
@@ -287,7 +357,7 @@ cd /root
 install -o root -g root -m 0755 /tmp/fleet-gate.sh /usr/local/sbin/fleet-gate
 install -d -o root -g root -m 0755 /usr/local/lib/fleet-gate
 install -o root -g root -m 0644 /tmp/quote-templates-sync.mjs /usr/local/lib/fleet-gate/quote-templates-sync.mjs
-echo '186390d77a6c8546a2d7fb0f720ea4846ee65f5b3b4f71807a4137e38fe021ce  /usr/local/sbin/fleet-gate' | sha256sum -c
+echo 'a5262e1646e286576fe1a8297ed25077cd17425f9edb8091647fa1e593e5cf4f  /usr/local/sbin/fleet-gate' | sha256sum -c
 echo 'd958d5a4050ebbf52610ca70f3574a3e572bf349751fbd7b011411a68a322834  /usr/local/lib/fleet-gate/quote-templates-sync.mjs' | sha256sum -c
                                              # mindkettő: OK. Ha nem: állj meg, és szólj.
 ```
