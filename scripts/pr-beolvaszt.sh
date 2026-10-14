@@ -102,6 +102,22 @@ REPO="${2:-${PR_REPO:-KratoBal/acropora-os}}"
 # nelkule nem indul. A hatarido a bevezetes napjatol (2026-10-13) ket het. A --nez
 # alakot nem allitja meg: az csak nez.
 TASK_KOTELEZO_ETTOL=2026-10-27
+# --task NELKUL a feladatot a sajat esemenyei nevezik meg (merge-task-auto, acrobot
+# atadasa 77): a #94 beolvasztasanal a merged esemeny elmaradt, mert a --task hianyzott,
+# pedig a feladat review_requested esemenye ott allt `KratoBal/marveen#94 fej ...` ref-fel.
+# Csak PONTOSAN EGY talalat dont; tobbnel vagy egynel sem nem talalgat, hanem kiirja,
+# es a beolvasztas esemeny nelkul megy (a hivo --task-kal donthet). A kereses: feladat-pr-szerint.py.
+if [ -z "$TASK" ]; then
+  KERESO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/feladat-pr-szerint.py"
+  TALALT="$(python3 -B "$KERESO" --repo "$REPO" --pr "$PR")"
+  case $? in
+    0) [[ "$TALALT" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || { echo "FAIL: a talalt feladat-azonosito nem az: $TALALT" >&2; exit 2; }
+       TASK="$TALALT"; echo "A feladat a review-esemenyek ref-jebol: $TASK (a ${REPO}#${PR} csak ezt nevezi meg)" >&2 ;;
+    3) echo "TOBB feladat nevezi meg a ${REPO}#${PR}-t (lasd fent): nem valasztok, a merged esemeny elmarad; --task <task_id> dont." >&2 ;;
+    4) ;;
+    *) echo "A feladatot nem tudtam megkeresni (lasd fent): a merged esemeny elmarad, ha nincs --task." >&2 ;;
+  esac
+fi
 if [ -z "$TASK" ]; then
   if [[ "$(date -u +%F)" < "$TASK_KOTELEZO_ETTOL" ]] || [ "$NEZ" = 1 ]; then
     echo "FIGYELEM: nincs --task <task_id>: a beolvasztas NEM kerul a feladat idovonalara, es a done-or nem latja." >&2
