@@ -2,10 +2,18 @@
 # ANSWERS: Hogyan rogziti a reviewer az iteletet ugy, hogy CSAK azt az egyet irhassa?
 #
 # review-ellenoriz.sh <csomag> <task_id> <APPROVE|CHANGES>
-#   csomag: a review-csomag neve a pr- utan (1650, c512, marveen68)
+#   csomag: a review-csomag neve a pr- utan (1650, c512, marveen68, ai37), VAGY egy dokumentum-
+#      csomag teljes neve (doc-<task_id>, review-csomag.sh docs)
 #   -> egy `verdict` esemeny a feladaton, a szereplo a HIVO (az OS-felhasznalobol), a
-#      hivatkozas "<ITELET> <owner/repo>#<N> pr-<csomag> fej <sha7>"; utana visszaolvasva,
+#      hivatkozas "<ITELET> <owner/repo>#<N> pr-<csomag> fej <sha7>", dokumentumnal
+#      "<ITELET> <fajl utja> doc-<task_id> sha256 <12 jegy>"; utana visszaolvasva,
 #      hogy tenyleg ott van.
+#
+# A DOCUMENT packet (task review-docs-verdict, acrobot 2026-10-14, msg 30226): a docs or
+# ops task is reviewed as a file, and its verdict could not be recorded here (30212). The
+# ref carries the file's path, which the Task Core takes for a docs/ops profile; the round
+# is the latest `vN:` line (or the first one), and the copy the reviewer read must still
+# hash to the README's sha256, so a copy swapped after packaging is refused.
 #
 # WHY (reviewer-profil, Balazs 2026-10-13 18:07 UTC, msg 1559628609390383170, condition 2):
 # this script may record only the proper verdict OF THE GIVEN REVIEW, and gives no general
@@ -41,12 +49,20 @@ FLEET_API=/home/marveen/marveen/scripts/fleet-api.sh
 usage() { echo "usage: review-ellenoriz.sh <csomag> <task_id> <APPROVE|CHANGES>" >&2; exit 2; }
 [ "$#" -eq 3 ] || usage
 C="$1"; TASK="$2"; V="$3"
-[[ "$C" =~ ^(c|marveen)?([1-9][0-9]{0,5})$ ]] || { echo "FAIL: a csomag neve szam, c<szam> vagy marveen<szam>: '$C'" >&2; exit 2; }
-case "${BASH_REMATCH[1]}" in
-  c) PRREF="KratoBal/acropora-commerce#${BASH_REMATCH[2]}" ;;
-  marveen) PRREF="KratoBal/marveen#${BASH_REMATCH[2]}" ;;
-  *) PRREF="KratoBal/acropora-os#${BASH_REMATCH[2]}" ;;
-esac
+DOCS=0
+if [[ "$C" =~ ^doc-[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then
+  DOCS=1; DIRNAME="$C"; PRREF=""
+elif [[ "$C" =~ ^(c|marveen|ai)?([1-9][0-9]{0,5})$ ]]; then
+  DIRNAME="pr-$C"
+  case "${BASH_REMATCH[1]}" in
+    c) PRREF="KratoBal/acropora-commerce#${BASH_REMATCH[2]}" ;;
+    marveen) PRREF="KratoBal/marveen#${BASH_REMATCH[2]}" ;;
+    ai) PRREF="KratoBal/acropora-ai-agent#${BASH_REMATCH[2]}" ;;
+    *) PRREF="KratoBal/acropora-os#${BASH_REMATCH[2]}" ;;
+  esac
+else
+  echo "FAIL: a csomag neve szam, c<szam>, marveen<szam>, ai<szam> vagy doc-<task_id>: '$C'" >&2; exit 2
+fi
 [[ "$TASK" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || { echo "FAIL: ervenytelen task_id: '$TASK'" >&2; exit 2; }
 case "$V" in APPROVE|CHANGES) ;; *) echo "FAIL: az itelet APPROVE vagy CHANGES, ez jott: '$V'" >&2; exit 2 ;; esac
 
@@ -57,7 +73,7 @@ case "$ME" in
   *) echo "FAIL: csak agens-felhasznalo rogzithet iteletet (a szereplo az OS-felhasznalobol jon), ez: $ME" >&2; exit 1 ;;
 esac
 
-D="$ZONA/pr-$C"
+D="$ZONA/$DIRNAME"
 { [ -d "$D" ] && [ ! -L "$D" ]; } || { echo "FAIL: nincs ilyen csomag, vagy symlink: $D" >&2; exit 1; }
 README=""
 for r in README.md README; do
@@ -80,6 +96,8 @@ DO="$(stat -c %U "$D")"; RO="$(stat -c %U "$README")"
 # start, `vN: task_id X,` (review-csomag.sh's later rounds), and "task X" in the TITLE line
 # (the hand-made packets before 2026-10-13).
 NAMED=" "; HEAD7=""; first=1; README_PR=""
+# a document packet: the file, its copy's sha256 and the round (the first, or the latest vN:)
+FAJL=""; SHA=""; ROUND=1
 ID_RE='([A-Za-z0-9][A-Za-z0-9._-]*)'
 while IFS= read -r line || [ -n "$line" ]; do
   if [[ "$line" =~ ^task(_id)?:[[:space:]]+$ID_RE([[:space:]]|$) ]]; then
@@ -88,6 +106,10 @@ while IFS= read -r line || [ -n "$line" ]; do
     NAMED="$NAMED${BASH_REMATCH[1]} "
     # a later round: its head replaces the first one
     [[ "$line" =~ [[:space:]]fej[[:space:]]+([0-9a-f]{7,40}) ]] && HEAD7="${BASH_REMATCH[1]:0:7}"
+    # ... and for a document, its file and its copy's hash
+    if [[ "$line" =~ ^v([0-9]+):.*[[:space:]]fajl[[:space:]]+([^,[:space:]]+),[[:space:]]+sha256[[:space:]]+([0-9a-f]{64})([[:space:]]|$) ]]; then
+      ROUND="${BASH_REMATCH[1]}"; FAJL="${BASH_REMATCH[2]}"; SHA="${BASH_REMATCH[3]}"
+    fi
   elif [ "$first" = 1 ] && [[ "$line" =~ (^|[[:space:],])task[[:space:]]+$ID_RE([[:space:],]|$) ]]; then
     NAMED="$NAMED${BASH_REMATCH[2]} "
   fi
@@ -98,13 +120,27 @@ while IFS= read -r line || [ -n "$line" ]; do
   if [ -z "$HEAD7" ] && [[ "$line" =~ ^(fej|head):?[[:space:]]+([0-9a-f]{7,40}) ]]; then
     HEAD7="${BASH_REMATCH[2]:0:7}"
   fi
+  if [ "$ROUND" = 1 ] && [[ "$line" =~ ^fajl:[[:space:]]+([^[:space:]]+)[[:space:]]*$ ]]; then FAJL="${BASH_REMATCH[1]}"; fi
+  if [ "$ROUND" = 1 ] && [[ "$line" =~ ^sha256:[[:space:]]+([0-9a-f]{64})[[:space:]]*$ ]]; then SHA="${BASH_REMATCH[1]}"; fi
 done < "$README"
 case "$NAMED" in
   *" $TASK "*) ;;
   *) echo "FAIL: a csomag ($README) nem ezt a feladatot nevezi meg: '$TASK' (a README-ben: ${NAMED# })" >&2; exit 1 ;;
 esac
 
-if [ -n "$README_PR" ] && [ "$README_PR" != "$PRREF" ]; then
+if [ "$DOCS" = 1 ]; then
+  # the packet folder is the task's own: a hand-made doc-<x> naming another task is refused
+  [ "$C" = "doc-$TASK" ] || { echo "FAIL: a dokumentum-csomag ($C) nem ennek a feladatnak a mappaja: doc-$TASK" >&2; exit 1; }
+  [ -z "$README_PR" ] || { echo "FAIL: dokumentum-csomag ($C), a README megis PR-t nevez: '$README_PR'" >&2; exit 1; }
+  { [ -n "$FAJL" ] && [ -n "$SHA" ]; } || { echo "FAIL: a dokumentum-csomag README-je nem nevez fajlt es sha256-ot (fajl:, sha256: vagy vN: ... fajl X, sha256 Y)" >&2; exit 1; }
+  SEG='[A-Za-z0-9_][A-Za-z0-9._-]*'
+  [[ "$FAJL" =~ ^$SEG(/$SEG)+$ ]] || { echo "FAIL: a README fajl-utja nem relativ ut mappaval: '$FAJL'" >&2; exit 1; }
+  COPY="$D/v$ROUND-${FAJL##*/}"
+  { [ -f "$COPY" ] && [ ! -L "$COPY" ]; } || { echo "FAIL: a(z) $ROUND. kor masolata nincs a csomagban, vagy symlink: $COPY" >&2; exit 1; }
+  [ "$(stat -c %U "$COPY")" = "$DO" ] || { echo "FAIL: a masolat ($COPY) tulajdonosa nem a csomagolo ($DO)" >&2; exit 1; }
+  GOT="$(sha256sum < "$COPY")"; GOT="${GOT%% *}"
+  [ "$GOT" = "$SHA" ] || { echo "FAIL: a masolat lenyomata ($GOT) nem az, amit a README nevez ($SHA): csomagolas utan valtozott" >&2; exit 1; }
+elif [ -n "$README_PR" ] && [ "$README_PR" != "$PRREF" ]; then
   echo "FAIL: a csomag neve ($C) a $PRREF PR-t jelenti, a README pr: sora mast: '$README_PR'" >&2; exit 1
 fi
 
@@ -116,7 +152,11 @@ fi
 grep -q '  esemeny  review_requested ' "$T/before" \
   || { echo "FAIL: a(z) $TASK feladaton nincs review_requested esemeny: nem kert senki reviewt" >&2; exit 1; }
 
-REF="$V $PRREF pr-$C${HEAD7:+ fej $HEAD7}"
+if [ "$DOCS" = 1 ]; then
+  REF="$V $FAJL $C sha256 ${SHA:0:12}"
+else
+  REF="$V $PRREF pr-$C${HEAD7:+ fej $HEAD7}"
+fi
 count_ref() { grep -c -F -x -e "$1" < <(grep '  esemeny  verdict ' "$2" | sed -E 's/^.*  esemeny  verdict +[^ ]+ +//') || true; }
 mine() { grep '  esemeny  verdict ' "$1" | grep -c -F " $ACTOR " || true; }
 n0="$(count_ref "$REF" "$T/before")"; a0="$(mine "$T/before")"
