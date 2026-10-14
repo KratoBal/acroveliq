@@ -681,7 +681,7 @@ print(int(any(t.get("id")==sys.argv[1] for t in json.load(sys.stdin))))' "$TASK"
       echo "3 rendben: $AGENT nem foglalt"
     fi
     # Mi tortent mar a feladaton? (4, 5 es 6 ismetlesre ebbol dont)
-    read -r HAS_ASSIGNED HAS_SESSION HAS_MESSAGE < <(printf '%s' "$TIMELINE" | python3 -c '
+    read -r HAS_ASSIGNED HAS_SESSION HAS_MESSAGE ASSIGNED_N < <(printf '%s' "$TIMELINE" | python3 -c '
 import json,sys
 agent=sys.argv[1]
 items=json.load(sys.stdin)["items"]
@@ -692,12 +692,21 @@ assigned=[i for i in items if i["source"]=="event" and i["kind"]=="assigned"]
 last=assigned[-1] if assigned else None
 to_me = bool(last) and ((last.get("data") or {}).get("agent")==agent or last.get("ref")==agent)
 session=any(i["source"]=="session" and i["agent"]==agent for i in items)
-message=any(i["source"]=="message" and i.get("to")==agent for i in items)
-print(int(to_me), int(session), int(message))' "$AGENT")
+# The start message counts only if it came AFTER the last assigned to this agent: a re-claimed
+# stage whose message failed (exit 7) gets it on the rerun, like a first hand-out does (barracuda
+# #133). The timeline is in time order, a message after an event of the same second (task-usage.ts).
+mine=[n for n,i in enumerate(items) if i["source"]=="event" and i["kind"]=="assigned"
+      and ((i.get("data") or {}).get("agent")==agent or i.get("ref")==agent)]
+since=items[mine[-1]+1:] if mine else items
+message=any(i["source"]=="message" and i.get("to")==agent for i in since)
+print(int(to_me), int(session), int(message), len(mine))' "$AGENT")
     # ZARVA hibazik: ures ertek mellett a 4, 5 es 6 ujra lefutna (dupla assigned, restart, uzenet)
     case "${HAS_ASSIGNED:-}${HAS_SESSION:-}${HAS_MESSAGE:-}" in
       [01][01][01]) ;;
       *) echo "FAIL: az idovonalbol nem olvashato, mi tortent mar a feladaton; nem irok semmit"; exit 1 ;;
+    esac
+    case "${ASSIGNED_N:-}" in
+      ''|*[!0-9]*) echo "FAIL: az idovonalbol nem olvashato, mi tortent mar a feladaton; nem irok semmit"; exit 1 ;;
     esac
     case "${THIS_BUSY:-}" in
       0|1) ;;
@@ -707,11 +716,11 @@ print(int(to_me), int(session), int(message))' "$AGENT")
     # busy: after review_requested, verdict, merged, deployed, blocked ... it reads as free (busy
     # check and dashboard), and the next stage must claim it again (acrobot, 2026-10-14 15:28,
     # the dashboard showed no active task; manual assigned 819; barracuda #132).
-    REFREE=0
+    WROTE_ASSIGNED=0
     if [ "${HAS_ASSIGNED:-0}" = "1" ] && [ "$THIS_BUSY" = "1" ]; then
       echo "4 kihagyva: a feladat mar ki van adva $AGENT agensnek"
     else
-      [ "${HAS_ASSIGNED:-0}" = "1" ] && REFREE=1 && echo "4 ujra foglal: a feladat $AGENT agensnel van, de a szerver szerint nem foglalja (az utolso allapot-esemenye nem assigned, started vagy fix_started)"
+      [ "${HAS_ASSIGNED:-0}" = "1" ] && echo "4 ujra foglal: a feladat $AGENT agensnel van, de a szerver szerint nem foglalja (az utolso allapot-esemenye nem assigned, started vagy fix_started)"
       DATA="$(AGENT="$AGENT" PARALLEL="$PARALLEL" python3 -c 'import json,os
 d={"agent":os.environ["AGENT"]}
 if os.environ["PARALLEL"]: d["parallel"]=os.environ["PARALLEL"]
@@ -719,6 +728,8 @@ print(json.dumps(d))')"
       EV_OUT="$(printf '%s' "$DATA" | bash "${BASH_SOURCE[0]}" task-event "$TASK" assigned "$KIADO" "" "$AGENT" --data - 2>&1)" \
         || { printf '%s\n' "$EV_OUT"; echo "FAIL 4: az assigned esemeny nem ment be"; exit 1; }
       echo "4 rendben: assigned -> $AGENT ($EV_OUT)"
+      WROTE_ASSIGNED=1
+      ASSIGNED_N=$((ASSIGNED_N + 1))
     fi
     # 4b es 5: friss inditas, csak tetlen panelre
     if [ "$CONTINUE" = "1" ]; then
@@ -762,13 +773,15 @@ print(d.get("session_id","") if d.get("ok") is True and d.get("registered") is n
       fi
       echo "5 rendben: $AGENT frissen indult, munkamenet $SID"
     fi
-    # 6. indito uzenet. A re-claimed task (a new stage, step 4) gets one again: the old message was
-    # about the previous stage, and without a new one the agent heard nothing (acrobot 30677).
-    # A repeat stays silent: after the claim the task is busy, so step 4 does not re-claim twice.
-    if [ "${HAS_MESSAGE:-0}" = "1" ] && [ "${REFREE:-0}" != "1" ]; then
+    # 6. indito uzenet: one per assigned. Needed when step 4 just wrote assigned, or when no message
+    # to the agent stands after its last assigned (a rerun after a failed message, exit 7). A
+    # re-claimed stage gets one again, the old message was about the previous stage (acrobot 30677).
+    # A repeat stays silent: its message already stands after the assigned.
+    if [ "$WROTE_ASSIGNED" = "0" ] && [ "${HAS_MESSAGE:-0}" = "1" ]; then
       echo "6 kihagyva: a feladathoz mar van $AGENT agensnek szolo uzenet"
     else
-      if [ "${REFREE:-0}" = "1" ]; then
+      # an earlier assigned to this agent than the one this message belongs to: a new stage
+      if [ "$ASSIGNED_N" -ge 2 ]; then
         MSG="Uj szakasz ugyanezen a feladaton: ${TASK}. Az elso lepes az atado rekord: bash ${BASE}/scripts/fleet-api.sh handoff-read ${TASK}"
       else
         MSG="Uj feladat: ${TASK}. Az elso lepes az atado rekord: bash ${BASE}/scripts/fleet-api.sh handoff-read ${TASK}"
