@@ -249,6 +249,44 @@ describe('the task\'s end by someone else', () => {
   })
 })
 
+describe('the other ends of a task (task-zaro-munkaablak)', () => {
+  // the measured case: started then blocked left the work window open, and the same
+  // agent's next task turned its calls into overlaps (2026-10-14, on the built functions)
+  it.each(['blocked', 'cancelled', 'failed', 'partial'] as const)(
+    'TASK-USAGE-END: %s by someone else closes murena\'s work window, so her next task is not an overlap',
+    (kind) => {
+      task('m1')
+      task('m2')
+      event('m1', 'started', 'murena', T('08:00:00'))
+      event('m1', kind, 'acrobot', T('09:00:00'))
+      event('m2', 'started', 'murena', T('09:30:00'))
+      call('murena', T('08:30:00'))
+      call('murena', T('09:45:00'))
+      const m1 = taskUsage(db, 'm1', NOW)!
+      const m2 = taskUsage(db, 'm2', NOW)!
+      expect([m1.valid, m1.totals.calls, m2.valid, m2.totals.calls, m2.overlaps.length], `TASK-USAGE-END ${kind}`)
+        .toEqual([true, 1, true, 1, 0])
+    },
+  )
+
+  it('TASK-USAGE-END-ADMIN: blocked is not an end, the admin window stays; cancelled ends it', () => {
+    for (const id of ['b', 'c']) {
+      task(id)
+      event(id, 'assigned', 'acrobot', T('08:00:00'))
+      event(id, 'started', 'murena', T('08:10:00'))
+    }
+    event('b', 'blocked', 'murena', T('09:00:00'))
+    event('c', 'cancelled', 'acrobot', T('11:00:00'))
+    // one acrobot call while both admin windows are open (unassigned), one after c ended
+    call('acrobot', T('10:00:00'))
+    call('acrobot', T('12:00:00'))
+    const b = taskUsage(db, 'b', NOW)!
+    const c = taskUsage(db, 'c', NOW)!
+    expect([b.totals.calls, b.unassigned.admin.calls, c.totals.calls, c.unassigned.admin.calls], 'TASK-USAGE-END-ADMIN')
+      .toEqual([1, 1, 0, 1])
+  })
+})
+
 describe('variants', () => {
   it('TASK-USAGE-VARIANT-BRIEF: three variants of one brief are each work, not repeated work', () => {
     task('exp', { brief_ref: 'exchange/m1-brief.md' }, 1)
