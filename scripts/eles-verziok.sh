@@ -24,6 +24,14 @@
 set -uo pipefail
 
 HOST="${ELES_HOST:-fleet@162.55.216.28}"
+
+# THE HOST KEYS ARE PINNED (Security Baseline, task ssh-hostkulcs-rogzites, nautilus's finding):
+# the production and the stage machines' public keys live in the repo (scripts/host/known_hosts),
+# and ssh checks against that file ONLY. An unknown or changed key fails the call, and nothing is
+# read or written from a machine that may not be ours (StrictHostKeyChecking=no would have taken
+# any key, and a fake machine could have handed back a fake version or a fake deployed event).
+KNOWN_HOSTS="${FLEET_KNOWN_HOSTS:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/host/known_hosts}"
+SSH_PIN=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS" -o GlobalKnownHostsFile=/dev/null -o HostKeyAlgorithms=ssh-ed25519)
 KEY="${ELES_KEY:-/home/marveen/.ssh/id_ed25519_acropora_monitor}"
 
 # nev|alkalmazas-uuid  -- ha uj alkalmazas keletkezik, ide kell felvenni, es a
@@ -46,7 +54,7 @@ for sor in "${ALKALMAZASOK[@]}"; do
   SZURO="$SZURO ${sor##*|}"
 done
 
-KIMENET="$(timeout 45 ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
+KIMENET="$(timeout 45 ssh -o BatchMode=yes -o ConnectTimeout=10 "${SSH_PIN[@]}" \
   -i "$KEY" "$HOST" \
   ps 2>&1)" || {  # fleet-gate: docker ps --format "{{.Names}}|{{.Image}}|{{.Status}}"
     echo "FAIL: a gep nem erheto el ($HOST)"
