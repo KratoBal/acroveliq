@@ -133,6 +133,12 @@ export const APPROVAL_DISCORD_NO = (cfg('APPROVAL_DISCORD_NO') ?? 'nem').trim().
  */
 export const APPROVAL_DISCORD_REQUIRE_REPLY = (cfg('APPROVAL_DISCORD_REQUIRE_REPLY') ?? 'on').trim().toLowerCase() !== 'off'
 export const APPROVAL_DISCORD_POLL_SECONDS = Math.max(5, Number(cfg('APPROVAL_DISCORD_POLL_SECONDS') ?? '20') || 20)
+/**
+ * The dashboard user who decides a decision row (Dontéseim V1; barracuda's review of #104:
+ * any logged-in session is not the owner, dashboard_users may hold more than one user).
+ * Unset, NOBODY decides: the route answers 403, it does not fall back to "any session".
+ */
+export const DECISION_OWNER_USER = (cfg('DECISION_OWNER_USER') ?? '').trim()
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
 
 export const SLACK_BOT_TOKEN = env['SLACK_BOT_TOKEN'] ?? ''

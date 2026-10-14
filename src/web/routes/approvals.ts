@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, DECISION_OWNER_USER } from '../../config.js'
 import {
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
-  createAgentMessage, setApprovalTelegramMessageId,
+  createAgentMessage, setApprovalTelegramMessageId, getDb,
   type Approval,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -12,6 +12,8 @@ import { readBody, json } from '../http-helpers.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
 import { sendTelegramMessage } from '../telegram.js'
 import { claimActor } from '../actor-claims.js'
+import { callerOfContext } from '../field-gate.js'
+import { checkDecisionPayload, decide, decisionOwner, DECISION_CATEGORY, DECISION_TIMEOUT_SECONDS } from '../../decisions.js'
 import {
   approvalDiscordConfig,
   approvalDiscordEnabled,
@@ -213,8 +215,21 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    // Dontéseim V1: a decision row names its task and the three texts the page shows,
+    // and lives a week whatever the caller asks (an expired one is shown apart)
+    const isDecision = category.trim() === DECISION_CATEGORY
+    if (isDecision) {
+      const checked = checkDecisionPayload(getDb(), action_payload)
+      if (!checked.ok) {
+        json(res, { error: 'a decision row needs its payload', missing: checked.missing }, 400)
+        return true
+      }
+    }
+
     const id = randomUUID()
-    const timeout_at = computeTimeoutAt(category, timeout_seconds)
+    const timeout_at = isDecision
+      ? Math.floor(Date.now() / 1000) + DECISION_TIMEOUT_SECONDS
+      : computeTimeoutAt(category, timeout_seconds)
     const approval = createApproval({
       id,
       agent_id: agent_id.trim(),
@@ -224,9 +239,13 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       timeout_at,
     })
 
-    notifyOwner(approval)
+    // A decision row gets ONE notice: the main agent's, who posts it in the Discord
+    // thread (or, when the main agent asked, nothing: it posts it itself). No Telegram,
+    // no in-band fallback to the requester, no Discord code: the code path would let a
+    // reply decide outside the session (survey 4c; Balázs's requirement 1).
+    if (!isDecision) notifyOwner(approval)
     notifyMainAgent(approval)
-    notifyDiscord(approval)
+    if (!isDecision) notifyDiscord(approval)
     logger.info({ id, agent_id, category }, 'Approval request created')
     json(res, approval, 201)
     return true
@@ -270,6 +289,25 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const { status, resolved_by, telegram_message_id } = body
     if (status !== 'approved' && status !== 'rejected' && status !== 'timeout') {
       json(res, { error: 'status must be approved, rejected, or timeout' }, 400)
+      return true
+    }
+    // A decision row is decided by the owner's session only, in every access mode, and the
+    // same way as POST /api/decisions/:id (state, Task Core event and memory together).
+    const decisionRow = getApproval(idMatch[1])
+    if (decisionRow?.category === DECISION_CATEGORY) {
+      const who = decisionOwner(ctx.auth, callerOfContext(ctx.auth)?.column, DECISION_OWNER_USER)
+      if (!who.ok) {
+        json(res, { error: who.error }, 403)
+        return true
+      }
+      const user = who.user
+      if (status === 'timeout') {
+        json(res, { error: 'a decision row times out by itself, it is not set to timeout' }, 400)
+        return true
+      }
+      const out = decide(getDb(), idMatch[1], status === 'approved' ? 'approve' : 'reject', user,
+        Math.floor(Date.now() / 1000), MAIN_AGENT_ID)
+      json(res, out.status === 200 ? out.body.approval : out.body, out.status)
       return true
     }
     // Who decided is the credential's, not the body's (acrovelIQ P0-1, plan

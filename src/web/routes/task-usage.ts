@@ -240,6 +240,12 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid event', missing }, 400)
       return true
     }
+    // the owner's decision is written by the decision route only, in the same transaction
+    // as the row's state: from here anyone could put one on a timeline in the owner's name
+    if (kind === 'decision') {
+      json(res, { error: 'a decision event is written by POST /api/decisions/:id only' }, 403)
+      return true
+    }
     const db = getDb()
     // a repeat is answered before the guard: the first one was already judged
     if (idemKey) {
