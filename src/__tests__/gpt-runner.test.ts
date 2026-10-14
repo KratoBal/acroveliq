@@ -12,10 +12,11 @@
 //     package.json, the lockfile and the probe;
 //   - the probe, run here in the fleet's own container, does not come out red.
 import { describe, it, expect } from 'vitest'
-import { readFileSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
+import { readFileSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { rootCertificates, createServer as createTlsServer } from 'node:tls'
 import {
   HOST_PORTS, SYSTEM_EXACT, networkTargets, globalIpv6, checkIpv6, checkHome, RUNNER_HOME,
@@ -92,7 +93,7 @@ describe('gpt-runner probe: the pure checks', () => {
   })
 
   it('N1-HOST-PORTS: on the host the public ports are tested too (the first live run reached 10.0.5.1:8000)', () => {
-    expect(HOST_PORTS).toEqual(expect.arrayContaining([3420, 3425, 8000, 22, 80, 443]))
+    expect(HOST_PORTS).toEqual(expect.arrayContaining([3420, 3425, 8000, 22, 80, 443, 8790]))
     // every address gets every port, the gateway, the host's own and the fleet's; no address twice
     const t = networkTargets('10.0.5.1', ['203.0.113.7', '10.0.5.1'], ['10.0.2.4'])
     const key = (x: { host: string; port: number }) => `${x.host}:${x.port}`
@@ -184,8 +185,17 @@ describe('gpt-runner container definition', () => {
 
   it('COMPOSE-NOTHING-OF-THE-FLEET: no bind mount, secret, host port, docker socket, fleet path, privileged mode; one outward network', () => {
     const code = compose.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n')
-    for (const bad of [/type: bind/, /^\s*secrets:/m, /^\s*ports:/m, /docker\.sock/, /marveen-docker/, /\/home\/marveen/, /privileged/, /network_mode/, /external: true/, /cap_add/]) {
+    for (const bad of [/type: bind/, /^\s*secrets:/m, /docker\.sock/, /marveen-docker/, /\/home\/marveen/, /privileged/, /network_mode/, /external: true/, /cap_add/]) {
       expect([bad.source, bad.test(code)]).toEqual([bad.source, false])
+    }
+    // the ONE published port: the service's, on ONE host address (never all of them), and only
+    // in the service, which is in a profile (a plain `docker compose up` runs the probe only)
+    const svc = code.split(/^ {2}gpt-szolga:/m)[1]!.split(/^networks:/m)[0]!
+    const probe = code.split(/^ {2}gpt-futtato:/m)[1]!.split(/^ {2}gpt-szolga:/m)[0]!
+    expect([(code.match(/^\s*ports:/gm) ?? []).length, /^\s*ports:/m.test(probe)]).toEqual([1, false])
+    expect(svc.match(/^ {6}- "(.*)"$/m)?.[1]).toBe('${GPT_FUTTATO_KOZZETETT_CIM:?the host script sets it}:8790:8790')
+    for (const want of [/profiles: \["szolga"\]/, /restart: "no"/, /user: "10002:10002"/, /read_only: true/, /- ALL/, /no-new-privileges:true/, /pids_limit: 128/, /mem_limit: 512m/, /ipv4_address: \$\{GPT_FUTTATO_SZOLGA_CIM:\?/, /SZOLGA_TOKEN_SHA256: \$\{GPT_FUTTATO_SZOLGA_TOKEN_SHA256:\?/]) {
+      expect([want.source, want.test(svc)]).toEqual([want.source, true])
     }
     const nets = code.split(/^networks:/m)[1]!.split(/^volumes:/m)[0]!
     expect(nets.match(/^ {2}\w[\w-]*:/gm)).toEqual(['  ki:'])
@@ -266,19 +276,24 @@ esac
     return dir
   }
   const fw = (dir: string) => spawnSync('bash', [join(__dirname, '..', '..', 'gpt-runner', 'host', 'tuzfal.sh')], {
-    env: { PATH: `${dir}:/usr/bin:/bin`, FAKE_STATE: join(dir, 'state'), IPTABLES: join(dir, 'iptables') }, encoding: 'utf8', timeout: 20_000,
+    env: {
+      PATH: `${dir}:/usr/bin:/bin`, FAKE_STATE: join(dir, 'state'), IPTABLES: join(dir, 'iptables'),
+      GPT_FUTTATO_ENV: join(dir, 'env'), GPT_FUTTATO_ALLAPOT_DIR: join(dir, 'allapot'),
+    },
+    encoding: 'utf8', timeout: 20_000,
   })
   const rules = (dir: string) => readFileSync(join(dir, 'state'), 'utf8').split('\n').filter((l) => l.startsWith('R|'))
   const chain = (dir: string, c: string) => rules(dir).filter((l) => l.startsWith(`R|${c}|`)).map((l) => l.split('|')[2])
   const calls = (dir: string) => { try { return readFileSync(join(dir, 'state.calls'), 'utf8').split('\n').filter(Boolean) } catch { return [] } }
-  const PRIVATE = ['-d 10.0.0.0/8 -j DROP', '-d 172.16.0.0/12 -j DROP', '-d 192.168.0.0/16 -j DROP', '-d 100.64.0.0/10 -j DROP', '-d 169.254.0.0/16 -j DROP']
+  const PRIVATE = ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10', '169.254.0.0/16'].map((r) => `-d ${r} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP`)
+  const BE_CLOSED = ['-m conntrack --ctstate INVALID -j DROP', '-m conntrack --ctstate NEW -j DROP']
   const run = (state: string, fn: (dir: string) => void) => { const dir = setup(state); try { fn(dir) } finally { rmSync(dir, { recursive: true, force: true }) } }
 
-  it('FW-RULES: the host is closed to the bridge (INPUT), the private ranges too (DOCKER-USER), outward untouched', () => run('', (dir) => {
+  it('FW-RULES: the host is closed to the bridge (INPUT, OUTPUT), the private ranges too, and without a channel config nothing comes in', () => run('', (dir) => {
     const r = fw(dir)
     expect([r.status, r.stderr]).toEqual([0, ''])
-    expect([chain(dir, 'INPUT'), chain(dir, 'DOCKER-USER'), chain(dir, 'GPTF-GEP'), chain(dir, 'GPTF-PRIVAT')]).toEqual([
-      ['-i gptki0 -j GPTF-GEP'], ['-i gptki0 -j GPTF-PRIVAT'], ['-j DROP'], PRIVATE,
+    expect([chain(dir, 'INPUT'), chain(dir, 'OUTPUT'), chain(dir, 'DOCKER-USER'), chain(dir, 'GPTF-TOVABB'), chain(dir, 'GPTF-GEP'), chain(dir, 'GPTF-GEPROL'), chain(dir, 'GPTF-PRIVAT'), chain(dir, 'GPTF-BE')]).toEqual([
+      ['-i gptki0 -j GPTF-GEP'], ['-o gptki0 -j GPTF-GEPROL'], ['-j GPTF-TOVABB'], ['-i gptki0 -j GPTF-PRIVAT', '-o gptki0 -j GPTF-BE'], ['-j DROP'], ['-j DROP'], PRIVATE, BE_CLOSED,
     ])
   }))
 
@@ -295,7 +310,7 @@ esac
     'R|INPUT|-j ufw-before-input\nR|INPUT|-i gptki0 -j GPTF-GEP\nR|DOCKER-USER|-j RETURN\n', (dir) => {
       const r = fw(dir)
       expect(chain(dir, 'INPUT')).toEqual(['-i gptki0 -j GPTF-GEP', '-j ufw-before-input'])
-      expect(chain(dir, 'DOCKER-USER')).toEqual(['-i gptki0 -j GPTF-PRIVAT', '-j RETURN'])
+      expect(chain(dir, 'DOCKER-USER')).toEqual(['-j GPTF-TOVABB', '-j RETURN'])
       expect(r.stdout).toMatch(/^VISSZATETTE: INPUT elejere: -i gptki0 -j GPTF-GEP$/m)
     }))
 
@@ -337,6 +352,146 @@ esac
     expect(calls(dir).length).toBeGreaterThan(10)
   }))
 
+  // a tiny evaluator of OUR rule shapes, so the tests check what a packet meets, not only the text
+  type Pkt = { src: string; dst: string; proto: 'tcp' | 'udp'; dport: number; sport?: number; in?: string; out?: string; state: 'NEW' | 'ESTABLISHED' | 'RELATED' | 'INVALID' }
+  const inCidr = (ip: string, cidr: string) => {
+    const [base, bits = '32'] = cidr.split('/')
+    const n = (a: string) => a.split('.').reduce((x, o) => (x << 8) + Number(o), 0) >>> 0
+    const mask = Number(bits) === 0 ? 0 : (~0 << (32 - Number(bits))) >>> 0
+    return ((n(ip) & mask) >>> 0) === ((n(base!) & mask) >>> 0)
+  }
+  const matches = (rule: string, p: Pkt) => {
+    const tok = rule.split(' ')
+    let ok = true
+    for (let i = 0; i < tok.length; i++) {
+      const neg = tok[i] === '!'
+      if (neg) i++
+      const k = tok[i]
+      const v = tok[i + 1]
+      let hit: boolean | null = null
+      if (k === '-s') hit = inCidr(p.src, v!)
+      else if (k === '-d') hit = inCidr(p.dst, v!)
+      else if (k === '-p') hit = p.proto === v
+      else if (k === '--dport') hit = p.dport === Number(v)
+      else if (k === '--sport') hit = p.sport === Number(v)
+      else if (k === '-i') hit = p.in === v
+      else if (k === '-o') hit = p.out === v
+      else if (k === '--ctstate') hit = v!.split(',').includes(p.state)
+      else if (k === '-m') { i++; continue }
+      else if (k === '-j') break
+      else throw new Error(`unknown token in rule: ${rule}`)
+      i++
+      if (neg ? hit : !hit) ok = false
+    }
+    return ok
+  }
+  const verdict = (rules: string[], p: Pkt) => (rules.some((r) => r.endsWith('-j DROP') && matches(r, p)) ? 'DROP' : 'tovabb')
+  const accepts = (rules: string[], p: Pkt) => rules.some((r) => r.endsWith('-j ACCEPT') && matches(r, p))
+  const CHANNEL_ENV = 'GPT_FUTTATO_VEZERLO_CIM=10.0.2.4\nGPT_FUTTATO_SZOLGA_CIM=10.0.5.10\nGPT_FUTTATO_FLOTTA_KONTENER=marveen\n'
+  // a fake docker: `inspect ... marveen` prints the fleet container's addresses from a file
+  const fleetAt = (dir: string, ips: string | null) => {
+    writeFileSync(join(dir, 'docker'), `#!/bin/bash\n[ "$1 $4" = "inspect marveen" ] || exit 9\n[ -f "${join(dir, 'ips')}" ] || exit 1\ncat "${join(dir, 'ips')}"\n`, { mode: 0o755 })
+    if (ips == null) rmSync(join(dir, 'ips'), { force: true })
+    else writeFileSync(join(dir, 'ips'), ips)
+  }
+
+  it('FW-CHANNEL: into the runner only the fleet address to the service port is new; replies pass; the runner still cannot start one to a private address', () => run('', (dir) => {
+    writeFileSync(join(dir, 'env'), CHANNEL_ENV)
+    fleetAt(dir, '10.0.2.4 192.168.250.2 ')
+    expect(fw(dir).status).toBe(0)
+    const be = chain(dir, 'GPTF-BE')
+    const priv = chain(dir, 'GPTF-PRIVAT')
+    const svc = { src: '10.0.2.4', dst: '10.0.5.10', proto: 'tcp', dport: 8790, state: 'NEW' } as Pkt
+    expect([
+      verdict(be, svc),
+      verdict(be, { ...svc, src: '10.0.2.9' }),
+      verdict(be, { ...svc, src: '10.0.5.1' }),
+      verdict(be, { ...svc, dport: 22 }),
+      verdict(be, { ...svc, dst: '10.0.5.11' }),
+      verdict(be, { ...svc, proto: 'udp' }),
+      verdict(be, { ...svc, state: 'INVALID' }),
+      verdict(be, { src: '162.159.140.245', dst: '10.0.5.10', proto: 'tcp', dport: 51000, state: 'ESTABLISHED' }),
+      verdict(priv, { src: '10.0.5.10', dst: '10.0.2.4', proto: 'tcp', dport: 3420, state: 'NEW' }),
+      verdict(priv, { src: '10.0.5.10', dst: '10.0.2.4', proto: 'tcp', dport: 41000, state: 'ESTABLISHED' }),
+      verdict(priv, { src: '10.0.5.10', dst: '162.159.140.245', proto: 'tcp', dport: 443, state: 'NEW' }),
+    ]).toEqual(['tovabb', 'DROP', 'DROP', 'DROP', 'DROP', 'DROP', 'DROP', 'tovabb', 'DROP', 'tovabb', 'tovabb'])
+    expect([chain(dir, 'OUTPUT'), chain(dir, 'GPTF-GEPROL')]).toEqual([['-o gptki0 -j GPTF-GEPROL'], ['-j DROP']])
+  }))
+
+  it('FW-ISOLATION-ACCEPT: past Docker\'s isolation goes EXACTLY the channel flow, both ways, and each ACCEPT is something our DROP chains pass anyway', () => run('', (dir) => {
+    writeFileSync(join(dir, 'env'), CHANNEL_ENV)
+    fleetAt(dir, '10.0.2.4 ')
+    fw(dir)
+    const tv = chain(dir, 'GPTF-TOVABB')
+    const be = chain(dir, 'GPTF-BE')
+    const priv = chain(dir, 'GPTF-PRIVAT')
+    const there = { src: '10.0.2.4', dst: '10.0.5.10', proto: 'tcp', dport: 8790, sport: 41000, out: 'gptki0', state: 'NEW' } as Pkt
+    const back = { src: '10.0.5.10', dst: '10.0.2.4', proto: 'tcp', dport: 41000, sport: 8790, in: 'gptki0', state: 'ESTABLISHED' } as Pkt
+    const cases: [Pkt, boolean][] = [
+      [there, true], [{ ...there, state: 'ESTABLISHED' }, true], [back, true],
+      [{ ...there, src: '10.0.2.9' }, false], [{ ...there, dport: 22 }, false], [{ ...there, dst: '10.0.5.11' }, false], [{ ...there, proto: 'udp' }, false],
+      [{ ...there, state: 'INVALID' }, false], [{ ...there, out: 'br-masik' }, false],
+      [{ ...back, state: 'NEW' }, false], [{ ...back, sport: 22 }, false], [{ ...back, dst: '10.0.2.9' }, false], [{ ...back, in: 'br-masik' }, false],
+    ]
+    expect(cases.map(([p]) => accepts(tv, p))).toEqual(cases.map(([, want]) => want))
+    // every accepted packet is one the DROP chain of its direction passes too: the ACCEPT never opens more
+    for (const [p, want] of cases) if (want) expect(verdict(p.out === 'gptki0' ? be : priv, p)).toBe('tovabb')
+  }))
+
+  it('FW-ADDRESS-CLOSES: the fleet container without the fixed address (or unreadable) CLOSES the channel: GPTF-BE closed, no ACCEPT; back at the address it opens; the ACCEPTs leave first and come last', () => run('', (dir) => {
+    writeFileSync(join(dir, 'env'), CHANNEL_ENV)
+    const closedTv = ['-i gptki0 -j GPTF-PRIVAT', '-o gptki0 -j GPTF-BE']
+    fleetAt(dir, '10.0.2.9 192.168.250.2 ')
+    fw(dir)
+    const a = [chain(dir, 'GPTF-BE'), chain(dir, 'GPTF-TOVABB')]
+    fleetAt(dir, '10.0.2.4 ')
+    const opening = calls(dir).length
+    fw(dir)
+    const openCalls = calls(dir).slice(opening)
+    const b = chain(dir, 'GPTF-TOVABB').length
+    fleetAt(dir, null)
+    const closing = calls(dir).length
+    fw(dir)
+    const closeCalls = calls(dir).slice(closing)
+    expect([a, b, chain(dir, 'GPTF-BE'), chain(dir, 'GPTF-TOVABB')]).toEqual([[BE_CLOSED, closedTv], 4, BE_CLOSED, closedTv])
+    const idx = (cs: string[], re: RegExp) => cs.findIndex((x) => re.test(x))
+    expect(idx(openCalls, /^W -A GPTF-BE ! -s /) < idx(openCalls, /^W -A GPTF-TOVABB .*-j ACCEPT$/)).toBe(true)
+    const lastAcceptDel = closeCalls.map((x, i) => (/^W -D GPTF-TOVABB .*-j ACCEPT$/.test(x) ? i : -1)).filter((i) => i >= 0).pop()!
+    expect(lastAcceptDel < idx(closeCalls, /^W -A GPTF-BE -m conntrack --ctstate NEW -j DROP$/)).toBe(true)
+  }))
+
+  it('FW-CHANNEL-MALFORMED: an address that is not a plain IPv4 (or a rule smuggled after it) keeps the channel closed', () => {
+    for (const env of ['GPT_FUTTATO_VEZERLO_CIM=10.0.2.4 -j ACCEPT\nGPT_FUTTATO_SZOLGA_CIM=10.0.5.10\n', 'GPT_FUTTATO_VEZERLO_CIM=300.0.2.4\nGPT_FUTTATO_SZOLGA_CIM=10.0.5.10\n', 'GPT_FUTTATO_VEZERLO_CIM=10.0.2.4\n', 'GPT_FUTTATO_VEZERLO_CIM=0.0.0.0/0\nGPT_FUTTATO_SZOLGA_CIM=10.0.5.10\n']) {
+      run('', (dir) => {
+        writeFileSync(join(dir, 'env'), env)
+        expect([fw(dir).status, chain(dir, 'GPTF-BE')]).toEqual([0, BE_CLOSED])
+      })
+    }
+  })
+
+  it('FW-MIGRATE: the first version (DOCKER-USER -i gptki0 -j GPTF-PRIVAT, plain private drops) moves over without an open moment', () => run(
+    `R|DOCKER-USER|-i gptki0 -j GPTF-PRIVAT\nR|DOCKER-USER|-j RETURN\nN|GPTF-PRIVAT\n${['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10', '169.254.0.0/16'].map((r) => `R|GPTF-PRIVAT|-d ${r} -j DROP`).join('\n')}\n`, (dir) => {
+      const r = fw(dir)
+      const c = calls(dir)
+      expect([chain(dir, 'DOCKER-USER'), chain(dir, 'GPTF-PRIVAT')]).toEqual([['-j GPTF-TOVABB', '-j RETURN'], PRIVATE])
+      expect(c.findIndex((x) => x === 'W -I DOCKER-USER 1 -j GPTF-TOVABB') < c.findIndex((x) => x === 'W -D DOCKER-USER -i gptki0 -j GPTF-PRIVAT')).toBe(true)
+      const lastNewPriv = c.map((x, i) => (/^W -A GPTF-PRIVAT /.test(x) ? i : -1)).filter((i) => i >= 0).pop()!
+      expect(lastNewPriv < c.findIndex((x) => /^W -D GPTF-PRIVAT /.test(x))).toBe(true)
+      expect(r.stdout).toMatch(/^ATTETTE: a DOCKER-USER regi ugrasa/m)
+    }))
+
+  it('FW-FLEET-ADDRESS: the fleet container without the fixed controller address is said once (channel closed), then said again when it is back', () => run('', (dir) => {
+    writeFileSync(join(dir, 'env'), CHANNEL_ENV)
+    fleetAt(dir, '10.0.2.9 192.168.250.2 ')
+    const a = fw(dir).stdout
+    const b = fw(dir).stdout
+    fleetAt(dir, '10.0.2.4 192.168.250.2 ')
+    const c = fw(dir).stdout
+    expect(a).toMatch(/^CSATORNA: a flotta kontener \(marveen\) cimei: 10\.0\.2\.9 192\.168\.250\.2; a rogzitett vezerlo-cim \(10\.0\.2\.4\) nincs koztuk: a csatorna zarva marad$/m)
+    // opening changes our chains (said by their own lines); the state line says why
+    expect([b, /^CSATORNA: rendben$/m.test(c)]).toEqual(['', true])
+  }))
+
   it('FW-UNIT: the unit runs the script at boot and after every docker (re)start', () => {
     const unit = R('host/gpt-futtato-tuzfal.service')
     expect([/^After=docker\.service$/m.test(unit), /^PartOf=docker\.service$/m.test(unit), /^WantedBy=.*docker\.service.*multi-user\.target/m.test(unit), /^ExecStart=\/opt\/gpt-futtato\/tuzfal\.sh$/m.test(unit), /^RemainAfterExit=yes$/m.test(unit)]).toEqual([true, true, true, true, true])
@@ -355,7 +510,7 @@ esac
     expect(inst).toMatch(/systemctl enable --now gpt-futtato-tuzfal\.service/)
     expect(inst).toMatch(/systemctl enable --now gpt-futtato-tuzfal-ellenor\.timer/)
     // the one timer round: a rule above ours, the DOCKER-USER jump removed, wait, check, clean up
-    expect(inst).toMatch(/iptables -w 5 -I INPUT 1 -m comment --comment gptf-ufw-proba\niptables -w 5 -D DOCKER-USER -i "\$BRIDGE" -j GPTF-PRIVAT[\s\S]*sleep 5[\s\S]*"-A INPUT -i \$BRIDGE -j GPTF-GEP"[\s\S]*iptables -w 5 -D INPUT -m comment --comment gptf-ufw-proba[\s\S]*STOP: a timer/)
+    expect(inst).toMatch(/iptables -w 5 -I INPUT 1 -m comment --comment gptf-ufw-proba\niptables -w 5 -D DOCKER-USER -j GPTF-TOVABB[\s\S]*sleep 5[\s\S]*"-A INPUT -i \$BRIDGE -j GPTF-GEP"[\s\S]*iptables -w 5 -D INPUT -m comment --comment gptf-ufw-proba[\s\S]*STOP: a timer/)
     // every write of the installer waits for the lock too; the save before the real reload
     expect(inst.match(/\biptables -(?!w 5 |V\b)\w/g)).toBeNull()
     expect(inst).toMatch(/ufw-elo-mentett\.sh[\s\S]*STOP reload nelkul[\s\S]*iptables-save > \/opt\/gpt-futtato\/iptables-elotte\.rules[\s\S]*chmod 600[\s\S]*\n {2}ufw reload\n/)
@@ -432,7 +587,7 @@ describe('gpt-runner probe after the login: H1-AUTH, test overrides, V3', () => 
     // an ALLOWLIST (barracuda, #145): the common part, feature pairs, the fixed prompt; nothing else
     const common = V3_TEST_ARGS.slice(0, V3_TEST_ARGS.indexOf('-c', 9))
     for (const extra of [['--full-auto'], ['--add-dir', '/'], ['-c', 'features.apply_patch=true'], ['-c', 'sandbox_mode="danger-full-access"'], ['--sandbox', 'danger-full-access'], ['-c']]) {
-      const args = [...common, ...extra, V3_PROMPT]
+      const args = [...common, ...extra, '-']
       expect([extra.join(' '), safeExecArgs(args) != null]).toEqual([extra.join(' '), true])
     }
     expect(safeExecArgs([...V3_TEST_ARGS.slice(0, -1), 'touch /etc/x'])).toMatch(/prompt/)
@@ -446,12 +601,13 @@ describe('gpt-runner probe after the login: H1-AUTH, test overrides, V3', () => 
     const fs = new Set<string>()
     const said: Record<string, string> = {}
     const calls: string[][] = []
+    const inputs: (string | undefined)[] = []
     const log = console.log
     console.log = () => {}
     try {
-      v3Checks((id, v) => { said[id] = v }, (_c, args) => { calls.push(args); return onRun(args, fs) }, { exists: (p) => fs.has(p), remove: (p) => fs.delete(p), loggedIn })
+      v3Checks((id, v) => { said[id] = v }, (_c, args, input) => { calls.push(args); inputs.push(input); return onRun(args, fs) }, { exists: (p) => fs.has(p), remove: (p) => fs.delete(p), loggedIn })
     } finally { console.log = log }
-    return { said, calls, fs }
+    return { said, calls, fs, inputs }
   }
   const isControl = (a: string[]) => a.includes('features.shell_tool=true')
   const EXEC = '{"type":"item.started","item":{"type":"command_execution","command":"touch ..."}}'
@@ -468,6 +624,11 @@ describe('gpt-runner probe after the login: H1-AUTH, test overrides, V3', () => 
     // an item event without its item's type is unknown (fail-closed), not silently nothing
     expect([toolUses(ev({ type: 'item.started', item: {} })).unknown, toolUses(ev({ type: 'item.completed' })).unknown, toolUses(ev({ type: 'item.updated', item: { type: 7 } })).unknown]).toEqual([['item.started:tipus-nelkul'], ['item.completed:tipus-nelkul'], ['item.updated:tipus-nelkul']])
     expect(toolUses([ev({ type: 'error', message: 'x' }), ev({ type: 'turn.failed' })].join('\n')).errors).toEqual(['error', 'turn.failed'])
+  })
+
+  it('V3-STDIN: both runs take the fixed prompt on STDIN with the "-" sentinel, as the service does; no prompt text in the arguments', () => {
+    const r = v3((a) => (isControl(a) ? { code: 0, out: EXEC } : { code: 0, out: '{"type":"item.completed","item":{"type":"agent_message"}}' }))
+    expect([r.inputs, r.calls.map((a) => a[a.length - 1]), r.calls.some((a) => a.some((x) => x.includes('touch')))]).toEqual([[V3_PROMPT, V3_PROMPT], ['-', '-'], false])
   })
 
   it('V3-OK: off, no execution and no canary; the control shows an attempt', () => {
@@ -588,6 +749,106 @@ const SYSTEM_CA_FALLBACK = () => {
   writeFileSync(p, rootCertificates.join('\n'))
   return p
 }
+
+describe('gpt-runner controller channel on the host (host/csatorna.sh) against fakes', () => {
+  // fakes for docker, iptables and timeout; every call is logged. The scenario is set by files:
+  // forras (what the service saw), nyitott (host:port pairs that connect), and the logs
+  const SCRIPT = join(__dirname, '..', '..', 'gpt-runner', 'host', 'csatorna.sh')
+  const TOKEN_RE = /^[A-Za-z0-9._~+/=-]{16,512}$/
+  const setup = (o: { forras?: string; nyitott?: string[]; allapot?: string } = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), 'gpt-csat-'))
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
+    mkdirSync(join(dir, 'opt', 'src', 'gpt-runner', 'host'), { recursive: true })
+    mkdirSync(join(dir, 'store'))
+    mkdirSync(join(dir, 'allapot'))
+    writeFileSync(join(dir, 'store', '.dashboard-token'), 'x', { mode: 0o600 })
+    writeFileSync(join(dir, 'opt', '.env'), 'GPT_FUTTATO_NODE_IMAGE=node@sha256:x\n', { mode: 0o600 })
+    writeFileSync(join(dir, 'forras'), o.forras ?? '10.0.2.4')
+    writeFileSync(join(dir, 'nyitott'), (o.nyitott ?? ['10.0.2.4:3420']).join('\n') + '\n')
+    writeFileSync(join(dir, 'allapot', 'cim-allapot'), `${o.allapot ?? 'rendben'}\n`)
+    writeFileSync(join(dir, 'opt', 'src', 'gpt-runner', 'host', 'telepit-tuzfal.sh'), `echo telepit >> "${dir}/calls"\nprintf 'PROBA N1 OK x\\nOSSZESITES ok=16 fail=0\\n' > "${dir}/opt/proba-teljes.log"\n`)
+    const log = `echo "$(basename "$0") $*" >> "${dir}/calls"`
+    writeFileSync(join(bin, 'docker'), `#!/bin/bash
+${log}
+case "$1 $2" in
+  "ps -q") echo c1 ;;
+  "inspect -f") case "$4" in c1) echo "/marveen|/opt/marveen-docker/data/marveen " ;; marveen) printf 'fleetnet 10.0.2.4 10.0.2.1\\nmasik 192.168.250.2 192.168.250.1\\n' ;; esac ;;
+  "network inspect") case "$5" in fleetnet) echo 1 ;; masik) echo 3 ;; gpt-futtato-ki) echo "10.0.5.0/24 " ;; esac ;;
+  "logs gpt-szolga") printf 'SZOLGA figyel 10.0.5.10:8790\\nFORRAS %s\\n' "$(cat "${dir}/forras")" ;;
+  "exec marveen") cat "${dir}/forras"; echo ;;
+  "run --rm") h="\${@: -2:1}"; p="\${@: -1}"; if grep -qxF "$h:$p" "${dir}/nyitott"; then echo NYITOTT; else echo "ZART (idotullepes)"; fi ;;
+esac
+exit 0
+`, { mode: 0o755 })
+    writeFileSync(join(bin, 'iptables'), `#!/bin/bash
+${log}
+case "$4" in
+  GPTF-BE) printf -- '-N GPTF-BE\\n-A GPTF-BE -m conntrack --ctstate INVALID -j DROP\\n-A GPTF-BE ! -s 10.0.2.4/32 -m conntrack --ctstate NEW -j DROP\\n-A GPTF-BE ! -d 10.0.5.10/32 -m conntrack --ctstate NEW -j DROP\\n' ;;
+  GPTF-TOVABB) printf -- '-N GPTF-TOVABB\\n-A GPTF-TOVABB -i gptki0 -j GPTF-PRIVAT\\n-A GPTF-TOVABB -o gptki0 -j GPTF-BE\\n'; [ -f "${dir}/accept-nincs" ] || printf -- '-A GPTF-TOVABB -s 10.0.2.4/32 -d 10.0.5.10/32 -o gptki0 -p tcp -m tcp --dport 8790 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT\\n-A GPTF-TOVABB -s 10.0.5.10/32 -d 10.0.2.4/32 -i gptki0 -p tcp -m tcp --sport 8790 -m conntrack --ctstate ESTABLISHED -j ACCEPT\\n' ;;
+esac
+`, { mode: 0o755 })
+    writeFileSync(join(bin, 'timeout'), `#!/bin/bash
+${log}
+t="$4"; t="\${t#*/dev/tcp/}"; t="\${t%% *}"; hp="\${t%/*}:\${t##*/}"
+grep -qxF "$hp" "${dir}/nyitott"
+`, { mode: 0o755 })
+    return dir
+  }
+  const go = (dir: string) => spawnSync('bash', [SCRIPT], {
+    env: { PATH: `${join(dir, 'bin')}:/usr/bin:/bin`, GPT_FUTTATO_DIR: join(dir, 'opt'), GPT_FUTTATO_FLOTTA_STORE: join(dir, 'store'), GPT_FUTTATO_ALLAPOT_DIR: join(dir, 'allapot') },
+    encoding: 'utf8', timeout: 30_000,
+  })
+  const calls = (dir: string) => readFileSync(join(dir, 'calls'), 'utf8').split('\n').filter(Boolean)
+  const run = (o: Parameters<typeof setup>[0], fn: (dir: string, r: ReturnType<typeof go>) => void) => {
+    const dir = setup(o)
+    try { fn(dir, go(dir)) } finally { rmSync(dir, { recursive: true, force: true }) }
+  }
+
+  it('CSAT-OK: the fleet address seen, the neighbour and the host closed with their controls open: done, and the service STOPPED at the end', () => run({}, (dir, r) => {
+    expect([r.status, r.stdout]).toEqual([0, expect.stringContaining('== kesz: a csatorna mert, a szolgaltatas leallitva')])
+    const c = calls(dir)
+    expect(c[c.length - 1]).toBe('docker compose --profile szolga stop gpt-szolga')
+    expect(r.stdout).toMatch(/^valasztott: fleetnet \(kontenerek: 1\); a vezerlo forrascime 10\.0\.2\.4, a kozzetett cim 10\.0\.2\.1:8790$/m)
+    const env = readFileSync(join(dir, 'opt', '.env'), 'utf8')
+    for (const l of ['GPT_FUTTATO_VEZERLO_CIM=10.0.2.4', 'GPT_FUTTATO_KOZZETETT_CIM=10.0.2.1', 'GPT_FUTTATO_SZOLGA_CIM=10.0.5.10', 'GPT_FUTTATO_KI_ALHALO=10.0.5.0/24', 'GPT_FUTTATO_KI_TARTOMANY=10.0.5.128/25', 'GPT_FUTTATO_FLOTTA_KONTENER=marveen']) expect(env.split('\n')).toContain(l)
+    // never a network connect on the fleet container, never a docker restart
+    expect(c.filter((x) => /network connect|docker restart|systemctl restart docker/.test(x))).toEqual([])
+  }))
+
+  it('CSAT-TOKEN: the token is made 0600 in the fleet store, the runner gets its SHA-256, and its value is never printed', () => run({}, (dir, r) => {
+    const f = join(dir, 'store', '.gpt-futtato-token')
+    const tok = readFileSync(f, 'utf8')
+    const env = readFileSync(join(dir, 'opt', '.env'), 'utf8')
+    expect([TOKEN_RE.test(tok), statSync(f).mode & 0o777, env.includes(`GPT_FUTTATO_SZOLGA_TOKEN_SHA256=${createHash('sha256').update(tok).digest('hex')}`), r.stdout.includes(tok), r.stderr.includes(tok), env.includes(tok)]).toEqual([true, 0o600, true, false, false, false])
+  }))
+
+  it('CSAT-SOURCE: the service saw the GATEWAY (a docker-proxy in the way): STOP, and the service is stopped', () => run({ forras: '10.0.2.1' }, (dir, r) => {
+    expect([r.status, r.stdout]).toEqual([1, expect.stringContaining('STOP: a futtato nem a flotta kontener cimet (10.0.2.4) latta, hanem: 10.0.2.1')])
+    expect(calls(dir)[calls(dir).length - 1]).toBe('docker compose --profile szolga stop gpt-szolga')
+  }))
+
+  it('CSAT-NEIGHBOUR: another container on the fleet network reaches the port: STOP', () => run({ nyitott: ['10.0.2.4:3420', '10.0.2.1:8790'] }, (_dir, r) => {
+    expect([r.status, r.stdout]).toEqual([1, expect.stringContaining('STOP: egy masik kontener a flotta-halon eleri a futtato szolgaltatasat')])
+  }))
+
+  it('CSAT-BLIND: when the control does not connect either, a closed port proves nothing: STOP', () => run({ nyitott: [] }, (_dir, r) => {
+    expect([r.status, r.stdout]).toEqual([1, expect.stringContaining('STOP: a kontroll sem ert el semmit a masik kontenerbol')])
+  }))
+
+  it('CSAT-NO-ACCEPT: the flow\'s ACCEPTs past Docker\'s isolation are missing: STOP before the service starts', () => {
+    const dir = setup({})
+    writeFileSync(join(dir, 'accept-nincs'), '')
+    try {
+      const r = go(dir)
+      expect([r.status, r.stdout, calls(dir).some((c) => c.includes('up -d gpt-szolga'))]).toEqual([1, expect.stringContaining('STOP: a GPTF-TOVABB-ban nincs meg a csatorna oda-iranyu ACCEPT-je'), false])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('CSAT-TIMER-ADDRESS: the timer says the fleet address does not match: STOP', () => run({ allapot: 'a flotta kontener (marveen) cimei: 10.0.2.9; ...' }, (_dir, r) => {
+    expect([r.status, r.stdout]).toEqual([1, expect.stringContaining('STOP: a tuzfal szerint a flotta cime nem egyezik')])
+  }))
+})
 
 describe('gpt-runner TLS with the system CA store (the login failed on it, 2026-10-14 20:13 UTC)', () => {
   it('TLS-JUDGE: every host must handshake with the system CA; one failure is FAIL and named', () => {

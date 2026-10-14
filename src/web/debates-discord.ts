@@ -5,12 +5,17 @@
 // mention (`allowed_mentions: { parse: [] }`). It takes only the OWNER's messages (a configured
 // Discord user, not a bot): an approval request, Acrobot's own report or anyone else's message in
 // the thread is not the debate (barracuda 30721). Off unless DEBATE_DISCORD_THREADS is set and a
-// bot token is there. GPT has no runner in this PR: its turn is skipped and said so.
+// bot token is there. GPT's runner comes from src/gpt-runner-client.ts: null (its turn skipped
+// and said so) unless the switch is on AND the conversation package with its filters exists (PR 2).
 
 import {
   APPROVAL_DISCORD_USER_IDS,
   DEBATE_DISCORD_THREADS,
   DEBATE_GPT_DAILY_CAP,
+  DEBATE_GPT_RUNNER_ENABLED,
+  DEBATE_GPT_RUNNER_TIMEOUT_SECONDS,
+  DEBATE_GPT_RUNNER_TOKEN_FILE,
+  DEBATE_GPT_RUNNER_URL,
   DEBATE_OWNER_IDS,
   DEBATE_PHASE_TIMEOUT_SECONDS,
   DEBATE_POLL_SECONDS,
@@ -19,6 +24,7 @@ import {
 } from '../config.js'
 import { createAgentMessage, getDb } from '../db.js'
 import { handleOwnerMessage, sweepDebates, type DebateConfig, type DebateDeps } from '../debates.js'
+import { GPT_FILTERS, makeRunGpt } from '../gpt-runner-client.js'
 import { logger } from '../logger.js'
 import { snowflakeAt } from './approval-discord-core.js'
 import type { DiscordTransport } from './approval-discord.js'
@@ -34,12 +40,29 @@ export function debateConfig(): DebateConfig {
   }
 }
 
+// decided once per process: the switch, the address and the filters do not change while it runs,
+// and the reason it stays off is said once, not at every hand-in
+let runGptOnce: DebateDeps['runGpt'] | undefined
+function runGpt(): DebateDeps['runGpt'] {
+  if (runGptOnce === undefined) {
+    runGptOnce = makeRunGpt({
+      enabled: DEBATE_GPT_RUNNER_ENABLED,
+      url: DEBATE_GPT_RUNNER_URL,
+      tokenFile: DEBATE_GPT_RUNNER_TOKEN_FILE,
+      timeoutMs: DEBATE_GPT_RUNNER_TIMEOUT_SECONDS * 1000,
+      filters: GPT_FILTERS,
+      log: (line) => logger.warn(line),
+    })
+  }
+  return runGptOnce
+}
+
 export function debateDeps(transport: DiscordTransport): DebateDeps {
   return {
     post: (threadId, text) => transport.send(threadId, text),
     // the controller gives Acrobot the floor as an ordinary inter-agent message
     tellAcrobot: (content) => createAgentMessage('vita', MAIN_AGENT_ID, content).id,
-    runGpt: null,
+    runGpt: runGpt(),
     now: () => Math.floor(Date.now() / 1000),
   }
 }

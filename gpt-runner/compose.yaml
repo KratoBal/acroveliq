@@ -6,8 +6,14 @@
 #
 # Balázs's conditions (2026-10-14): no fleet file, volume, credential or internal service
 # (1, 5); not root, least privilege, resource limits (2); the GPT side stays off (6). So: no bind
-# mount, no secret, no docker socket, no host port, and ONE network, outward only. The channel to
-# the controller is a later PR, on a network of its own (plan v2: not the fleet's).
+# mount, no secret, no docker socket, and ONE network, outward only.
+#
+# The controller channel (acrobot 30868, barracuda 30866/30873): the service `gpt-szolga` (same
+# image, szolga.mjs) publishes ONE port on ONE host address, the gateway of a fleet network; the
+# host firewall (host/tuzfal.sh, GPTF-BE) lets a new connection in only from the fleet container's
+# fixed address to this service's fixed address and port. Routed, not a shared segment: the fleet
+# container joins no network of ours. It is in a profile, so `docker compose up` still runs only
+# the probe; the host script starts the service for its measurement and stops it again.
 name: gpt-futtato
 
 services:
@@ -44,6 +50,41 @@ services:
     networks:
       - ki
 
+  gpt-szolga:
+    profiles: ["szolga"]
+    image: gpt-futtato:local
+    container_name: gpt-szolga
+    # nothing restarts it: running it for the debates is Balázs's separate activation
+    restart: "no"
+    command: ["node", "/app/szolga.mjs"]
+    user: "10002:10002"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    environment:
+      # the token's SHA-256 only; the token itself is in the fleet's store (0600), not here
+      SZOLGA_TOKEN_SHA256: ${GPT_FUTTATO_SZOLGA_TOKEN_SHA256:?the host script sets it}
+      SZOLGA_NAPI_PLAFON: ${GPT_FUTTATO_SZOLGA_NAPI_PLAFON:-40}
+      SZOLGA_IDOKORLAT_MP: ${GPT_FUTTATO_SZOLGA_IDOKORLAT_MP:-180}
+    volumes:
+      - type: volume
+        source: codex-home
+        target: /home/gpt
+    ports:
+      # ONE host address (the fleet network's gateway), never all of them
+      - "${GPT_FUTTATO_KOZZETETT_CIM:?the host script sets it}:8790:8790"
+    networks:
+      ki:
+        # fixed: the host firewall's rule names this address (DOCKER-USER runs after the DNAT)
+        ipv4_address: ${GPT_FUTTATO_SZOLGA_CIM:?the host script sets it}
+
 networks:
   # outward only; no fleet container joins it. A FIXED bridge name: the host firewall
   # (host/tuzfal.sh) closes the host and the private ranges to traffic from this interface
@@ -52,6 +93,12 @@ networks:
     driver: bridge
     driver_opts:
       com.docker.network.bridge.name: gptki0
+    # a fixed subnet (the one Docker gave it, measured by the host script), so the service's
+    # address can be fixed; the probe and others get theirs from the upper half
+    ipam:
+      config:
+        - subnet: ${GPT_FUTTATO_KI_ALHALO:?the host script sets it}
+          ip_range: ${GPT_FUTTATO_KI_TARTOMANY:?the host script sets it}
 
 volumes:
   # empty: the Codex login (~/.codex) lands here only after Balázs's separate approval
