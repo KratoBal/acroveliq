@@ -26,9 +26,13 @@ WANT="$SCRIPT_DIR/crontab/marveen.cron"
 # "No crontab" and a failed read both exit 1. Only the first may be treated as empty: on any
 # other error the install below would REPLACE the whole crontab with these lines (barracuda,
 # review of #96). So an unreadable crontab means: report and write nothing.
-OUT="$(crontab -l 2>&1)"; RC=$?
+# stdout and stderr are kept apart, so a warning on a successful read never ends up in the
+# crontab that is written back.
+ERRF="$(mktemp)"; trap 'rm -f "$ERRF"' EXIT
+CUR="$(crontab -l 2>"$ERRF")"; RC=$?
+OUT="$(cat "$ERRF")"
 if [ "$RC" -eq 0 ]; then
-  CUR="$OUT"
+  :
 elif [[ "$OUT" == "no crontab for "* ]]; then
   CUR=""
 else
