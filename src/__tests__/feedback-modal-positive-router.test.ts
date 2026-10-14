@@ -24,7 +24,7 @@ const mockMarkFailed = vi.fn((..._a: unknown[]) => true)
 const mockSessionExistsOnHost = vi.fn((..._a: unknown[]) => true)
 const mockIsReady = vi.fn(() => false)
 const mockClearModal = vi.fn(() => false)
-const mockSendPrompt = vi.fn(async (..._a: unknown[]) => 'sent')
+const mockSendPrompt = vi.fn()
 
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
@@ -67,8 +67,6 @@ vi.mock('../web/agent-process.js', () => ({
   clearFeedbackModalAndRecheck: (...a: unknown[]) => mockClearModal(...(a as [])),
   agentSessionName: (name: string) => `agent-${name}`,
   isSessionReadyForPrompt: (...a: unknown[]) => mockIsReady(...(a as [])),
-  // a modal-held pane is not a running turn: it never takes a queued message
-  isSessionReadyForQueuedPrompt: vi.fn(async () => false),
   clearStaleParkedInput: vi.fn(() => false),
   sendPromptToSession: (...a: unknown[]) => mockSendPrompt(...(a as [])),
   sessionExistsOnHost: (...a: unknown[]) => mockSessionExistsOnHost(...a),

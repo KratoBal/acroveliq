@@ -19,7 +19,6 @@ import {
   stripAllAnsi,
   paneShowsContextSaturation,
   idleConsideringDimGhost,
-  paneAcceptsQueuedPrompt,
   detectsFirstRunGate,
   detectsModelConsentDialog,
   detectsFeedbackDraftModal,
@@ -32,7 +31,6 @@ import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import { atomicWriteFileSync, atomicWriteInTree, atomicWriteGroupPrivate, agentTreeRootOf } from './atomic-write.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
-import { emitIntoBusyPane } from './busy-pane-emit.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -2328,8 +2326,8 @@ export async function sendPromptToSession(
   session: string,
   text: string,
   host: string | null = null,
-  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode; busyTarget?: boolean } = {},
-): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'not-landed'> {
+  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode } = {},
+): Promise<'sent' | 'aborted-busy' | 'skipped-locked'> {
   const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
   // PANEWRITERS805: the three modal dismissals are probe+act keystroke writers
   // that ran BEFORE the lane lock -- so they could press Escape/Enter into a
@@ -2401,24 +2399,7 @@ export async function sendPromptToSession(
   // is the per-session critical section. Held under a per-pane in-process mutex
   // (session-send-lock): normal delivery is fail-open (a stuck holder must not
   // silence the fleet); a `recover` caller skips instead of racing a live send.
-  const emitToPane = async (): Promise<'sent' | 'not-landed'> => {
-  // Into a running turn (the router's queued delivery): every keystroke after a fresh look
-  // at the pane, and 'not-landed' when a dialog shows up or the text does not leave the box
-  // (busy-pane-emit.ts; barracuda, #117 review). No injected-prompt record here: a message
-  // that did not land stays pending and the router sends it again, so the stuck-input
-  // recovery must not submit a second copy from a record.
-  if (opts.busyTarget) {
-    return emitIntoBusyPane(
-      text.replace(/\r?\n/g, ' '),
-      {
-        capture: () => capturePane(session, host),
-        typeChunk: (chunk) => runTmux(host, ['send-keys', '-t', session, '-l', chunk], { timeout: 5000 }),
-        enter: () => runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 }),
-        delay,
-      },
-      { chunkGapMs: 30, pollMs: SUBMIT_RETRY_POLL_MS, maxRetries: SUBMIT_RETRY_MAX_ATTEMPTS },
-    )
-  }
+  const emitToPane = async (): Promise<'sent'> => {
   // Pre-flight buffer-clear when a stale preamble is detected. Reading
   // the pane is best-effort: a capture failure here means we cannot
   // prove the buffer is clean, but proceeding without the clear is no
@@ -2548,24 +2529,7 @@ export async function sendPromptToSession(
     // is visible rather than silently degrading into re-interleaving.
     logger.warn({ session }, 'sendPromptToSession: delivery lock wait budget elapsed; sent WITHOUT the per-pane lock (fail-open) -- a holder may be wedged')
   }
-  return lockResult.value ?? 'sent'
-}
-
-/**
- * May a message be typed into this session's BUSY pane, for Claude Code to queue
- * (paneAcceptsQueuedPrompt)? Two captures PANE_READY_CONFIRM_DELAY_MS apart must both say
- * so, the same confirmation isSessionReadyForPrompt uses: a permission dialog or a parked
- * line that appears between the two refuses. The dim-stripped view is read only when the
- * plain box shows text. An idle pane answers false (it takes isSessionReadyForPrompt).
- */
-export async function isSessionReadyForQueuedPrompt(session: string, host: string | null = null): Promise<boolean> {
-  const accepts = (plain: string | null): boolean =>
-    plain != null &&
-    (paneAcceptsQueuedPrompt(plain) ||
-      (detectPaneState(plain) === 'busy' && paneAcceptsQueuedPrompt(plain, captureParkedInputView(session, host))))
-  if (!accepts(capturePane(session, host))) return false
-  await delay(PANE_READY_CONFIRM_DELAY_MS)
-  return accepts(capturePane(session, host))
+  return 'sent'
 }
 
 // How long to wait between the two capture samples when the first one

@@ -247,8 +247,7 @@ async function tick(): Promise<void> {
 
     const prev = state
     state = recordNudge(state, now, oldest.id)
-    // 'not-landed' only comes from a busyTarget send (the router's queued delivery), never here
-    let result: 'sent' | 'aborted-busy' | 'skipped-locked' | 'not-landed'
+    let result: 'sent' | 'aborted-busy' | 'skipped-locked'
     try {
       result = await sendPromptToSession(MAIN_CHANNELS_SESSION, nudgeText(resolveLang()), null, {
         onBusyTimeout: 'abort',
@@ -263,7 +262,7 @@ async function tick(): Promise<void> {
       logger.warn({ err, pending: pending.length }, 'inbox nudge: send threw; nothing typed, state restored')
       return
     }
-    if (result === 'aborted-busy' || result === 'skipped-locked' || result === 'not-landed') {
+    if (result === 'aborted-busy' || result === 'skipped-locked') {
       // Nothing was typed: either the pane turned busy in the check->send gap
       // (aborted-busy), or a delivery held the per-pane lock (skipped-locked --
       // this is a deliver-mode call so it fails open rather than skipping, but
