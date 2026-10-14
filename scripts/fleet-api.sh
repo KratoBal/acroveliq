@@ -794,7 +794,12 @@ print(json.dumps({"kind":"deployed","actor":"acrobot","ref":ref,"data":data}))')
       exit 0
     fi
     # acropora: az eles kep-cimke
-    PS_OUT="$(timeout 45 ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
+    # the production machine's key is pinned (scripts/host/known_hosts; task ssh-hostkulcs-rogzites):
+    # an unknown or changed key fails here, before any line of the answer can become an event
+    KNOWN_HOSTS="${FLEET_KNOWN_HOSTS:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/host/known_hosts}"
+    PS_OUT="$(timeout 45 ssh -o BatchMode=yes -o ConnectTimeout=10 \
+      -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS" -o GlobalKnownHostsFile=/dev/null \
+      -o HostKeyAlgorithms=ssh-ed25519 \
       -i "${ELES_KEY:-/home/marveen/.ssh/id_ed25519_acropora_monitor}" "${ELES_HOST:-fleet@162.55.216.28}" ps 2>&1)" \
       || { echo "FAIL: az eles gep nem erheto el: $(printf '%s' "$PS_OUT" | head -c 200)"; exit 1; }
     declare -a OUT_T=() OUT_S=() OUT_A=()
