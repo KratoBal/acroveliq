@@ -16935,7 +16935,7 @@ const AQ_KIND = {
   cancelled: 'Megszakítva', failed: 'Sikertelen', partial: 'Részben kész',
   coord_open: 'Koordináció kezdete', coord_close: 'Koordináció vége', decision: 'Döntés',
   paused: 'Szüneteltetve', resumed: 'Folytatva', owner_action: 'Balázs módosította',
-  deployed: 'Kint van (telepítve)',
+  deployed: 'Telepítés mérve',
 }
 // filter group of a task by its LAST event
 // (owner_action is the last kind only of a task with no state event yet: created, waiting for its hand-out).
