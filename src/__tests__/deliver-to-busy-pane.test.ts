@@ -43,11 +43,27 @@ const BUSY_PERMISSION = [
 // rule alone would let these through, so each guard has a pane only it refuses)
 const BUSY_BOX_AND_QUESTION = pane(['  ⎿  … tool output …', SPINNER, ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No'], ['❯ '])
 const BUSY_BOX_AND_MENU = pane(['  ⎿  … tool output …', '', SPINNER, ''], ['❯ '], ['  ↑/↓ to navigate · Esc to cancel', FOOTER])
+// Captured live (murena, 2026-10-14, mid-turn, the bottom seven lines): the prompt glyph is
+// followed by a NO-BREAK SPACE (U+00A0), and the top separator carries the session's title.
+const LIVE_BUSY = [
+  '* Leavening… (5m 28s · ↓ 31.4k tokens · thought for 5s)',
+  "  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work",
+  '',
+  '─'.repeat(151) + ' Murena ─',
+  '❯\u00a0',
+  '─'.repeat(160),
+  '  claude-opus-5-5 | 5h 14% | 7d 50%',
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle) · install gh for PR status · ← for agents',
+].join('\n')
 const BUSY_NO_BOX = ['  ⎿  … tool output …', SPINNER, FOOTER].join('\n')
 
 describe('paneAcceptsQueuedPrompt', () => {
   it('QUEUE-ACCEPT: a running turn with an empty box, or with only the queue hint, takes a message', () => {
     expect([paneAcceptsQueuedPrompt(BUSY_EMPTY), paneAcceptsQueuedPrompt(BUSY_QUEUED)]).toEqual([true, true])
+  })
+
+  it('QUEUE-LIVE: a real mid-turn pane (no-break space after the prompt, titled separator) takes a message', () => {
+    expect(paneAcceptsQueuedPrompt(LIVE_BUSY)).toBe(true)
   })
 
   it('QUEUE-REFUSE: idle, typed text, placeholder, permission question, saturated context, no live box', () => {
