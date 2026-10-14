@@ -23,12 +23,13 @@
 // THE WINDOWS come from the events (`task_events`, plus the kanban card's own
 // moves when the task id is a card id):
 //   - work:   from the actor's `started` or `fix_started` to its own next
-//             `review_requested`, or the task's `done` or `merged` by anyone;
+//             `review_requested`, or the task's end (`done`, `merged`, `cancelled`,
+//             `failed`, `partial`) or `blocked` by anyone;
 //   - review: from a `review_requested` to the `verdict` that answers it, for
 //             the verdict's actor;
-//   - admin:  from the actor's `assigned` to the task's `merged` or `done`;
+//   - admin:  from the actor's `assigned` to the task's end;
 //   - coord:  from the actor's `coord_open` to its own `coord_close` (or the task's
-//             `done`/`merged`). The channel session marks the hand-out and the
+//             end). The channel session marks the hand-out and the
 //             take-over of a coordination unit this way (koord-munkamenet, acrobot
 //             msg 29883). A registered SESSION would claim the whole long channel
 //             session, so the mark is a window, not a session.
@@ -351,6 +352,19 @@ export interface TaskWindow {
 
 const WORK_OPEN: ReadonlySet<TaskEventKind> = new Set(['started', 'fix_started'])
 const WORK_CLOSE: ReadonlySet<TaskEventKind> = new Set(['review_requested', 'done', 'merged'])
+/*
+  THE OTHER ENDS OF A TASK (TC-Lite L1 added them, the windows did not learn them). A task
+  that ended in cancelled, failed or partial kept every window open, and one that was
+  blocked kept its worker's work window open: measured 2026-10-14 on the built functions,
+  `started` then `blocked` left the work window at to=null, and the same agent's next task
+  turned each of its calls into an overlap, so that task was not valid (survey
+  feladatkezeles-v1, section 3; task task-zaro-munkaablak). Now cancelled, failed and
+  partial end the task like done: every window closes. blocked is not an end (the work may
+  go on with a new started), so it closes the WORK windows only, whoever writes it: admin
+  and coord windows overlap as a matter of course and never make a task invalid.
+*/
+const TASK_END: ReadonlySet<TaskEventKind> = new Set(['done', 'merged', 'cancelled', 'failed', 'partial'])
+const WORK_STOP: ReadonlySet<TaskEventKind> = new Set(['blocked'])
 
 /** The windows of one task's events (already in time order). */
 export function taskWindows(events: readonly TaskEvent[]): TaskWindow[] {
@@ -390,7 +404,11 @@ export function taskWindows(events: readonly TaskEvent[]): TaskWindow[] {
     // the task's end closes every open window, whoever writes it: acrobot
     // usually merges, and a worker who wrote no close of its own would keep
     // its window open into its next task (barracuda, #18)
-    if (kind === 'merged' || kind === 'done') {
+    if (WORK_STOP.has(kind)) {
+      for (const window of openWork.values()) window.to ??= at
+      openWork.clear()
+    }
+    if (TASK_END.has(kind)) {
       for (const window of [...openAdmin.values(), ...openWork.values(), ...openCoord.values()]) window.to ??= at
       openAdmin.clear()
       openWork.clear()
@@ -907,6 +925,24 @@ export function githubMergeProbe(token: string | null, fetchImpl: typeof fetch =
 
 const BUSY_KINDS: ReadonlySet<string> = new Set(['assigned', 'started', 'fix_started'])
 
+/*
+  THE KINDS THAT ARE NOT A STATE OF THE TASK. A decision on a decision row, and the
+  channel session's coord_open/coord_close marks, can land on a task someone is working
+  on; they say something ABOUT the task, not where its work stands. Read as the "last
+  event" they freed the working agent: measured 2026-10-14 on the built functions,
+  `started` then `decision` gave busy=false, so the hand-out's busy check would have put
+  a second task next to the running one, and the AcrovelIQ list moved the task to "no
+  event" (survey feladatkezeles-v1, section 3; task task-busy-decision). The last event
+  is therefore the latest STATE event; a task with no state event at all (a coordination
+  unit, only coord marks) keeps its latest event, so what it shows does not change.
+*/
+export const NON_STATE_KINDS: readonly TaskEventKind[] = ['decision', 'coord_open', 'coord_close']
+const NON_STATE_SQL = NON_STATE_KINDS.map((k) => `'${k}'`).join(', ')
+/** The task's last event as the busy check and the list read it (see NON_STATE_KINDS). */
+const LAST_STATE_EVENT = (alias: string) =>
+  `SELECT id FROM task_events ${alias} WHERE ${alias}.task_id = t.id
+   ORDER BY (${alias}.kind IN (${NON_STATE_SQL})), ${alias}.at DESC, ${alias}.id DESC LIMIT 1`
+
 export interface AssigneeTask {
   id: string
   title: string | null
@@ -916,17 +952,17 @@ export interface AssigneeTask {
 }
 
 /**
- * An agent's tasks, and which of them keep it busy: those whose LAST event is
- * `assigned`, `started` or `fix_started`. After `review_requested` the agent
- * is free for the next task.
+ * An agent's tasks, and which of them keep it busy: those whose LAST STATE event
+ * (NON_STATE_KINDS left out) is `assigned`, `started` or `fix_started`. After
+ * `review_requested` the agent is free for the next task.
  */
 export function assigneeTasks(db: Database.Database, agent: string): AssigneeTask[] {
   const rows = db
     .prepare(
-      `SELECT t.id, t.title,
-              (SELECT kind FROM task_events e WHERE e.task_id = t.id ORDER BY at DESC, id DESC LIMIT 1) AS last_kind,
-              (SELECT at FROM task_events e WHERE e.task_id = t.id ORDER BY at DESC, id DESC LIMIT 1) AS last_at
-       FROM tasks t WHERE t.assignee = ? ORDER BY t.created_at, t.id`,
+      `SELECT t.id, t.title, e.kind AS last_kind, e.at AS last_at
+       FROM tasks t
+       LEFT JOIN task_events e ON e.id = (${LAST_STATE_EVENT('x')})
+       WHERE t.assignee = ? ORDER BY t.created_at, t.id`,
     )
     .all(agent) as Omit<AssigneeTask, 'busy'>[]
   return rows.map((r) => ({ ...r, busy: r.last_kind !== null && BUSY_KINDS.has(r.last_kind) }))
@@ -950,9 +986,10 @@ export interface ListedTask extends AssigneeTask {
 }
 
 /**
- * Every task, with its last event: the read-only list of the AcrovelIQ page
- * (acroveliq-vp-v1). Newest activity first; a task with no event yet sorts by
- * its creation. `busy` means the same as in assigneeTasks.
+ * Every task, with its last STATE event (NON_STATE_KINDS left out): the read-only
+ * list of the AcrovelIQ page (acroveliq-vp-v1). Newest activity first, by ANY event,
+ * so a decision still brings its task up; a task with no event yet sorts by its
+ * creation. `busy` means the same as in assigneeTasks.
  */
 export function allTasks(db: Database.Database): ListedTask[] {
   const rows = db
@@ -962,9 +999,8 @@ export function allTasks(db: Database.Database): ListedTask[] {
               e.kind AS last_kind, e.at AS last_at, e.actor AS last_actor, e.ref AS last_ref,
               (SELECT count(*) FROM task_events c WHERE c.task_id = t.id) AS events
        FROM tasks t
-       LEFT JOIN task_events e ON e.id = (
-         SELECT id FROM task_events x WHERE x.task_id = t.id ORDER BY at DESC, id DESC LIMIT 1)
-       ORDER BY coalesce(e.at, t.created_at) DESC, t.id`,
+       LEFT JOIN task_events e ON e.id = (${LAST_STATE_EVENT('x')})
+       ORDER BY coalesce((SELECT max(a.at) FROM task_events a WHERE a.task_id = t.id), t.created_at) DESC, t.id`,
     )
     .all() as Omit<ListedTask, 'busy'>[]
   return rows.map((r) => ({ ...r, busy: r.last_kind !== null && BUSY_KINDS.has(r.last_kind) }))

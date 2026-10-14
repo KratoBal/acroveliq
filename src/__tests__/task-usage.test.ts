@@ -249,6 +249,44 @@ describe('the task\'s end by someone else', () => {
   })
 })
 
+describe('the other ends of a task (task-zaro-munkaablak)', () => {
+  // the measured case: started then blocked left the work window open, and the same
+  // agent's next task turned its calls into overlaps (2026-10-14, on the built functions)
+  it.each(['blocked', 'cancelled', 'failed', 'partial'] as const)(
+    'TASK-USAGE-END: %s by someone else closes murena\'s work window, so her next task is not an overlap',
+    (kind) => {
+      task('m1')
+      task('m2')
+      event('m1', 'started', 'murena', T('08:00:00'))
+      event('m1', kind, 'acrobot', T('09:00:00'))
+      event('m2', 'started', 'murena', T('09:30:00'))
+      call('murena', T('08:30:00'))
+      call('murena', T('09:45:00'))
+      const m1 = taskUsage(db, 'm1', NOW)!
+      const m2 = taskUsage(db, 'm2', NOW)!
+      expect([m1.valid, m1.totals.calls, m2.valid, m2.totals.calls, m2.overlaps.length], `TASK-USAGE-END ${kind}`)
+        .toEqual([true, 1, true, 1, 0])
+    },
+  )
+
+  it('TASK-USAGE-END-ADMIN: blocked is not an end, the admin window stays; cancelled ends it', () => {
+    for (const id of ['b', 'c']) {
+      task(id)
+      event(id, 'assigned', 'acrobot', T('08:00:00'))
+      event(id, 'started', 'murena', T('08:10:00'))
+    }
+    event('b', 'blocked', 'murena', T('09:00:00'))
+    event('c', 'cancelled', 'acrobot', T('11:00:00'))
+    // one acrobot call while both admin windows are open (unassigned), one after c ended
+    call('acrobot', T('10:00:00'))
+    call('acrobot', T('12:00:00'))
+    const b = taskUsage(db, 'b', NOW)!
+    const c = taskUsage(db, 'c', NOW)!
+    expect([b.totals.calls, b.unassigned.admin.calls, c.totals.calls, c.unassigned.admin.calls], 'TASK-USAGE-END-ADMIN')
+      .toEqual([1, 1, 0, 1])
+  })
+})
+
 describe('variants', () => {
   it('TASK-USAGE-VARIANT-BRIEF: three variants of one brief are each work, not repeated work', () => {
     task('exp', { brief_ref: 'exchange/m1-brief.md' }, 1)
@@ -635,6 +673,44 @@ describe('TC-Lite L1: the timeline and busy', () => {
     const afterReview = busy()
     event('a', 'fix_started', 'murena', 30)
     expect([atStart, afterReview, busy()], 'TCL-BUSY').toEqual([['a', 'b'], ['b'], ['a', 'b']])
+  })
+
+  it('TCL-BUSY-NONSTATE: a decision or a coord mark on a running task does not free its agent', () => {
+    // the measured case (task-busy-decision, 2026-10-14): started, then decision, read busy=false
+    upsertTask(db, { id: 'fut', type: null, parent_task: null, variant: null, brief_ref: null, assignee: 'murena' }, 1)
+    event('fut', 'started', 'murena', 10)
+    const busy = () => assigneeTasks(db, 'murena').map((t) => [t.id, t.last_kind, t.busy])
+    event('fut', 'decision', 'balazs', 20)
+    const afterDecision = busy()
+    event('fut', 'coord_open', 'acrobot', 30)
+    event('fut', 'coord_close', 'acrobot', 40)
+    const afterCoord = busy()
+    // a state event after them still decides: review_requested frees the agent
+    event('fut', 'review_requested', 'murena', 50)
+    event('fut', 'decision', 'balazs', 60)
+    expect([afterDecision, afterCoord, busy()], 'TCL-BUSY-NONSTATE').toEqual([
+      [['fut', 'started', true]],
+      [['fut', 'started', true]],
+      [['fut', 'review_requested', false]],
+    ])
+  })
+
+  it('TASK-LIST-NONSTATE: the list shows the last state event, a coordination unit its coord mark, and a decision still brings its task up', () => {
+    upsertTask(db, { id: 'regi', type: null, parent_task: null, variant: null, brief_ref: null, assignee: 'murena' }, 1)
+    upsertTask(db, { id: 'koord', type: 'coordination', parent_task: null, variant: null, brief_ref: null, assignee: 'acrobot' }, 2)
+    upsertTask(db, { id: 'uj', type: null, parent_task: null, variant: null, brief_ref: null, assignee: 'nautilus' }, 3)
+    event('regi', 'started', 'murena', 10)
+    event('koord', 'coord_open', 'acrobot', 20)
+    event('koord', 'coord_close', 'acrobot', 30)
+    event('uj', 'started', 'nautilus', 40)
+    // the newest activity of all is a decision on the OLDEST task
+    event('regi', 'decision', 'balazs', 50)
+    const list = allTasks(db).map((t) => [t.id, t.last_kind, t.last_actor, t.last_at, t.busy, t.events])
+    expect(list, 'TASK-LIST-NONSTATE').toEqual([
+      ['regi', 'started', 'murena', 10, true, 2],
+      ['uj', 'started', 'nautilus', 40, true, 1],
+      ['koord', 'coord_close', 'acrobot', 30, false, 2],
+    ])
   })
 
   it('TASK-LIST: every task with its latest event, newest activity first; an event-less task by its creation', () => {
