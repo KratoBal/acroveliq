@@ -1,5 +1,7 @@
 # The marveen user's crontab lines that must survive a container recreate.
 # Restored on every start by scripts/crontab-ensure.sh (missing lines only).
+# This file is the source: change a time HERE, not in the live crontab. A line edited only
+# in the crontab no longer matches, so the original comes back next to it on the next start.
 # Backups run from cron, not from an agent session: see scripts/mentes-cron.sh.
 40 3 * * * /home/marveen/marveen/scripts/mentes-cron.sh fleet
 30 4 * * * /home/marveen/marveen/scripts/mentes-cron.sh ai

@@ -23,7 +23,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WANT="$SCRIPT_DIR/crontab/marveen.cron"
 [ -f "$WANT" ] || { echo "crontab-ensure: $WANT missing, nothing to restore" >&2; exit 0; }
 
-CUR="$(crontab -l 2>/dev/null || true)"
+# "No crontab" and a failed read both exit 1. Only the first may be treated as empty: on any
+# other error the install below would REPLACE the whole crontab with these lines (barracuda,
+# review of #96). So an unreadable crontab means: report and write nothing.
+OUT="$(crontab -l 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ]; then
+  CUR="$OUT"
+elif [[ "$OUT" == "no crontab for "* ]]; then
+  CUR=""
+else
+  echo "crontab-ensure: cannot read the crontab (rc $RC: $OUT), not writing" >&2
+  exit 0
+fi
 MISSING=""
 while IFS= read -r line; do
   case "$line" in ''|'#'*) continue ;; esac
