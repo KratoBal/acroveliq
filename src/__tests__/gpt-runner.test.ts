@@ -463,6 +463,8 @@ describe('gpt-runner probe after the login: H1-AUTH, test overrides, V3', () => 
     }
     expect(toolUses(ev({ id: '0', msg: { type: 'exec_command_begin' } })).unknown).toEqual(['kulcsok:id+msg'])
     expect(toolUses(ev({ type: 'exec_command_begin' })).unknown).toEqual(['exec_command_begin'])
+    // an item event without its item's type is unknown (fail-closed), not silently nothing
+    expect([toolUses(ev({ type: 'item.started', item: {} })).unknown, toolUses(ev({ type: 'item.completed' })).unknown, toolUses(ev({ type: 'item.updated', item: { type: 7 } })).unknown]).toEqual([['item.started:tipus-nelkul'], ['item.completed:tipus-nelkul'], ['item.updated:tipus-nelkul']])
     expect(toolUses([ev({ type: 'error', message: 'x' }), ev({ type: 'turn.failed' })].join('\n')).errors).toEqual(['error', 'turn.failed'])
   })
 
