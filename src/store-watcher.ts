@@ -147,6 +147,12 @@ export function startStoreWatcher(): void {
         logger.warn({ err, rel }, 'store-watcher: failed to log new file event')
       }
     })
+    // The recursive watcher reports an unreadable subdirectory (store/tokens is
+    // root:root 0711 since P0-1 L2) as an async 'error' event; unhandled, it
+    // takes the whole dashboard down at startup. Log it and keep running.
+    watcher.on('error', (err) => {
+      logger.warn({ err }, 'store-watcher: watch error (non-fatal)')
+    })
     logger.info({ dir: STORE_DIR, knownCount: knownFiles.size }, 'Store file watcher started')
   } catch (err) {
     logger.warn({ err }, 'Store file watcher failed to start')
