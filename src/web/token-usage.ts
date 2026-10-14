@@ -320,11 +320,16 @@ async function parseJsonlFile(
 // token_usage only holds what it has read, so a task's usage read before the next run misses
 // every later call and can say 0 (task task-usage-continue-res: 2026-10-14, 0 calls for a task
 // that ran 100). The usage route shows it, so the reader knows how far the numbers go.
+// `at` is the run's START: files are read one by one, so a call made after its file was read
+// but before the run ended is not in; from the start on, "complete up to here" holds (barracuda,
+// #135). The sub-agents' calls come through their statusLine export, which lags too; the
+// reader's warning says the number may be incomplete, which covers both.
 export interface TokenCollection { at: number; inserted: number; files: number }
 let lastCollection: TokenCollection | null = null
 export const lastTokenCollection = (): TokenCollection | null => lastCollection
 
 export async function collectTokenUsage(): Promise<{ inserted: number; files: number }> {
+  const startedAt = Math.floor(Date.now() / 1000)
   const db = getDb()
   const sources = discoverAgentSources()
   let totalInserted = 0
@@ -380,7 +385,7 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
     }
   }
 
-  lastCollection = { at: Math.floor(Date.now() / 1000), inserted: totalInserted, files: totalFiles }
+  lastCollection = { at: startedAt, inserted: totalInserted, files: totalFiles }
   return { inserted: totalInserted, files: totalFiles }
 }
 
