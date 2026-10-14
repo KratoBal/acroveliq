@@ -34,7 +34,7 @@
 
 import type Database from 'better-sqlite3'
 
-import { DISCORD_GUILD_ID } from './config.js'
+import { DISCORD_DM_CHANNELS, DISCORD_GUILD_ID } from './config.js'
 import { createAgentMessage, saveAgentMemory, type Approval } from './db.js'
 import { addTaskEvent } from './task-usage.js'
 import { latestTaskHandoff } from './task-handoff.js'
@@ -306,14 +306,28 @@ export interface DecisionItems {
 
 const normalizedWho = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
 
-/** The link to a Discord message, or null when a part is missing or not an id. */
-export function discordMessageUrl(guild: string | null | undefined, channel: string | null | undefined, message: string | null | undefined): string | null {
-  return guild && channel && message && [guild, channel, message].every((part) => DISCORD_MESSAGE_ID.test(part))
-    ? `https://discord.com/channels/${guild}/${channel}/${message}`
-    : null
+/**
+ * The link to a Discord message, or null when a part is missing or not an id. A message in a
+ * direct-message channel has no guild: Discord's own link there is /channels/@me/<channel>/<message>.
+ */
+export function discordMessageUrl(
+  guild: string | null | undefined,
+  channel: string | null | undefined,
+  message: string | null | undefined,
+  dmChannels: ReadonlySet<string> = new Set(),
+): string | null {
+  if (!channel || !message || ![channel, message].every((part) => DISCORD_MESSAGE_ID.test(part))) return null
+  if (dmChannels.has(channel)) return `https://discord.com/channels/@me/${channel}/${message}`
+  return guild && DISCORD_MESSAGE_ID.test(guild) ? `https://discord.com/channels/${guild}/${channel}/${message}` : null
 }
 
-export function decisionItems(db: Database.Database, now: number, openTaskIds: readonly string[], guild: string = DISCORD_GUILD_ID): DecisionItems {
+export function decisionItems(
+  db: Database.Database,
+  now: number,
+  openTaskIds: readonly string[],
+  guild: string = DISCORD_GUILD_ID,
+  dmChannels: ReadonlySet<string> = DISCORD_DM_CHANNELS,
+): DecisionItems {
   const rows = db
     .prepare(`SELECT * FROM approvals WHERE category = ? AND (status = 'pending' OR resolved_at >= ?)
               ORDER BY requested_at DESC, id`)
@@ -325,7 +339,7 @@ export function decisionItems(db: Database.Database, now: number, openTaskIds: r
       status: r.status, requested_at: r.requested_at, timeout_at: r.timeout_at, resolved_at: r.resolved_at,
       resolved_by: r.resolved_by, discuss_requested_at: r.discuss_requested_at ?? null,
       discord_message: r.discord_reply_ref ?? r.decision_ref ?? null,
-      discord_url: r.discord_reply_ref ? discordMessageUrl(guild, r.discord_reply_channel, r.discord_reply_ref) : null,
+      discord_url: r.discord_reply_ref ? discordMessageUrl(guild, r.discord_reply_channel, r.discord_reply_ref, dmChannels) : null,
     }
   }
   const out: DecisionItems = { pending: [], discuss: [], discord_replied: [], expired: [], recent: [], recent_discord: [] }

@@ -355,6 +355,28 @@ describe('a decision made on Discord makes no second item (requirement 4)', () =
     ])
   })
 
+  // The main channel is a DM (acrobot, 2026-10-14: Discord type 1, no guild): there the link is
+  // @me in the guild's place, with or without a guild set; a thread keeps the guild. RED: the DM
+  // message linked under the guild, or no link without a guild.
+  it('the link to an answer in a DM channel: @me in the guild place; a thread keeps the guild', async () => {
+    const reply = (id: string, body: Record<string, unknown>) =>
+      call(tryHandleDecisions, 'POST', `/api/decisions/${id}/discord-reply`, body, A)
+    const dm = await newDecision()
+    const thread = await newDecision()
+    expect((await reply(dm, { message_id: '1559851364950220852', channel_id: '1538522302277353505' })).status).toBe(200)
+    expect((await reply(thread, { message_id: '1559851364950220999', channel_id: '1540270627926183997' })).status).toBe(200)
+    const dms = new Set(['1538522302277353505'])
+    const url = (items: ReturnType<typeof decisionItems>, id: string) => items.discord_replied.find((d) => d.id === id)?.discord_url
+    const withGuild = decisionItems(getDb(), NOW(), ['tsk-1'], '1538520890822885418', dms)
+    const noGuild = decisionItems(getDb(), NOW(), ['tsk-1'], '', dms)
+    expect([url(withGuild, dm), url(withGuild, thread), url(noGuild, dm), url(noGuild, thread)]).toEqual([
+      'https://discord.com/channels/@me/1538522302277353505/1559851364950220852',
+      'https://discord.com/channels/1538520890822885418/1540270627926183997/1559851364950220999',
+      'https://discord.com/channels/@me/1538522302277353505/1559851364950220852',
+      null,
+    ])
+  })
+
   it('the message id reader: a labelled number or a link\'s last number, 17-20 digits; a thread id alone is not a message', () => {
     expect(discordMessageIds('Acroveliq szal 1559470238783770624, msg 1559847481821626421')).toEqual(['1559847481821626421'])
     expect(discordMessageIds('message_id 1559139791860123456')).toEqual(['1559139791860123456'])

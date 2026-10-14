@@ -17330,7 +17330,7 @@ async function aqDecide(id, action) {
 // The owner's Discord answer: a link when the server built one (it does, only from ids and
 // only to discord.com), so confirming is not done from memory (barracuda, #108); else the id.
 function aqDiscordLink(d) {
-  const url = typeof d.discord_url === 'string' && /^https:\/\/discord\.com\/channels\/\d{17,20}\/\d{17,20}\/\d{17,20}$/.test(d.discord_url) ? d.discord_url : null
+  const url = typeof d.discord_url === 'string' && /^https:\/\/discord\.com\/channels\/(?:\d{17,20}|@me)\/\d{17,20}\/\d{17,20}$/.test(d.discord_url) ? d.discord_url : null
   return url
     ? `<a href="${aqEsc(url)}" target="_blank" rel="noreferrer">a válaszod megnyitása a Discordon</a> (üzenet ${aqEsc(d.discord_message)})`
     : `üzenet ${aqEsc(d.discord_message)}`

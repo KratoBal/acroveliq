@@ -110,7 +110,7 @@ describe('Döntéseim V1 view', () => {
     expect(view.aqRenderDecisions(d)).not.toContain('data-aq-decide=')
   })
 
-  it('DEC-VIEW-DISCORD-LINK: the answer opens on Discord when the server gave a discord.com link; anything else stays an id', () => {
+  it('DEC-VIEW-DISCORD-LINK: the answer opens on Discord when the server gave a discord.com link (a guild or @me); anything else stays an id', () => {
     const { view } = load()
     const link = 'https://discord.com/channels/1538520890822885418/1540270627926183997/1559851364950220852'
     const html = view.aqRenderDecisions(data({ discord_replied: [row('dc', { discord_message: '1559851364950220852', discord_url: link })] }))
@@ -118,6 +118,12 @@ describe('Döntéseim V1 view', () => {
     const bad = view.aqRenderDecisions(data({ discord_replied: [row('dc', { discord_message: '1559851364950220852', discord_url: 'javascript:alert(1)' })] }))
     expect(bad).not.toContain('<a href=')
     expect(bad).toContain('Discordon válaszoltál: üzenet 1559851364950220852')
+    const dm = 'https://discord.com/channels/@me/1538522302277353505/1559851364950220852'
+    expect(view.aqRenderDecisions(data({ discord_replied: [row('dc', { discord_message: '1559851364950220852', discord_url: dm })] })))
+      .toContain(`<a href="${dm}" target="_blank" rel="noreferrer">`)
+    const odd = 'https://discord.com/channels/@you/1538522302277353505/1559851364950220852'
+    expect(view.aqRenderDecisions(data({ discord_replied: [row('dc', { discord_message: '1559851364950220852', discord_url: odd })] })))
+      .not.toContain('<a href=')
   })
 
   it('DEC-VIEW-EMPTY: nothing waiting says so, an unreachable source is not an empty list', () => {

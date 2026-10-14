@@ -145,6 +145,15 @@ export const DECISION_OWNER_USER = (cfg('DECISION_OWNER_USER') ?? '').trim()
  * the row shows the message id only, as before.
  */
 export const DISCORD_GUILD_ID = (cfg('DISCORD_GUILD_ID') ?? '').trim()
+/**
+ * The direct-message channels among the ones the owner answers in, comma separated (acrobot's
+ * measurement, 2026-10-14: the main channel is a DM, Discord type 1, no guild). A message there
+ * links as https://discord.com/channels/@me/<channel>/<message>; a thread or a server channel
+ * keeps the guild. Anything that is not a 17-20 digit id is dropped.
+ */
+export const DISCORD_DM_CHANNELS: ReadonlySet<string> = new Set(
+  (cfg('DISCORD_DM_CHANNELS') ?? '').split(',').map((s) => s.trim()).filter((s) => /^[0-9]{17,20}$/.test(s)),
+)
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
 
 export const SLACK_BOT_TOKEN = env['SLACK_BOT_TOKEN'] ?? ''
