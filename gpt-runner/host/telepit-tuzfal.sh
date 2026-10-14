@@ -17,9 +17,11 @@ command -v systemctl >/dev/null || { echo "STOP: nincs systemd a gepen, a tartos
 echo "== tuzfal-kornyezet"
 iptables -V
 docker info 2>/dev/null | grep -iE 'firewall|iptables' || echo "(a docker info nem nevez meg tuzfal-hatteret)"
-for fw in ufw firewalld; do
-  if systemctl is-active --quiet "$fw" 2>/dev/null; then echo "FIGYELEM: a $fw fut; egy ujratoltese az INPUT-ot atrendezheti, a unit ilyenkor nem fut ujra"; else echo "$fw: nem fut"; fi
-done
+# ufw is judged by ITS OWN status, not by the service: on the host (2026-10-14 18:55 UTC) the ufw
+# service ran with the firewall off, "Firewall not enabled (skipping reload)" (acrobot, 30839)
+ufw_aktiv() { command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; }
+if ufw_aktiv; then echo "FIGYELEM: a ufw tuzfala aktiv; egy ujratoltese az INPUT-ot atrendezheti (a timer percen belul visszateszi)"; else echo "ufw: a tuzfala nem aktiv (a ufw status szerint)"; fi
+if systemctl is-active --quiet firewalld 2>/dev/null; then echo "FIGYELEM: a firewalld fut; egy ujratoltese az INPUT-ot atrendezheti (a timer percen belul visszateszi)"; else echo "firewalld: nem fut"; fi
 
 # 1. the script and the unit, root-owned
 install -o root -g root -m 755 "$SRC/host/tuzfal.sh" /opt/gpt-futtato/tuzfal.sh
@@ -73,7 +75,7 @@ fi
 # from its saved files, so a rule that lives only in the running ufw state would be dropped.
 # Measured, not assumed: `ufw status` and the rules OUTSIDE ufw's and our chains, before and
 # after; any difference is printed. Then the timer must put our jumps first again.
-if systemctl is-active --quiet ufw 2>/dev/null; then
+if ufw_aktiv; then
   echo "== valodi ufw reload"
   # BEFORE the reload (acrobot, 30825): a ufw user rule that lives only in the running state
   # would be dropped by the reload; any such rule (or no way to tell) stops here, no reload
@@ -121,7 +123,7 @@ if systemctl is-active --quiet ufw 2>/dev/null; then
   rules_diff=$(diff <(echo "$rules_before") <(other_rules) || true)
   [ -z "$rules_diff" ] && echo "a ufw-n es a mi lancainkon kivuli szabalyok a reload utan azonosak" || { echo "FIGYELEM: a reload a ufw-n kivul is valtoztatott:"; echo "$rules_diff"; }
 else
-  echo "== a ufw nem fut: a valodi reload merese nem alkalmazhato"
+  echo "== a ufw tuzfala nem aktiv: a ufw reload ezen a gepen nem nyul az iptableshez, igy a valodi reload-meres nem ertelmezheto; a timer bizonyiteka a 2b kor"
 fi
 
 # 3. the host's own IPv4 addresses for the probe (gateway, public, tailnet): all must be closed

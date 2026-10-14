@@ -30,6 +30,19 @@ export function judgeSandboxRun(r: RunResult): 'usage' | 'never-started' | 'allo
 export function networkTargets(gateway: string | null, hostAddrs: string[], fleetAddrs: string[]): Array<{ host: string; port: number }>
 export function globalIpv6(ifInet6: string): string[]
 export function checkIpv6(ifInet6: string): [Verdict, string]
+export const AUTH_FILE: string
+export const TEST_OVERRIDES: string[]
+export function checkTestOverrides(env: Record<string, string | undefined>): [Verdict, string]
+export function checkAuthFile(stat: { mode: number; uid: number } | null): [Verdict, string]
+export const V3_CANARIES: string[]
+export const V3_PROMPT: string
+export const V3_TEST_ARGS: string[]
+export const V3_CONTROL_ARGS: string[]
+export const ALLOWED_ITEM_TYPES: string[]
+export const ALLOWED_EVENT_TYPES: string[]
+export function toolUses(jsonl: string): { tools: string[]; unknown: string[]; errors: string[]; items: number }
+export function safeExecArgs(args: string[]): string | null
+export function v3Checks(say: Say, run: Run, io: { exists: (p: string) => boolean; remove: (p: string) => void; loggedIn: boolean }): void
 export function summarize(lines: Array<[string, string, string]>): { ok: number; fail: number; nem: number }
 export function codexSandboxChecks(say: Say, run: Run): Promise<void>
 export function main(): Promise<void>
