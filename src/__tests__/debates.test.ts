@@ -26,6 +26,7 @@ import {
 import { pollDebates } from '../web/debates-discord.js'
 import { setDebateTransportForTest, tryHandleDebates } from '../web/routes/debates.js'
 import { MAIN_AGENT_ID } from '../config.js'
+import { FINAL_MARK, GptBlocked } from '../gpt-package.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 const THREAD = '1559470238783770624'
@@ -168,6 +169,67 @@ describe('rounds, with a fake GPT runner (the counting PR 2 relies on)', () => {
   })
 })
 
+describe('GPT runs (the multi-model plan\'s PR 2)', () => {
+  it('DEB-ATTEMPTS: a run the runner FAILED counts in the daily cap (an attempt, barracuda #137); the next one is skipped by the cap', async () => {
+    const small = { ...cfg, gptDailyCap: 1 }
+    const id = await start('vita os gpt: kérdés', true)
+    const failing: DebateDeps = { ...deps(true), runGpt: async () => { gptCalls.push('x'); throw new Error('502') } }
+    await handleOwnerMessage(db(), failing, small, THREAD, { id: 'a1', content: 'gpt: első' }, OWNER)
+    await handleOwnerMessage(db(), deps(true), small, THREAD, { id: 'a2', content: 'gpt: második' }, OWNER)
+    const gpt = debateTurns(db(), id).filter((t) => t.speaker === 'gpt').map((t) => t.status)
+    expect([gpt, gptCalls.length, posts.some((p) => /napi 1 futást/.test(p.text))], 'DEB-ATTEMPTS').toEqual([['failed', 'skipped'], 1, true])
+  })
+
+  it('DEB-RUNNING-COUNTS: a run in progress already counts (its row is written before the call)', async () => {
+    const small = { ...cfg, gptDailyCap: 1 }
+    const id = await start('vita os gpt: kérdés', true)
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    const slow: DebateDeps = { ...deps(true), runGpt: async () => { await gate; return { text: 'lassú', final: false } } }
+    const first = handleOwnerMessage(db(), slow, small, THREAD, { id: 'r1', content: 'gpt: első' }, OWNER)
+    await new Promise((r) => setTimeout(r, 10))
+    const during = debateTurns(db(), id).filter((t) => t.speaker === 'gpt').map((t) => t.status)
+    await handleOwnerMessage(db(), deps(true), small, THREAD, { id: 'r2', content: 'gpt: második' }, OWNER)
+    release()
+    await first
+    expect([during, gptCalls.length], 'DEB-RUNNING-COUNTS').toEqual([['running'], 0])
+  })
+
+  it('DEB-BLOCKED: a package the filters stopped spent nothing: it does not count, the thread says which piece', async () => {
+    const small = { ...cfg, gptDailyCap: 1 }
+    const id = await start('vita os gpt: kérdés', true)
+    const blocking: DebateDeps = { ...deps(true), runGpt: async () => { throw new GptBlocked('GPT most nem kapja meg a beszélgetést: Balázs 1. üzenete titok-alakot tartalmaz (x).', 'secret') } }
+    await handleOwnerMessage(db(), blocking, small, THREAD, { id: 'b1', content: 'gpt: első' }, OWNER)
+    await handleOwnerMessage(db(), deps(true), small, THREAD, { id: 'b2', content: 'gpt: második' }, OWNER)
+    const gpt = debateTurns(db(), id).filter((t) => t.speaker === 'gpt').map((t) => t.status)
+    expect([gpt, posts.some((p) => p.text.includes('Balázs 1. üzenete titok-alakot')), posts.some((p) => p.text.includes('GPT válasz'))], 'DEB-BLOCKED').toEqual([['blocked', 'answered'], true, true])
+  })
+
+  it('DEB-DEFER: with GPT in the debate, the hand-in is answered once Acrobot\'s text is posted; GPT runs after, in the background', async () => {
+    const id = await start('vita os gpt: kérdés', true)
+    const queued: (() => Promise<void>)[] = []
+    const d: DebateDeps = { ...deps(true), defer: (w) => { queued.push(w) } }
+    const out = await submitAcrobotTurn(db(), d, cfg, id, tokenOf(told[0]!), 'Acrobot 1', false)
+    const before = [out.status, out.status === 200 ? out.body.next : null, gptCalls.length, posts.some((p) => p.text.includes('Acrobot 1')), queued.length]
+    await queued[0]!()
+    const open = debateTurns(db(), id).filter((t) => t.status === 'open' && t.speaker === 'acrobot').map((t) => t.round)
+    expect([before, gptCalls.length, open], 'DEB-DEFER').toEqual([[200, 'gpt', 0, true, 1], 1, [2]])
+  })
+
+  it('DEB-DEFER-NO-GPT: without GPT nothing is deferred (quick, inline), the answer says the real state', async () => {
+    const id = await start()
+    const queued: (() => Promise<void>)[] = []
+    const out = await submitAcrobotTurn(db(), { ...deps(false), defer: (w) => { queued.push(w) } }, cfg, id, tokenOf(told[0]!), 'válasz', false)
+    expect([out.status === 200 ? out.body.next : null, queued.length], 'DEB-DEFER-NO-GPT').toEqual(['var_balazsra', 0])
+  })
+
+  it('DEB-FINAL-ASK: GPT\'s round asks for the end mark by name', async () => {
+    const id = await start('vita os gpt: kérdés', true)
+    await submitAcrobotTurn(db(), deps(true), cfg, id, tokenOf(told[0]!), 'Acrobot 1', false)
+    expect([gptCalls.length, gptCalls[0]!.includes(FINAL_MARK)], 'DEB-FINAL-ASK').toEqual([1, true])
+  })
+})
+
 describe('steering and the clocks', () => {
   it('DEB-STOP: állj closes the open round; a hand-in after it is refused', async () => {
     const id = await start()
@@ -198,7 +260,8 @@ describe('steering and the clocks', () => {
       turns.filter((t) => t.status === 'open').length,
       turns.filter((t) => t.speaker === 'gpt').map((t) => [t.status, /leállítás után/.test(t.text ?? '')]),
       told.length - toldAfterStop,
-    ], 'DEB-STOP-RACE').toEqual([200, 'leallitva', false, 0, [['skipped', true]], 0])
+    // 'late': the runner WAS called, so it is an attempt and counts in the daily cap (barracuda, #137)
+    ], 'DEB-STOP-RACE').toEqual([200, 'leallitva', false, 0, [['late', true]], 0])
   })
 
   it('DEB-STOP-STAYS: a stopped or closed debate is not written back to running or waiting by a late phase end', async () => {

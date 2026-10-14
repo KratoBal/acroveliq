@@ -19,7 +19,8 @@ iptables -V
 docker info 2>/dev/null | grep -iE 'firewall|iptables' || echo "(a docker info nem nevez meg tuzfal-hatteret)"
 # ufw is judged by ITS OWN status, not by the service: on the host (2026-10-14 18:55 UTC) the ufw
 # service ran with the firewall off, "Firewall not enabled (skipping reload)" (acrobot, 30839)
-ufw_aktiv() { command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; }
+# read first, then searched: `cmd | grep -q` under pipefail fails when grep stops early (SIGPIPE)
+ufw_aktiv() { command -v ufw >/dev/null && grep -q '^Status: active' <<< "$(ufw status 2>/dev/null || true)"; }
 if ufw_aktiv; then echo "FIGYELEM: a ufw tuzfala aktiv; egy ujratoltese az INPUT-ot atrendezheti (a timer percen belul visszateszi)"; else echo "ufw: a tuzfala nem aktiv (a ufw status szerint)"; fi
 if systemctl is-active --quiet firewalld 2>/dev/null; then echo "FIGYELEM: a firewalld fut; egy ujratoltese az INPUT-ot atrendezheti (a timer percen belul visszateszi)"; else echo "firewalld: nem fut"; fi
 
@@ -59,7 +60,7 @@ echo "a tuzfal.sh masodik futasa csendes: a szabalyok irasmodja egyezik a kanoni
 echo "== a unit kotesei (boot es docker-ujrainditas)"
 systemctl is-enabled gpt-futtato-tuzfal.service
 systemctl show -p WantedBy -p PartOf -p After -p ActiveState gpt-futtato-tuzfal.service
-systemctl show -p WantedBy gpt-futtato-tuzfal.service | grep -q 'docker.service' || echo "FIGYELEM: a docker.service nem huzza be a unitot (WantedBy)"
+grep -q 'docker.service' <<< "$(systemctl show -p WantedBy gpt-futtato-tuzfal.service)" || echo "FIGYELEM: a docker.service nem huzza be a unitot (WantedBy)"
 
 # 2b. the per-minute check, measured in ONE timer round (not by restarting a unit): a rule put
 # ABOVE our INPUT jump (what a ufw reload does) and the DOCKER-USER jump removed; within the

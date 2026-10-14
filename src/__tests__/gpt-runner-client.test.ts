@@ -1,9 +1,11 @@
 // The controller's side of the GPT runner's channel (src/gpt-runner-client.ts; task
 // t-20261014-gpt-futtato-kontener). WHAT TURNS THIS RED:
 //   - with the switch off, the controller calls the runner (one call is enough);
-//   - with the switch on but WITHOUT the package and filters (PR 2), the controller gets a runner;
-//   - the wired controller (debateDeps) has a runner while PR 2's filters are not there;
-//   - a package the filter stops, or a missing token, still reaches the runner;
+//   - with the switch on but WITHOUT the package and filters, the controller gets a runner;
+//   - the wired controller (debateDeps) has a runner with the default (off) switch;
+//   - a package the filter stops (GptBlocked), or a missing token, still reaches the runner, or the
+//     thread is not told which piece stopped it;
+//   - GPT's end mark is posted, or does not end the phase;
 //   - an answer the output filter stops is posted to the thread;
 //   - the address is anything but http://<IPv4>:<port>.
 import { describe, it, expect, beforeEach } from 'vitest'
@@ -12,8 +14,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDb, initDatabase } from '../db.js'
 import { handleOwnerMessage, type DebateConfig, type DebateDeps } from '../debates.js'
-import { GPT_FILTERS, makeRunGpt, readRunnerToken, runnerEndpoint, type GptFilters, type RunnerClientOptions } from '../gpt-runner-client.js'
-import { debateDeps } from '../web/debates-discord.js'
+import { makeRunGpt, readFinal, readRunnerToken, runnerEndpoint, type GptFilters, type RunnerClientOptions } from '../gpt-runner-client.js'
+import { GptBlocked } from '../gpt-package.js'
+import { debateDeps, debateFilters } from '../web/debates-discord.js'
 
 const THREAD = '1559470238783770624'
 const OWNER = '111'
@@ -33,7 +36,7 @@ const fakeFetch = (answer: unknown = { text: 'GPT szerint igen.' }, status = 200
   }) as typeof fetch
 
 const filters = (o: Partial<GptFilters> = {}): GptFilters => ({
-  buildPrompt: (_d, ask) => `CSOMAG: ${ask}`,
+  buildPrompt: async (_d, ask) => ({ prompt: `CSOMAG: ${ask}` }),
   allowOutput: () => true,
   ...o,
 })
@@ -76,8 +79,12 @@ describe('the switch', () => {
     expect([runGpt, fetches.length, logs]).toEqual([null, 0, ['GPT-futtato: a kapcsolo be van kapcsolva, de nincs csomag-epito es szuro (2. PR): a GPT-oldal kikapcsolva marad']])
   })
 
-  it('KLIENS-WIRED: the controller as wired today has no runner (PR 2 has not given the filters), whatever the switch says', () => {
-    expect([GPT_FILTERS, debateDeps({ send: async () => '1', read: async () => [] } as never).runGpt]).toEqual([null, null])
+  it('KLIENS-WIRED: the wired controller has no runner with the default (off) switch; its filters are the real package', () => {
+    const wired = debateDeps({ send: async () => '1', read: async () => [] } as never)
+    // and the step after a hand-in goes to the background there (the HTTP answer does not wait for GPT)
+    expect([wired.runGpt, typeof wired.defer]).toEqual([null, 'function'])
+    const f = debateFilters(getDb())
+    expect([typeof f.buildPrompt, typeof f.allowOutput, makeRunGpt(opts({ filters: f })) != null]).toEqual(['function', 'function', true])
   })
 
   it('KLIENS-URL: only http://<IPv4>:<port>; a name, https, a path, a credential or a bad octet is no runner', () => {
@@ -98,9 +105,22 @@ describe('a call', () => {
     expect(posts.some((p) => p.includes('GPT szerint igen.'))).toBe(true)
   })
 
-  it('KLIENS-FILTER-IN: a package the filter stops does not leave: zero calls', async () => {
-    await askGpt(makeRunGpt(opts({ filters: filters({ buildPrompt: () => null }) })))
-    expect([fetches.length, posts.some((p) => /futtató hibát adott/.test(p))]).toEqual([0, true])
+  it('KLIENS-FILTER-IN: a package the filter stops does not leave: zero calls, and the thread says which piece (not its content)', async () => {
+    await askGpt(makeRunGpt(opts({ filters: filters({ buildPrompt: async () => { throw new GptBlocked('GPT most nem kapja meg a beszélgetést: Balázs 1. üzenete titok-alakot tartalmaz (GitHub token).', 'secret') } }) })))
+    expect([fetches.length, posts.some((p) => p.includes('Balázs 1. üzenete titok-alakot tartalmaz')), posts.some((p) => /futtató hibát adott/.test(p))]).toEqual([0, true, false])
+  })
+
+  it('KLIENS-FINAL: an answer whose last line is the end mark ends the phase, and the mark is not posted', () => {
+    expect([
+      readFinal('Egyetértek.\n[VÉGE]'), readFinal('Egyetértek.\n[VÉGE]  \n'), readFinal('A [VÉGE] jel a szövegben\nnem zár.'), readFinal('[VÉGE]'),
+    ]).toEqual([{ text: 'Egyetértek.', final: true }, { text: 'Egyetértek.', final: true }, { text: 'A [VÉGE] jel a szövegben\nnem zár.', final: false }, { text: '[VÉGE]', final: false }])
+  })
+
+  it('KLIENS-NOTICE: the package\'s note (older messages left out) is said in the thread before GPT\'s answer', async () => {
+    await askGpt(makeRunGpt(opts({ filters: filters({ buildPrompt: async (_d, ask) => ({ prompt: ask, notice: 'A régebbi 3 üzenet kimaradt.' }) }) })))
+    const n = posts.findIndex((p) => p.includes('A régebbi 3 üzenet kimaradt.'))
+    const a = posts.findIndex((p) => p.includes('GPT szerint igen.'))
+    expect([n >= 0, n < a]).toEqual([true, true])
   })
 
   it('KLIENS-FILTER-OUT: an answer the output filter stops is not posted', async () => {

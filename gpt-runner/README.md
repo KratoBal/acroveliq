@@ -150,8 +150,18 @@ The debate controller (in the fleet's dashboard) talks to this runner over one n
   - **The channel is open only while the fleet container holds the fixed address**, measured at every run of `tuzfal.sh` (the per-minute timer too). Docker may give an old address to another container (barracuda, #148). So another address, an unreadable container or a missing setting **closes** the channel: GPTF-BE gets its closed form and the two ACCEPTs go. On closing, the ACCEPTs leave first; on opening, they come last. The timer logs the change once: `CSATORNA: ...` in `journalctl -u gpt-futtato-tuzfal-ellenor.service`. Running `host/csatorna.sh` again re-reads the address.
 - **The token** is `store/.gpt-futtato-token` in the fleet's store: 0600, owned like `.dashboard-token`, read at every call, never printed.
 - **The controller side** (`src/gpt-runner-client.ts`):
-  - `DEBATE_GPT_RUNNER_ENABLED` is off by default, and **it cannot switch the runner on alone**: the controller gets one only together with the conversation package and its filters (PR 2, `GPT_FILTERS`). Until then, `on` still means no runner and one log line.
+  - `DEBATE_GPT_RUNNER_ENABLED` is off by default, and **it cannot switch the runner on alone**: the controller gets one only together with the conversation package and its filters. Without filters, `on` still means no runner and one log line.
   - `DEBATE_GPT_RUNNER_URL` must be `http://<IPv4>:<port>`.
+- **The package and its filters** (`src/gpt-package.ts`, `scripts/gpt-csomag/hatar.py`; the multi-model plan's PR 2):
+  - **What goes out:** only this debate's record. The owner's messages and the texts the controller itself posted (Acrobot's and GPT's answered turns), in time order, with the project and the topic.
+  - **Secrets:** every raw piece (the messages, the topic, the controller's ask) is checked for the repository's secret shapes and the fleet's own token **values** from the store. A hit blocks the package. The thread is told **which** piece it was, never its content.
+  - **Personal data:** the body goes through the JEV provider boundary's redactor in its **full** mode, behind its leak gate (green for the running code), then its runtime guard. Names, e-mails, phones and addresses leave only as placeholders. Any failure blocks; nothing falls back to the raw text. The keeping mode (amounts, dates, ids, company names) was narrowed by Balázs to one other task (PD-006), so it is not used here.
+  - **Size:** the oldest messages are left out, and the thread is told how many.
+  - **Log:** `logs/gpt-csomag/<date>.jsonl` holds the hash and the size of what went out, never the text.
+  - **Output filter:** GPT's answer is checked for secrets (shapes and fleet token values) before it is posted.
+  - **End mark:** a last line of exactly `[VÉGE]` ends the phase early; the mark itself is not posted.
+  - **Daily cap:** it counts **attempts**. The row is written before the runner is called, and a failed or late run counts too. A package the filters stopped spent nothing and does not count.
+  - **The HTTP answer does not wait for GPT:** after Acrobot's hand-in, GPT's turn runs in the background (barracuda, #137).
 - **`host/csatorna.sh`** (as root, on the host) sets all of this up and **measures** it. Any difference is a STOP.
   1. It finds the fleet container (the one that mounts `/opt/marveen-docker/data`) and chooses the network.
   2. It fixes the runner network's subnet as Docker gave it, with the service at `.10`.
