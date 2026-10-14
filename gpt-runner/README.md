@@ -122,18 +122,49 @@ Balázs approved the ChatGPT login on 2026-10-14 at 18:31 UTC (`exchange/acrovel
   - **H1-AUTH:** the one allowed credential is `/home/gpt/.codex/auth.json`, by exact path, `600` and owned by 10002. F2 no longer flags that exact path; any other credential-looking name stays FAIL.
   - **TESZT-VALTOZO:** `PROBA_ELVART_HOME`, `PROBA_GYOKER`, `PROBA_CSAK_HELYI` and `PROBA_CODEX_VERSION` set in the container are FAIL. `PROBA_FLOTTA_CIMEK` and `PROBA_GEP_CIMEK` are real inputs.
   - **V3** (Balázs, condition 4: a conversation partner, **no execution right**, not just "no shell"; barracuda, #145).
-    - The flags are an **allowlist**: exactly `exec --json --skip-git-repo-check -C /tmp -s read-only -c approval_policy="never"`, then only `-c features.<shell_tool|unified_exec>=<true|false>` pairs, then the fixed prompt. Anything else (`--full-auto`, `--add-dir`, another sandbox, the bypass flags) is refused before any call.
+    - The flags are an **allowlist**: exactly `exec --json --skip-git-repo-check -C /tmp -s read-only -c approval_policy="never"`, then only `-c features.<shell_tool|unified_exec>=<true|false>` pairs, then `-`: the fixed prompt goes in on **stdin** (the CLI's documented stdin sentinel), the way the service sends it, so no prompt text is ever an argument. Anything else (`--full-auto`, `--add-dir`, another sandbox, the bypass flags) is refused before any call.
     - The `--json` events are an **allowlist** too. In the test run only the frames (`thread.started`, `turn.started`, `turn.completed`, `item.*`) and the items `agent_message` and `reasoning` may appear. **Any other item** (a command, a `file_change`, a `web_search`, an `mcp_tool_call`, or a type a later version adds) is FAIL, and so is an unknown event type. An `error` or `turn.failed`, or no item at all, proves nothing: NEM_MERHETO.
     - **The test run:** `features.shell_tool=false` and `features.unified_exec=false`, with a prompt that asks for `touch /tmp/kanari-v3 /home/gpt/kanari-v3`. Neither canary may appear (the second one is on the writable volume), and the JSON events may show no command execution.
     - **The control run:** the same prompt with `shell_tool` on, still read-only. It must show a non-allowed item in the events, or the parser is blind and V3 is NEM_MERHETO.
     - **A canary from the control run** is its own FAIL (`V3-KONTROLL-IRAS`). Since V2 shows that Codex's own sandbox does not start in this container, **this line is the expected signal** if Codex then runs commands without a sandbox: there is no "read-only" inside the container. The activation must then rest on the container's boundary (and on V3's test run with the tools off), not on Codex's sandbox (barracuda, #145).
     - This costs two short model calls on Balázs's plan.
 
+## The controller channel
+
+The debate controller (in the fleet's dashboard) talks to this runner over one narrow, **routed** channel (acrobot 30868, barracuda 30866/30873). The runner never calls back.
+
+- **The service** (`szolga.mjs`, the compose service `gpt-szolga` in the `szolga` profile, the same image):
+  - It listens on the container's **one** address, port 8790, never `0.0.0.0`.
+  - `POST /futtat` takes **exactly** `{"prompt": "..."}`: no Codex flag, no working directory, no session. It needs a Bearer token, compared by SHA-256 in constant time; the runner holds only the hash.
+  - It runs Codex with **the same flag list V3 measured** (`SERVICE_ARGS` is `V3_TEST_ARGS`), with the prompt on stdin.
+  - One run at a time (a parallel request is 429), a time limit per run (the whole process group is killed), and a daily cap on the runner side too, kept in its volume.
+  - It returns the answer only if the `--json` stream holds nothing but the answer and the reasoning. A tool, an unknown event or an error means no answer.
+  - `GET /health` returns the source address the service saw, and logs it.
+  - **No session:** whether `codex exec resume` keeps the read-only sandbox and the tools-off flags is not provable from the 0.159.3 source (`-s` is not a global flag there; the resume parameters carry only part of the config). So every round is a new run (acrobot 30864).
+- **The network:** the port is published on **one** host address, the gateway of the fleet network with the fewest containers. The fleet container joins no network of ours.
+  - **GPTF-BE** (in `tuzfal.sh`, from DOCKER-USER, so after the DNAT): a new connection into the runner's bridge is dropped unless it comes from the fleet container's fixed address and goes to the service's fixed address and port.
+  - **GPTF-GEPROL** (OUTPUT): the host itself sends nothing into the runner's bridge.
+  - The private-range drops now spare replies (`! RELATED,ESTABLISHED`). A NEW connection from the runner to a private address is still dropped, so it never has an established flow of its own.
+  - Every rule of ours is a DROP (GPTF-TOVABB is a jump to them), so their order does not matter. If the addresses in `.env` are missing or malformed, GPTF-BE drops every new connection: the channel is closed.
+  - If the fleet container is re-created with another address, the channel stops working (the safe way). The per-minute timer logs it once: `CSATORNA: ...` in `journalctl -u gpt-futtato-tuzfal-ellenor.service`. Running `host/csatorna.sh` again re-reads the address.
+- **The token** is `store/.gpt-futtato-token` in the fleet's store: 0600, owned like `.dashboard-token`, read at every call, never printed.
+- **The controller side** (`src/gpt-runner-client.ts`):
+  - `DEBATE_GPT_RUNNER_ENABLED` is off by default, and **it cannot switch the runner on alone**: the controller gets one only together with the conversation package and its filters (PR 2, `GPT_FILTERS`). Until then, `on` still means no runner and one log line.
+  - `DEBATE_GPT_RUNNER_URL` must be `http://<IPv4>:<port>`.
+- **`host/csatorna.sh`** (as root, on the host) sets all of this up and **measures** it. Any difference is a STOP.
+  1. It finds the fleet container (the one that mounts `/opt/marveen-docker/data`) and chooses the network.
+  2. It fixes the runner network's subnet as Docker gave it, with the service at `.10`.
+  3. It makes the token if there is none, and writes the addresses and the hash into `.env`.
+  4. It runs `telepit-tuzfal.sh`: persistence, the timer, a quiet second run of `tuzfal.sh` (the rules are spelled the canonical way), and the probe. N1 also tries port 8790 on every host address.
+  5. It starts the service, then measures the **source address** the service sees from a call made in the fleet container. It must be the fleet container's address; a gateway would mean a docker-proxy is in the way and the source filter filters the wrong thing.
+  6. **Negative controls** in the same round, each with a positive control from the same place: another container on the same fleet network, and the host itself. Each must reach the fleet's own port 3420 but not the service's port.
+  7. It checks the timer's address state, then **stops the service**. Running it for the debates is Balázs's separate activation.
+
 ## Before the activation (not this PR)
 
 - **The activation condition (barracuda, #138 review):** the exit code is 1 only on FAIL; NEM_MERHETO exits 0. So before activation, **V2 and V3 must not stay NEM_MERHETO**, unless Balázs accepts that explicitly, in writing, for those lines.
 - **F2 after the login:** the runner's own home (`/home/gpt`, with `auth.json` in it) is not a system path, so F2 will report it. That is then expected, not a fault. The login PR names it explicitly in the probe (the own home is allowed, nothing else), or the probe stays red forever and the red loses its meaning.
 
-- **The controller's channel:** a network of its own between this container and the controller, never one of the fleet's. Then N1 runs on that network too, and ports 3420 and 3425 must not answer there either (plan v2).
+- **The conversation package and its filters (PR 2):** without them the controller has no runner, whatever the switch says (see "The controller channel").
 - **Who can read the login:** like the deploy executor's secrets, `~/.codex` in a volume is readable by anyone who can run `docker` on the host. Install the login only after the fleet's SSH user is out of the `docker` group (the B8 gate).
 - **V3:** with a logged-in model, measure whether the shell tool can be switched off. If the sandbox never starts (see above), also measure what `codex exec` does with a command.

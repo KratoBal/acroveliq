@@ -39,7 +39,7 @@ const SYSTEM_RE = /\.pid$|\.tmp$|\.tmp\.[a-f0-9]+$|\.migrated$|\.bak$|^\.DS_Stor
 
 // Filenames whose presence is sensitive; the audit row is flagged so the UI
 // can show a sanitised label instead of hinting at secret values.
-const SENSITIVE_NAMES = new Set(['.dashboard-token', 'vault.json', '.vault-key', '.claude-oauth-token', '.federation-token', 'federation.json'])
+const SENSITIVE_NAMES = new Set(['.dashboard-token', 'vault.json', '.vault-key', '.claude-oauth-token', '.federation-token', 'federation.json', '.gpt-futtato-token'])
 
 // --- Agent attribution slot ---
 // Node.js is single-threaded; a route handler sets this before writing,

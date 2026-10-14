@@ -145,6 +145,13 @@ export const DEBATE_TURN_TIMEOUT_SECONDS = Math.max(60, Number(cfg('DEBATE_TURN_
 export const DEBATE_PHASE_TIMEOUT_SECONDS = Math.max(300, Number(cfg('DEBATE_PHASE_TIMEOUT_SECONDS') ?? '3600') || 3600)
 export const DEBATE_GPT_DAILY_CAP = Math.max(0, Number(cfg('DEBATE_GPT_DAILY_CAP') ?? '40') || 0)
 export const DEBATE_POLL_SECONDS = Math.max(5, Number(cfg('DEBATE_POLL_SECONDS') ?? '15') || 15)
+// The GPT runner's channel (gpt-runner/szolga.mjs). OFF by default, and even when `on` the
+// controller gets no runner unless the conversation package and its filters exist (PR 2):
+// src/gpt-runner-client.ts. The token is a store file (0600), read at every call, not .env.
+export const DEBATE_GPT_RUNNER_ENABLED = (cfg('DEBATE_GPT_RUNNER_ENABLED') ?? 'off').trim().toLowerCase() === 'on'
+export const DEBATE_GPT_RUNNER_URL = (cfg('DEBATE_GPT_RUNNER_URL') ?? '').trim()
+export const DEBATE_GPT_RUNNER_TOKEN_FILE = (cfg('DEBATE_GPT_RUNNER_TOKEN_FILE') ?? '').trim() || join(STORE_DIR, '.gpt-futtato-token')
+export const DEBATE_GPT_RUNNER_TIMEOUT_SECONDS = Math.max(30, Number(cfg('DEBATE_GPT_RUNNER_TIMEOUT_SECONDS') ?? '240') || 240)
 /**
  * The dashboard user who decides a decision row (Dontéseim V1; barracuda's review of #104:
  * any logged-in session is not the owner, dashboard_users may hold more than one user).

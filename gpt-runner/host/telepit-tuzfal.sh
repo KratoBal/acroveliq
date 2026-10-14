@@ -35,16 +35,27 @@ systemctl enable --now gpt-futtato-tuzfal-ellenor.timer
 
 # 2. persistence, measured: take our rules away, the unit must bring them back
 iptables -w 5 -D INPUT -i "$BRIDGE" -j GPTF-GEP 2>/dev/null || true
-iptables -w 5 -D DOCKER-USER -i "$BRIDGE" -j GPTF-PRIVAT 2>/dev/null || true
+iptables -w 5 -D OUTPUT -o "$BRIDGE" -j GPTF-GEPROL 2>/dev/null || true
+iptables -w 5 -D DOCKER-USER -j GPTF-TOVABB 2>/dev/null || true
 iptables -w 5 -F GPTF-GEP 2>/dev/null || true
 iptables -w 5 -F GPTF-PRIVAT 2>/dev/null || true
+iptables -w 5 -F GPTF-BE 2>/dev/null || true
 systemctl restart gpt-futtato-tuzfal.service
 echo "== a szabalyok a unit ujrafuttatasa utan"
 iptables -w 5 -S INPUT | grep -F GPTF-GEP || { echo "STOP: az INPUT ugras hianyzik"; exit 1; }
-iptables -w 5 -S DOCKER-USER | grep -F GPTF-PRIVAT || { echo "STOP: a DOCKER-USER ugras hianyzik"; exit 1; }
+iptables -w 5 -S OUTPUT | grep -F GPTF-GEPROL || { echo "STOP: az OUTPUT ugras hianyzik"; exit 1; }
+iptables -w 5 -S DOCKER-USER | grep -F GPTF-TOVABB || { echo "STOP: a DOCKER-USER ugras hianyzik"; exit 1; }
 iptables -w 5 -S FORWARD | grep -F -- '-j DOCKER-USER' || echo "FIGYELEM: a FORWARD nem ugrik a DOCKER-USER-re ebben az iptables-hatterben; a privat-tartomany szabaly igy nem hat (a proba N1-je megmutatja)"
 iptables -w 5 -S GPTF-GEP
 iptables -w 5 -S GPTF-PRIVAT
+iptables -w 5 -S GPTF-BE
+iptables -w 5 -S GPTF-GEPROL
+iptables -w 5 -S GPTF-TOVABB
+# the canonical spelling, measured on THIS iptables: a second run must change nothing and say nothing
+masodik=$(/opt/gpt-futtato/tuzfal.sh)
+masodik=$(printf '%s\n' "$masodik" | grep -v '^CSATORNA: ' || true)
+[ -z "$masodik" ] || { echo "STOP: a tuzfal.sh masodik futasa is valtoztatott (a szabaly irasmodja nem a kanonikus):"; echo "$masodik"; exit 1; }
+echo "a tuzfal.sh masodik futasa csendes: a szabalyok irasmodja egyezik a kanonikus (listazott) alakkal"
 echo "== a unit kotesei (boot es docker-ujrainditas)"
 systemctl is-enabled gpt-futtato-tuzfal.service
 systemctl show -p WantedBy -p PartOf -p After -p ActiveState gpt-futtato-tuzfal.service
@@ -57,11 +68,11 @@ systemctl show -p WantedBy gpt-futtato-tuzfal.service | grep -q 'docker.service'
 echo "== a percenkenti ellenorzo (timer): egy kor"
 systemctl is-active gpt-futtato-tuzfal-ellenor.timer
 iptables -w 5 -I INPUT 1 -m comment --comment gptf-ufw-proba
-iptables -w 5 -D DOCKER-USER -i "$BRIDGE" -j GPTF-PRIVAT
+iptables -w 5 -D DOCKER-USER -j GPTF-TOVABB
 start=$(date +%s); back=""
 for _ in $(seq 1 18); do
   sleep 5
-  if [ "$(iptables -w 5 -S INPUT | grep -m1 '^-A ' || true)" = "-A INPUT -i $BRIDGE -j GPTF-GEP" ] && iptables -w 5 -C DOCKER-USER -i "$BRIDGE" -j GPTF-PRIVAT 2>/dev/null; then back=1; break; fi
+  if [ "$(iptables -w 5 -S INPUT | grep -m1 '^-A ' || true)" = "-A INPUT -i $BRIDGE -j GPTF-GEP" ] && iptables -w 5 -C DOCKER-USER -j GPTF-TOVABB 2>/dev/null; then back=1; break; fi
 done
 iptables -w 5 -D INPUT -m comment --comment gptf-ufw-proba
 if [ -n "$back" ]; then
@@ -109,7 +120,7 @@ if ufw_aktiv; then
   echo "az INPUT elso szabalya kozvetlenul a reload utan: $first_after_reload"
   back=""
   for _ in $(seq 1 18); do
-    if [ "$(iptables -w 5 -S INPUT | grep -m1 '^-A ' || true)" = "-A INPUT -i $BRIDGE -j GPTF-GEP" ] && iptables -w 5 -C DOCKER-USER -i "$BRIDGE" -j GPTF-PRIVAT 2>/dev/null; then back=1; break; fi
+    if [ "$(iptables -w 5 -S INPUT | grep -m1 '^-A ' || true)" = "-A INPUT -i $BRIDGE -j GPTF-GEP" ] && iptables -w 5 -C DOCKER-USER -j GPTF-TOVABB 2>/dev/null; then back=1; break; fi
     sleep 5
   done
   [ -n "$back" ] || { echo "STOP: a ufw reload utan 90 mp alatt nem allt vissza a szabalyunk"; exit 1; }
@@ -131,7 +142,8 @@ GEP=$(hostname -I | tr ' ' '\n' | { grep -v ':' || true; } | { grep -v '^$' || t
 [ -n "$GEP" ] || echo "FIGYELEM: a gepnek nincs IPv4 cime a hostname -I szerint; a proba csak az atjarot nezi"
 sed -i '/^GPT_FUTTATO_GEP_CIMEK=/d' /opt/gpt-futtato/.env
 echo "GPT_FUTTATO_GEP_CIMEK=$GEP" >> /opt/gpt-futtato/.env
-cat /opt/gpt-futtato/.env
+# the service token's hash is not printed (not a secret, but nothing to read in it)
+grep -v '^GPT_FUTTATO_SZOLGA_TOKEN_SHA256=' /opt/gpt-futtato/.env
 
 # 4. the network is re-created with the fixed bridge name, then the probe runs once
 cd /opt/gpt-futtato
@@ -146,5 +158,5 @@ grep -E "^(PROBA |OSSZESITES)" /opt/gpt-futtato/proba-teljes.log || echo "NINCS 
 
 # 5. the stop rule (acrobot): if the control or name resolution broke under the rules, say so
 if grep -qE "^PROBA N1 NEM_MERHETO" /opt/gpt-futtato/proba-teljes.log; then
-  echo "STOP: a kontroll (api.openai.com:443) a szabalyok utan nem ert ki; a nevfeloldas vagy a kimeno ut torhetett el. A szabalyok levetele: iptables -w 5 -D INPUT -i $BRIDGE -j GPTF-GEP; iptables -w 5 -D DOCKER-USER -i $BRIDGE -j GPTF-PRIVAT"
+  echo "STOP: a kontroll (api.openai.com:443) a szabalyok utan nem ert ki; a nevfeloldas vagy a kimeno ut torhetett el. A szabalyok levetele: iptables -w 5 -D INPUT -i $BRIDGE -j GPTF-GEP; iptables -w 5 -D OUTPUT -o $BRIDGE -j GPTF-GEPROL; iptables -w 5 -D DOCKER-USER -j GPTF-TOVABB"
 fi

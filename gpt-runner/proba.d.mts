@@ -2,7 +2,7 @@
 export type Verdict = 'OK' | 'FAIL' | 'NEM_MERHETO'
 export type Say = (id: string, verdict: Verdict, detail: string) => void
 export type RunResult = { code: number; out: string }
-export type Run = (cmd: string, args: string[]) => RunResult
+export type Run = (cmd: string, args: string[], input?: string) => RunResult
 
 export const FLEET_IDS: number[]
 export const RUNNER_ID: number
@@ -36,6 +36,9 @@ export function checkTestOverrides(env: Record<string, string | undefined>): [Ve
 export function checkAuthFile(stat: { mode: number; uid: number } | null): [Verdict, string]
 export const V3_CANARIES: string[]
 export const V3_PROMPT: string
+export const RUN_COMMON: readonly string[]
+export const RUN_TOOLS_OFF: readonly string[]
+export const PROMPT_FROM_STDIN: '-'
 export const V3_TEST_ARGS: string[]
 export const V3_CONTROL_ARGS: string[]
 export const ALLOWED_ITEM_TYPES: string[]

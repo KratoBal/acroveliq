@@ -3,8 +3,9 @@
 # a container of its own). Built ON THE HOST, as root, from a root-owned clone at a reviewed
 # commit (/opt/gpt-futtato/src), never from the fleet's tree, the same way as deploy-executor/.
 #
-# Until the GPT side is activated (Balázs, condition 6) the image runs ONE thing: the isolation
-# probe (proba.mjs), once, into `docker logs`. No login, no credential (Balázs: not yet allowed).
+# By default the image runs the isolation probe (proba.mjs), once, into `docker logs`. The
+# controller channel's service (szolga.mjs) is a second compose service from the same image,
+# started only by the host script; the GPT side stays off until Balázs's separate activation.
 #
 # NODE_IMAGE has no default and must be pinned to a digest; the Codex CLI comes from
 # package-lock.json with `npm ci` (integrity hashes), at one exact version: the probe's V2 sandbox
@@ -27,6 +28,8 @@ COPY gpt-runner/package.json gpt-runner/package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund --omit=dev \
  && ln -s /app/node_modules/.bin/codex /usr/local/bin/codex
 COPY gpt-runner/proba.mjs ./proba.mjs
+# the service (the controller channel); it imports the probe's measured flags
+COPY gpt-runner/szolga.mjs ./szolga.mjs
 # the home volume (~/.codex later) starts out owned by the runner's user, closed to anyone else;
 # uid 10002: not root, not the image's own `node` (1000, which is marveen on the fleet host)
 RUN mkdir -p /home/gpt && chown 10002:10002 /home/gpt && chmod 700 /home/gpt
