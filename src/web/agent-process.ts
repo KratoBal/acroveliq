@@ -55,7 +55,7 @@ import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureSkillsPathTrapSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
-import { recordInjectedPrompt } from './injected-prompt-registry.js'
+import { clearAbandonedPrompt, recordAbandonedPrompt, recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
@@ -2408,16 +2408,22 @@ export async function sendPromptToSession(
   // that did not land stays pending and the router sends it again, so the stuck-input
   // recovery must not submit a second copy from a record.
   if (opts.busyTarget) {
-    return emitIntoBusyPane(
+    const outcome = await emitIntoBusyPane(
       text.replace(/\r?\n/g, ' '),
       {
         capture: () => capturePane(session, host),
         typeChunk: (chunk) => runTmux(host, ['send-keys', '-t', session, '-l', chunk], { timeout: 5000 }),
         enter: () => runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 }),
         delay,
+        abandon: (typed) => recordAbandonedPrompt(session, typed),
       },
       { chunkGapMs: 30, pollMs: SUBMIT_RETRY_POLL_MS, maxRetries: SUBMIT_RETRY_MAX_ATTEMPTS },
     )
+    // a landed message in this pane supersedes an earlier abandoned half, the same
+    // way a recorded typing does (barracuda, #118): the old record must not later
+    // clear a real parked text that happens to start the same way
+    if (outcome === 'sent') clearAbandonedPrompt(session)
+    return outcome
   }
   // Pre-flight buffer-clear when a stale preamble is detected. Reading
   // the pane is best-effort: a capture failure here means we cannot

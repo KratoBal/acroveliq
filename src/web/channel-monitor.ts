@@ -33,7 +33,7 @@ import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
-import { getInjectedPrompt, matchesInjectedPrompt } from './injected-prompt-registry.js'
+import { clearAbandonedPrompt, getAbandonedPrompt, getInjectedPrompt, isAbandonedFragment, matchesInjectedPrompt } from './injected-prompt-registry.js'
 import {
   detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
@@ -320,6 +320,11 @@ export async function recoverStuckInputForSession(
   // (phantom prompt-injection). See captureParkedInputView / stripGhostSuggestion.
   const pane = captureParkedInputView(session)
   const sig = pane != null ? stuckInputSignature(pane) : null
+  // An idle pane with an empty box: an abandoned half (busy-pane-emit) is gone
+  // some other way (a hand clear, the parked-input janitor), so its record ends
+  // here -- the record lives on events, not on time (barracuda, #118). A busy
+  // pane keeps it: the half waits behind the running turn.
+  if (pane != null && detectPaneState(pane) === 'idle') clearAbandonedPrompt(session)
   const decision = decideStuckInputRecovery(sig, prev, Date.now(), thresholds)
   if (decision.recover && pane != null) {
     const attempt = decision.next.attempts
@@ -345,6 +350,7 @@ export async function recoverStuckInputForSession(
       scheduledTaskBlock: parkedScheduledTaskInput(pane),
       machineOrigin: parkedMachineOriginInput(pane),
       recordedMatch,
+      abandonedMatch: isAbandonedFragment(parkedInputText(pane), getAbandonedPrompt(session)),
     }
     const action = decideStuckInputAction(facts)
     await performStuckInputAction(session, action, pane, block, sig, attempt, recorded?.text ?? null)
@@ -442,6 +448,18 @@ async function performStuckInputAction(
         logger.warn({ session, attempt }, 'Stuck input -- truncated safety preamble, clearing buffer (no re-inject)')
         await clearInputBuffer(session)
         break
+      case 'clear-abandoned': {
+        // the half a busy-pane send left behind: clear, never submit (the router
+        // re-sends the whole message). Under the lane, like the re-injects: a
+        // live delivery into this pane must not have its box cleared under it.
+        logger.warn({ session, attempt }, 'Stuck input -- text an undelivered busy-pane send left behind, clearing buffer (no submit; the router re-sends)')
+        const res = await withSessionSendLock(session, null, 'recover', async () => {
+          await clearInputBuffer(session)
+        })
+        if (res.ran) clearAbandonedPrompt(session)
+        else logger.info({ session, attempt }, 'Stuck-input recovery (clear-abandoned) skipped: a delivery is in flight into this pane (fail-closed)')
+        break
+      }
       case 'clear-scheduled':
         logger.warn({ session, attempt }, 'Stuck input -- parked scheduled-task tick, clearing buffer (no re-inject; next schedule fire re-delivers)')
         await clearInputBuffer(session)

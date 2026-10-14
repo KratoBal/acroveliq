@@ -56,6 +56,12 @@ export interface BusyPaneIo {
   typeChunk(chunk: string): void
   enter(): void
   delay(ms: number): Promise<void>
+  /**
+   * A 'not-landed' send that typed something: what it typed, so the stuck-input
+   * recovery CLEARS that text from the box instead of submitting half a message
+   * (the router sends the whole one again). Not called when nothing was typed.
+   */
+  abandon?(typed: string): void
 }
 
 export interface BusyPaneEmitConfig {
@@ -83,23 +89,29 @@ function ourTextInLiveBox(pane: string | null, head: string): boolean {
  */
 export async function emitIntoBusyPane(oneLine: string, io: BusyPaneIo, cfg: BusyPaneEmitConfig): Promise<'sent' | 'not-landed'> {
   const chunks = splitForSendKeys(oneLine)
+  let typed = ''
+  const notLanded = (): 'not-landed' => {
+    if (typed.length > 0) io.abandon?.(typed)
+    return 'not-landed'
+  }
   for (let i = 0; i < chunks.length; i++) {
     const pane = io.capture()
-    if (pane == null || !paneShowsOnlyLiveInput(pane)) return 'not-landed'
+    if (pane == null || !paneShowsOnlyLiveInput(pane)) return notLanded()
     io.typeChunk(chunks[i]!)
+    typed += chunks[i]!
     if (i < chunks.length - 1) await io.delay(cfg.chunkGapMs)
   }
   const head = payloadHead(oneLine)
-  if (!ourTextInLiveBox(io.capture(), head)) return 'not-landed'
+  if (!ourTextInLiveBox(io.capture(), head)) return notLanded()
   io.enter()
   for (let attempt = 0; ; attempt++) {
     await io.delay(cfg.pollMs)
     const pane = io.capture()
     const action = decideSubmitFollowup(pane, head, attempt, cfg.maxRetries, { busyTarget: true })
     if (action === 'done') return 'sent'
-    if (action !== 'retry-enter') return 'not-landed'
+    if (action !== 'retry-enter') return notLanded()
     // the retry Enter gets the same fresh look as the first one
-    if (!ourTextInLiveBox(io.capture(), head)) return 'not-landed'
+    if (!ourTextInLiveBox(io.capture(), head)) return notLanded()
     io.enter()
   }
 }
