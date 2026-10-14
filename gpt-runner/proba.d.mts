@@ -38,6 +38,8 @@ export const V3_CANARIES: string[]
 export const V3_PROMPT: string
 export const RUN_COMMON: readonly string[]
 export const PLUGIN_CACHE: string
+export const SYSTEM_SKILLS: string
+export function checkSystemSkills(present: boolean, loggedIn: boolean): [Verdict, string]
 export function checkPluginCache(present: boolean, loggedIn: boolean): [Verdict, string]
 export const RUN_TOOLS_OFF: readonly string[]
 export const PROMPT_FROM_STDIN: '-'

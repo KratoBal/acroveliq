@@ -110,11 +110,12 @@ grep -v '^GPT_FUTTATO_SZOLGA_TOKEN_SHA256=' "$ENVF"
 # installer measures all of these (and that a second run of tuzfal.sh is quiet)
 # a service container from an earlier round would keep the runner network from being re-created
 (cd "$DIR" && docker compose --profile szolga rm -sf gpt-szolga >/dev/null 2>&1) || true
-# the Codex plugin cache the remote sync wrote into the runner's volume after the login (acrobot
-# 30889): removed here, as the runner's own user, ONLY that directory (auth.json is not in it); the
-# probe's PLUGIN line then proves the sync stays off after its Codex runs
-echo "== a Codex plugin-gyorsitotara a futtato koteten"
-(cd "$DIR" && docker compose run --rm --no-deps --entrypoint sh gpt-futtato -c 'p=/home/gpt/.codex/plugins; echo "elotte: $(find "$p" -type f 2>/dev/null | wc -l) fajl"; rm -rf -- "$p"; if [ -e "$p" ]; then echo "MEGMARADT"; exit 1; fi; echo "utana: a mappa nincs"; test -f /home/gpt/.codex/auth.json && echo "az auth.json a helyen"') || stop "a plugin-gyorsitotar nem torolheto"
+# what Codex wrote into the runner's volume and the runner does not need, removed here as the
+# runner's own user, ONLY these two directories (auth.json is in neither): the plugin cache of the
+# remote sync (acrobot 30889) and the built-in skills (acrobot 30902). The probe's PLUGIN and SKILLS
+# lines then prove neither comes back after its Codex runs (both are off in the fixed flags).
+echo "== a Codex plugin-gyorsitotara es beepitett skilljei a futtato koteten"
+(cd "$DIR" && docker compose run --rm --no-deps --entrypoint sh gpt-futtato -c 'for p in /home/gpt/.codex/plugins /home/gpt/.codex/skills/.system; do echo "$p elotte: $(find "$p" -type f 2>/dev/null | wc -l) fajl"; rm -rf -- "$p"; if [ -e "$p" ]; then echo "MEGMARADT: $p"; exit 1; fi; echo "$p utana: a mappa nincs"; done; if [ -f /home/gpt/.codex/auth.json ]; then echo "az auth.json a helyen"; else echo "FIGYELEM: az auth.json nincs a koteten (a torles nem erintette)"; fi') || stop "a plugin-gyorsitotar vagy a beepitett skillek nem torolhetok"
 echo "== a tuzfal, a tartossag, az idozito es a proba (telepit-tuzfal.sh)"
 bash "$SRC/host/telepit-tuzfal.sh"
 # the chain is read ONCE into a variable, then searched: `iptables -S | grep -q` under pipefail
