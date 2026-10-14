@@ -31,6 +31,7 @@ import type Database from 'better-sqlite3'
 
 import { createAgentMessage } from './db.js'
 import {
+  NON_STATE_SQL,
   TASK_PRIORITIES,
   addTaskEvent,
   isTaskPaused,
@@ -71,7 +72,7 @@ export function taskSnapshot(db: Database.Database, id: string): Record<string, 
 function lastStateKind(db: Database.Database, id: string): string | null {
   const row = db
     .prepare(
-      `SELECT kind FROM task_events WHERE task_id = ? AND kind NOT IN ('decision', 'coord_open', 'coord_close', 'owner_action')
+      `SELECT kind FROM task_events WHERE task_id = ? AND kind NOT IN (${NON_STATE_SQL})
        ORDER BY at DESC, id DESC LIMIT 1`,
     )
     .get(id) as { kind: string } | undefined

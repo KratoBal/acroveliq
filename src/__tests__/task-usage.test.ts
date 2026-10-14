@@ -42,6 +42,9 @@ import {
   taskUsage,
   taskUsageWithVariants,
   upsertTask,
+  NON_STATE_KINDS,
+  STATE_KINDS,
+  TASK_EVENT_KINDS,
   type MergeProbe,
   type TaskEventKind,
 } from '../task-usage.js'
@@ -673,6 +676,12 @@ describe('TC-Lite L1: the timeline and busy', () => {
     const afterReview = busy()
     event('a', 'fix_started', 'murena', 30)
     expect([atStart, afterReview, busy()], 'TCL-BUSY').toEqual([['a', 'b'], ['b'], ['a', 'b']])
+  })
+
+  it('KIND-CLASS: every event kind is named a state or a non-state, once (a new kind is red until someone decides)', () => {
+    const named = [...STATE_KINDS, ...NON_STATE_KINDS]
+    expect([...named].sort(), 'KIND-CLASS').toEqual([...TASK_EVENT_KINDS].sort())
+    expect(new Set(named).size).toBe(named.length)
   })
 
   it('TCL-BUSY-NONSTATE: a decision or a coord mark on a running task does not free its agent', () => {
