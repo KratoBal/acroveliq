@@ -17327,6 +17327,15 @@ async function aqDecide(id, action) {
   }
 }
 
+// The owner's Discord answer: a link when the server built one (it does, only from ids and
+// only to discord.com), so confirming is not done from memory (barracuda, #108); else the id.
+function aqDiscordLink(d) {
+  const url = typeof d.discord_url === 'string' && /^https:\/\/discord\.com\/channels\/\d{17,20}\/\d{17,20}\/\d{17,20}$/.test(d.discord_url) ? d.discord_url : null
+  return url
+    ? `<a href="${aqEsc(url)}" target="_blank" rel="noreferrer">a válaszod megnyitása a Discordon</a> (üzenet ${aqEsc(d.discord_message)})`
+    : `üzenet ${aqEsc(d.discord_message)}`
+}
+
 const aqNotGiven = (v) => (v === null || v === undefined || String(v).trim() === '' ? 'nincs megadva' : String(v))
 
 // The state of a decision row, as the owner reads it.
@@ -17367,7 +17376,7 @@ function aqDecisionDetail(d) {
       <li>Ha jóváhagyod: ${aqEsc(aqNotGiven(d.consequence))}</li>
       <li>Feladat: ${d.task_id ? `<button type="button" class="aq-link" data-aq-task="${aqEsc(d.task_id)}">${aqEsc(d.task_id)}</button>` : 'nincs megadva'}</li>
       <li>Kérte: ${aqEsc(d.requested_by)}, ${aqEsc(aqTime(d.requested_at))}</li>
-      ${d.discord_message ? `<li>Discordon válaszoltál: üzenet ${aqEsc(d.discord_message)}</li>` : ''}
+      ${d.discord_message ? `<li>Discordon válaszoltál: ${aqDiscordLink(d)}</li>` : ''}
       ${open ? `<li>Lejár: ${aqEsc(aqTime(d.timeout_at))}</li>` : `<li>Eldöntve: ${aqEsc(aqTime(d.resolved_at))}${d.resolved_by ? ', ' + aqEsc(d.resolved_by) : ''}</li>`}
     </ul>
     ${open ? `<div class="aq-dec-actions">${button('approve', 'aq-dec-yes')}${button('reject', 'aq-dec-no')}${button('discuss', 'aq-dec-talk')}</div>

@@ -139,6 +139,12 @@ export const APPROVAL_DISCORD_POLL_SECONDS = Math.max(5, Number(cfg('APPROVAL_DI
  * Unset, NOBODY decides: the route answers 403, it does not fall back to "any session".
  */
 export const DECISION_OWNER_USER = (cfg('DECISION_OWNER_USER') ?? '').trim()
+/**
+ * The Discord server (guild) the owner answers in: with it, a Discord-answered decision row
+ * links to the message (https://discord.com/channels/<guild>/<channel>/<message>). Unset,
+ * the row shows the message id only, as before.
+ */
+export const DISCORD_GUILD_ID = (cfg('DISCORD_GUILD_ID') ?? '').trim()
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
 
 export const SLACK_BOT_TOKEN = env['SLACK_BOT_TOKEN'] ?? ''
