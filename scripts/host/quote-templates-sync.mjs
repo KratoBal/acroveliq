@@ -16,11 +16,16 @@
 //     naming the "seed" could overwrite any template it can read);
 //   - leave everything else alone: a matching row, a row someone edited, a name
 //     held by more than one row. No delete, no other table but the audit log.
-// Without APPLY=1 it only prints the plan. The writes are one transaction, every
-// row re-read inside it; after it the plan runs again and must find nothing to do.
+// Without APPLY=1 it only prints the plan. The writes are one transaction; a row
+// whose blocks are replaced is re-read FOR UPDATE inside it, the same lock the
+// template editor takes (quote-templates.service.ts), so an edit saved between
+// the read and the write cannot be overwritten (barracuda, #97). After it the
+// plan runs again and must find nothing to do. The input's sha256 is printed
+// first and goes into every audit row: the write is tied to the file approved.
 //
 // Exit: 0 done (or plan printed), 1 the re-measure still finds work or a write
 // failed (nothing written then), 3 the input was refused (nothing read or written).
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -40,7 +45,7 @@ const { templateBody } = await quotes("quote-templates.service.js");
 const { SNIPPET_KINDS, snippetMilestones } = await quotes("quote-snippets.service.js");
 const { textInput, richTextInput } = await quotes("quote-editor-input.js");
 const { DEFAULT_QUOTE_TEMPLATES } = await quotes("quote-template-defaults.js");
-const { prisma } = await import("@acropora/database");
+const { prisma, Prisma } = await import("@acropora/database");
 
 const canon = (v) =>
   Array.isArray(v)
@@ -142,7 +147,7 @@ async function plan(db, input) {
 }
 
 const audit = (tx, action, entityType, entityId, metadata) =>
-  tx.auditLog.create({ data: { action, entityType, entityId, userId: null, metadata: { ...metadata, source: "fleet-gate quote-templates-sync" } } });
+  tx.auditLog.create({ data: { action, entityType, entityId, userId: null, metadata: { ...metadata, source: "fleet-gate quote-templates-sync", inputSha256 } } });
 
 async function write(input, steps) {
   await prisma.$transaction(async (tx) => {
@@ -156,7 +161,10 @@ async function write(input, steps) {
         await audit(tx, "quote_template.created", "QuoteTemplate", row.id, { blockCount: st.t.blocks.length });
       }
       if (st.op === "updateBlocks") {
-        const cur = await tx.quoteTemplate.findUnique({ where: { id: st.id } });
+        // locked: an editor save waits for this transaction, or this waits for it and sees its text
+        const [cur] = await tx.$queryRaw(
+          Prisma.sql`SELECT "archivedAt", "blocks", "milestones", "priceDisplay", "defaultValidityDays" FROM "QuoteTemplate" WHERE "id" = ${st.id} FOR UPDATE`,
+        );
         if (!cur || !holdsSeed(cur, st.t))
           throw new Error(`${st.t.name}: a sor a terv ota megvaltozott, semmit nem irtam`);
         await tx.quoteTemplate.update({ where: { id: st.id }, data: { blocks: st.t.blocks } });
@@ -174,8 +182,14 @@ async function write(input, steps) {
   });
 }
 
-let raw = "";
-for await (const chunk of process.stdin) raw += chunk;
+// the bytes first, decoded once: a multi-byte letter may fall across two chunks
+const chunks = [];
+for await (const chunk of process.stdin) chunks.push(chunk);
+const bytes = Buffer.concat(chunks);
+const raw = bytes.toString("utf8");
+// the same digest as `sha256sum <file>` on the caller's side
+const inputSha256 = createHash("sha256").update(bytes).digest("hex");
+console.log(`BEMENET sha256: ${inputSha256}`);
 const input = checkInput(raw);
 
 try {

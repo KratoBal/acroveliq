@@ -23,4 +23,6 @@ case "$MODE" in plan|apply) ;; *) echo "hasznalat: $0 plan|apply <sablonok.json>
 [ "$#" -eq 2 ] || { echo "hasznalat: $0 plan|apply <sablonok.json>" >&2; exit 2; }
 [ -f "$FILE" ] && [ -s "$FILE" ] || { echo "nincs ilyen fajl, vagy ures: $FILE" >&2; exit 2; }
 
+# the program prints the same digest first ("BEMENET sha256: ..."): the two must match
+echo "fajl sha256: $(sha256sum < "$FILE" | cut -d' ' -f1)" >&2
 ssh -o BatchMode=yes -o ConnectTimeout=10 -i "$KEY" "$HOST" quote-templates-sync "$MODE" < "$FILE"

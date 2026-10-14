@@ -16,6 +16,7 @@ import { describe, it, expect, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 
 const PROGRAM = readFileSync(join(process.cwd(), 'scripts', 'host', 'quote-templates-sync.mjs'), 'utf-8')
@@ -89,7 +90,15 @@ const table = (get, name) => ({
   create: async ({ data }) => { log(name + ".create"); const row = { id: name + "-" + ++n, archivedAt: null, milestones: null, ...structuredClone(data) }; get()[name].push(row); return structuredClone(row); },
   update: async ({ where, data }) => { log(name + ".update"); const row = get()[name].find((r) => r.id === where.id); Object.assign(row, structuredClone(data)); return structuredClone(row); },
 });
-const client = (get) => ({ quoteTemplate: table(get, "quoteTemplate"), quoteSnippet: table(get, "quoteSnippet"), auditLog: table(get, "auditLog") });
+export const Prisma = { sql: (strings, ...values) => ({ text: strings.join("?"), values }) };
+// the raw read the program locks with: only the one statement it may send
+const queryRaw = (get) => async (q) => {
+  const locked = 'SELECT "archivedAt", "blocks", "milestones", "priceDisplay", "defaultValidityDays" FROM "QuoteTemplate" WHERE "id" = ? FOR UPDATE';
+  log("$queryRaw " + (q.text.endsWith(" FOR UPDATE") ? "FOR UPDATE" : "UNLOCKED"));
+  if (q.text !== locked) throw new Error("unexpected raw query: " + q.text);
+  return get().quoteTemplate.filter((r) => r.id === q.values[0]).map((r) => structuredClone(r));
+};
+const client = (get) => ({ quoteTemplate: table(get, "quoteTemplate"), quoteSnippet: table(get, "quoteSnippet"), auditLog: table(get, "auditLog"), $queryRaw: queryRaw(get) });
 export const prisma = {
   ...client(() => state),
   $transaction: async (fn) => {
@@ -154,6 +163,7 @@ const template = (name: string, blocks = edited) => ({ name, priceDisplay: 'GROS
 const snippet = { name: 'Szállítási feltételek', kind: 'DELIVERY', content: doc('30 munkanap'), milestones: null }
 const empty = (): State => ({ quoteTemplate: [], quoteSnippet: [], auditLog: [] })
 const writes = (calls: string[]) => calls.filter((c) => /\.(create|update)$/.test(c))
+const sha = (input: unknown) => createHash('sha256').update(JSON.stringify(input), 'utf8').digest('hex')
 
 describe('quote-templates-sync: the input', () => {
   it('QTS-INPUT: anything but the exact shape, valid by the image\'s rules, is refused whole, before the database', () => {
@@ -207,6 +217,7 @@ describe('quote-templates-sync: plan and apply', () => {
       [],
       false,
       [
+        `BEMENET sha256: ${sha(input)}`,
         'ELOTTE: 5 sablon, 0 reszlet',
         'sablon  Alap sablon: az alapszoveg all, a kapott szovegre frissitem',
         'sablon  Szerviz: megvan, egyezik',
@@ -233,7 +244,9 @@ describe('quote-templates-sync: plan and apply', () => {
         [byId(r.state, 'hand-1').blocks, byId(r.state, 'dup-1').blocks, byId(r.state, 'dup-2').blocks],
         r.state.quoteTemplate.find((t) => t.name === 'Angol')?.blocks,
         r.state.quoteSnippet.map((s) => [s.name, s.kind, s.milestones]),
-        r.state.auditLog.map((a) => [a.action, a.userId, (a.metadata as Record<string, unknown>).source]),
+        r.state.auditLog.map((a) => [a.action, a.userId, (a.metadata as Record<string, unknown>).source, (a.metadata as Record<string, unknown>).inputSha256 === sha(input)]),
+        // the seed row is re-read under the editor's lock, right before its update, and not without it
+        [r.calls.indexOf('$queryRaw FOR UPDATE') === r.calls.indexOf('quoteTemplate.update') - 1, r.calls.filter((c) => c.startsWith('$queryRaw') || c === 'quoteTemplate.findUnique')],
         r.out.trim().split('\n').at(-1),
         [again.code, writes(again.calls), again.out.includes('0 iras kesz')],
       ],
@@ -247,10 +260,11 @@ describe('quote-templates-sync: plan and apply', () => {
       edited,
       [['Szállítási feltételek', 'DELIVERY', null]],
       [
-        ['quote_template.updated', null, 'fleet-gate quote-templates-sync'],
-        ['quote_template.created', null, 'fleet-gate quote-templates-sync'],
-        ['quote_snippet.created', null, 'fleet-gate quote-templates-sync'],
+        ['quote_template.updated', null, 'fleet-gate quote-templates-sync', true],
+        ['quote_template.created', null, 'fleet-gate quote-templates-sync', true],
+        ['quote_snippet.created', null, 'fleet-gate quote-templates-sync', true],
       ],
+      [true, ['$queryRaw FOR UPDATE']],
       'UTANA: 6 sablon, 1 reszlet; duplikalt sablonnev: Kettő x2',
       [0, [], true],
     ])
@@ -262,6 +276,16 @@ describe('quote-templates-sync: plan and apply', () => {
     const notSeed = app.run({ ...empty(), quoteTemplate: [seedRow({ blocks: [block('TEXT', 'Bevezető', 'Más alap.')] })] }, { templates: [template('Alap sablon')], snippets: [] }, true)
     const archived = app.run({ ...empty(), quoteTemplate: [seedRow({ archivedAt: '2026-10-01T00:00:00.000Z' })] }, { templates: [template('Alap sablon')], snippets: [] }, true)
     expect([notSeed.code, writes(notSeed.calls), archived.code, writes(archived.calls)], 'QTS-SEED-IS-THE-IMAGES').toEqual([0, [], 0, []])
+  })
+
+  it('QTS-UTF8: a long Hungarian text arrives whole across stdin chunks, and its sha256 is the bytes\' one', () => {
+    // 70 000 two-byte letters: over node's 64 KiB stdin chunk, so letters fall across chunk edges
+    const long = { ...snippet, content: doc('ő'.repeat(70_000)) }
+    const input = { templates: [], snippets: [long] }
+    const r = image().run(empty(), input, true)
+    expect([r.code, r.out.split('\n')[0], JSON.stringify(r.state.quoteSnippet[0]?.content) === JSON.stringify(long.content)], 'QTS-UTF8').toEqual([
+      0, `BEMENET sha256: ${sha(input)}`, true,
+    ])
   })
 
   it('QTS-CHANGED-AFTER-PLAN: a row changed between the plan and the write stops the whole transaction', () => {
