@@ -49,6 +49,10 @@
 #   bash scripts/fleet-api.sh kiadas <task_id> <agens> [--continue] [--parallel "<indok>"] [--kiado <nev>]
 #         (egy feladat kiadasa, megismetelheto; kilepes: 3 atado rekord, 4 feladat, 5 foglalt,
 #          6 restart, 7 uzenet, 8 a panel nem tetlen)
+#   bash scripts/fleet-api.sh deployed [--nez] marveen <task_id> [--commit <cherry-pick sha>]
+#   bash scripts/fleet-api.sh deployed [--nez] acropora <task_id> --app api|web|partner|commerce [--app ...]
+#         (egy beolvadt valtozas kint van-e: mer, es csak utana ir deployed esemenyt;
+#          kilepes: 3 a commit nincs a fan, 4 nincs merged vagy mas repo, 5 nincs kint)
 #
 # Any argument may be "-" to read that value from STDIN (for long/multi-line content).
 # Output: the raw API response on success; "FAIL <reason>" + exit 1 otherwise.
@@ -668,6 +672,137 @@ print(d.get("session_id","") if d.get("ok") is True and d.get("registered") is n
     fi
     echo "KIADVA: $TASK -> $AGENT"
     ;;
+  deployed)
+    # TC-03 MINIMUM (task deployed-esemeny, acrobot 30524): egy BEOLVADT valtozas KINT VAN-E.
+    # A feladat utolso `merged` esemenyebol indul (repo, pr, merge_sha: a pr-beolvaszt.sh irja),
+    # lemeri, hogy a valtozas fut-e, es CSAK UTANA ir egy `deployed` esemenyt. A done-or nem keri
+    # (az kulon dontes). Ket cel:
+    #
+    #   deployed [--nez] marveen <task_id> [--commit <sha>]
+    #     A flotta elo fajan (DEPLOYED_LIVE_TREE, alapbol a repo gyokere): ha a merge_sha az elo HEAD
+    #     ose, evidence=ancestor. Ha nem (cherry-pick a release-agra), a --commit kotelezo: az legyen
+    #     a HEAD ose, ES a git patch-id-ja egyezzen a merge commit valtozasaeval (kulonben egy MASIK
+    #     PR cherry-pickje is atmenne), evidence=cherry-pick. A futo build (dist) frissesseget NEM meri.
+    #   deployed [--nez] acropora <task_id> --app api|web|partner|commerce [--app ...]
+    #     Az eles gep kep-cimkejet olvassa a fleet-gate `ps` muveleten at (ELES_HOST, ELES_KEY, mint az
+    #     eles-verziok.sh), es a merge_sha a kep commitjanak ose-e (DEPLOYED_OS_CLONE, illetve a
+    #     commerce appnal DEPLOYED_COMMERCE_CLONE klonban, fetch utan). Appenkent egy esemeny,
+    #     evidence=image-tag; ha barmelyik app kepe nem tartalmazza, SEMMIT nem ir.
+    #
+    # Kilepes: 0 rendben (vagy --nez); 1 hivas- vagy halozati hiba; 3 a commit nincs a fan;
+    # 4 nincs hasznalhato merged esemeny vagy mas repo; 5 nincs kint. Ismetles: a kulcs
+    # deployed:<task>:<cel>:<sha>, tehat ugyanaz a telepites masodszor is egy sor.
+    NEZ=0; [ "${1:-}" = "--nez" ] && { NEZ=1; shift; }
+    CEL="${1:-}"; TASK="${2:-}"
+    case "$CEL" in marveen|acropora) ;; *) echo "FAIL: deployed [--nez] marveen|acropora <task_id> [--commit <sha>] [--app <nev>]" >&2; exit 1 ;; esac
+    [ -n "$TASK" ] || { echo "FAIL: hianyzik a feladat-azonosito" >&2; exit 1; }
+    [[ "$TASK" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || { echo "FAIL: a feladat-azonosito alakja: $TASK" >&2; exit 1; }
+    shift 2
+    COMMIT=""; APPS=()
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --commit) COMMIT="${2:?a --commit utan sha kell}"; shift 2 ;;
+        --app) APPS+=("${2:?az --app utan nev kell}"); shift 2 ;;
+        *) echo "FAIL: ismeretlen kapcsolo: $1" >&2; exit 1 ;;
+      esac
+    done
+    [ "$CEL" = "marveen" ] && [ "${#APPS[@]}" -gt 0 ] && { echo "FAIL: az --app csak az acropora celnal" >&2; exit 1; }
+    [ "$CEL" = "acropora" ] && [ -n "$COMMIT" ] && { echo "FAIL: a --commit csak a marveen celnal" >&2; exit 1; }
+    [ "$CEL" = "acropora" ] && [ "${#APPS[@]}" -eq 0 ] && { echo "FAIL: az acropora celnal legalabb egy --app kell (api, web, partner, commerce)" >&2; exit 1; }
+    RESP="$(curl -s -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "${API}/tasks/${TASK}/timeline" -w $'\n%{http_code}' 2>/dev/null || true)"
+    CODE="$(printf '%s' "$RESP" | tail -n1)"; JSON="$(printf '%s' "$RESP" | sed '$d')"
+    [ "$CODE" = "404" ] && { echo "FAIL 4: nincs ilyen feladat: $TASK"; exit 4; }
+    [ "$CODE" = "200" ] || { echo "FAIL: http=${CODE:-?} $(printf '%s' "$JSON" | head -c 200)"; exit 1; }
+    MERGED="$(printf '%s' "$JSON" | python3 -c '
+import json,re,sys
+items=json.load(sys.stdin).get("items") or []
+m=[i for i in items if i.get("source")=="event" and i.get("kind")=="merged"]
+if not m: sys.exit("nincs merged esemeny a feladaton (a pr-beolvaszt.sh --task irja)")
+d=m[-1].get("data") or {}
+repo,pr,sha=d.get("repo"),d.get("pr"),d.get("merge_sha")
+if not (isinstance(repo,str) and re.fullmatch(r"[\w.-]+/[\w.-]+",repo)): sys.exit("a merged esemenyben nincs repo")
+if isinstance(pr,str) and pr.isdigit(): pr=int(pr)
+if not (isinstance(pr,int) and pr>0): sys.exit("a merged esemenyben nincs pr")
+if not (isinstance(sha,str) and re.fullmatch(r"[0-9a-f]{40}",sha.lower())): sys.exit("a merged esemenyben nincs 40 jegyu merge_sha")
+print(repo, pr, sha.lower())' 2>&1)" || { echo "FAIL 4: $MERGED"; exit 4; }
+    read -r M_REPO M_PR M_SHA <<< "$MERGED"
+    # egy esemeny kiirasa (vagy --nez), rogzitett kulccsal
+    dep_write() {
+      local target="$1" dsha="$2" evid="$3" app="${4:-}" key body resp code json attempt
+      key="deployed:${TASK}:${target}${app:+:$app}:${dsha}"
+      body="$(M_REPO="$M_REPO" M_PR="$M_PR" M_SHA="$M_SHA" T="$target" D="$dsha" E="$evid" A="$app" python3 -c '
+import json,os
+data={"target":os.environ["T"],"repo":os.environ["M_REPO"],"pr":int(os.environ["M_PR"]),"merge_sha":os.environ["M_SHA"],
+      "deployed_sha":os.environ["D"],"evidence":os.environ["E"]}
+if os.environ["A"]: data["app"]=os.environ["A"]
+ref="%s#%s kint %s %s%s" % (os.environ["M_REPO"],os.environ["M_PR"],os.environ["T"],os.environ["D"][:12],(" "+os.environ["A"]) if os.environ["A"] else "")
+print(json.dumps({"kind":"deployed","actor":"acrobot","ref":ref,"data":data}))')"
+      if [ "$NEZ" = "1" ]; then echo "NEZ (nem irok): $body"; return 0; fi
+      for attempt in 1 2 3; do
+        resp="$(curl -s -X POST "${API}/tasks/${TASK}/events" -H 'Content-Type: application/json' \
+          -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") -H "Idempotency-Key: $key" \
+          -d "$body" -w $'\n%{http_code}' 2>/dev/null || true)"
+        code="$(printf '%s' "$resp" | tail -n1)"; json="$(printf '%s' "$resp" | sed '$d')"
+        case "$code" in
+          200|201) echo "IRVA: deployed $target${app:+ $app} $dsha ($evid) $json"; return 0 ;;
+          000|5??) [ "$attempt" -lt 3 ] && sleep "$attempt" ;;
+          *) break ;;
+        esac
+      done
+      echo "FAIL: http=${code:-?} kulcs=$key $(printf '%s' "$json" | head -c 200)"; return 1
+    }
+    if [ "$CEL" = "marveen" ]; then
+      [ "$M_REPO" = "KratoBal/marveen" ] || { echo "FAIL 4: a merged repo $M_REPO, nem KratoBal/marveen"; exit 4; }
+      LIVE="${DEPLOYED_LIVE_TREE:-$BASE}"
+      git -C "$LIVE" cat-file -e "${M_SHA}^{commit}" 2>/dev/null \
+        || { echo "FAIL 3: a merge commit (${M_SHA:0:12}) nincs az elo faban ($LIVE): elobb git -C $LIVE fetch origin main"; exit 3; }
+      HEAD_SHA="$(git -C "$LIVE" rev-parse HEAD)"
+      if git -C "$LIVE" merge-base --is-ancestor "$M_SHA" "$HEAD_SHA"; then
+        echo "MERT: a ${M_SHA:0:12} az elo HEAD (${HEAD_SHA:0:12}) ose"
+        dep_write marveen-live "$HEAD_SHA" ancestor || exit 1
+        exit 0
+      fi
+      [ -n "$COMMIT" ] || { echo "FAIL 5: a ${M_SHA:0:12} nem ose az elo HEAD-nek (${HEAD_SHA:0:12}); cherry-pick eseten: --commit <a cherry-pick sha-ja>"; exit 5; }
+      C_SHA="$(git -C "$LIVE" rev-parse --verify -q "${COMMIT}^{commit}")" || { echo "FAIL 3: a --commit (${COMMIT}) nincs az elo faban"; exit 3; }
+      git -C "$LIVE" merge-base --is-ancestor "$C_SHA" "$HEAD_SHA" || { echo "FAIL 5: a --commit (${C_SHA:0:12}) nem ose az elo HEAD-nek"; exit 5; }
+      P_MERGE="$(git -C "$LIVE" show "$M_SHA" | git -C "$LIVE" patch-id --stable | cut -d' ' -f1)"
+      P_PICK="$(git -C "$LIVE" show "$C_SHA" | git -C "$LIVE" patch-id --stable | cut -d' ' -f1)"
+      [ -n "$P_MERGE" ] && [ "$P_MERGE" = "$P_PICK" ] \
+        || { echo "FAIL 5: a --commit valtozasa nem a merge commite (patch-id ${P_PICK:0:12} kontra ${P_MERGE:0:12})"; exit 5; }
+      echo "MERT: a ${C_SHA:0:12} cherry-pick az elo HEAD ose, a patch-id egyezik a ${M_SHA:0:12}-val"
+      dep_write marveen-live "$C_SHA" cherry-pick || exit 1
+      exit 0
+    fi
+    # acropora: az eles kep-cimke
+    PS_OUT="$(timeout 45 ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
+      -i "${ELES_KEY:-/home/marveen/.ssh/id_ed25519_acropora_monitor}" "${ELES_HOST:-fleet@162.55.216.28}" ps 2>&1)" \
+      || { echo "FAIL: az eles gep nem erheto el: $(printf '%s' "$PS_OUT" | head -c 200)"; exit 1; }
+    declare -a OUT_T=() OUT_S=() OUT_A=()
+    for app in "${APPS[@]}"; do
+      case "$app" in
+        api) uuid=t9gxx94ecwekwruxngps5i6v; repo=KratoBal/acropora-os; clone="${DEPLOYED_OS_CLONE:-/home/marveen/work/acropora-os}" ;;
+        web) uuid=dnt6jzza68wnuamvi93whn28; repo=KratoBal/acropora-os; clone="${DEPLOYED_OS_CLONE:-/home/marveen/work/acropora-os}" ;;
+        partner) uuid=iknrqjk9xeyydc5fibrk5tbp; repo=KratoBal/acropora-os; clone="${DEPLOYED_OS_CLONE:-/home/marveen/work/acropora-os}" ;;
+        commerce) uuid=obpxbcqgjturybmemmdi7wid; repo=KratoBal/acropora-commerce; clone="${DEPLOYED_COMMERCE_CLONE:-/home/marveen/work/acropora-commerce}" ;;
+        *) echo "FAIL: ismeretlen app: $app (api, web, partner, commerce)"; exit 1 ;;
+      esac
+      [ "$repo" = "$M_REPO" ] || { echo "FAIL 4: a(z) $app a $repo repoe, a merged esemeny a $M_REPO repoe"; exit 4; }
+      line="$(printf '%s\n' "$PS_OUT" | grep -F "$uuid" | head -1)"
+      [ -n "$line" ] || { echo "FAIL 5: a(z) $app nem fut (nincs kontener ezzel az azonositoval)"; exit 5; }
+      img="$(printf '%s' "$line" | cut -d'|' -f2)"; isha="${img##*:}"
+      [[ "$isha" =~ ^[0-9a-f]{7,40}$ ]] || { echo "FAIL 5: a(z) $app kep-cimkeje nem commit: $img"; exit 5; }
+      git -C "$clone" fetch -q origin main 2>/dev/null || true
+      full="$(git -C "$clone" rev-parse --verify -q "${isha}^{commit}")" || { echo "FAIL 3: a(z) $app kep-commitja (${isha:0:12}) nincs a $clone klonban"; exit 3; }
+      git -C "$clone" cat-file -e "${M_SHA}^{commit}" 2>/dev/null || { echo "FAIL 3: a merge commit (${M_SHA:0:12}) nincs a $clone klonban"; exit 3; }
+      git -C "$clone" merge-base --is-ancestor "$M_SHA" "$full" \
+        || { echo "FAIL 5: a(z) $app kepe (${full:0:12}) NEM tartalmazza a ${M_SHA:0:12}-t: meg nincs kint"; exit 5; }
+      echo "MERT: a(z) $app kepe (${full:0:12}) tartalmazza a ${M_SHA:0:12}-t"
+      OUT_T+=("acropora-prod"); OUT_S+=("$full"); OUT_A+=("$app")
+    done
+    # csak ha MIND kint van, akkor ir: egy reszleges telepites nem kerul fel felig
+    for i in "${!OUT_A[@]}"; do dep_write "${OUT_T[$i]}" "${OUT_S[$i]}" image-tag "${OUT_A[$i]}" || exit 1; done
+    exit 0
+    ;;
   task-session)
     # Egy munkamenet a feladate (a V3 eset): akkor minden hivasa a feladathoz megy.
     # A HIVO SAJAT munkamenetere valo. Egy masik agens friss inditasat az agent-restart
@@ -1144,7 +1279,7 @@ if d.get("action_description"):
 '
     ;;
   *)
-    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-comment|kanban-comments|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart|kiadas)"
+    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-comment|kanban-comments|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart|kiadas|deployed)"
     exit 1
     ;;
 esac

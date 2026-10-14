@@ -16935,6 +16935,7 @@ const AQ_KIND = {
   cancelled: 'Megszakítva', failed: 'Sikertelen', partial: 'Részben kész',
   coord_open: 'Koordináció kezdete', coord_close: 'Koordináció vége', decision: 'Döntés',
   paused: 'Szüneteltetve', resumed: 'Folytatva', owner_action: 'Balázs módosította',
+  deployed: 'Kint van (telepítve)',
 }
 // filter group of a task by its LAST event
 // (owner_action is the last kind only of a task with no state event yet: created, waiting for its hand-out).
@@ -16945,7 +16946,7 @@ const AQ_GROUP = {
   assigned: 'active', started: 'active', fix_started: 'active', coord_open: 'active', coord_close: 'active',
   review_requested: 'review', verdict: 'review', merged: 'review',
   blocked: 'blocked', failed: 'blocked',
-  done: 'closed', cancelled: 'closed', partial: 'closed',
+  done: 'closed', cancelled: 'closed', partial: 'closed', deployed: 'closed',
   resumed: 'waiting', owner_action: 'waiting', paused: 'paused',
 }
 const AQ_GROUP_LABEL = { all: 'Mind', waiting: 'Kiosztásra vár', active: 'Folyamatban', review: 'Ellenőrzés', paused: 'Szünetel', blocked: 'Blokkolt', closed: 'Lezárt', none: 'Nincs esemény' }
@@ -17324,7 +17325,7 @@ function aqStallReason(data, task, items) {
 
 // The phases of a task, from its events (Feladatkezelés V1). A missing `assigned` does not break
 // it: a `started` means the task was handed out too (measured: not every hand-out writes one).
-const AQ_PHASES = [['created', 'Létrehozva'], ['assigned', 'Kiosztva'], ['working', 'Folyamatban'], ['review', 'Ellenőrzés'], ['merged', 'Beolvasztva'], ['done', 'Kész']]
+const AQ_PHASES = [['created', 'Létrehozva'], ['assigned', 'Kiosztva'], ['working', 'Folyamatban'], ['review', 'Ellenőrzés'], ['merged', 'Beolvasztva'], ['deployed', 'Telepítve'], ['done', 'Kész']]
 function aqPhases(items, task) {
   const kinds = new Set(items.filter((i) => i.source === 'event').map((i) => i.kind))
   const has = (...k) => k.some((x) => kinds.has(x))
@@ -17333,7 +17334,9 @@ function aqPhases(items, task) {
     assigned: has('assigned', 'started', 'fix_started', 'review_requested', 'verdict', 'merged', 'done'),
     working: has('started', 'fix_started', 'review_requested', 'verdict', 'merged', 'done'),
     review: has('review_requested', 'verdict', 'merged'),
-    merged: has('merged'),
+    merged: has('merged', 'deployed'),
+    // a done says nothing about running code (a docs task is done without a deployment)
+    deployed: has('deployed'),
     done: has('done'),
   }
   const side = task.paused ? ['Szünetel', 'grey'] : task.last_kind === 'blocked' ? ['Blokkolt', 'red']

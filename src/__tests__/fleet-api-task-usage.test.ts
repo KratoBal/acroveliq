@@ -8,8 +8,8 @@
 //     reach the body, or a non-object goes out; task-new - drops a field.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { createServer, type Server } from 'node:http'
-import { execFile } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFile, execFileSync } from 'node:child_process'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { AddressInfo } from 'node:net'
@@ -59,9 +59,9 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
-function run(args: string[], stdin?: string): Promise<{ code: number; out: string }> {
+function run(args: string[], stdin?: string, env: Record<string, string> = {}): Promise<{ code: number; out: string }> {
   return new Promise((resolve) => {
-    const child = execFile('bash', [script, ...args], { env: { ...process.env, MARVEEN_WEB_PORT: String(port) } }, (error, stdout, stderr) =>
+    const child = execFile('bash', [script, ...args], { env: { ...process.env, MARVEEN_WEB_PORT: String(port), ...env } }, (error, stdout, stderr) =>
       resolve({ code: error ? Number((error as { code?: number }).code ?? 1) : 0, out: stdout + stderr }),
     )
     if (stdin !== undefined) child.stdin?.end(stdin)
@@ -350,4 +350,115 @@ describe('fleet-api.sh kiadas (TC-Lite L5)', () => {
     const r = await run(['kiadas', 't5', 'nautilus'])
     expect([r.code, /FAIL 6: az indito uzenet nem ment el/.test(r.out), /KIADVA/.test(r.out)], 'FLEET-KIADAS-6').toEqual([7, true, false])
   }, 15_000)
+})
+
+// TC-03 minimum (task deployed-esemeny): fleet-api.sh deployed. WHAT TURNS THIS RED:
+//   - it writes before it measured, or writes when the change is not running;
+//   - a cherry-pick of ANOTHER change passes (the patch-id check);
+//   - an acropora app whose image lacks the merge does not stop the whole run before any write;
+//   - the same deployment run twice sends two different keys.
+describe('fleet-api.sh deployed (TC-03 minimum)', () => {
+  const repo = mkdtempSync(join(root, 'deployed-git-'))
+  const gitEnv = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' }
+  const g = (...args: string[]) => execFileSync('git', args, { cwd: repo, env: gitEnv }).toString().trim()
+  let BASE = '', MERGE = '', PICK = '', OTHER_PICK = '', MAIN = ''
+  const bin = join(root, 'deployed-bin')
+  beforeAll(() => {
+    g('init', '-q', '-b', 'main')
+    writeFileSync(join(repo, 'a.txt'), 'a\n'); g('add', '.'); g('commit', '-q', '-m', 'base'); BASE = g('rev-parse', 'HEAD')
+    writeFileSync(join(repo, 'b.txt'), 'the change\n'); g('add', '.'); g('commit', '-q', '-m', 'squash merge (#7)'); MERGE = g('rev-parse', 'HEAD')
+    writeFileSync(join(repo, 'c.txt'), 'another change\n'); g('add', '.'); g('commit', '-q', '-m', 'another (#8)'); const other = g('rev-parse', 'HEAD')
+    MAIN = other
+    // a release-only commit first: without it the cherry-pick recreates the very same commit
+    // object (same parent, tree, author and second), and it would not be a cherry-pick at all
+    g('checkout', '-q', '-b', 'release', BASE)
+    writeFileSync(join(repo, 'r.txt'), 'release only\n'); g('add', '.'); g('commit', '-q', '-m', 'release-only')
+    g('cherry-pick', MERGE); PICK = g('rev-parse', 'HEAD')
+    g('checkout', '-q', '-b', 'release-wrong', 'release~1')
+    g('cherry-pick', other); OTHER_PICK = g('rev-parse', 'HEAD')
+    mkdirSync(bin, { recursive: true })
+  })
+  const merged = (over: Record<string, unknown> = {}) => ({
+    at: 5, source: 'event', id: 9, kind: 'merged', actor: 'acrobot', ref: 'KratoBal/marveen#7',
+    data: { repo: 'KratoBal/marveen', pr: 7, merge_sha: MERGE, ...over },
+  })
+  const fakeTimeline = (items: unknown[]) => {
+    requests = []
+    router = (method, path) => {
+      if (method === 'GET' && path === '/api/tasks/t9/timeline') return [200, { task: 't9', fields: {}, items }]
+      if (method === 'POST' && path === '/api/tasks/t9/events') return [201, { id: 55 }]
+      return [599, { error: `unexpected ${method} ${path}` }]
+    }
+  }
+  const posts = () => requests.filter((r) => r.method === 'POST')
+  const live = (ref: string) => { g('checkout', '-q', ref); return { DEPLOYED_LIVE_TREE: repo } }
+  afterAll(() => { router = null })
+
+  it('DEPLOYED-ANCESTOR: the merge is an ancestor of the live HEAD: one event, evidence ancestor, the HEAD as deployed_sha', async () => {
+    fakeTimeline([merged()])
+    const r = await run(['deployed', 'marveen', 't9'], undefined, live('main'))
+    const body = posts()[0]?.body as { kind: string; data: Record<string, unknown> } | undefined
+    expect([r.code, posts().length, body?.kind, body?.data.evidence, body?.data.deployed_sha, body?.data.merge_sha, posts()[0]?.key],
+      `DEPLOYED-ANCESTOR ${r.out}`).toEqual([0, 1, 'deployed', 'ancestor', MAIN, MERGE, `deployed:t9:marveen-live:${MAIN}`])
+  })
+
+  it('DEPLOYED-CHERRY-PICK: on a release branch only a --commit whose patch-id is the merge\'s passes', async () => {
+    const isAncestor = (a: string, b: string) => { try { g('merge-base', '--is-ancestor', a, b); return true } catch { return false } }
+    // the fixture is a real cherry-pick: another commit, and the merge NOT in the release branch
+    expect([PICK === MERGE, isAncestor(MERGE, 'release'), isAncestor(PICK, 'release')]).toEqual([false, false, true])
+    fakeTimeline([merged()])
+    const none = await run(['deployed', 'marveen', 't9'], undefined, live('release'))
+    const noneWrites = posts().length
+    fakeTimeline([merged()])
+    const ok = await run(['deployed', 'marveen', 't9', '--commit', PICK], undefined, live('release'))
+    const okBody = posts()[0]?.body as { data: Record<string, unknown> } | undefined
+    fakeTimeline([merged()])
+    // a real cherry-pick of ANOTHER change, an ancestor of the live HEAD: refused
+    const wrong = await run(['deployed', 'marveen', 't9', '--commit', OTHER_PICK], undefined, live('release-wrong'))
+    expect([none.code, noneWrites, ok.code, okBody?.data.evidence, okBody?.data.deployed_sha, wrong.code, posts().length, /patch-id/.test(wrong.out)],
+      'DEPLOYED-CHERRY-PICK').toEqual([5, 0, 0, 'cherry-pick', PICK, 5, 0, true])
+  })
+
+  it('DEPLOYED-STOPS: no merged event 4, another repo 4, a merge not in the tree 3, --nez writes nothing', async () => {
+    fakeTimeline([])
+    const noMerged = await run(['deployed', 'marveen', 't9'], undefined, live('main'))
+    fakeTimeline([merged({ repo: 'KratoBal/acropora-os' })])
+    const otherRepo = await run(['deployed', 'marveen', 't9'], undefined, live('main'))
+    fakeTimeline([merged({ merge_sha: 'f'.repeat(40) })])
+    const absent = await run(['deployed', 'marveen', 't9'], undefined, live('main'))
+    fakeTimeline([merged()])
+    const nez = await run(['deployed', '--nez', 'marveen', 't9'], undefined, live('main'))
+    expect([noMerged.code, otherRepo.code, absent.code, nez.code, /NEZ \(nem irok\)/.test(nez.out), posts().length], 'DEPLOYED-STOPS')
+      .toEqual([4, 4, 3, 0, true, 0])
+  })
+
+  it('DEPLOYED-REPEAT: the same deployment twice sends the same key (the server keeps one row)', async () => {
+    fakeTimeline([merged()])
+    await run(['deployed', 'marveen', 't9'], undefined, live('main'))
+    await run(['deployed', 'marveen', 't9'], undefined, live('main'))
+    const keys = posts().map((p) => p.key)
+    expect([keys.length, new Set(keys).size], 'DEPLOYED-REPEAT').toEqual([2, 1])
+  })
+
+  it('DEPLOYED-IMAGE: acropora reads the image tags; every named app must contain the merge, or nothing is written', async () => {
+    const ps = (api: string, web: string) => {
+      writeFileSync(join(bin, 'ssh'), `#!/bin/bash\nprintf '%s\\n' 't9gxx94ecwekwruxngps5i6v-1|t9gxx94ecwekwruxngps5i6v:${api}|Up 1 hour' 'dnt6jzza68wnuamvi93whn28-1|dnt6jzza68wnuamvi93whn28:${web}|Up 1 hour'\n`)
+      chmodSync(join(bin, 'ssh'), 0o755)
+    }
+    const env = { PATH: `${bin}:${process.env.PATH}`, DEPLOYED_OS_CLONE: repo, ELES_KEY: '/dev/null' }
+    const os = merged({ repo: 'KratoBal/acropora-os' })
+    g('checkout', '-q', 'main')
+    ps(MAIN, MAIN)
+    fakeTimeline([os])
+    const both = await run(['deployed', 'acropora', 't9', '--app', 'api', '--app', 'web'], undefined, env)
+    const bothApps = posts().map((p) => (p.body as { data: { app: string; evidence: string } }).data)
+    ps(MAIN, BASE) // the web image is older than the merge
+    fakeTimeline([os])
+    const partial = await run(['deployed', 'acropora', 't9', '--app', 'api', '--app', 'web'], undefined, env)
+    const partialWrites = posts().length
+    fakeTimeline([merged()]) // a marveen merge against an OS app
+    const wrongRepo = await run(['deployed', 'acropora', 't9', '--app', 'api'], undefined, env)
+    expect([both.code, bothApps.map((d) => `${d.app}:${d.evidence}`), partial.code, partialWrites, /web.*NEM tartalmazza/.test(partial.out), wrongRepo.code, posts().length],
+      `DEPLOYED-IMAGE ${both.out}`).toEqual([0, ['api:image-tag', 'web:image-tag'], 5, 0, true, 4, 0])
+  })
 })
