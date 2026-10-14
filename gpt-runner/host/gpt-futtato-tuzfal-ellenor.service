@@ -1,0 +1,12 @@
+# The per-minute check of the GPT runner's host firewall (acrobot, 30821): a ufw or firewalld
+# reload may drop our jumps or put them behind its own chains, and gpt-futtato-tuzfal.service
+# does not run again then. This one runs tuzfal.sh, which writes ONLY when something differs
+# and then logs one line (VISSZATETTE: ...) to the journal:
+#   journalctl -u gpt-futtato-tuzfal-ellenor.service
+[Unit]
+Description=GPT-futtato: a host-tuzfal szabalyainak percenkenti ellenorzese es visszaallitasa
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/gpt-futtato/tuzfal.sh
