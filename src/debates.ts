@@ -26,6 +26,7 @@
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { resolveProject } from './projects.js'
+import { FINAL_MARK, GptBlocked } from './gpt-package.js'
 import { wrapUntrusted } from './prompt-safety.js'
 
 export const MAX_ROUNDS = 3
@@ -33,7 +34,11 @@ export const DEBATE_STATUSES = ['fut', 'var_balazsra', 'megakadt', 'leallitva', 
 export type DebateStatus = (typeof DEBATE_STATUSES)[number]
 export type Speaker = 'acrobot' | 'gpt'
 type TurnKind = 'turn' | 'summary' | 'direct'
-type TurnStatus = 'open' | 'answered' | 'expired' | 'skipped'
+// GPT's runs: 'running' from the moment the runner is called, then 'answered', 'failed' (the
+// runner gave an error) or 'late' (it answered after a stop); every one of these is an ATTEMPT and
+// counts in the daily cap (barracuda, #137). 'blocked' (the package filters stopped it before any
+// call) and 'skipped' (no runner, the cap) spent nothing and do not count.
+type TurnStatus = 'open' | 'answered' | 'expired' | 'skipped' | 'running' | 'failed' | 'late' | 'blocked'
 
 export interface Debate {
   id: string
@@ -77,8 +82,9 @@ export interface DebateConfig {
   gptDailyCap: number
 }
 
-/** A GPT answer: its text, and whether it marks the phase done. */
-export interface GptAnswer { text: string; final: boolean }
+/** A GPT answer: its text, whether it marks the phase done, and a note for the thread (e.g. older
+ *  messages left out of the package). */
+export interface GptAnswer { text: string; final: boolean; notice?: string }
 
 export interface DebateDeps {
   /** Posts to a thread, returns the message id; the transport sends no mention (allowed_mentions empty). */
@@ -88,6 +94,12 @@ export interface DebateDeps {
   /** The GPT runner (PR 2). null: not switched on, a GPT turn is skipped and said so. */
   runGpt: ((debate: Debate, prompt: string) => Promise<GptAnswer>) | null
   now(): number
+  /**
+   * Runs what comes after Acrobot's hand-in (GPT's turn, the phase's end). The dashboard gives one
+   * that runs it in the background, so the hand-in's HTTP answer does not wait for a GPT run
+   * (barracuda, #137). Absent: inline (the tests, and the same order either way).
+   */
+  defer?: (work: () => Promise<void>) => void
 }
 
 export function ensureDebatesSchema(db: Database.Database): void {
@@ -232,10 +244,11 @@ export function activeDebate(db: Database.Database, threadId: string): Debate | 
     .get(threadId) as Debate | undefined) ?? null
 }
 
-/** GPT runs since the local day began: every one, a round's or a `gpt:` run (barracuda 30721). */
+/** GPT ATTEMPTS since the local day began: every call of the runner, a round's or a `gpt:` run,
+ *  answered or not (barracuda 30721 and #137: the runner spends the plan even when it fails). */
 export function gptRunsSince(db: Database.Database, since: number): number {
   return (db
-    .prepare(`SELECT COUNT(*) AS n FROM debate_turns WHERE speaker = 'gpt' AND status = 'answered' AND answered_at >= ?`)
+    .prepare(`SELECT COUNT(*) AS n FROM debate_turns WHERE speaker = 'gpt' AND status IN ('running', 'answered', 'failed', 'late') AND created_at >= ?`)
     .get(since) as { n: number }).n
 }
 
@@ -312,7 +325,7 @@ function gptPrompt(db: Database.Database, debate: Debate, kind: TurnKind, round:
   // filters, size cap). Here: the shape of the ask, so the counting can be tested with a fake runner.
   const ask = kind === 'summary'
     ? 'Írd le külön, miben értesz egyet és miben nem.'
-    : `${round}. válaszkör a legfeljebb ${MAX_ROUNDS}-ból. Ha egyetértetek, vagy nincs mit hozzátenned, jelöld a végét.`
+    : `${round}. válaszkör a legfeljebb ${MAX_ROUNDS}-ból. Ha egyetértetek, vagy nincs mit hozzátenned, a válaszod utolsó sora legyen pontosan ez: ${FINAL_MARK}`
   return `Vita ${debate.id}, projekt: ${debate.project}. Téma: ${debate.topic}\n${ask}`
 }
 
@@ -328,18 +341,31 @@ async function gptTurn(db: Database.Database, deps: DebateDeps, cfg: DebateConfi
   if (!deps.runGpt) return skip('GPT most nem szólhat: a GPT-futtató nincs bekapcsolva (külön jóváhagyásra vár).')
   if (gptRunsSince(db, localDayStart(now)) >= cfg.gptDailyCap)
     return skip(`GPT most nem szólhat: elérte a napi ${cfg.gptDailyCap} futást.`)
+  // the attempt is on record BEFORE the call: a run that crashes the process still counts
+  const attempt = Number(db.prepare(`INSERT INTO debate_turns (debate_id, phase, round, speaker, kind, status, created_at)
+              VALUES (?, ?, ?, 'gpt', ?, 'running', ?)`).run(debate.id, debate.phase, round, kind, now).lastInsertRowid)
+  const settle = (status: TurnStatus, text: string | null) =>
+    db.prepare('UPDATE debate_turns SET status = ?, text = ?, answered_at = ? WHERE id = ?').run(status, text, deps.now(), attempt)
   let answer: GptAnswer
   try {
     answer = await deps.runGpt(debate, prompt ?? gptPrompt(db, debate, kind, round))
-  } catch {
-    return skip('GPT most nem szólhat: a futtató hibát adott (a naplóban).')
+  } catch (err) {
+    if (err instanceof GptBlocked) {
+      // stopped by the package filters before any call: nothing spent, the thread is told which piece
+      settle('blocked', err.reason)
+      if (running(db, debate.id)) await say(db, deps, debate, '[vezérlő]', err.publicMessage)
+      return null
+    }
+    settle('failed', 'a futtató hibát adott')
+    if (running(db, debate.id)) await say(db, deps, debate, '[vezérlő]', 'GPT most nem szólhat: a futtató hibát adott (a naplóban).')
+    return null
   }
   // stopped (or timed out) while GPT was thinking: its answer does not go out (barracuda #137)
-  if (!running(db, debate.id)) return skip('GPT válasza a leállítás után érkezett, nem került ki.', true)
+  if (!running(db, debate.id)) { settle('late', 'GPT válasza a leállítás után érkezett, nem került ki.'); return null }
+  if (answer.notice) await say(db, deps, debate, '[vezérlő]', answer.notice)
   const ids = await say(db, deps, debate, '[GPT]', answer.text)
-  db.prepare(`INSERT INTO debate_turns (debate_id, phase, round, speaker, kind, status, text, final, posted_ids, created_at, answered_at)
-              VALUES (?, ?, ?, 'gpt', ?, 'answered', ?, ?, ?, ?, ?)`)
-    .run(debate.id, debate.phase, round, kind, answer.text, answer.final ? 1 : 0, JSON.stringify(ids), now, deps.now())
+  db.prepare(`UPDATE debate_turns SET status = 'answered', text = ?, final = ?, posted_ids = ?, answered_at = ? WHERE id = ?`)
+    .run(answer.text, answer.final ? 1 : 0, JSON.stringify(ids), deps.now(), attempt)
   return answer
 }
 
@@ -411,19 +437,26 @@ export async function submitAcrobotTurn(
       await say(db, deps, debate, '[vezérlő]', 'Összegzés kész, Balázs döntésére vár.')
     return stoppedNow()
   }
+  // with GPT in the debate, what comes next may wait for a GPT run (its turn, or its summary at
+  // the phase's end): in the background when the dashboard gives `defer`, so the hand-in is
+  // answered once Acrobot's text is posted (barracuda, #137). Without GPT it is quick and inline.
+  if (debate.gpt_invited && deps.defer) {
+    deps.defer(async () => { await afterAcrobot(db, deps, cfg, debate, turn, final) })
+    return { status: 200, body: { debate: debate.id, round: turn.round, posted, next: 'gpt' } }
+  }
+  const opened = await afterAcrobot(db, deps, cfg, debate, turn, final)
+  return { status: 200, body: { debate: debate.id, round: turn.round, posted, next: opened ?? getDebate(db, debate.id)!.status } }
+}
+
+/** After Acrobot's round: the phase's end, or GPT's turn and then the next round ('acrobot' then). */
+async function afterAcrobot(db: Database.Database, deps: DebateDeps, cfg: DebateConfig, debate: Debate, turn: DebateTurn, final: boolean): Promise<'acrobot' | null> {
   // one model answered and said it is enough, or GPT is not in the debate
-  if (final || !debate.gpt_invited) {
-    await endPhase(db, deps, cfg, debate)
-    return { status: 200, body: { debate: debate.id, round: turn.round, posted, next: getDebate(db, debate.id)!.status } }
-  }
+  if (final || !debate.gpt_invited) { await endPhase(db, deps, cfg, debate); return null }
   const answer = await gptTurn(db, deps, cfg, debate, turn.round, 'turn')
-  if (!running(db, debate.id)) return stoppedNow()
-  if (!answer || answer.final || turn.round >= MAX_ROUNDS) {
-    await endPhase(db, deps, cfg, debate)
-    return { status: 200, body: { debate: debate.id, round: turn.round, posted, next: getDebate(db, debate.id)!.status } }
-  }
+  if (!running(db, debate.id)) return null
+  if (!answer || answer.final || turn.round >= MAX_ROUNDS) { await endPhase(db, deps, cfg, debate); return null }
   openAcrobotTurn(db, deps, debate, turn.round + 1, 'turn')
-  return { status: 200, body: { debate: debate.id, round: turn.round, posted, next: 'acrobot' } }
+  return 'acrobot'
 }
 
 /** One owner message from an allowed thread (the poller checked the author). */

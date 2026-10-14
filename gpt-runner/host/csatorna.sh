@@ -112,13 +112,17 @@ grep -v '^GPT_FUTTATO_SZOLGA_TOKEN_SHA256=' "$ENVF"
 (cd "$DIR" && docker compose --profile szolga rm -sf gpt-szolga >/dev/null 2>&1) || true
 echo "== a tuzfal, a tartossag, az idozito es a proba (telepit-tuzfal.sh)"
 bash "$SRC/host/telepit-tuzfal.sh"
-iptables -w 5 -S GPTF-BE
-iptables -w 5 -S GPTF-BE | grep -qxF -- "-A GPTF-BE ! -s $VEZ/32 -m conntrack --ctstate NEW -j DROP" || stop "a GPTF-BE lanc nem a $VEZ forrasra szukit"
-iptables -w 5 -S GPTF-BE | grep -qxF -- "-A GPTF-BE ! -d $SZOLGA/32 -m conntrack --ctstate NEW -j DROP" || stop "a GPTF-BE lanc nem a $SZOLGA celra szukit"
+# the chain is read ONCE into a variable, then searched: `iptables -S | grep -q` under pipefail
+# fails when grep stops early and iptables gets SIGPIPE (a false STOP; measured in the tests)
+be=$(iptables -w 5 -S GPTF-BE)
+printf '%s\n' "$be"
+grep -qxF -- "-A GPTF-BE ! -s $VEZ/32 -m conntrack --ctstate NEW -j DROP" <<< "$be" || stop "a GPTF-BE lanc nem a $VEZ forrasra szukit"
+grep -qxF -- "-A GPTF-BE ! -d $SZOLGA/32 -m conntrack --ctstate NEW -j DROP" <<< "$be" || stop "a GPTF-BE lanc nem a $SZOLGA celra szukit"
 # the one flow past Docker's isolation (barracuda, #148), both ways, exactly as tuzfal.sh writes it
-iptables -w 5 -S GPTF-TOVABB
-iptables -w 5 -S GPTF-TOVABB | grep -qxF -- "-A GPTF-TOVABB -s $VEZ/32 -d $SZOLGA/32 -o gptki0 -p tcp -m tcp --dport $PORT -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT" || stop "a GPTF-TOVABB-ban nincs meg a csatorna oda-iranyu ACCEPT-je"
-iptables -w 5 -S GPTF-TOVABB | grep -qxF -- "-A GPTF-TOVABB -s $SZOLGA/32 -d $VEZ/32 -i gptki0 -p tcp -m tcp --sport $PORT -m conntrack --ctstate ESTABLISHED -j ACCEPT" || stop "a GPTF-TOVABB-ban nincs meg a csatorna valasz-iranyu ACCEPT-je"
+tovabb=$(iptables -w 5 -S GPTF-TOVABB)
+printf '%s\n' "$tovabb"
+grep -qxF -- "-A GPTF-TOVABB -s $VEZ/32 -d $SZOLGA/32 -o gptki0 -p tcp -m tcp --dport $PORT -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT" <<< "$tovabb" || stop "a GPTF-TOVABB-ban nincs meg a csatorna oda-iranyu ACCEPT-je"
+grep -qxF -- "-A GPTF-TOVABB -s $SZOLGA/32 -d $VEZ/32 -i gptki0 -p tcp -m tcp --sport $PORT -m conntrack --ctstate ESTABLISHED -j ACCEPT" <<< "$tovabb" || stop "a GPTF-TOVABB-ban nincs meg a csatorna valasz-iranyu ACCEPT-je"
 fails=$( { grep -E '^PROBA [^ ]+ FAIL' "$DIR/proba-teljes.log" || true; } | wc -l | tr -d ' ')
 grep -qE '^PROBA N1 OK' "$DIR/proba-teljes.log" || stop "a proba N1 sora nem OK (a futtatobol elerheto lehet a flotta vagy a gep)"
 [ "$fails" = 0 ] || stop "a probaban $fails FAIL sor van"
@@ -129,7 +133,8 @@ cd "$DIR"
 docker compose --profile szolga up -d gpt-szolga
 ok=""
 for _ in $(seq 1 30); do
-  if docker logs gpt-szolga 2>&1 | grep -qxF "SZOLGA figyel $SZOLGA:$PORT"; then ok=1; break; fi
+  naplo=$(docker logs gpt-szolga 2>&1 || true)
+  if grep -qxF "SZOLGA figyel $SZOLGA:$PORT" <<< "$naplo"; then ok=1; break; fi
   sleep 1
 done
 [ -n "$ok" ] || { docker logs gpt-szolga 2>&1 | tail -20; stop "a szolgaltatas nem indult el a $SZOLGA:$PORT cimen"; }

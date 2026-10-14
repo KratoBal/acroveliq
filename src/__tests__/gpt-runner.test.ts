@@ -523,7 +523,9 @@ esac
     expect(inst).toMatch(/iptables -V/)
     expect(inst).toMatch(/iptables -w 5 -S FORWARD \| grep -F -- '-j DOCKER-USER' \|\| echo "FIGYELEM/)
     // ufw by its own status (the host: service running, firewall off; acrobot 30839)
-    expect(inst).toMatch(/ufw_aktiv\(\) \{ command -v ufw >\/dev\/null && ufw status 2>\/dev\/null \| grep -q '\^Status: active'; \}/)
+    expect(inst).toMatch(/ufw_aktiv\(\) \{ command -v ufw >\/dev\/null && grep -q '\^Status: active' <<< "\$\(ufw status 2>\/dev\/null \|\| true\)"; \}/)
+    // no `cmd | grep -q` in the host scripts: under pipefail an early grep exit (SIGPIPE) is a false failure
+    for (const f of ['host/telepit-tuzfal.sh', 'host/csatorna.sh', 'host/tuzfal.sh']) expect([f, /\|\s*grep -q/.test(R(f).split('\n').filter((l) => !l.trim().startsWith('#')).join('\n'))]).toEqual([f, false])
     expect(inst).toMatch(/\nif ufw_aktiv; then\n {2}echo "== valodi ufw reload"/)
     expect(/systemctl is-active --quiet "?ufw/.test(inst)).toBe(false)
   })

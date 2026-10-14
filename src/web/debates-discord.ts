@@ -21,10 +21,14 @@ import {
   DEBATE_POLL_SECONDS,
   DEBATE_TURN_TIMEOUT_SECONDS,
   MAIN_AGENT_ID,
+  PROJECT_ROOT,
+  STORE_DIR,
 } from '../config.js'
+import { join } from 'node:path'
 import { createAgentMessage, getDb } from '../db.js'
 import { handleOwnerMessage, sweepDebates, type DebateConfig, type DebateDeps } from '../debates.js'
-import { GPT_FILTERS, makeRunGpt } from '../gpt-runner-client.js'
+import { makeRunGpt, type GptFilters } from '../gpt-runner-client.js'
+import { buildPackage, outputAllowed, type PackageOptions } from '../gpt-package.js'
 import { logger } from '../logger.js'
 import { snowflakeAt } from './approval-discord-core.js'
 import type { DiscordTransport } from './approval-discord.js'
@@ -40,6 +44,26 @@ export function debateConfig(): DebateConfig {
   }
 }
 
+/** The package's settings: the store for the token values, the log, the JEV boundary script. */
+export function packageOptions(): PackageOptions {
+  return {
+    storeDir: STORE_DIR,
+    logDir: join(PROJECT_ROOT, 'logs', 'gpt-csomag'),
+    boundary: { python: 'python3', script: join(PROJECT_ROOT, 'scripts', 'gpt-csomag', 'hatar.py'), timeoutMs: 20_000 },
+    // the runner takes 48 KiB; the redacted text is a little longer than the raw one
+    maxBytes: 32 * 1024,
+  }
+}
+
+/** The real filters: this debate's record, secrets, personal data, size (src/gpt-package.ts). */
+export function debateFilters(db: Database.Database): GptFilters {
+  const o = packageOptions()
+  return {
+    buildPrompt: (debate, ask) => buildPackage(db, debate, ask, o),
+    allowOutput: (text) => outputAllowed(text, o.storeDir),
+  }
+}
+
 // decided once per process: the switch, the address and the filters do not change while it runs,
 // and the reason it stays off is said once, not at every hand-in
 let runGptOnce: DebateDeps['runGpt'] | undefined
@@ -50,7 +74,7 @@ function runGpt(): DebateDeps['runGpt'] {
       url: DEBATE_GPT_RUNNER_URL,
       tokenFile: DEBATE_GPT_RUNNER_TOKEN_FILE,
       timeoutMs: DEBATE_GPT_RUNNER_TIMEOUT_SECONDS * 1000,
-      filters: GPT_FILTERS,
+      filters: debateFilters(getDb()),
       log: (line) => logger.warn(line),
     })
   }
@@ -64,6 +88,8 @@ export function debateDeps(transport: DiscordTransport): DebateDeps {
     tellAcrobot: (content) => createAgentMessage('vita', MAIN_AGENT_ID, content).id,
     runGpt: runGpt(),
     now: () => Math.floor(Date.now() / 1000),
+    // the GPT turn after a hand-in runs in the background: the hand-in's answer does not wait
+    defer: (work) => { void work().catch((err) => logger.warn({ err }, 'debate: the step after a hand-in failed')) },
   }
 }
 
