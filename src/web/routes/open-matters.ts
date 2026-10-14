@@ -3,6 +3,7 @@ import { buildOpenMatters } from '../../open-matters.js'
 import { acroveliqOpenMattersView } from '../acroveliq-host.js'
 import { callerOfContext } from '../field-gate.js'
 import { json } from '../http-helpers.js'
+import { listProjects } from '../../projects.js'
 import type { RouteContext } from './types.js'
 
 // The open-matters summary (koord-munkamenet, plan item 1). See src/open-matters.ts.
@@ -22,10 +23,16 @@ import type { RouteContext } from './types.js'
 export async function tryHandleOpenMatters(ctx: RouteContext): Promise<boolean> {
   const { res, path, method, url } = ctx
   if (path !== '/api/open-matters' || method !== 'GET') return false
-  const unknown = [...url.searchParams.keys()].filter((k) => k !== 'format')
+  const unknown = [...url.searchParams.keys()].filter((k) => k !== 'format' && k !== 'project')
   const format = url.searchParams.get('format')
   if (unknown.length || (format !== null && format !== 'text' && format !== 'json')) {
-    json(res, { error: 'only ?format=text or ?format=json' }, 400)
+    json(res, { error: 'only ?format=text or ?format=json, and ?project=<id>' }, 400)
+    return true
+  }
+  // Projektek V1: the server filters by a registry project; an unknown id is a 400, not an empty answer
+  const project = url.searchParams.get('project')
+  if (project !== null && !listProjects(getDb()).some((p) => p.id === project)) {
+    json(res, { error: 'unknown project', known: listProjects(getDb()).map((p) => p.id) }, 400)
     return true
   }
   if (ctx.surface === 'acroveliq' && callerOfContext(ctx.auth)?.column !== 'S') {
@@ -36,7 +43,7 @@ export async function tryHandleOpenMatters(ctx: RouteContext): Promise<boolean> 
     json(res, { error: 'only the JSON view here' }, 400)
     return true
   }
-  const out = buildOpenMatters(getDb(), { now: Math.floor(Date.now() / 1000) })
+  const out = buildOpenMatters(getDb(), { now: Math.floor(Date.now() / 1000), ...(project ? { project } : {}) })
   if (ctx.surface === 'acroveliq') {
     json(res, acroveliqOpenMattersView(out))
     return true

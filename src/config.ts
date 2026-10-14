@@ -268,6 +268,9 @@ export const ACCESS_MODE_SETTING = env['ACCESS_MODE']
 // The `done` guard of the task records (TC-Lite L1, src/task-usage.ts): off,
 // naplo (default) or kenyszerit, the same words as ACCESS_MODE. Read once at start.
 export const TASK_CORE_MODE_SETTING = env['TASK_CORE_MODE']
+// Projektek V1: the project and repo rules have their own mode (off|naplo|kenyszerit, default
+// naplo): turning the done guard to kenyszerit must not turn these on with it (two decisions)
+export const PROJECT_CHECK_MODE_SETTING = env['PROJECT_CHECK_MODE']
 // The hidden heartbeat worker's agent id. Lives here (not in
 // heartbeat-agent-scaffold) so agent-scaffold can key gates on it without an
 // import cycle: heartbeat-agent-scaffold already imports agent-scaffold.

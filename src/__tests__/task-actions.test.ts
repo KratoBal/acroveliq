@@ -70,8 +70,9 @@ async function call(
 }
 
 const NOW = () => Math.floor(Date.now() / 1000)
+// Projektek V1: a new task names its project; the tests that are not about it use `os`
 const create = (body: Record<string, unknown>, key: string | null = 'kulcs-0001', who: Auth | typeof NOBODY = SESSION, extra: Partial<RouteContext> = {}) =>
-  call(tryHandleTaskActions, 'POST', '/api/task-actions', body, who, extra, key ? { 'idempotency-key': key } : {})
+  call(tryHandleTaskActions, 'POST', '/api/task-actions', { project: 'os', ...body }, who, extra, key ? { 'idempotency-key': key } : {})
 const act = (id: string, body: Record<string, unknown>, who: Auth | typeof NOBODY = SESSION, extra: Partial<RouteContext> = {}) =>
   call(tryHandleTaskActions, 'POST', `/api/task-actions/${id}`, body, who, extra)
 const agentEvent = (id: string, kind: string, actor = 'murena', who: Auth = { kind: 'token', actor: 'murena', project: 'acropora' }) =>
@@ -156,9 +157,10 @@ describe('create: a task, one event, one message; the hand-out stays acrobot\'s'
   })
 
   it('a missing or bad field is a 400 that names it, and makes nothing', async () => {
-    const r = await create({ title: '', goal: 'y', priority: 'kritikus', assignee: '../etc' })
+    const r = await create({ title: '', goal: 'y', priority: 'kritikus', assignee: '../etc', project: 'nincs-ilyen' })
     expect(r.status).toBe(400)
     expect(r.body.missing).toEqual([
+      'project (acropora|os|commerce|reefclub)',
       'title (1-200 characters)',
       'priority (low|normal|high|urgent)',
       'assignee: an agent of the fleet, or empty for "acrobot assigns"',

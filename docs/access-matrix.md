@@ -357,6 +357,8 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | POST | `/api/tasks/:id/sessions` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
 | GET | `/api/tasks` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | GET | `/api/tasks/:id/timeline` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
+| GET | `/api/projects` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
+| POST | `/api/tasks/:id/project` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
 | POST | `/api/decisions/:id` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | decision-decide |  |
 | POST | `/api/task-actions` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | class:KRITIKUS |  |
 | POST | `/api/task-actions/:id` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | class:KRITIKUS |  |
