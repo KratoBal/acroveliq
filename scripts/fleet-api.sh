@@ -580,7 +580,12 @@ print(json.dumps(b))')"
     #      pedig ez az agens (enelkul a foglaltsag-lekerdezes sosem latna)    -> 4
     #   2  az atado rekord, visszamerve (handoff-read)                         -> 3 tovabbadva
     #   3  az agensnek nincs MASIK foglalt feladata; --parallel "<indok>" atengedi -> 5
-    #   4  assigned esemeny, csak ha a feladat meg nincs ennek az agensnek kiadva
+    #   4  assigned esemeny, csak ha a feladat meg nincs ennek az agensnek kiadva, VAGY ugyan nala
+    #      van, de a szerver szerint nem foglalja (a 3. lepes busy=1 listajan nincs rajta): az
+    #      utolso allapot-esemenye nem assigned, started vagy fix_started (review_requested, verdict,
+    #      merged, deployed, done, blocked ...), es a vezerlopult is szabadnak mutatja. Egy uj szakasz
+    #      kiadasa ilyenkor ujra foglalja. A szabalyt a szerver adja (task-usage.ts BUSY_KINDS,
+    #      NON_STATE_KINDS es a szunet), a szkriptben nincs masolata.
     #   4b a panel tetlen (idle vagy stopped) ES nincs neki szolo fuggo uzenet -> 8, restart nincs
     #   5  friss inditas a feladat munkamenet-azonositojaval, ha nincs --continue
     #      es a feladaton meg nincs az agensnek munkamenete                    -> 6
@@ -660,6 +665,10 @@ print("1 rendben: %s, felelos %s, profil %s, projekt %s" % (sys.argv[2], agent, 
     BUSY="$(printf '%s' "$KI_JSON" | python3 -c '
 import json,sys
 print(" ".join("%s(%s)" % (t["id"], t.get("last_kind")) for t in json.load(sys.stdin) if t["id"] != sys.argv[1]))' "$TASK")" || exit 1
+    # Is THIS task among the ones keeping the agent busy? (step 4: a free task is claimed again)
+    THIS_BUSY="$(printf '%s' "$KI_JSON" | python3 -c '
+import json,sys
+print(int(any(t.get("id")==sys.argv[1] for t in json.load(sys.stdin))))' "$TASK")" || exit 1
     if [ -n "$BUSY" ]; then
       if [ -z "$PARALLEL" ]; then
         echo "FAIL 3: $AGENT foglalt: $BUSY"
@@ -689,10 +698,18 @@ print(int(to_me), int(session), int(message))' "$AGENT")
       [01][01][01]) ;;
       *) echo "FAIL: az idovonalbol nem olvashato, mi tortent mar a feladaton; nem irok semmit"; exit 1 ;;
     esac
-    # 4. assigned
-    if [ "${HAS_ASSIGNED:-0}" = "1" ]; then
+    case "${THIS_BUSY:-}" in
+      0|1) ;;
+      *) echo "FAIL: a foglaltsag-valaszbol nem olvashato, foglalja-e ez a feladat; nem irok semmit"; exit 1 ;;
+    esac
+    # 4. assigned. A task already handed to this agent is skipped only while it keeps the agent
+    # busy: after review_requested, verdict, merged, deployed, blocked ... it reads as free (busy
+    # check and dashboard), and the next stage must claim it again (acrobot, 2026-10-14 15:28,
+    # the dashboard showed no active task; manual assigned 819; barracuda #132).
+    if [ "${HAS_ASSIGNED:-0}" = "1" ] && [ "$THIS_BUSY" = "1" ]; then
       echo "4 kihagyva: a feladat mar ki van adva $AGENT agensnek"
     else
+      [ "${HAS_ASSIGNED:-0}" = "1" ] && echo "4 ujra foglal: a feladat $AGENT agensnel van, de a szerver szerint nem foglalja (az utolso allapot-esemenye nem assigned, started vagy fix_started)"
       DATA="$(AGENT="$AGENT" PARALLEL="$PARALLEL" python3 -c 'import json,os
 d={"agent":os.environ["AGENT"]}
 if os.environ["PARALLEL"]: d["parallel"]=os.environ["PARALLEL"]
