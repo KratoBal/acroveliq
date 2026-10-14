@@ -62,6 +62,8 @@ import { tryHandleOpenMatters } from './web/routes/open-matters.js'
 import { tryHandleDecisions } from './web/routes/decisions.js'
 import { tryHandleTaskActions } from './web/routes/task-actions.js'
 import { tryHandleTaskUsage } from './web/routes/task-usage.js'
+import { tryHandleDebates } from './web/routes/debates.js'
+import { startDebatePoller } from './web/debates-discord.js'
 import { tryHandleSchedules } from './web/routes/schedules.js'
 import { tryHandleConnectors } from './web/routes/connectors.js'
 import { tryHandleDocs } from './web/routes/docs.js'
@@ -236,6 +238,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleDecisions(routeCtx)) return
       if (await tryHandleTaskActions(routeCtx)) return
       if (await tryHandleTaskUsage(routeCtx)) return
+      if (await tryHandleDebates(routeCtx)) return
       if (await tryHandleSchedules(routeCtx)) return
       if (await tryHandleConnectorsHu(routeCtx)) return
       if (await tryHandleConnectors(routeCtx)) return
@@ -501,6 +504,10 @@ export function startWebServer(port = 3420): http.Server {
   const approvalDiscordInterval = approvalDiscordTransport
     ? startApprovalDiscordPoller(approvalDiscordTransport)
     : null
+  // Többmodelles V1: the debate controller; off unless DEBATE_DISCORD_THREADS is set
+  const debateInterval = approvalDiscordTransport && !webOnly
+    ? startDebatePoller(approvalDiscordTransport)
+    : null
 
   // Hourly sweep of expired browser-login sessions (7d idle / 30d absolute).
   // Runs regardless of WEB_ONLY -- it is a cheap indexed delete on the shared DB
@@ -668,6 +675,7 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(contextGuardInterval)
     clearInterval(approvalTimeoutInterval)
     if (approvalDiscordInterval) clearInterval(approvalDiscordInterval)
+    if (debateInterval) clearInterval(debateInterval)
     clearInterval(authSessionSweepInterval)
     clearInterval(toolLogPruneInterval)
     clearInterval(updateCheckerInterval)

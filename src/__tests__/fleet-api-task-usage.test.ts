@@ -696,3 +696,26 @@ describe('fleet-api.sh, Projektek V1', () => {
     ])
   })
 })
+
+// Többmodelles V1, PR 1: Acrobot hands in its debate round (task t-20261014-tobbmodelles-vezerlo)
+describe('fleet-api.sh vita-valasz', () => {
+  it('FLEET-VITA-VALASZ: the answer comes from STDIN, --vege marks it final; no STDIN or a bad id sends nothing; a refused round fails', async () => {
+    router = null
+    queue = []
+    answer = [200, { debate: 'vita-1', round: 1, posted: ['p1'], next: 'var_balazsra' }]
+    requests = []
+    const ok = await run(['vita-valasz', 'vita-1', 'tok_EN-1', '--vege', '-'], 'A válaszom "idézettel" és $HOME-mal.')
+    const okReq = requests.map((r) => [r.method, r.path, r.body])
+    requests = []
+    const noStdin = await run(['vita-valasz', 'vita-1', 'tok_EN-1'])
+    const badId = await run(['vita-valasz', 'vita/1', 'tok', '-'], 'x')
+    const empty = await run(['vita-valasz', 'vita-1', 'tok', '-'], '   ')
+    const noneSent = requests.length
+    answer = [409, { error: 'this round is answered: one answer a round' }]
+    const refused = await run(['vita-valasz', 'vita-1', 'tok', '-'], 'még egyszer')
+    expect([ok.code, okReq, noStdin.code, badId.code, empty.code, noneSent, refused.code, /one answer a round/.test(refused.out)], 'FLEET-VITA-VALASZ').toEqual([
+      0, [['POST', '/api/debates/vita-1/turns/tok_EN-1', { text: 'A válaszom "idézettel" és $HOME-mal.', final: true }]],
+      2, 2, 2, 0, 1, true,
+    ])
+  })
+})
