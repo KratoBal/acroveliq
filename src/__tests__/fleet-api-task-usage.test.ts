@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { createServer, type Server } from 'node:http'
 import { execFile, execFileSync } from 'node:child_process'
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { AddressInfo } from 'node:net'
@@ -480,6 +480,47 @@ describe('fleet-api.sh deployed (TC-03 minimum)', () => {
     const wrongRepo = await run(['deployed', 'acropora', 't9', '--app', 'api'], undefined, env)
     expect([both.code, bothApps.map((d) => `${d.app}:${d.evidence}`), partial.code, partialWrites, /web.*NEM tartalmazza/.test(partial.out), wrongRepo.code, posts().length],
       `DEPLOYED-IMAGE ${both.out}`).toEqual([0, ['api:image-tag', 'web:image-tag'], 5, 0, true, 4, 0])
+  })
+
+  /*
+    THE PINNED HOST KEY (Security Baseline, task ssh-hostkulcs-rogzites). MI PIROSÍT: the
+    deployed read reaches the production machine without StrictHostKeyChecking=yes and the
+    pinned file (or with the global known_hosts on); a machine whose key is not pinned still
+    produces an event. The fake ssh plays ssh's own rule: it answers only if the pinned file
+    carries the host, else it fails the way ssh does (255, host key verification failed);
+    the real behaviour was measured once by hand (a foreign pinned key stops at the handshake).
+  */
+  it('DEPLOYED-HOSTKEY: an unpinned machine key fails the read, and no event is written', async () => {
+    const pinned = join(root, 'pinned_known_hosts')
+    const argsFile = join(root, 'ssh-args')
+    writeFileSync(join(bin, 'ssh'), [
+      '#!/bin/bash',
+      'printf "%s\\n" "$@" > "$SSH_ARGS_FILE"',
+      'kh=""; strict=""',
+      'for a in "$@"; do case "$a" in UserKnownHostsFile=*) kh="${a#UserKnownHostsFile=}";; StrictHostKeyChecking=yes) strict=1;; esac; done',
+      'host="${@: -2:1}"; host="${host#*@}"',
+      'if [ -z "$strict" ] || [ -z "$kh" ] || ! grep -q "^$host " "$kh" 2>/dev/null; then echo "Host key verification failed." >&2; exit 255; fi',
+      'printf "%s\\n" "t9gxx94ecwekwruxngps5i6v-1|t9gxx94ecwekwruxngps5i6v:$MAIN_SHA|Up 1 hour"',
+    ].join('\n') + '\n')
+    chmodSync(join(bin, 'ssh'), 0o755)
+    const os = merged({ repo: 'KratoBal/acropora-os' })
+    const env = (khContent: string) => {
+      writeFileSync(pinned, khContent)
+      return { PATH: `${bin}:${process.env.PATH}`, DEPLOYED_OS_CLONE: repo, ELES_KEY: '/dev/null', FLEET_KNOWN_HOSTS: pinned, MAIN_SHA: MAIN, SSH_ARGS_FILE: argsFile }
+    }
+    g('checkout', '-q', 'main')
+    fakeTimeline([os])
+    const foreign = await run(['deployed', 'acropora', 't9', '--app', 'api'], undefined, env('203.0.113.9 ssh-ed25519 AAAA\n'))
+    const foreignWrites = posts().length
+    fakeTimeline([os])
+    const ok = await run(['deployed', 'acropora', 't9', '--app', 'api'], undefined, env('162.55.216.28 ssh-ed25519 AAAA\n'))
+    const args = readFileSync(argsFile, 'utf-8').split('\n')
+    expect([
+      foreign.code, foreignWrites, /Host key verification failed/.test(foreign.out),
+      ok.code, posts().length,
+      args.includes('StrictHostKeyChecking=yes'), args.includes(`UserKnownHostsFile=${pinned}`), args.includes('GlobalKnownHostsFile=/dev/null'), args.includes('HostKeyAlgorithms=ssh-ed25519'),
+      args.some((a) => /StrictHostKeyChecking=no/.test(a)),
+    ], `DEPLOYED-HOSTKEY ${foreign.out} ${ok.out}`).toEqual([1, 0, true, 0, 1, true, true, true, true, false])
   })
 
   it('DEPLOYED-OVERLAP: during a deployment the old and the new container run under one app id; while the old one lives, nothing is written', async () => {

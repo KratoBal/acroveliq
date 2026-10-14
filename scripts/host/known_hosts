@@ -1,0 +1,8 @@
+# The production (162.55.216.28) and the stage/AI (100.88.199.87) machines' PUBLIC ed25519 host keys,
+# pinned for the fleet's ssh calls (task ssh-hostkulcs-rogzites). Each key was measured twice and
+# matched: ssh-keyscan on 2026-10-14 15:3x, and the fleet's known_hosts kept since 2026-09-18
+# (acrobot, /home/marveen/.ssh/known_hosts). Only ed25519: there is no independent source for the
+# ECDSA and RSA keys, so the calls use HostKeyAlgorithms=ssh-ed25519. A changed key fails the call;
+# re-pin only after checking the new key out of band.
+162.55.216.28 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDsfgYdb/KI/lOgz8lvcKxNF2BokOrHc5IH7vdPbha1V
+100.88.199.87 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM2HhjjV2LJZ3QYQLyKdd2mrO/Qv6CzKQaal9uJlL9S0

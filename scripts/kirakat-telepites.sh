@@ -50,6 +50,14 @@ TOKEN_FILE=/home/marveen/marveen/store/.coolify-token-ai
 SSH_KEY=/home/marveen/.ssh/id_ed25519_acropora_monitor
 GEP=fleet@100.88.199.87
 
+# THE HOST KEYS ARE PINNED (Security Baseline, task ssh-hostkulcs-rogzites, nautilus's finding):
+# the production and the stage machines' public keys live in the repo (scripts/host/known_hosts),
+# and ssh checks against that file ONLY. An unknown or changed key fails the call, and nothing is
+# read or written from a machine that may not be ours (StrictHostKeyChecking=no would have taken
+# any key, and a fake machine could have handed back a fake version or a fake deployed event).
+KNOWN_HOSTS="${FLEET_KNOWN_HOSTS:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/host/known_hosts}"
+SSH_PIN=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS" -o GlobalKnownHostsFile=/dev/null -o HostKeyAlgorithms=ssh-ed25519)
+
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: nincs olvashato Coolify token: $TOKEN_FILE" >&2; exit 1; }
 
 api() { /usr/bin/curl -s -H @<(printf 'Authorization: Bearer %s\n' "$(/bin/cat $TOKEN_FILE)") "$@"; }
@@ -57,7 +65,7 @@ api() { /usr/bin/curl -s -H @<(printf 'Authorization: Bearer %s\n' "$(/bin/cat $
 case "${1:-allapot}" in
   allapot)
     # fleet-gate (B8): a named read of the Coolify database, the SQL is the gate's
-    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$GEP" coolify-deployments "$UUID_APP" \
+    ssh -i "$SSH_KEY" "${SSH_PIN[@]}" "$GEP" coolify-deployments "$UUID_APP" \
       | python3 -c "
 import sys
 print('%-26s %-10s %-8s %-20s %s' % ('uuid','allapot','inditva','kezdet (UTC)','vege'))
@@ -70,7 +78,7 @@ for sor in sys.stdin:
   naplo)
     [ -n "${2:-}" ] || { echo "FAIL: kell egy deployment uuid (lasd: allapot)" >&2; exit 2; }
     # the gate takes a 24-character uuid only, and says so if it is not one
-    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$GEP" coolify-deploy-log "$2" \
+    ssh -i "$SSH_KEY" "${SSH_PIN[@]}" "$GEP" coolify-deploy-log "$2" \
       | python3 -c "
 import sys, json
 nyers = sys.stdin.read().strip()
