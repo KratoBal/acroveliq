@@ -52,6 +52,8 @@ jobs:
       - run: python3 -B scripts/__tests__/b45-acl.test.py
       # B45 B2-4: the daily run of that check and the bootstrap line reading its result.
       - run: python3 -B scripts/__tests__/b45-jogellenorzo-napi.test.py
+      # P0-1 L4: the daily access preflight wrapper
+      - run: python3 -B scripts/__tests__/access-preflight-napi.test.py
       # reviewer-profil: the git reader (a trapped repo runs nothing through it; script(1)
       # gives git a terminal for the pager trap), the packet reader and the verdict writer.
       - run: bash scripts/__tests__/git-olvas.test.sh
