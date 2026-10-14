@@ -396,7 +396,11 @@ case "$OP" in
     esac
     [ "$lines" -le 5000 ] || deny "'app-log': a sorok száma 1 és 5000 közötti egész"
     C="$(resolve "${W[1]}")" || exit 2
-    allow app-log "${W[1]}" "$lines"
+    # which container: during a deployment the old and the new one both run, and
+    # the question is often which of them speaks (barracuda, #99). On stderr, so
+    # the log itself stays the container's alone.
+    allow app-log "${W[1]}" "$lines" "$C"
+    echo "fleet-gate: app-log konténer: $C" >&2
     exec "$DOCKER" logs --timestamps --tail "$lines" "$C" 2>&1
     ;;
   coolify-deployments|coolify-deploy-log)
