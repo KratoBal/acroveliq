@@ -30,6 +30,7 @@ akkor az éles, ha a próba-sor (lent) minden sora zöld rajta.
 | `docstore-tar`, `docstore-count` | a dokumentum-tároló tar-ja, illetve a fájljainak száma | éles |
 | `env-get` | az api konténer `MEDUSA_ADMIN_URL` és `MEDUSA_PROJECTION_SCHEDULE_ENABLED` értéke, semmi más | éles |
 | `quote-templates-sync plan`, `quote-templates-sync apply` | az ajánlatsablonok és szövegrészletek JSON-ja a stdin-en; a kapuval együtt telepített, root tulajdonú program (`/usr/local/lib/fleet-gate/quote-templates-sync.mjs`) az api konténerben ellenőrzi a kép saját szerkesztő-szabályaival, és név szerint felveszi, ami hiányzik. Az `apply` ír az éles OS-be (lásd lent) | éles |
+| `app-log <kulcs> [sorok]` | `docker logs --timestamps --tail <sorok> <konténer>`, a stdout és a stderr együtt; a kulcs az éles api, web vagy partner alkalmazás (a Coolify uuid-ja), a sorok száma 1 és 5000 között, alapból 500. Követés (`--follow`) és szabad `--since` nincs | éles |
 | `restore-probe` | eldobható `postgres:16-alpine` hálózat nélkül, memória-, CPU- és folyamat-korláttal, a dump a stdin-ről, egy rögzített számláló-lekérdezés, utána törlés; a képet a kapu nem tölti le | stage |
 | `backup-db <kulcs> <adatbázis> <felhasználó>` | `~/backups/<adatbázis>/<mai dátum>.dump`, utána `pg_restore --list` szám | mindkettő |
 | `backup-docstore` | `~/backups/dokumentumok/<mai dátum>.tar.gz`, a fájlszám egyezésével | éles |
@@ -286,7 +287,7 @@ cd /root
 install -o root -g root -m 0755 /tmp/fleet-gate.sh /usr/local/sbin/fleet-gate
 install -d -o root -g root -m 0755 /usr/local/lib/fleet-gate
 install -o root -g root -m 0644 /tmp/quote-templates-sync.mjs /usr/local/lib/fleet-gate/quote-templates-sync.mjs
-echo '41919ecdc8d222e6a22db151fbf5586465fec33738ac5baa520e79bda5c98f51  /usr/local/sbin/fleet-gate' | sha256sum -c
+echo 'ae4cfea7cd307aba781af33d64ed213e22d40b3d3d31e30da5255457254fe9bd  /usr/local/sbin/fleet-gate' | sha256sum -c
 echo 'd958d5a4050ebbf52610ca70f3574a3e572bf349751fbd7b011411a68a322834  /usr/local/lib/fleet-gate/quote-templates-sync.mjs' | sha256sum -c
                                              # mindkettő: OK. Ha nem: állj meg, és szólj.
 ```
@@ -426,6 +427,14 @@ elutasítást kap). A megfeleltetés:
 - Interaktív belépés `fleet`-ként, és minden, ami nincs a fenti táblában.
 
 ## Korlátok, amiket tudni kell
+
+- **Az `app-log` a naplót adja, szűrés nélkül** (Balázs, 2026-10-14 06:53 UTC). A Coolify API
+  napló-végpontja `read:sensitive` jogot kér, ami a környezeti változók ÉRTÉKÉT is kiadja; ezt a
+  flotta nem kapja meg, ezért megy a napló a kapun. Amit egy alkalmazás a naplójába ír (egy
+  kiírt kulcs, egy vevő adata), az a flotta kulcsának tulajdonosa számára látszik: a napló
+  olvasási kitettség, ugyanúgy, mint a `coolify-deploy-log`. Telepítése a kapu újratelepítése:
+  a `quote-templates-sync` szakasz telepítési lépése (a `stat` sor, az `install`, a két
+  `sha256sum -c` sor) ezt is viszi.
 
 - **A `psql-ro` a `fleet_ro` szereppel csatlakozik** (Balázs, 12:23 UTC): táblánkénti és
   oszloponkénti `SELECT` (Balázs, 2026-10-13 13:04:44 UTC), se superuser, se `pg_execute_server_program`. Írni nem tud, és a `COPY ... TO PROGRAM` sem ad neki
