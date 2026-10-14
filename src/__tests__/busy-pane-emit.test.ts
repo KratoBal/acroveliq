@@ -156,6 +156,29 @@ describe('emitIntoBusyPane: the report', () => {
     expect(got).toEqual(cases.map(([name, , want]) => [name, [want]]))
   })
 
+  it('BUSY-LATE-LANDING: the text is still in the box after the Enter, gone at the look before the retry: sent, no second Enter', async () => {
+    // captures: one per chunk, one before the Enter, the follow-up (text still there), then the
+    // look before the retry Enter -- by then the box shows the queue hint
+    let captures = 0
+    let typed = ''
+    const enters: number[] = []
+    const io: BusyPaneIo = {
+      capture: () => {
+        captures++
+        if (enters.length > 0 && captures >= K + 3) return busyWithBox('Press up to edit queued messages')
+        return busyWithBox(typed.slice(0, 70))
+      },
+      typeChunk: (c) => {
+        typed += c
+      },
+      enter: () => enters.push(captures),
+      delay: async () => {},
+    }
+    const abandoned: string[] = []
+    const { result, reports } = await run({ ...io, abandon: (t) => abandoned.push(t) })
+    expect([result, enters.length, abandoned.length, reports]).toEqual(['sent', 1, 0, [{ result: 'sent', chunks: K, retries: 0 }]])
+  })
+
   it('BUSY-REPORT-NOT-OURS: foreign text in the box before the Enter is named not-ours', async () => {
     let typedAny = false
     const io: BusyPaneIo = {
