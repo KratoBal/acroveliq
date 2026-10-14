@@ -10,10 +10,15 @@
 # ref-je `<owner>/<repo>#<N> fej <sha>` alaku.
 #
 # A KERESES: a /api/tasks lista, es feladatonkent a /timeline; csak a `review_requested`
-# es a `verdict` esemeny ref-je szamit, es abban a `<owner>/<repo>#<N>` pontosan (a repo
-# kis- es nagybetu nelkul, a szam utan nem allhat szamjegy: a #9 nem a #97). Szerveroldali
-# szuro nincs, es nem is kell: merve 2026-10-14, 95 feladat idovonala 0,2 s alatt jon le,
-# a dashboard telepitese nelkul.
+# es a `verdict` esemeny szamit. Hogy egy esemeny MELYIK PR-t nevezi meg, azt UGYANUGY
+# dontjuk el, mint a szerver orzoje (src/task-usage.ts, reviewRefGuard es REF_PR), kulonben
+# a ketto ugyanarrol az esemenyrol mast mondana (barracuda, #98): a ref ELSO `owner/repo#N`
+# alakja, ugyanazzal a mintaval; ha a ref nem nevez meg PR-t, a data.repo + data.pr par.
+# Egy ref, ami mellekesen egy masik PR-t is emlit ("KratoBal/marveen#99 fej x, a #97
+# javitasa"), igy csak az elsot nevezi meg, es a merged nem kerul rossz feladatra. Az
+# osszevetes: a repo kis- es nagybetu nelkul, a szam egyezzen. Szerveroldali szuro nincs,
+# es nem is kell: merve 2026-10-14, 95 feladat idovonala 0,2 s alatt jon le, a dashboard
+# telepitese nelkul; a teljes keresesnek DEADLINE masodperce van, utana 1-es kilepes.
 #
 # KIMENET ES KILEPES, mert a hivo ebbol dont, es nem talalgat:
 #   0  pontosan EGY feladat: az azonositoja a stdout-on, egyedul
@@ -25,6 +30,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,8 +40,15 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(HERE, 'lib'))
 from dashboard_token import read_token  # noqa: E402
 
-REPO_RE = re.compile(r'^(?!.*\.\.)[\w.-]+/[\w.-]+$')
+REPO_RE = re.compile(r'^(?!.*\.\.)[\w.-]+/[\w.-]+$', re.ASCII)
 KINDS = ('review_requested', 'verdict')
+# the server's REF_PR, letter for letter; re.ASCII because a JS \w is ASCII
+REF_PR = re.compile(r'(?<![\w./-])((?!\S*\.\.)[\w.-]+/[\w.-]+)#(\d+)(?!\w)', re.ASCII)
+# seconds for the whole search; FELADAT_PR_HATARIDO may only shorten it (the tests do)
+DEADLINE = 60
+_env = os.environ.get('FELADAT_PR_HATARIDO', '')
+if re.fullmatch(r'[1-9][0-9]?', _env, re.ASCII) and int(_env) < DEADLINE:
+    DEADLINE = int(_env)
 
 
 def fail(msg, code):
@@ -60,23 +73,40 @@ def parse(argv):
     return a['repo'], a['pr']
 
 
-def names(ref, repo, pr):
-    """Does this ref name repo#pr, exactly?"""
-    pat = re.compile(r'(?<![\w.-])' + re.escape(repo) + '#' + pr + r'(?!\d)', re.IGNORECASE)
-    return bool(pat.search(ref or ''))
+def named(ref, data):
+    """The (repo, pr) an event names, as the server's guard reads it, or None."""
+    m = REF_PR.search(ref or '')
+    if m and int(m.group(2)) > 0:
+        return m.group(1), int(m.group(2))
+    d = data if isinstance(data, dict) else {}
+    p = d.get('pr')
+    n = p if isinstance(p, int) and not isinstance(p, bool) else int(p) if isinstance(p, str) and re.fullmatch(r'\d+', p, re.ASCII) else 0
+    if isinstance(d.get('repo'), str) and REPO_RE.match(d['repo']) and n > 0:
+        return d['repo'], n
+    return None
+
+
+def names(item, repo, pr):
+    """Does this event name repo#pr?"""
+    got = named(item.get('ref'), item.get('data'))
+    return bool(got) and got[0].lower() == repo.lower() and got[1] == int(pr)
 
 
 def main(argv):
     repo, pr = parse(argv)
     base = f'http://localhost:{os.environ.get("MARVEEN_WEB_PORT", "3420")}/api'
-    token = read_token(ROOT)
+    until = time.monotonic() + DEADLINE
 
     def get(path):
+        left = until - time.monotonic()
+        if left <= 0:
+            raise TimeoutError(f'{DEADLINE} s alatt nem ert vegere')
         req = urllib.request.Request(base + path, headers={'Authorization': f'Bearer {token}'})
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urllib.request.urlopen(req, timeout=min(15, left)) as r:
             return json.load(r)
 
     try:
+        token = read_token(ROOT)
         tasks = get('/tasks')
         if not isinstance(tasks, list):
             fail('a /api/tasks nem listat adott', 1)
@@ -88,10 +118,12 @@ def main(argv):
             items = get(f'/tasks/{urllib.parse.quote(tid, safe="")}/timeline').get('items')
             if not isinstance(items, list):
                 fail(f'a {tid} idovonala nem listat adott', 1)
-            if any(i.get('source') == 'event' and i.get('kind') in KINDS and names(i.get('ref'), repo, pr) for i in items):
+            if any(isinstance(i, dict) and i.get('source') == 'event' and i.get('kind') in KINDS and names(i, repo, pr) for i in items):
                 found.append(tid)
     except (urllib.error.URLError, OSError, ValueError, AttributeError) as e:
-        fail(f'a keresest nem tudtam elvegezni: {e}', 1)
+        # a request cut short by the remaining time is the deadline too, not a dashboard fault
+        why = f'{DEADLINE} s alatt nem ert vegere' if time.monotonic() >= until else str(e)
+        fail(f'a keresest nem tudtam elvegezni: {why}', 1)
 
     if len(found) == 1:
         print(found[0])

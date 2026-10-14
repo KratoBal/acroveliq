@@ -20,14 +20,15 @@ const REPO_ROOT = process.cwd()
 const root = mkdtempSync(join(tmpdir(), 'merge-task-auto-'))
 const finder = join(root, 'scripts', 'feladat-pr-szerint.py')
 
-type Item = { source: string; kind?: string; ref?: string | null }
+type Item = { source: string; kind?: string; ref?: string | null; data?: Record<string, unknown> | null }
 let timelines: Record<string, Item[]> = {}
 let listStatus = 200
+let delayMs = 0
 let seenAuth: (string | undefined)[] = []
 let server: Server
 let port = 0
 
-const ev = (kind: string, ref: string | null): Item => ({ source: 'event', kind, ref })
+const ev = (kind: string, ref: string | null, data: Record<string, unknown> | null = null): Item => ({ source: 'event', kind, ref, data })
 
 beforeAll(async () => {
   mkdirSync(join(root, 'scripts'), { recursive: true })
@@ -43,8 +44,10 @@ beforeAll(async () => {
     let body: unknown = { error: 'not found' }
     if (url === '/api/tasks') [status, body] = [listStatus, Object.keys(timelines).map((id) => ({ id }))]
     else if (m && decodeURIComponent(m[1]!) in timelines) [status, body] = [200, { task: decodeURIComponent(m[1]!), items: timelines[decodeURIComponent(m[1]!)] }]
-    res.writeHead(status, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify(body))
+    setTimeout(() => {
+      res.writeHead(status, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(body))
+    }, m ? delayMs : 0)
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   port = (server.address() as AddressInfo).port
@@ -55,6 +58,7 @@ afterAll(() => {
 })
 beforeEach(() => {
   listStatus = 200
+  delayMs = 0
   seenAuth = []
   timelines = {
     'keret-or': [ev('started', null), ev('review_requested', 'KratoBal/marveen#76 fej 2409741'), ev('verdict', 'APPROVE KratoBal/marveen#76 fej 2409741')],
@@ -97,6 +101,29 @@ describe('feladat-pr-szerint.py', () => {
     expect(r.map((x) => [x.code, x.out])).toEqual([[4, ''], [4, ''], [4, ''], [4, '']])
   })
 
+  it('the server\'s own rule (reviewRefGuard): data.repo + data.pr names a PR when the ref does not', async () => {
+    timelines = {
+      'data-szam': [ev('review_requested', 'fej abc', { repo: 'KratoBal/marveen', pr: 61 })],
+      'data-szoveg': [ev('verdict', 'APPROVE', { repo: 'kratobal/marveen', pr: '62' })],
+      'data-rossz': [ev('review_requested', null, { repo: 'KratoBal/marveen', pr: '63x' })],
+    }
+    const r = await Promise.all([find('KratoBal/marveen', '61'), find('KratoBal/marveen', '62'), find('KratoBal/marveen', '63')])
+    expect(r.map((x) => [x.code, x.out])).toEqual([[0, 'data-szam\n'], [0, 'data-szoveg\n'], [4, '']])
+  })
+
+  it('the server\'s own rule: only the FIRST owner/repo#N in a ref counts, with its boundaries', async () => {
+    timelines = {
+      // a fix's review that mentions the PR it fixes: it names #99, never #97
+      'javito': [ev('review_requested', 'KratoBal/marveen#99 fej x, a KratoBal/marveen#97 javitasa')],
+      'utvonal': [ev('review_requested', 'x/KratoBal/marveen#55 fej y')], // a path, not a PR ref
+      'betu': [ev('review_requested', 'KratoBal/marveen#56a fej z')], // #56a is not #56
+      // a ref that names a PR wins over data naming another one, as on the server
+      'ref-elol': [ev('review_requested', 'KratoBal/marveen#57 fej w', { repo: 'KratoBal/marveen', pr: 58 })],
+    }
+    const r = await Promise.all(['97', '99', '55', '56', '57', '58'].map((n) => find('KratoBal/marveen', n)))
+    expect(r.map((x) => [x.code, x.out])).toEqual([[4, ''], [0, 'javito\n'], [4, ''], [4, ''], [0, 'ref-elol\n'], [4, '']])
+  })
+
   it('a dashboard that does not answer is not "no task": exit 1', async () => {
     listStatus = 500
     const failed = await find('KratoBal/marveen', '97')
@@ -107,6 +134,17 @@ describe('feladat-pr-szerint.py', () => {
       ),
     )
     expect([failed.code, failed.out, down.code]).toEqual([1, '', 1])
+  })
+
+  it('a slow dashboard runs into the deadline of the whole search: exit 1, not a long wait', async () => {
+    delayMs = 600 // five timelines, 3 s in all, against a 1 s deadline
+    const started = Date.now()
+    const r = await new Promise<{ code: number; err: string }>((resolve) =>
+      execFile('python3', ['-B', finder, '--repo', 'KratoBal/marveen', '--pr', '97'], { env: { ...process.env, MARVEEN_WEB_PORT: String(port), FELADAT_PR_HATARIDO: '1' } }, (error, _o, stderr) =>
+        resolve({ code: error ? Number((error as { code?: number }).code ?? 1) : 0, err: stderr }),
+      ),
+    )
+    expect([r.code, r.err.includes('1 s alatt nem ert vegere'), Date.now() - started < 2500]).toEqual([1, true, true])
   })
 
   it('bad arguments: exit 2, the dashboard is not asked', async () => {
@@ -124,7 +162,8 @@ describe('pr-beolvaszt.sh takes the task only when exactly one names the PR', ()
   const block = join(root, 'scripts', 'blokk.sh')
 
   const decide = (pr: string, task = '') => {
-    writeFileSync(block, `REPO=KratoBal/marveen\nPR=${pr}\nTASK=${task}\nNEZ=1\n${src.slice(from, to)}\necho "TASK=$TASK"\n`)
+    // the script runs under set -uo pipefail: the block does too
+    writeFileSync(block, `set -uo pipefail\nREPO=KratoBal/marveen\nPR=${pr}\nTASK=${task}\nNEZ=1\n${src.slice(from, to)}\necho "TASK=$TASK"\n`)
     return sh('bash', [block])
   }
 
