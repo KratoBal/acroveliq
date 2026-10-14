@@ -7,7 +7,6 @@ import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { ensureTaskHandoffSchema } from './task-handoff.js'
 import { ensureTaskUsageSchema } from './task-usage.js'
-import { ensureDebatesSchema } from './debates.js'
 import { ensurePrincipalSchema } from './web/auth-principals.js'
 import { ensureAccessDecisionSchema } from './web/access-enforcement.js'
 
@@ -730,9 +729,6 @@ export function initDatabase(dbPathOverride?: string): void {
 
   // --- Per-task token measurement (acrovelIQ token brief, item 1) ---
   ensureTaskUsageSchema(db)
-
-  // --- Többmodelles V1: the debate controller's records (src/debates.ts) ---
-  ensureDebatesSchema(db)
 
   // --- Per-actor tokens and the actor log (acrovelIQ P0-1, step 1) ---
   ensurePrincipalSchema(db)

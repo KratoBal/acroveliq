@@ -133,18 +133,6 @@ export const APPROVAL_DISCORD_NO = (cfg('APPROVAL_DISCORD_NO') ?? 'nem').trim().
  */
 export const APPROVAL_DISCORD_REQUIRE_REPLY = (cfg('APPROVAL_DISCORD_REQUIRE_REPLY') ?? 'on').trim().toLowerCase() !== 'off'
 export const APPROVAL_DISCORD_POLL_SECONDS = Math.max(5, Number(cfg('APPROVAL_DISCORD_POLL_SECONDS') ?? '20') || 20)
-
-// Többmodelles V1, the debate controller (src/debates.ts). Off unless threads are named: a
-// debate runs only in these Discord threads (a setting, not the CLAUDE.md table; barracuda 30664).
-export const DEBATE_DISCORD_THREADS = (cfg('DEBATE_DISCORD_THREADS') ?? '')
-  .split(',').map((s) => s.trim()).filter(Boolean)
-/** The Discord users whose messages are the owner's; unset: the approval path's users. */
-export const DEBATE_OWNER_IDS = (cfg('DEBATE_OWNER_IDS') ?? '')
-  .split(',').map((s) => s.trim()).filter(Boolean)
-export const DEBATE_TURN_TIMEOUT_SECONDS = Math.max(60, Number(cfg('DEBATE_TURN_TIMEOUT_SECONDS') ?? '900') || 900)
-export const DEBATE_PHASE_TIMEOUT_SECONDS = Math.max(300, Number(cfg('DEBATE_PHASE_TIMEOUT_SECONDS') ?? '3600') || 3600)
-export const DEBATE_GPT_DAILY_CAP = Math.max(0, Number(cfg('DEBATE_GPT_DAILY_CAP') ?? '40') || 0)
-export const DEBATE_POLL_SECONDS = Math.max(5, Number(cfg('DEBATE_POLL_SECONDS') ?? '15') || 15)
 /**
  * The dashboard user who decides a decision row (Dontéseim V1; barracuda's review of #104:
  * any logged-in session is not the owner, dashboard_users may hold more than one user).

@@ -42,8 +42,6 @@
 #   bash scripts/fleet-api.sh task-timeline <task_id>
 #   bash scripts/fleet-api.sh open-matters         # a nyitott ugyek osszefoglaloja (koord-munkamenet)
 #   bash scripts/fleet-api.sh task-busy <agens>     # a feladatai, amik foglalva tartjak
-#   bash scripts/fleet-api.sh vita-valasz <vita> <kor-token> [--vege] - < valasz.txt   # Acrobot vitakore (Tobbmodelles V1)
-#   bash scripts/fleet-api.sh vita-lista [projekt]   # a vitak, ujak elol
 #   bash scripts/fleet-api.sh task-session <task_id> <agens> <session_id>
 #         (a HIVO SAJAT munkamenetet: egy masik agenset az agent-restart --task regisztralja)
 #   bash scripts/fleet-api.sh agent-restart <agens> [--fresh] [--task <task_id>]
@@ -540,42 +538,6 @@ print("-- %d tetel, %s" % (len(d["items"]), d["task"]))'
     CODE="$(printf '%s' "$RESP" | tail -n1)"; BODYTXT="$(printf '%s' "$RESP" | sed '$d')"
     [ "$CODE" = "200" ] || { echo "FAIL http=${CODE:-?} $(printf '%s' "$BODYTXT" | head -c 200)"; exit 1; }
     printf '%s\n' "$BODYTXT"
-    ;;
-  vita-valasz)
-    # TOBBMODELLES V1 (src/debates.ts): Acrobot leadja a vita egy koret a vezerlotol kapott,
-    # egyszer hasznalhato kor-azonositoval. A szovegnek STDIN-rol kell jonnie (a tartalom ne
-    # menjen at a shellen). A szalba a vezerlo teszi ki; egy korre csak egy leadas szamit (409).
-    # --vege: a szakasz itt megallhat (egyetertes, vagy eleg ez az egy valasz).
-    argc_max 4 "$#" "fleet-api.sh vita-valasz <vita> <kor-token> [--vege] - < valasz.txt"
-    VITA="${1:?vita id required}"; KOR="${2:?kor token required}"; shift 2
-    FINAL=false; DASH=0
-    for a in "$@"; do
-      case "$a" in
-        --vege) FINAL=true ;;
-        -) DASH=1 ;;
-        *) echo "FAIL: ismeretlen argumentum: $a (--vege, -)" >&2; exit 2 ;;
-      esac
-    done
-    [ "$DASH" = "1" ] || { echo "FAIL: a valasz STDIN-rol jon: fleet-api.sh vita-valasz $VITA $KOR [--vege] - < valasz.txt" >&2; exit 2; }
-    for v in "$VITA" "$KOR"; do
-      [[ "$v" =~ ^[A-Za-z0-9._-]{1,100}$ ]] || { echo "FAIL: az azonosito alakja (betu, szam, . _ -): $v" >&2; exit 2; }
-    done
-    BODY="$(FINAL="$FINAL" python3 -c 'import json,os,sys
-t=sys.stdin.read()
-if not t.strip(): sys.exit("FAIL: ures valasz")
-print(json.dumps({"text": t, "final": os.environ["FINAL"] == "true"}))')" || exit 2
-    post "/debates/${VITA}/turns/${KOR}" "$BODY"
-    ;;
-  vita-lista)
-    argc_max 1 "$#" "fleet-api.sh vita-lista [projekt]"
-    Q=""; [ -n "${1:-}" ] && Q="?project=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1")"
-    get "/debates${Q}" | python3 -c '
-import json,sys,time
-rows=json.load(sys.stdin)
-if not rows: print("nincs vita")
-for d in rows:
-    print("%s  %-12s %-9s %d. szakasz  GPT %s  %s  %s" % (d["id"], d["status"], d["project"], d["phase"], "igen" if d["gpt_invited"] else "nem",
-        time.strftime("%m-%d %H:%M", time.localtime(d["created_at"])), d["topic"][:60]))'
     ;;
   task-busy)
     # Egy agens feladatai, amik FOGLALVA tartjak: az utolso esemeny assigned, started vagy

@@ -362,9 +362,6 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | POST | `/api/decisions/:id` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | decision-decide |  |
 | POST | `/api/task-actions` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | class:KRITIKUS |  |
 | POST | `/api/task-actions/:id` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | class:KRITIKUS |  |
-| GET | `/api/debates` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
-| GET | `/api/debates/:id` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
-| POST | `/api/debates/:id/turns/:token` | ERZEKENY | ✓ | ✓ | ✓ | ✓ | ✓ | class:ERZEKENY |  |
 | POST | `/api/decisions/:id/discord-reply` | KRITIKUS | ✗ | ✓ | ✗ | ✗ | ✗ | decision-discord-reply |  |
 
 ## A csoportok indoka
