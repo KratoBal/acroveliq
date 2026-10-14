@@ -66,6 +66,11 @@ const IDLE_ACCEPT_EDITS_TAIL_ONLY = modeFooter('  ⏵⏵ accept edits on · 1 mo
 // 2026-10-08): the `…` truncation mark at the end of the line has to carry it.
 const IDLE_BYPASS_TRUNCATED = modeFooter('  ⏵⏵ bypass permissions on · install gh for PR status · 2 shells · ← for agen…')
 const IDLE_BYPASS_TRUNCATED_EARLY = modeFooter('  ⏵⏵ bypass permissions on · install gh for PR st…')
+// The second narrow-pane case (murena, 2026-10-14, 80 columns): the shift+tab hint stayed,
+// the `· ← for agents` tail was cut after `install gh for PR status`. Copied byte for byte
+// from the /api/agents/activity tail (exchange/flotta/murena-csonka-lablec-2026-10-14.txt),
+// with the status line above it as the pane had it.
+const IDLE_BYPASS_SHIFT_TAB_CUT = modeFooter('  claude-opus-5-5 | 5h 8% | 7d 48%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · install gh for PR status · …')
 // Prose with an ellipsis but no mode glyph must stay out.
 const NOT_A_FOOTER_ELLIPSIS = ['', SEP, '❯ ', SEP, '  the light was on · then it went…'].join('\n')
 
@@ -465,9 +470,14 @@ describe('detectPaneState', () => {
     ['accept edits with no shift+tab hint', IDLE_ACCEPT_EDITS_TAIL_ONLY],
     ['bypass footer cut by a narrow pane', IDLE_BYPASS_TRUNCATED],
     ['bypass footer cut before the shell count', IDLE_BYPASS_TRUNCATED_EARLY],
+    ['bypass footer cut after the shift+tab hint (murena, 2026-10-14)', IDLE_BYPASS_SHIFT_TAB_CUT],
   ])('detects idle on the %s footer', (_label, pane) => {
     expect(detectPaneState(pane)).toBe('idle')
     expect(isReadyForPrompt(pane)).toBe(true)
+  })
+
+  it('names the permission mode on the footer cut after the shift+tab hint', () => {
+    expect(detectPermissionMode(IDLE_BYPASS_SHIFT_TAB_CUT)).toBe('bypass permissions')
   })
 
   it('does not read a quoted footer phrase without the UI tail as idle', () => {

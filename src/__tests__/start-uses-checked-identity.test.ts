@@ -73,6 +73,19 @@ describe('the start runs as the CHECKED identity, not a second read of the confi
     expect(cmd).toContain('export GIT_CEILING_DIRECTORIES=')
   })
 
+  it('the agent pane starts 200 columns wide, not at tmux\'s default 80', async () => {
+    // at 80 columns Claude Code cut the idle footer (`· install gh for PR status · …`) and
+    // the pane read as not idle; a restart brought the narrow pane back every time
+    await startAgentProcess(AGENT)
+    const ns = calls.filter((c) => c.includes('new-session'))
+    expect(ns).toHaveLength(1)
+    const x = ns[0].indexOf('-x')
+    expect(x).toBeGreaterThan(0)
+    expect(ns[0].slice(x, x + 4)).toEqual(['-x', '200', '-y', '24'])
+    // the size goes before the command, which tmux takes as the LAST argument
+    expect(x).toBeLessThan(ns[0].length - 1)
+  })
+
   it('a remote host written into the config after the remote check: the launch stays local', async () => {
     writeFileSync(join(agentDir(AGENT), 'agent-config.json'),
       JSON.stringify({ runAsUser: CHECKED, remoteHost: 'tamado.example', remoteWorkdir: '/home/x/proj' }))
