@@ -184,7 +184,7 @@ export function acroveliqOpenMattersView(out: OpenMatters): { generated_at: numb
   const row = (d: DecisionView): DecisionView => ({
     id: d.id, requested_by: d.requested_by, task_id: d.task_id, summary: d.summary, reason: d.reason, consequence: d.consequence, status: d.status,
     requested_at: d.requested_at, timeout_at: d.timeout_at, resolved_at: d.resolved_at, resolved_by: d.resolved_by,
-    discuss_requested_at: d.discuss_requested_at, discord_message: d.discord_message,
+    discuss_requested_at: d.discuss_requested_at, discord_message: d.discord_message, discord_url: d.discord_url,
   })
   const dt = out.items.dontes
   return {

@@ -110,6 +110,16 @@ describe('Döntéseim V1 view', () => {
     expect(view.aqRenderDecisions(d)).not.toContain('data-aq-decide=')
   })
 
+  it('DEC-VIEW-DISCORD-LINK: the answer opens on Discord when the server gave a discord.com link; anything else stays an id', () => {
+    const { view } = load()
+    const link = 'https://discord.com/channels/1538520890822885418/1540270627926183997/1559851364950220852'
+    const html = view.aqRenderDecisions(data({ discord_replied: [row('dc', { discord_message: '1559851364950220852', discord_url: link })] }))
+    expect(html).toContain(`<a href="${link}" target="_blank" rel="noreferrer">a válaszod megnyitása a Discordon</a>`)
+    const bad = view.aqRenderDecisions(data({ discord_replied: [row('dc', { discord_message: '1559851364950220852', discord_url: 'javascript:alert(1)' })] }))
+    expect(bad).not.toContain('<a href=')
+    expect(bad).toContain('Discordon válaszoltál: üzenet 1559851364950220852')
+  })
+
   it('DEC-VIEW-EMPTY: nothing waiting says so, an unreachable source is not an empty list', () => {
     const { view } = load()
     expect(view.aqRenderDecisions(data({}))).toContain('Most egy döntés sem vár rád.')
