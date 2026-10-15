@@ -110,6 +110,42 @@ describe('measure-statusline.py --export-usage', () => {
   })
 })
 
+// Card 88a21124 (acrobot, 2026-10-15 08:56, korall): the export runs only when the statusline is drawn,
+// at most once per interval. An agent that works inside the interval and then goes idle is not drawn
+// again, so its last calls stayed out of the measurement. A throttled draw now leaves ONE trailing
+// export that runs when the stamp ages out. WHAT TURNS THIS RED: no trailing export (the new call is
+// not exported without another draw); two waiting for one agent.
+describe('measure-statusline.py --export-usage, the trailing export', () => {
+  it('a throttled draw leaves one trailing export: the call made inside the interval is exported without another draw', async () => {
+    const proj = join(TMP, 'trailproj')
+    mkdirSync(proj, { recursive: true })
+    const call = (id: string, ts: string) => JSON.stringify({ type: 'assistant', sessionId: 'sessT', timestamp: ts,
+      message: { id, model: 'claude-opus-5-5', usage: { input_tokens: 1, output_tokens: 2 }, content: [] } }) + '\n'
+    const transcript = join(proj, 'sessT.jsonl')
+    writeFileSync(transcript, call('msg_a', '2026-10-15T06:56:20Z'))
+    const mdir = join(TMP, 'trail-measurements')
+    const draw = () => spawnSync('python3', [SCRIPT, '--export-usage'], {
+      input: JSON.stringify({ model: { id: 'claude-opus-5-5' }, transcript_path: transcript }), encoding: 'utf-8',
+      env: { ...process.env, MEASURE_AGENT: 'korall', MEASURE_DIR: mdir, MEASURE_QUOTA_FILE: join(mdir, 'quota-samples.jsonl'),
+        MEASURE_USAGE_DIR: join(mdir, 'usage'), MEASURE_GATE_FILE: join(TMP, 'trail-gate.json'), MEASURE_EXPORT_INTERVAL_S: '2' } })
+    const out = join(mdir, 'usage', 'korall', 'sessT.jsonl')
+    const ids = () => (existsSync(out) ? readFileSync(out, 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l).message.id) : [])
+    const wait = async (ok: () => boolean, ms: number) => { for (let t = 0; t < ms && !ok(); t += 100) await new Promise((r) => setTimeout(r, 100)) }
+
+    expect(draw().status).toBe(0) // the first draw exports at once
+    await wait(() => ids().length === 1, 5000)
+    const first = ids()
+    // the agent works inside the interval: a new call, one throttled draw, then it goes idle
+    writeFileSync(transcript, call('msg_a', '2026-10-15T06:56:20Z') + call('msg_b', '2026-10-15T06:56:41Z'))
+    expect(draw().status).toBe(0)
+    expect(draw().status).toBe(0) // a second throttled draw while one waits: no second trailing export
+    const right = ids()
+    await wait(() => ids().length === 2, 6000)
+    const log = readFileSync(join(mdir, 'usage', 'korall', '.trailing.log'), 'utf-8').trim().split('\n')
+    expect([first, right, ids(), log.length], 'TRAILING-EXPORT').toEqual([['msg_a'], ['msg_a'], ['msg_a', 'msg_b'], 1])
+  }, 20000)
+})
+
 // Worker provisioning: the measurement statusLine is part of ensureWorkerCwd,
 // so a fresh install / fresh worker gets it without a hand edit. Run in an
 // isolated HOME so nothing touches the live ~/.claude or worker dirs.
