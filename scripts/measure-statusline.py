@@ -59,9 +59,10 @@ import time
 
 MIN_INTERVAL_S = 300
 EXPORT_INTERVAL_S = 60
-# Tests shorten it; the fleet runs the default.
+# Tests shorten it; the fleet runs the default. Capped at 300 s: the trailing export sleeps this
+# long, and a mistyped value (milliseconds meant) must not leave a process asleep for hours.
 try:
-    EXPORT_INTERVAL_S = max(1, int(os.environ.get("MEASURE_EXPORT_INTERVAL_S", "")))
+    EXPORT_INTERVAL_S = min(300, max(1, int(os.environ.get("MEASURE_EXPORT_INTERVAL_S", ""))))
 except ValueError:
     pass
 ROOT = os.environ.get("MARVEEN_ROOT", "/home/marveen/marveen")
@@ -358,9 +359,10 @@ def run_export(agent, project_dir, stamp):
 def schedule_trailing(agent, project_dir, stamp, delay):
     """A detached export that runs once when the throttle stamp has aged out.
 
-    At most one waits per agent: it holds .trailing.lock for its whole wait, and a second
-    throttled draw finds it held and leaves. Each start appends one line to .trailing.log
-    (time and delay), which says afterwards whether the trailing export ran."""
+    At most one waits per agent: it holds .trailing.lock for its WAIT, and a second throttled
+    draw finds it held and leaves. The lock is let go before the export runs, so a draw during
+    the export can leave the next trailing export (export_usage's own lock queues the two;
+    barracuda, #155). Each start appends one line to .trailing.log (time and delay)."""
     try:
         pid = os.fork()
     except OSError:
@@ -385,6 +387,7 @@ def schedule_trailing(agent, project_dir, stamp, delay):
         finally:
             os.close(fd)
         time.sleep(max(0.0, delay) + 0.5)
+        os.close(lock_fd)
         run_export(agent, project_dir, stamp)
     except Exception:
         pass

@@ -146,6 +146,22 @@ describe('measure-statusline.py --export-usage, the trailing export', () => {
   }, 20000)
 })
 
+// barracuda, #155: the trailing export sleeps the interval; a mistyped interval must not leave a
+// process asleep for hours. Measured by loading the script as a module (main() does not run), so the
+// test leaves no sleeping process behind.
+describe('measure-statusline.py --export-usage, the interval cap', () => {
+  it('the interval is capped at 300 s, floored at 1 s, and 60 s unset or unreadable', () => {
+    const load = (value: string | null) => {
+      const env = { ...process.env }
+      delete env.MEASURE_EXPORT_INTERVAL_S
+      if (value !== null) env.MEASURE_EXPORT_INTERVAL_S = value
+      const code = 'import importlib.util,sys; s=importlib.util.spec_from_file_location("ms", sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.EXPORT_INTERVAL_S)'
+      return spawnSync('python3', ['-c', code, SCRIPT], { env, encoding: 'utf-8' }).stdout.trim()
+    }
+    expect([load('86400000'), load('300'), load('2'), load('0'), load(null), load('egy')], 'TRAILING-CAP').toEqual(['300', '300', '2', '1', '60', '60'])
+  })
+})
+
 // Worker provisioning: the measurement statusLine is part of ensureWorkerCwd,
 // so a fresh install / fresh worker gets it without a hand edit. Run in an
 // isolated HOME so nothing touches the live ~/.claude or worker dirs.
