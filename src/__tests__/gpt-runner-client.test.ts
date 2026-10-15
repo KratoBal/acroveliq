@@ -133,6 +133,12 @@ describe('a call', () => {
     expect([posts.some((p) => p.includes('GPT válasza a kimeneti titok-szűrőn fennakadt')), posts.some((p) => /futtató hibát adott/.test(p))]).toEqual([true, false])
   })
 
+  it('KLIENS-UNAVAILABLE: the runner not reachable at all (refused, timed out): the thread says the service is likely not running and names the host command', async () => {
+    const refused = (async () => { throw new TypeError('fetch failed') }) as unknown as typeof fetch
+    await askGpt(makeRunGpt(opts({ fetchImpl: refused })))
+    expect([posts.some((p) => p.includes('a futtató nem érhető el') && p.includes('systemctl status gpt-szolga.service')), posts.some((p) => /futtató hibát adott/.test(p))]).toEqual([true, false])
+  })
+
   it('KLIENS-TOKEN: the token is read at every call; missing or malformed: zero calls', async () => {
     rmSync(join(dir, 'token'))
     await askGpt(makeRunGpt(opts()))

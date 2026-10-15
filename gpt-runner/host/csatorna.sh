@@ -48,6 +48,14 @@ set_env() { sed -i "/^$1=/d" "$ENVF"; printf '%s=%s\n' "$1" "$2" >> "$ENVF"; }
 # a TCP connect from a given place: prints NYITOTT or ZART (with the reason)
 CONNECT_JS='const net=require("net");const [h,p]=process.argv.slice(1);const s=net.connect({host:h,port:+p});s.setTimeout(5000);s.on("connect",()=>{console.log("NYITOTT");s.destroy()});s.on("timeout",()=>{console.log("ZART (idotullepes)");s.destroy()});s.on("error",(e)=>console.log("ZART ("+e.code+")"))'
 
+# after the activation (aktivalas.sh) systemd runs the service: this script's own `up -d` would
+# collide with it, and its final stop would stop it with a CLEAN exit that Restart=on-failure does
+# not restart, so the debate channel would stay down silently (barracuda, #166). So it stops here,
+# WITHOUT touching the service (no stop_szolga).
+if systemctl is-enabled --quiet gpt-szolga.service 2>/dev/null; then
+  echo "STOP: a gpt-szolga.service engedelyezve (aktivalva): a csatorna-meres ezt leallitana. Elobb: systemctl disable --now gpt-szolga.service, a meres utan az aktivalas ujra."
+  exit 1
+fi
 [ -d "$SRC" ] || stop "nincs $SRC: elobb a forras kell a jovahagyott commiton"
 [ -r "$ENVF" ] || stop "nincs $ENVF"
 
