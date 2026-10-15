@@ -17,10 +17,12 @@ WHAT TURNS THIS RED (the plan's section 8, the parts that need no installed brok
 The pane is a script that follows the keys (no tmux, no agent user, no root: CI has none).
 Run: python3 -B <thisfile>   Exit 0 = all pass.
 """
+import atexit
 import importlib.util
 import json
 import re
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -333,6 +335,260 @@ for s in SAMPLES:
     look = {'plain': fp.strip_ansi(s['pane']), 'dimless': fp.strip_dim(s['pane'])}
     got.append((s['name'], fp.ready_refusal(look, False) is None, fp.ready_refusal(look, True) is None))
 check('the broker agrees with every shared pane sample (idle, queued)', got, [(s['name'], s['idle'], s['queued']) for s in SAMPLES])
+
+# --- start and generate (the second PR): the generated root-owned start scripts ---------------
+# What turns this red: a config field outside its value set reaches the script; the profile comes
+# from the config the agent writes (barracuda 31245); a refused generate still writes; a claude
+# binary someone else can replace is accepted (acrobot 31242); start passes anything but one item
+# of the closed launch list (N5); the caller's environment reaches claude (N9).
+class Pw:
+    def __init__(self, uid, home):
+        self.pw_uid, self.pw_dir = uid, home
+
+
+class StartEnv(Env):
+    """Under $HOME, not /tmp: the ownership chain refuses a world-writable directory, sticky or not."""
+
+    def __init__(self, profile='reviewer', config=None, values=None):
+        super().__init__()
+        self.dir = tempfile.mkdtemp(prefix='fleet-pane-start-teszt-', dir=os.path.expanduser('~'))
+        os.chmod(self.dir, 0o755)
+        atexit.register(shutil.rmtree, self.dir, True)
+        self.agents = os.path.join(self.dir, 'agents.json')
+        self.log = os.path.join(self.dir, 'fleet-pane.log')
+        me = os.getuid()
+        self.work = os.path.join(self.dir, 'agents', 'proba')
+        self.home = os.path.join(self.dir, 'home')
+        self.start_dir = os.path.join(self.dir, 'start')
+        self.bin = os.path.join(self.dir, 'bin', 'claude')
+        self.out = os.path.join(self.dir, 'claude.out')
+        self.token = os.path.join(self.dir, 'token')
+        for d in (self.work, self.home, self.start_dir, os.path.dirname(self.bin)):
+            os.makedirs(d, mode=0o755)
+        with open(self.bin, 'w') as f:
+            f.write('#!/usr/bin/bash\nprintf "%%s\\n" "$PWD" "$@" > %s\n/usr/bin/env > %s.env\n' % (self.out, self.out))
+        os.chmod(self.bin, 0o755)
+        with open(self.token, 'w') as f:
+            f.write('tok-123')
+        agents = {'proba': {'user': 'agent-proba', 'workdir': self.work}}
+        if profile:
+            agents['proba']['profile'] = profile
+        with open(self.agents, 'w') as f:
+            json.dump({'agents': agents}, f)
+        self.values = os.path.join(self.dir, 'start-values.json')
+        v = {'claudeBin': self.bin, 'oauthTokenFile': self.token, 'tz': 'Europe/Budapest', 'gitCeiling': os.path.join(self.dir, 'agents'),
+             'routerUser': 'marveen', 'models': ['claude-opus-5-5', 'claude-sonnet-5-5'],
+             'profiles': {'developer-senior': 'permissive', 'reviewer': 'strict'}}
+        v.update(values or {})
+        with open(self.values, 'w') as f:
+            json.dump(v, f)
+        self.write_config(config if config is not None else {'model': 'claude-opus-5-5', 'securityProfile': profile or 'reviewer'})
+        self.pw = {'marveen': Pw(me, '/home/marveen'), 'agent-proba': Pw(me, self.home)}
+
+    def write_config(self, c):
+        with open(os.path.join(self.work, 'agent-config.json'), 'w') as f:
+            f.write(c if isinstance(c, str) else json.dumps(c))
+
+    def run(self, pane, argv, stdin=b'', require_root=False):
+        return fp.run(argv, {'agents_file': self.agents, 'log_file': self.log, 'run': pane, 'sleep': lambda s: None,
+                             'caller_uid': 1000, 'require_root': require_root, 'values_file': self.values,
+                             'start_dir': self.start_dir, 'getpw': lambda n: self.pw[n], 'trusted_uid': os.getuid()}, stdin)
+
+    def script(self):
+        try:
+            with open(os.path.join(self.start_dir, 'proba')) as f:
+                return f.read()
+        except FileNotFoundError:
+            return None
+
+
+class StartPane(Pane):
+    def __init__(self, running=False):
+        super().__init__()
+        self.running = running
+
+    def __call__(self, cmd):
+        a = cmd[5:]
+        if a and a[0] == 'new-session':
+            assert cmd[:5] == [fp.RUNUSER, '-u', 'agent-proba', '--', fp.TMUX], cmd
+            self.calls.append(a)
+            self.running = True
+            return 0, ''
+        return super().__call__(cmd)
+
+
+s = StartEnv()
+code, out = s.run(StartPane(), ['generate', 'proba'])
+q = fp.shlex.quote
+WANT = ''.join([
+    '#!/usr/bin/bash\n',
+    '# fleet-pane generate proba: GENERATED, do not edit (B48 (2)); run by `fleet-pane start` only\n',
+    'set -u\n', 'umask 022\n',
+    'export GIT_CEILING_DIRECTORIES=%s\n' % q(os.path.join(s.dir, 'agents')),
+    'export PATH="/usr/local/bin:/usr/bin:/bin:$HOME/.bun/bin"\n',
+    'export DISABLE_AUTOUPDATER=1 CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false\n',
+    'export CLAUDE_CONFIG_DIR=%s\n' % q(s.work + '/.claude-config'),
+    'launch=()\n', 'case "$#:${1:-}" in\n', '  0:) ;;\n', '  1:--continue) launch=(--continue) ;;\n', '  2:--session-id)\n',
+    '    [[ ${2:-} =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || { echo "fleet-pane start: bad session id" >&2; exit 64; }\n',
+    '    launch=(--session-id "$2") ;;\n', '  *) echo "fleet-pane start: bad arguments" >&2; exit 64 ;;\n', 'esac\n',
+    '# path A (acrobot 31154): the token is read HERE, as the agent; root never reads it\n',
+    'CLAUDE_CODE_OAUTH_TOKEN="$(cat %s)" || exit 65\n' % q(s.token), 'export CLAUDE_CODE_OAUTH_TOKEN\n',
+    'cd %s || exit 66\n' % q(s.work),
+    'exec %s "${launch[@]}" --model claude-opus-5-5 --name proba\n' % q(s.bin),
+])
+check('G generate a strict (reviewer) agent: the script, letter for letter; no bypass flag', (code, out.split(' ')[0], s.script()), (0, 'generated', WANT))
+check('G the script is 0755 although the broker runs with umask 077, and its hash is logged',
+      (oct(os.stat(os.path.join(s.start_dir, 'proba')).st_mode & 0o777) if s.script() else None, s.log_lines()[-1].get('script_sha256') == out.split(' ')[-1]),
+      ('0o755', True))
+s = StartEnv(profile='developer-senior')
+s.run(StartPane(), ['generate', 'proba'])
+check('G a permissive profile (root decides it): --dangerously-skip-permissions', '--dangerously-skip-permissions --model' in (s.script() or ''), True)
+
+# refusals: nothing written, nothing started
+TOOBIG = '{"model": "claude-opus-5-5", "x": "' + 'y' * fp.MAX_CONFIG + '"}'
+REFUSALS = [
+    ('a model outside the list', dict(config={'model': 'claude-opus-4-8', 'securityProfile': 'reviewer'}), 'model-not-allowed'),
+    ('a model that tries to break the quoting', dict(config={'model': "claude-opus-5-5'; touch /tmp/pwn; '", 'securityProfile': 'reviewer'}), 'model-not-allowed'),
+    ('no profile in the ROOT agents file', dict(profile=None, config={'model': 'claude-opus-5-5', 'securityProfile': 'reviewer'}), 'profile-not-allowed'),
+    ('a root profile outside the value set', dict(profile='default'), 'profile-not-allowed'),
+    ('the agent writes itself a permissive profile (barracuda 31245)', dict(config={'model': 'claude-opus-5-5', 'securityProfile': 'developer-senior'}), 'profile-mismatch'),
+    ('no profile in the config either', dict(config={'model': 'claude-opus-5-5'}), 'profile-mismatch'),
+    ('authMode api (a vault key root must not read)', dict(config={'model': 'claude-opus-5-5', 'securityProfile': 'reviewer', 'authMode': 'api'}), 'auth-mode-not-supported'),
+    ('a claudePlan', dict(config={'model': 'claude-opus-5-5', 'securityProfile': 'reviewer', 'claudePlan': 'x'}), 'claudePlan-not-supported'),
+    ('a claudeConfigDir', dict(config={'model': 'claude-opus-5-5', 'securityProfile': 'reviewer', 'claudeConfigDir': '/tmp'}), 'claudeConfigDir-not-supported'),
+    ('a channel provider', dict(config={'model': 'claude-opus-5-5', 'securityProfile': 'reviewer', 'channel': 'telegram'}), 'channel-not-supported'),
+    ('JSON that is not an object', dict(config='["claude-opus-5-5"]'), 'config-unreadable'),
+    ('a config over 64 KiB', dict(config=TOOBIG), 'config-unreadable'),
+    ('a values file with a model id outside the strict shape', dict(values={'models': ['claude-opus-5-5[1m]']}), 'values-file-invalid'),
+    ('a values file with a relative claude path', dict(values={'claudeBin': 'bin/claude'}), 'values-file-invalid'),
+]
+for name, kw, why in REFUSALS:
+    s = StartEnv(**kw)
+    p = StartPane()
+    check('G refused, nothing written: %s' % name, (s.run(p, ['generate', 'proba']), s.script(), p.calls), ((10, why), None, []))
+
+s = StartEnv()
+os.makedirs(os.path.join(s.work, '.claude', 'channels', 'telegram'))
+with open(os.path.join(s.work, '.claude', 'channels', 'telegram', '.env'), 'w') as f:
+    f.write('TELEGRAM_BOT_TOKEN=x\n')
+check('G a channel token file with content: refused (stat only)', (s.run(StartPane(), ['generate', 'proba']), s.script()), ((10, 'channel-not-supported'), None))
+s = StartEnv()
+cfgp = os.path.join(s.work, 'agent-config.json')
+real = os.path.join(s.dir, 'real-config.json')
+os.rename(cfgp, real)
+os.symlink(real, cfgp)
+check('G a symlinked config: refused, not followed', (s.run(StartPane(), ['generate', 'proba']), s.script()), ((10, 'config-unreadable'), None))
+s = StartEnv()
+os.remove(cfgp := os.path.join(s.work, 'agent-config.json'))
+os.mkfifo(cfgp)
+check('G a FIFO config: refused at once (no hang)', (s.run(StartPane(), ['generate', 'proba']), s.script()), ((10, 'config-unreadable'), None))
+
+# the claude binary: root's, nobody else can replace it, no symlink (acrobot 31242, barracuda 31245)
+s = StartEnv()
+os.chmod(s.bin, 0o775)
+check('G a group-writable claude binary: refused', (s.run(StartPane(), ['generate', 'proba']), s.script()), ((10, 'claude-bin-writable-by-others'), None))
+s = StartEnv()
+os.chmod(s.bin, 0o757)
+check('G a claude binary writable by others only: refused', s.run(StartPane(), ['generate', 'proba']), (10, 'claude-bin-writable-by-others'))
+s = StartEnv()
+os.chmod(os.path.dirname(s.bin), 0o777)
+check('G a claude binary in an other-writable directory: refused', s.run(StartPane(), ['generate', 'proba']), (10, 'claude-bin-writable-by-others'))
+s = StartEnv()
+link = os.path.join(os.path.dirname(s.bin), 'claude-link')
+os.symlink(s.bin, link)
+with open(s.values) as f:
+    vv = json.load(f)
+vv['claudeBin'] = link
+with open(s.values, 'w') as f:
+    json.dump(vv, f)
+check('G a claude path through a symlink: refused', s.run(StartPane(), ['generate', 'proba']), (10, 'claude-bin-symlink'))
+s = StartEnv()
+code, _ = fp.run(['generate', 'proba'], {'agents_file': s.agents, 'log_file': s.log, 'run': StartPane(), 'values_file': s.values,
+                                         'start_dir': s.start_dir, 'getpw': lambda n: s.pw[n], 'require_root': False})
+check('G with the production owner (root), a claude binary the test user owns is refused', (code, s.script()), (10, None))
+
+# the name and the router's read clones
+s = StartEnv(config={'model': 'claude-opus-5-5', 'securityProfile': 'reviewer', 'displayName': 'Medúsa 2'})
+s.run(StartPane(), ['generate', 'proba'])
+check('G a displayName in the pattern becomes --name', (s.script() or '').rstrip().endswith("--name 'Medúsa 2'"), True)
+for bad in ['-x', 'a$(id)', "a'b", 'x' * 41, '2nd', 'a\nb']:
+    s = StartEnv(config={'model': 'claude-opus-5-5', 'securityProfile': 'reviewer', 'displayName': bad})
+    s.run(StartPane(), ['generate', 'proba'])
+    check('G a displayName outside the pattern falls back to the agent name: %r' % bad, (s.script() or '').rstrip().endswith('--name proba'), True)
+s = StartEnv()
+for d in ('olvaso', 'szokozos nev', 'linkelt-cel'):
+    os.makedirs(os.path.join(s.work, d, '.git'))
+os.symlink(os.path.join(s.work, 'linkelt-cel'), os.path.join(s.work, 'linkelt'))
+os.makedirs(os.path.join(s.work, 'nincs-git'))
+s.run(StartPane(), ['generate', 'proba'])
+gitline = [l for l in (s.script() or '').split('\n') if l.startswith('export GIT_CONFIG_COUNT')]
+check('G read clones: a real dir with .git qualifies; a symlink, an odd name, a dir without .git do not',
+      gitline, ['export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0=%s GIT_CONFIG_KEY_1=safe.directory GIT_CONFIG_VALUE_1=%s'
+                % (q(os.path.join(s.work, 'linkelt-cel')), q(os.path.join(s.work, 'olvaso')))])
+
+# start: the closed launch list (N5), the checks before the new-session
+s = StartEnv()
+s.run(StartPane(), ['generate', 'proba'])
+UUID = '0f8fad5b-d9cb-469f-a165-70867728950e'
+for argv in [['start', 'proba', '--continue', '--session-id', UUID], ['start', 'proba', '--session-id', UUID.upper()],
+             ['start', 'proba', '--session-id'], ['start', 'proba', '--continue;id'], ['start', 'proba', '-c'],
+             ['start', 'proba', '--model', 'claude-opus-5-5'], ['start', 'proba', '--', 'bash'], ['start', 'proba', '--continue', 'x'],
+             ['generate', 'proba', '--model', 'x']]:
+    p = StartPane()
+    check('N5 %r: usage refusal, no tmux call' % (argv[2:],), (s.run(p, argv)[0], p.calls), (2, []))
+p = StartPane(running=True)
+check('S start on a running session: nothing (the router stops first)', (s.run(p, ['start', 'proba']), [c[0] for c in p.calls]), ((12, 'running'), ['has-session']))
+s2 = StartEnv()
+p = StartPane()
+check('S start without a generated script: refused, no new-session', (s2.run(p, ['start', 'proba']), [c[0] for c in p.calls]), ((10, 'script-missing'), ['has-session']))
+os.chmod(os.path.join(s.start_dir, 'proba'), 0o775)
+p = StartPane()
+check('S a group-writable start script: refused', (s.run(p, ['start', 'proba'])[1], [c[0] for c in p.calls]), ('script-writable-by-others', ['has-session']))
+os.chmod(os.path.join(s.start_dir, 'proba'), 0o755)
+LAUNCHES = {'fresh': [], 'continue': ['--continue'], 'session-id': ['--session-id', UUID]}
+script = os.path.join(s.start_dir, 'proba')
+PREFIX = ['new-session', '-d', '-s', 'agent-proba', '-x', '200', '-y', '24', '/usr/bin/env', '-i', 'HOME=' + s.home, 'USER=agent-proba',
+          'LOGNAME=agent-proba', 'SHELL=/bin/bash', 'LANG=C.UTF-8', 'LC_ALL=C.UTF-8', 'TZ=Europe/Budapest', 'TERM=tmux-256color',
+          '/usr/bin/bash', '--noprofile', '--norc', script]
+SENT = {}
+for kind, launch in LAUNCHES.items():
+    p = StartPane()
+    code, out = s.run(p, ['start', 'proba', *launch])
+    SENT[kind] = p.calls[-1][8:]
+    check('N5 start %s: the fixed new-session form, and from the caller only the launch item, last' % kind,
+          (code, out, p.calls[-1]), (0, 'started', PREFIX + launch))
+    check('S start %s is logged with its launch kind' % kind, s.log_lines()[-1].get('launch'), launch[0] if launch else 'fresh')
+
+# the generated script, run for real (no tmux): claude gets exactly the template argv and env (N5, N9)
+os.environ['BASH_ENV'] = os.path.join(s.dir, 'pwn.sh')
+with open(os.environ['BASH_ENV'], 'w') as f:
+    f.write('touch %s\n' % os.path.join(s.dir, 'PWNED'))
+for kind, launch in LAUNCHES.items():
+    if os.path.exists(s.out):
+        os.remove(s.out)
+    # the broker's OWN argv after the tmux part, not this file's PREFIX: a broker that drops env -i must turn this red
+    r = subprocess.run(SENT[kind], capture_output=True, timeout=20)
+    argv = open(s.out).read().split('\n')[:-1] if os.path.exists(s.out) else None
+    envs = dict(l.split('=', 1) for l in open(s.out + '.env').read().split('\n') if '=' in l) if argv else {}
+    check('N5 the script runs claude (%s) in the workdir with exactly the template argv' % kind,
+          (r.returncode, argv), (0, [s.work] + launch + ['--model', 'claude-opus-5-5', '--name', 'proba']))
+    check('N9 claude (%s) sees no caller variable; the token read as the agent; the config dir set' % kind,
+          ([k for k in ('LD_PRELOAD', 'PYTHONPATH', 'TMUX', 'BASH_ENV') if k in envs], envs.get('CLAUDE_CODE_OAUTH_TOKEN'),
+           envs.get('CLAUDE_CONFIG_DIR'), envs.get('HOME'), os.path.exists(os.path.join(s.dir, 'PWNED'))),
+          ([], 'tok-123', s.work + '/.claude-config', s.home, False))
+for bad in (['--continue;id'], ['$(id)'], ['--session-id', UUID.upper()], ['--session-id', UUID, 'x'], ['--continue', '--session-id', UUID], ['-c']):
+    if os.path.exists(s.out):
+        os.remove(s.out)
+    r = subprocess.run(PREFIX[8:] + bad, capture_output=True, timeout=20)
+    check('N5 the script itself refuses %r: exit 64, claude never runs' % (bad,), (r.returncode, os.path.exists(s.out)), (64, False))
+del os.environ['BASH_ENV']
+
+# the example files the installer copies are what the loaders accept (a stale example is a broken install)
+ex_values = fp.load_values(os.path.join(SCRIPTS, 'root', 'fleet-pane-start-values.example.json'), False)
+ex_agents = fp.load_agents(os.path.join(SCRIPTS, 'root', 'fleet-pane-agents.example.json'), False)
+check('the example values and agents load, every example agent has a workdir and a profile from the value set',
+      (sorted(ex_values['profiles']), all(a['workdir'] and a['profile'] in ex_values['profiles'] for a in ex_agents.values())),
+      (['designer', 'developer-senior', 'marketer', 'researcher-reader', 'reviewer'], True))
 
 # --- the installed form -----------------------------------------------------------------------
 src = open(os.path.join(SCRIPTS, 'root', 'fleet-pane.py'), encoding='utf-8').read()
