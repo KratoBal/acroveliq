@@ -28,6 +28,12 @@ function run(script: string, args: string[]): { argv: string; stdin: string; cal
   const src = readFileSync(copy, 'utf8')
   expect(src).toContain('ROOT=/home/marveen/marveen\n')
   writeFileSync(copy, src.replace('ROOT=/home/marveen/marveen\n', `ROOT=${root}\n`))
+  // the GitHub token helper the script sources (the owner token's retirement, PR 1), its owner file in the root
+  mkdirSync(join(root, 'scripts', 'lib'), { recursive: true })
+  const lib = readFileSync(join(REPO, 'scripts', 'lib', 'github-token.sh'), 'utf8')
+  expect(lib).toContain('GITHUB_OWNER_TOKEN_FILE=/home/marveen/marveen/store/.github-token\n')
+  writeFileSync(join(root, 'scripts', 'lib', 'github-token.sh'),
+    lib.replace('GITHUB_OWNER_TOKEN_FILE=/home/marveen/marveen/store/.github-token\n', `GITHUB_OWNER_TOKEN_FILE=${join(root, 'store', '.github-token')}\n`))
   const shim = join(root, 'bin', 'curl')
   writeFileSync(shim, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${root}/argv.log"\ncat >> "${root}/stdin.log"\necho '{}'\n`)
   chmodSync(shim, 0o755)
