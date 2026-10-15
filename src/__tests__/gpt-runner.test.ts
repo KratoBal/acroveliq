@@ -12,7 +12,7 @@
 //     package.json, the lockfile and the probe;
 //   - the probe, run here in the fleet's own container, does not come out red.
 import { describe, it, expect } from 'vitest'
-import { readFileSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -1089,6 +1089,73 @@ grep -qxF "$hp" "${dir}/nyitott"
   it('CSAT-TIMER-ADDRESS: the timer says the fleet address does not match: STOP', () => run({ allapot: 'a flotta kontener (marveen) cimei: 10.0.2.9; ...' }, (_dir, r) => {
     expect([r.status, r.stdout]).toEqual([1, expect.stringContaining('STOP: a tuzfal szerint a flotta cime nem egyezik')])
   }))
+})
+
+describe('gpt-runner activation on the host (host/aktivalas.sh, host/gpt-szolga.service) against fakes', () => {
+  const SCRIPT = join(__dirname, '..', '..', 'gpt-runner', 'host', 'aktivalas.sh')
+  const TOKEN = 'Aktivalo-Token-0123456789abcdef'
+  const setup = (o: { forras?: string; hash?: string; inaktiv?: string } = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), 'gpt-akt-'))
+    const bin = join(dir, 'bin')
+    for (const d of [bin, join(dir, 'opt', 'src', 'gpt-runner', 'host'), join(dir, 'store'), join(dir, 'allapot'), join(dir, 'units')]) mkdirSync(d, { recursive: true })
+    writeFileSync(join(dir, 'store', '.gpt-futtato-token'), TOKEN, { mode: 0o600 })
+    const hash = o.hash ?? createHash('sha256').update(TOKEN).digest('hex')
+    writeFileSync(join(dir, 'opt', '.env'), `GPT_FUTTATO_VEZERLO_CIM=192.168.250.2\nGPT_FUTTATO_KOZZETETT_CIM=192.168.250.1\nGPT_FUTTATO_SZOLGA_CIM=10.0.5.10\nGPT_FUTTATO_SZOLGA_TOKEN_SHA256=${hash}\nGPT_FUTTATO_FLOTTA_KONTENER=marveen\n`)
+    writeFileSync(join(dir, 'allapot', 'cim-allapot'), 'rendben\n')
+    writeFileSync(join(dir, 'opt', 'src', 'gpt-runner', 'host', 'gpt-szolga.service'), '[Unit]\n')
+    writeFileSync(join(dir, 'forras'), o.forras ?? '192.168.250.2')
+    writeFileSync(join(dir, 'opt', 'tuzfal.sh'), `echo tuzfal >> "${dir}/calls"\n`)
+    const log = `echo "$(basename "$0") $*" >> "${dir}/calls"`
+    writeFileSync(join(bin, 'docker'), `#!/bin/bash\n${log}\ncase "$1 $2" in\n  "compose run") exit 0 ;;\n  "logs gpt-szolga") echo "SZOLGA figyel 10.0.5.10:8790" ;;\n  "exec marveen") cat "${dir}/forras"; echo ;;\n  "inspect -f") echo no ;;\nesac\nexit 0\n`, { mode: 0o755 })
+    writeFileSync(join(bin, 'systemctl'), `#!/bin/bash\n${log}\ncase "$1" in\n  is-active) [ "$2" = --quiet ] && n="$3" || n="$2"; [ -f "${dir}/inaktiv-$n" ] && exit 3; echo active ;;\n  is-enabled) echo enabled ;;\nesac\nexit 0\n`, { mode: 0o755 })
+    writeFileSync(join(bin, 'install'), `#!/bin/bash\n${log}\ncp "\${@: -2:1}" "\${@: -1}"\n`, { mode: 0o755 })
+    if (o.inaktiv) writeFileSync(join(dir, `inaktiv-${o.inaktiv}`), '')
+    return dir
+  }
+  const go = (dir: string) => spawnSync('bash', [SCRIPT], {
+    env: { PATH: `${join(dir, 'bin')}:/usr/bin:/bin`, GPT_FUTTATO_DIR: join(dir, 'opt'), GPT_FUTTATO_FLOTTA_STORE: join(dir, 'store'), GPT_FUTTATO_ALLAPOT_DIR: join(dir, 'allapot'), GPT_FUTTATO_UNIT_DIR: join(dir, 'units'), GPT_FUTTATO_DOCKER_BIN: join(dir, 'bin', 'docker') },
+    encoding: 'utf8', timeout: 30_000,
+  })
+  const calls = (dir: string) => { try { return readFileSync(join(dir, 'calls'), 'utf8').split('\n').filter(Boolean) } catch { return [] } }
+  const run = (o: Parameters<typeof setup>[0], fn: (dir: string, r: ReturnType<typeof go>) => void) => {
+    const dir = setup(o)
+    try { fn(dir, go(dir)) } finally { rmSync(dir, { recursive: true, force: true }) }
+  }
+
+  it('AKT-OK: preconditions hold: the unit installed and enabled, ordered again after the start, the fleet source seen; the fleet-side settings printed, nothing set', () => run({}, (dir, r) => {
+    const c = calls(dir)
+    const en = c.indexOf('systemctl enable --now gpt-szolga.service')
+    const order2 = c.findIndex((x, i) => i > en && x === 'tuzfal')
+    const measure = c.findIndex((x) => x.startsWith('docker exec marveen'))
+    expect([r.status, en > 0, en < order2, order2 < measure, existsSync(join(dir, 'units', 'gpt-szolga.service'))]).toEqual([0, true, true, true, true])
+    for (const l of ['DEBATE_GPT_RUNNER_ENABLED=on', 'DEBATE_GPT_RUNNER_URL=http://192.168.250.1:8790', 'a kontener ujrainditasi szabalya: no']) expect([l, r.stdout.includes(l)]).toEqual([l, true])
+    expect([r.stdout.includes(TOKEN), c.some((x) => /supervisorctl/.test(x))]).toEqual([false, false])
+  }))
+
+  it('AKT-TOKEN: the fleet token does not match the runner\'s hash: STOP before anything is enabled, the token never printed', () => run({ hash: 'a'.repeat(64) }, (dir, r) => {
+    expect([r.status, r.stdout.includes('STOP: a flotta tokenjenek lenyomata nem egyezik'), calls(dir).some((x) => x.includes('enable')), r.stdout.includes(TOKEN)]).toEqual([1, true, false, false])
+  }))
+
+  it('AKT-SOURCE: after the start the service sees another source: STOP, and the unit is disabled again (the channel stays closed)', () => run({ forras: '10.0.5.128' }, (dir, r) => {
+    expect([r.status, r.stdout.includes('STOP: a futtato nem a flotta kontener cimet (192.168.250.2) latta, hanem: 10.0.5.128'), calls(dir).includes('systemctl disable --now gpt-szolga.service')]).toEqual([1, true, true])
+  }))
+
+  it('AKT-FIREWALL: the firewall unit or its timer not active: STOP before the service', () => {
+    for (const unit of ['gpt-futtato-tuzfal.service', 'gpt-futtato-tuzfal-ellenor.timer']) {
+      run({ inaktiv: unit }, (dir, r) => {
+        expect([unit, r.status, calls(dir).some((x) => x.includes('enable'))]).toEqual([unit, 1, false])
+      })
+    }
+  })
+
+  it('AKT-UNIT: the unit starts the service only after the firewall, restarts on failure with a limit, and the container keeps restart "no"', () => {
+    const u = R('host/gpt-szolga.service')
+    for (const want of [/^After=docker\.service gpt-futtato-tuzfal\.service$/m, /^Requires=gpt-futtato-tuzfal\.service$/m, /^PartOf=docker\.service$/m, /^ExecStartPre=\/opt\/gpt-futtato\/tuzfal\.sh$/m, /^ExecStart=\/usr\/bin\/docker compose --profile szolga up --no-log-prefix --exit-code-from gpt-szolga gpt-szolga$/m, /^Restart=on-failure$/m, /^StartLimitBurst=5$/m, /^StartLimitIntervalSec=300$/m]) {
+      expect([want.source, want.test(u)]).toEqual([want.source, true])
+    }
+    const svc = R('compose.yaml').split(/^ {2}gpt-szolga:/m)[1]!.split(/^networks:/m)[0]!
+    expect(/^\s*restart: "no"$/m.test(svc)).toBe(true)
+  })
 })
 
 describe('gpt-runner TLS with the system CA store (the login failed on it, 2026-10-14 20:13 UTC)', () => {
