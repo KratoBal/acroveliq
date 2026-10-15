@@ -139,6 +139,12 @@ describe('a call', () => {
     expect([posts.some((p) => p.includes('a futtató nem érhető el') && p.includes('systemctl status gpt-szolga.service')), posts.some((p) => /futtató hibát adott/.test(p))]).toEqual([true, false])
   })
 
+  it('KLIENS-TIMEOUT: the runner did not answer in time: the thread says so (it may be running but slow), NOT that the service is not running', async () => {
+    const slow = (async () => { throw new DOMException('The operation was aborted due to timeout', 'TimeoutError') }) as unknown as typeof fetch
+    await askGpt(makeRunGpt(opts({ fetchImpl: slow })))
+    expect([posts.some((p) => p.includes('a futtató nem válaszolt időben')), posts.some((p) => p.includes('valószínűleg a szolgáltatás nem fut'))]).toEqual([true, false])
+  })
+
   it('KLIENS-TOKEN: the token is read at every call; missing or malformed: zero calls', async () => {
     rmSync(join(dir, 'token'))
     await askGpt(makeRunGpt(opts()))

@@ -27,6 +27,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { resolveProject } from './projects.js'
 import { FINAL_MARK, GptBlocked, GptOutputBlocked } from './gpt-package.js'
+import { GptRunnerUnavailable } from './gpt-runner-client.js'
 import { wrapUntrusted } from './prompt-safety.js'
 
 export const MAX_ROUNDS = 3
@@ -358,12 +359,12 @@ async function gptTurn(db: Database.Database, deps: DebateDeps, cfg: DebateConfi
     }
     // the output filter stopped the answer: the runner WAS called (an attempt), and the thread is
     // told what happened, not "the runner failed" (barracuda, #149)
-    // an error that carries its own safe text (the output filter; the runner not reachable) says it;
-    // anything else is the generic line
-    const raw = err instanceof Error ? (err as unknown as { publicMessage?: unknown }).publicMessage : undefined
-    const pub = typeof raw === 'string' ? raw : null
-    settle('failed', err instanceof GptOutputBlocked ? 'a kimeneti titok-szűrőn fennakadt' : pub ? 'a futtató nem érhető el' : 'a futtató hibát adott')
-    if (running(db, debate.id)) await say(db, deps, debate, '[vezérlő]', pub ?? 'GPT most nem szólhat: a futtató hibát adott (a naplóban).')
+    // only OUR classes put their own (safe) text into the thread, an explicit list: the thread goes
+    // out, and a third error must not be labelled as one of these (barracuda, #169)
+    const out = err instanceof GptOutputBlocked
+    const down = err instanceof GptRunnerUnavailable
+    settle('failed', out ? 'a kimeneti titok-szűrőn fennakadt' : down ? (err.timedOut ? 'a futtató nem válaszolt időben' : 'a futtató nem érhető el') : 'a futtató hibát adott')
+    if (running(db, debate.id)) await say(db, deps, debate, '[vezérlő]', out || down ? err.publicMessage : 'GPT most nem szólhat: a futtató hibát adott (a naplóban).')
     return null
   }
   // stopped (or timed out) while GPT was thinking: its answer does not go out (barracuda #137)

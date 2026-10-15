@@ -52,8 +52,10 @@ CONNECT_JS='const net=require("net");const [h,p]=process.argv.slice(1);const s=n
 # collide with it, and its final stop would stop it with a CLEAN exit that Restart=on-failure does
 # not restart, so the debate channel would stay down silently (barracuda, #166). So it stops here,
 # WITHOUT touching the service (no stop_szolga).
-if systemctl is-enabled --quiet gpt-szolga.service 2>/dev/null; then
-  echo "STOP: a gpt-szolga.service engedelyezve (aktivalva): a csatorna-meres ezt leallitana. Elobb: systemctl disable --now gpt-szolga.service, a meres utan az aktivalas ujra."
+# enabled OR running (a `systemctl start` without enable is stopped by the final stop all the same;
+# barracuda, #169)
+if systemctl is-enabled --quiet gpt-szolga.service 2>/dev/null || systemctl is-active --quiet gpt-szolga.service 2>/dev/null; then
+  echo "STOP: a gpt-szolga.service engedelyezve vagy fut: a csatorna-meres ezt leallitana. Elobb: systemctl disable --now gpt-szolga.service, a meres utan az aktivalas ujra."
   exit 1
 fi
 [ -d "$SRC" ] || stop "nincs $SRC: elobb a forras kell a jovahagyott commiton"

@@ -68,20 +68,33 @@ echo "a host-tuzfal es az idozito aktiv, a flotta cime rendben, a belepes a kote
 echo "== a gpt-szolga.service"
 install -o root -g root -m 644 "$SRC/host/gpt-szolga.service" "$UNIT_DIR/gpt-szolga.service"
 systemctl daemon-reload
+# an older container (the channel measurement STOPPED it, did not remove it) still holds the old
+# "SZOLGA figyel" line in its log: the wait below then passed at once and the measurement went to a
+# service not yet listening (the 2026-10-15 08:47 UTC run: "HIBA fetch failed"). The unit creates
+# a new one; only lines since this start count.
+(cd "$DIR" && docker compose --profile szolga rm -sf gpt-szolga >/dev/null 2>&1) || true
+since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 ENABLED=1
 systemctl enable --now gpt-szolga.service
 
 # 3. listening, ordered, and the source the service sees
 ok=""
 for _ in $(seq 1 60); do
-  naplo=$(docker logs gpt-szolga 2>&1 || true)
-  if grep -qxF "SZOLGA figyel $SZOLGA:$PORT" <<< "$naplo"; then ok=1; break; fi
+  fut=$(docker inspect -f '{{.State.Running}}' gpt-szolga 2>/dev/null || true)
+  naplo=$(docker logs --since "$since" gpt-szolga 2>&1 || true)
+  if [ "$fut" = true ] && grep -qxF "SZOLGA figyel $SZOLGA:$PORT" <<< "$naplo"; then ok=1; break; fi
   sleep 1
 done
 [ -n "$ok" ] || stop "a szolgaltatas 60 mp alatt nem figyel a $SZOLGA:$PORT cimen"
 # starting the container re-ordered raw PREROUTING (Docker's DROP at the head): order first
 bash "$DIR/tuzfal.sh" || stop "a tuzfal.sh rendezo futasa elbukott a szolgaltatas inditasa utan"
-forras=$(docker exec "$FLOTTA" node -e 'fetch(process.argv[1],{signal:AbortSignal.timeout(8000)}).then(r=>r.json()).then(j=>console.log(j.forras)).catch(e=>console.log("HIBA "+e.message))' "http://$KOZZ:$PORT/health")
+# a connection error is retried for 30 s (the service may have just started listening); an answer
+# with another source is final
+forras=""
+for _ in $(seq 1 15); do
+  forras=$(docker exec "$FLOTTA" node -e 'fetch(process.argv[1],{signal:AbortSignal.timeout(8000)}).then(r=>r.json()).then(j=>console.log(j.forras)).catch(e=>console.log("HIBA "+e.message))' "http://$KOZZ:$PORT/health")
+  case "$forras" in HIBA*) sleep 2 ;; *) break ;; esac
+done
 echo "a szolgaltatas ezt latta: $forras"
 [ "$forras" = "$VEZ" ] || stop "a futtato nem a flotta kontener cimet ($VEZ) latta, hanem: $forras"
 
