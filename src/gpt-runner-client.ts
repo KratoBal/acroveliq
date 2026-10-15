@@ -27,10 +27,16 @@ export class GptRunnerUnavailable extends Error {
   }
 }
 
-/** A fetch failure that is the time limit, not the connection. */
+/** A fetch failure that is the time limit, not the connection. Measured on Node 22: an
+ *  AbortSignal.timeout() fires as TimeoutError both before the headers and while the body is read;
+ *  an AbortError is a deliberate stop (an own AbortController), NOT a timeout (barracuda, #171). */
 export function isTimeout(err: unknown): boolean {
-  const name = err instanceof Error ? err.name : ''
-  return name === 'TimeoutError' || name === 'AbortError'
+  return err instanceof Error && err.name === 'TimeoutError'
+}
+
+/** A deliberate stop: not the runner's fault, so not posted as a runner failure. */
+function isAbort(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError'
 }
 
 /** The package sent out, and the check of what comes back (src/gpt-package.ts gives both). */
@@ -106,10 +112,18 @@ export function makeRunGpt(o: RunnerClientOptions): DebateDeps['runGpt'] {
         redirect: 'error',
       })
     } catch (err) {
+      if (isAbort(err)) throw err
       throw new GptRunnerUnavailable(err instanceof Error ? err.message : String(err), isTimeout(err))
     }
     if (!res.ok) throw new Error(`a futtato ${res.status} valaszt adott`)
-    const body = (await res.json()) as unknown
+    let body: unknown
+    try {
+      body = (await res.json()) as unknown
+    } catch (err) {
+      // the same signal covers the body: a runner slow AFTER its headers timed out here, unlabelled
+      if (isTimeout(err)) throw new GptRunnerUnavailable(err instanceof Error ? err.message : String(err), true)
+      throw err
+    }
     const text = body && typeof body === 'object' && typeof (body as { text?: unknown }).text === 'string' ? (body as { text: string }).text : null
     if (text == null || !text.trim()) throw new Error('a futtato valasza nem tartalmaz szoveget')
     if (!filters.allowOutput(text)) throw new GptOutputBlocked('a valasz a kimeneti titok-szuron fennakadt')
