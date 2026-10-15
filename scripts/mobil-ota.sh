@@ -110,8 +110,34 @@
 #
 # === HASZNALAT ===
 #
-#   bash .../mobil-ota.sh                      <- SZARAZ: csak szamol, NEM ad ki
-#   bash .../mobil-ota.sh kiadas "az uzenet"   <- valodi kiadas a production agra
+#   bash .../mobil-ota.sh                                  <- SZARAZ: csak szamol, NEM ad ki
+#   OTA_AG=preview bash .../mobil-ota.sh kiadas "uzenet"   <- valodi kiadas a preview agra
+#   bash .../mobil-ota.sh kiadas "az uzenet"               <- NEM ad ki: kiirja Balazsnak a sort
+#
+# === ELESRE A FLOTTA NEM AD KI (Balazs D5 dontese, A valtozat, 2026-10-15 12:24 UTC) ===
+#
+# A flotta eles frissitest (production csatorna) NEM ad ki, csak tesztre (preview),
+# akkor sem, ha a csatorna az Expoban meg nem vedett. Az elest Balazs futtatja, a sajat
+# Expo-belepesevel. Ezert a `kiadas` CSAK a `preview` agra fut le; minden mas agnal
+# (production, orzo-meres, barmi ismeretlen) a szkript a token olvasasa es barmilyen
+# hivas ELOTT megall, kiirja a Balazs gepen futtatando sort, es 5-tel lep ki.
+# Engedelylista, nem tiltolista: egy uj vagy elirt agnev is a megallasra esik.
+#
+# Az engedely a PARRA szol: preview ag ES preview kornyezet (a preview build is
+# `environment: preview`, `APP_VARIANT=preview` mellett epul, apps/mobile/eas.json).
+# A kornyezet alaperteke ezert az ag neve: OTA_AG=preview -> --environment preview.
+# Egy preview ag production kornyezettel az eles valtozokkal epulne (barracuda, #199).
+#
+# A KIIRT SOR BALAZS SHELLJEBE KERUL, ezert a hivo szovege nyersen nem mehet bele: az ag
+# es a kornyezet neve szuk mintara illeszkedik (kulonben nincs kiirt parancs, csak
+# megallas), az uzenet egyes idezojelben, escape-elve all (barracuda, #199).
+#
+# AMIRE AZ ORZO TAMASZKODIK, ES AMIT NEM MER: hogy egy frissites kihez jut el, az Expo
+# csatorna-ag lekepezesen mulik. Az orzo az ag NEVET nezi; ha a production csatornat
+# valaki a preview agra allitana, a preview-kiadas elesre menne. A csatorna szerkesztese
+# a production csatorna vedette tetele utan (B49 / D5, `channel:protect production`)
+# vedett muvelet, amit a flotta robotja nem vegezhet. Lekepezes-ellenorzes a szkriptben
+# nincs, mert a `channel:view` kimenetenek alakjat nem mertem.
 #
 # A szaraz ag az ALAPERTELMEZES, szandekosan: egy `eas update` sikeres futasa utan
 # egy KIADAS marad a vilagban, tehat muvelet, nem meres.
@@ -121,7 +147,7 @@ set -uo pipefail
 KLON="${MOBIL_KLON:-/home/marveen/work/acropora-os}"
 TOKEN_FILE="/home/marveen/marveen/store/.expo-token"
 AG_NEV="${OTA_AG:-production}"
-VALTOZAT="${OTA_VALTOZAT:-production}"
+VALTOZAT="${OTA_VALTOZAT:-$AG_NEV}"
 
 MIT="${1:-szaraz}"
 UZENET="${2:-}"
@@ -133,6 +159,37 @@ case "$MIT" in
     exit 2
     ;;
 esac
+
+# D5 (lasd fent): kiadni csak a preview agra, preview kornyezettel. Ez az ELSO lepes:
+# elotte nincs klon, token, npx, tehat egy eles kiadasnak semmilyen resze nem indul el.
+KIADHATO_AG="preview"
+# az elso karakter betu vagy szam: egy `-`-tel kezdodo nev a kiirt sorban uj kapcsolonak latszana
+NEV_MINTA='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+
+# egyes idezojelbe tesz egy szoveget ugy, hogy egy shell egyetlen szokent, szo szerint lassa
+egyes() {
+  local v="$1"
+  printf "'%s'" "${v//\'/\'\\\'\'}"
+}
+
+if ! [[ "$AG_NEV" =~ $NEV_MINTA ]] || ! [[ "$VALTOZAT" =~ $NEV_MINTA ]]; then
+  echo "MEGALLOK: az ag vagy a kornyezet neve nem illeszkedik a mintara ($NEV_MINTA)."
+  echo "   Parancsot nem irok ki: a kiirt sor Balazs shelljebe kerulne."
+  exit 5
+fi
+
+if [ "$MIT" = "kiadas" ] && { [ "$AG_NEV" != "$KIADHATO_AG" ] || [ "$VALTOZAT" != "$KIADHATO_AG" ]; }; then
+  echo "MEGALLOK: a(z) '$AG_NEV' ag '$VALTOZAT' kornyezettel nem adhato ki a flottabol (Balazs D5 dontese, 2026-10-15)."
+  echo "   A flotta csak a '$KIADHATO_AG' agra, '$KIADHATO_AG' kornyezettel ad ki; az elest Balazs futtatja, a sajat Expo-belepesevel."
+  echo
+  echo "--- Balazsnak: a friss main-en, a sajat gepeden ---"
+  echo "  cd acropora-os && git pull --ff-only origin main && cd apps/mobile && \\"
+  echo "    npx eas-cli@24.8.0 update --branch $AG_NEV --environment $VALTOZAT \\"
+  echo "    --message $(egyes "${UZENET:-<uzenet>}")"
+  echo
+  echo "Elotte, ha meg nem vagy belepve: cd acropora-os/apps/mobile && npx eas-cli@24.8.0 login"
+  exit 5
+fi
 
 cd "$KLON" 2>/dev/null || { echo "NINCS KLON: $KLON" >&2; exit 1; }
 
@@ -266,8 +323,8 @@ fi
 
 if [ "$MIT" = "szaraz" ]; then
   echo
-  echo "--- a parancs, ami KIADASKOR futna ---"
-  echo "  npx --yes eas-cli@latest update \\"
+  echo "--- a parancs, ami KIADASKOR futna (production agnal Balazs futtatja, D5) ---"
+  echo "  npx --yes eas-cli@24.8.0 update \\"
   echo "    --branch $AG_NEV --environment $VALTOZAT \\"
   echo "    --message \"<uzenet>\" --non-interactive"
   echo
@@ -303,7 +360,7 @@ echo "=== KIADAS a(z) $AG_NEV agra ==="
 # mondjak, tehat a kulonbseg nem latszik.
 #
 # HA EZ VALAHA VISSZAKERUL, elotte merd le: all-e meg a szerver oldalon.
-npx --yes eas-cli@latest update \
+npx --yes eas-cli@24.8.0 update \
   --branch "$AG_NEV" \
   --environment "$VALTOZAT" \
   --message "$UZENET" \
