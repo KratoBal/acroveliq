@@ -35,35 +35,32 @@ MINTA="${1:-}"
 [ -n "$MINTA" ] || { echo "HASZNALAT: szal-keres.sh <minta> [--mind | <chat_id>]" >&2; exit 2; }
 MODE="${2:-fontos}"
 
-# A szalak a CLAUDE.md tablajabol. Ha uj szal jon, ide is fel kell venni.
+# A leggyakoribb szalak, mindig keresve (a fontos mod ezeket nezi). A TELJES lista a
+# szal-tablabol jon, lent: uj szal oda kerul, ide nem kell felvenni.
 FONTOS="1538522302277353505:Fo_csatorna
 1540270627926183997:Eldontendo_dolgok
 1542865300565790850:UNAS_Medusa_migracio
 1541477372245835786:Commerce_fejlesztes
 1543527864190902292:Commerce_frontend
 1543587794444750868:Product_Master"
+# --mind: MINDEN szal a szal-tablabol, futaskor kiolvasva. Korabban itt egy
+# kezzel vezetett lista allt, ami 2026-10-01-en a 45 szalbol 27-et fedett (a Havi
+# elszamolasok, OTP, Stripe es a tobbi kimaradt), ezert egy dontes nem volt meg.
+# A tabla a forras: ha uj szal jon, oda kerul, ide nem kell nyulni.
+#
+# A TABLA 2026-10-15 OTA A store/discord-szalak.md-BEN AL, nem a CLAUDE.md-ben (a CLAUDE.md
+# karcsusitasa koltoztette at). A regi ut csendben harom szalra szukult: a CLAUDE.md-ben
+# csak a harom leggyakoribb sor maradt, a szkript pedig hiba nelkul azt olvasta (nautilus
+# merese, 63 azonosito kontra 3). Ezert a fejlecsor MEGNEVEZI, hany szalat nez: egy ujabb
+# szukules igy latszik, nem csak a hianyzo talalatbol derul ki.
+TABLA="$(dirname "$0")/../store/discord-szalak.md"
+[ -r "$TABLA" ] || { echo "FAIL: a szal-tabla nem olvashato: $TABLA" >&2; exit 2; }
+# Nulla illeszkedo sor = a tabla alakja valtozott; enelkul a --mind csendben a fontos
+# szalakra szukulne, es ezt csak a fejlec szama mutatna (barracuda, #198)
+TABLA_SOROK=$(grep -cE '^\| [^|]+ \| `[0-9]{17,20}` \|' "$TABLA")
+[ "$TABLA_SOROK" -gt 0 ] || { echo "FAIL: a szal-tablaban nincs illeszkedo sor (megvaltozott az alakja?): $TABLA" >&2; exit 2; }
 MIND="$FONTOS
-1538564799175331903:Acropora_OS
-1538617128066883666:Luca_tartalom
-1540314224503427192:Canva
-1540331536887451731:Google
-1540399184052621472:Mobilalkalmazas
-1540429953034756187:Munkalap_folyamatok
-1541098404522893372:OS_weboldal
-1541513491700252764:Veletek_kapcsolatos
-1541811508692918402:AI_feladatok
-1541878396013912105:Szervizpartnerek
-1542238835537346570:Mobil_Android
-1542478178898157588:Szerviz_eszkoznyilvantartas
-1542484792044691606:Szerviz_ticketing
-1542556954088444075:Biztonsag
-1542600944871546970:Luca_Balazs_Acrobot
-1544365768014176306:Codex
-1544377064680071288:API_vagy_elofizetes
-1544578417456980060:Acrobot_fejlesztes
-1544587063234396202:Staging_es_Eles
-1544707009545240657:Megrendelesek_frontend
-1544644461152178226:Matricak_QR"
+$(grep -E '^\| [^|]+ \| `[0-9]{17,20}` \|' "$TABLA" | sed -E 's/^\| ([^|]+) \| `([0-9]+)`.*/\2:\1/' | tr ' ' '_' | grep -v -F -f <(printf '%s\n' "$FONTOS" | cut -d: -f1))"
 
 case "$MODE" in
   --mind)  LISTA="$MIND" ;;
@@ -71,7 +68,7 @@ case "$MODE" in
   *)       LISTA="$MODE:megadott_szal" ;;
 esac
 
-echo "--- szal-keres: '$MINTA' ---"
+echo "--- szal-keres: '$MINTA' ($(printf '%s\n' "$LISTA" | grep -c ':') szal) ---"
 TOK="$TOK" MINTA="$MINTA" LISTA="$LISTA" python3 - <<'PY'
 import json, os, subprocess, sys, unicodedata, datetime
 

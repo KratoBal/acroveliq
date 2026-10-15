@@ -392,6 +392,12 @@ elif CMD == "orders":
         cust = o.get("Customer")
         if isinstance(cust, dict) and cust.get("Id"):
             out["CustomerId"] = cust["Id"]
+        # A VEVOCSOPORT NEVE, es csak a neve (barracuda 26770, 2026-10-06): a kuszob
+        # alatti ingyenes szallitas oka a vevocsoport lehet, es enelkul nem merheto.
+        # Csoportnev, nem szemelyes adat; a Customer blokk tobbi resze tovabbra sem jon at.
+        grp = cust.get("Group") if isinstance(cust, dict) else None
+        if isinstance(grp, dict) and grp.get("Name"):
+            out["CustomerGroup"] = grp["Name"]
         items = (o.get("Items") or {}).get("Item")
         if isinstance(items, dict):
             items = [items]
