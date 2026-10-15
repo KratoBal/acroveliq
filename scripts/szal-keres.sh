@@ -35,7 +35,8 @@ MINTA="${1:-}"
 [ -n "$MINTA" ] || { echo "HASZNALAT: szal-keres.sh <minta> [--mind | <chat_id>]" >&2; exit 2; }
 MODE="${2:-fontos}"
 
-# A szalak a CLAUDE.md tablajabol. Ha uj szal jon, ide is fel kell venni.
+# A leggyakoribb szalak, mindig keresve (a fontos mod ezeket nezi). A TELJES lista a
+# szal-tablabol jon, lent: uj szal oda kerul, ide nem kell felvenni.
 FONTOS="1538522302277353505:Fo_csatorna
 1540270627926183997:Eldontendo_dolgok
 1542865300565790850:UNAS_Medusa_migracio
@@ -54,6 +55,10 @@ FONTOS="1538522302277353505:Fo_csatorna
 # szukules igy latszik, nem csak a hianyzo talalatbol derul ki.
 TABLA="$(dirname "$0")/../store/discord-szalak.md"
 [ -r "$TABLA" ] || { echo "FAIL: a szal-tabla nem olvashato: $TABLA" >&2; exit 2; }
+# Nulla illeszkedo sor = a tabla alakja valtozott; enelkul a --mind csendben a fontos
+# szalakra szukulne, es ezt csak a fejlec szama mutatna (barracuda, #198)
+TABLA_SOROK=$(grep -cE '^\| [^|]+ \| `[0-9]{17,20}` \|' "$TABLA")
+[ "$TABLA_SOROK" -gt 0 ] || { echo "FAIL: a szal-tablaban nincs illeszkedo sor (megvaltozott az alakja?): $TABLA" >&2; exit 2; }
 MIND="$FONTOS
 $(grep -E '^\| [^|]+ \| `[0-9]{17,20}` \|' "$TABLA" | sed -E 's/^\| ([^|]+) \| `([0-9]+)`.*/\2:\1/' | tr ' ' '_' | grep -v -F -f <(printf '%s\n' "$FONTOS" | cut -d: -f1))"
 
