@@ -70,7 +70,8 @@ describe('the access matrix', () => {
       ['GET', '/api/vault/github-token', L, undefined, false],
       // messages: anyone sends (the sender is set from the token in 3b); reading is own
       ['POST', '/api/messages', G, undefined, true],
-      ['POST', '/api/messages', L, undefined, true],
+      // the shared token sends no message: any sub-agent could send in another registered name (barracuda, 31012)
+      ['POST', '/api/messages', L, undefined, false],
       ['GET', '/api/messages', G, 'nautilus', false],
       ['GET', '/api/messages', G, 'murena', true],
       ['PUT', '/api/messages/17', G, 'nautilus', false],
@@ -139,8 +140,8 @@ describe('the access matrix', () => {
       S: new Set(),
       A: new Set(),
       // a message may be sent by anyone; its sender is set from the token
-      // the legacy minimum leaves the shared token one critical route: sending a message (LEGACY_KEPT)
-      L: new Set(['message-send']),
+      // the legacy minimum leaves the shared token no critical route (LEGACY_KEPT)
+      L: new Set(),
       G: new Set(['message-send', 'message-state', 'approval-request', 'schedule-create', 'schedule-change', 'session-read', 'agent-taskstate', 'kanban-card-change']),
       D: new Set(['message-send', 'message-state', 'approval-request', 'session-read', 'kanban-card-change']),
     }
@@ -166,7 +167,6 @@ describe('the access matrix', () => {
     const measured = [
       'GET /api/agents', 'GET /api/agents/activity', 'GET /api/daily-log', 'GET /api/kanban', 'GET /api/memories',
       'GET /api/messages', 'GET /api/schedules', 'GET /api/terminal-input', 'GET /api/updates', 'GET /api/updates/status',
-      'POST /api/messages',
     ]
     expect([open.sort(), stale, reason.startsWith('class:OLVASO: legacy-minimum:')], 'ACCESS-LEGACY-MINIMUM').toEqual([
       measured.sort(),

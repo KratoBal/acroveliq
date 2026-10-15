@@ -27,8 +27,10 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
    `npx tsx scripts/access-preflight.ts` listája üres (kilépési kód 0): ez a naplóból sorolja fel, mit
    tiltott volna. Ez eljárás, nem zár: a beállítást a kód nem tagadja meg. Az L oszlop 2026-10-15 óta a
    minimum: csak az az útvonal ✓, amit a régi token az ágensek saját tokenre váltása után még hívott (lásd
-   lent, „A régi token minimuma”). Egy ritkábban futó hívót a 24 órás mérés nem lát: a preflight több napra
-   (`--napok N`) mutatja meg.
+   lent, „A régi token minimuma”), és az üzenetküldés sem ezek között van: a közös tokennel bármely al-ágens
+   egy másik regisztrált ágens nevében küldhetne. Egy ritkábban futó hívót a 24 órás mérés nem lát: a preflight
+   `--napok` értéke a legritkább ütemezett feladat periódusa fölött legyen. Hogy ki hív még közös tokennel, azt
+   az `npx tsx scripts/legacy-callers.ts --napok N` mutatja (user-agent, önbevallott név, cím: nyom, nem azonosság).
 4. **Az önbevallott szereplők.** Az üzenet feladóját, a jóváhagyás kérőjét és eldöntőjét, az átadó rekord
    `agent` mezőjét, a tokenmérési esemény `actor` mezőjét és az ütemezett feladat szerzőjét a szerver a
    tokenből tölti ki (`src/web/actor-claims.ts`). A régi közös token senkit nem nevez meg: `naplo` állásban
@@ -227,7 +229,7 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | GET | `/api/approvals` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
 | GET | `/api/approvals/:id` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
 | PATCH | `/api/approvals/:id` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | approval-decide |  |
-| POST | `/api/messages` | KRITIKUS | ✓ | ✓ | ✓ | ✓ | ✓ | message-send |  |
+| POST | `/api/messages` | KRITIKUS | ✓ | ✓ | ✓ | ✗ | ✓ | message-send |  |
 | GET | `/api/messages/threads` | OLVASO | ✓ | ✓ | saját | ✗ | ✓ | message-read | query: agent |
 | GET | `/api/messages/backlog` | OLVASO | ✓ | ✓ | saját | ✗ | ✓ | message-read | query: agent |
 | GET | `/api/messages` | OLVASO | ✓ | ✓ | saját | ✓ | ✓ | message-read | query: agent |
@@ -375,7 +377,6 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 Az L oszlopban csak ezek ✓, akármit ad a csoport vagy az osztály (a többi sor L ✗-je innen jön):
 
 - `GET /api/messages`
-- `POST /api/messages`
 - `GET /api/daily-log`
 - `GET /api/kanban`
 - `GET /api/schedules`
