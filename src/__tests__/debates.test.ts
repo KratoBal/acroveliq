@@ -294,16 +294,30 @@ describe('steering and the clocks', () => {
     expect([stopped, getDebate(db(), id)!.status, posts.some((p) => /nincs nyitott kör/.test(p.text))], 'DEB-IDLE').toEqual([[id], 'megakadt', true])
   })
 
-  it('DEB-OWNER-MESSAGE: during a phase it is kept for the next speaker and moves nothing; after the phase it opens a new one', async () => {
+  // acrobot 31095, 31100: a plain reply in a waiting debate started a phase (and a GPT run)
+  it('DEB-OWNER-MESSAGE: a message is kept and moves nothing, in a phase or after it; only folytasd starts the next, with the message in it', async () => {
     const id = await start()
     await handleOwnerMessage(db(), deps(false), cfg, THREAD, { id: 'm1', content: 'Figyelj a határidőre.' }, OWNER)
     const during = [getDebate(db(), id)!.phase, debateTurns(db(), id).length]
     await submitAcrobotTurn(db(), deps(false), cfg, id, tokenOf(told[0]!), 'válasz', false)
-    await handleOwnerMessage(db(), deps(false), cfg, THREAD, { id: 'm2', content: 'És a második részlet?' }, OWNER)
+    const toldBefore = told.length
+    const reply = await handleOwnerMessage(db(), deps(false), cfg, THREAD, { id: 'm2', content: '1' }, OWNER)
+    const second = await handleOwnerMessage(db(), deps(false), cfg, THREAD, { id: 'm3', content: 'Megvárjuk a felmérést.' }, OWNER)
+    const waiting = getDebate(db(), id)!
+    const waitingState = [reply, second, waiting.phase, waiting.status, told.length === toldBefore, debateTurns(db(), id).length]
+    await handleOwnerMessage(db(), deps(false), cfg, THREAD, { id: 'm4', content: 'folytasd' }, OWNER)
     const after = getDebate(db(), id)!
-    expect([during, after.phase, after.status, told[told.length - 1]!.includes('És a második részlet?')], 'DEB-OWNER-MESSAGE').toEqual([
-      [1, 1], 2, 'fut', true,
+    expect([during, waitingState, after.phase, after.status, told[told.length - 1]!.includes('Megvárjuk a felmérést.')], 'DEB-OWNER-MESSAGE').toEqual([
+      [1, 1], ['noted', 'noted', 1, 'var_balazsra', true, 1], 2, 'fut', true,
     ])
+  })
+
+  it('DEB-OWNER-MESSAGE-STALLED: a message in a stalled debate does not restart it either', async () => {
+    const id = await start()
+    now += cfg.turnTimeoutSeconds + 1
+    await sweepDebates(db(), deps(false), cfg)
+    const r = await handleOwnerMessage(db(), deps(false), cfg, THREAD, { id: 's-m', content: 'Mi történt?' }, OWNER)
+    expect([r, getDebate(db(), id)!.status, getDebate(db(), id)!.phase], 'DEB-OWNER-MESSAGE-STALLED').toEqual(['noted', 'megakadt', 1])
   })
 
   it('DEB-TIMEOUT: an Acrobot round that never comes stops the debate as megakadt, said in the thread; folytasd restarts it', async () => {
