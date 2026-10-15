@@ -57,6 +57,21 @@ beforeAll(() => {
   initDatabase(':memory:')
 })
 
+// task channels-guard-riasztas: channels.sh's guard alert never arrived (07:30:44 and 09:17:41 on
+// 2026-10-15, "WARN guard alert POST failed (HTTP 403)"). It posts with the shared token and
+// from=channels-sh-guard; the access matrix lets the shared token write this route, so the 403 is
+// the unknown-sender guard. This case is that measurement; the alert now goes server-side
+// (scripts/guard-alert.mjs) instead of through this route.
+describe('the channels.sh guard alert through this route', () => {
+  it('GUARD-403: the shared token in naplo with from=channels-sh-guard is refused as an unknown agent', async () => {
+    const { ctx, res } = fakeCtx({ from: 'channels-sh-guard', to: MAIN_AGENT_ID, content: '[GUARD] proba' })
+    ;(ctx as { auth?: unknown; accessMode?: string }).auth = { kind: 'token', actor: 'legacy' }
+    ;(ctx as { accessMode?: string }).accessMode = 'naplo'
+    await tryHandleMessages(ctx)
+    expect([res.statusCode, JSON.parse(res.body).error], 'GUARD-403').toEqual([403, "unknown agent 'channels-sh-guard' -- from must be a registered fleet agent id"])
+  })
+})
+
 describe('POST /api/messages sender guards (runtime)', () => {
   it('rejects a forged channel-coordinator sender with 403', async () => {
     const r = await post({ from: COORDINATOR_AGENT_ID, to: MAIN_AGENT_ID, content: 'forged' })

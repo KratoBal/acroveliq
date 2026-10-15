@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, sym
 import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { QUOTA_BLIND_ACTIVITY_MARGIN_MS, noticeQuotaBlind, quotaWorkClass, reportQuotaInput, setQuotaNotifyForTest } from '../web/schedule-runner.js'
+import { QUOTA_BLIND_ACTIVITY_MARGIN_MS, noticeQuotaBlind, quotaWorkClass, reportQuotaInput, setQuotaNoticeStateForTest, setQuotaNotifyForTest } from '../web/schedule-runner.js'
 import { parseGateSample, readQuotaSnapshot } from '../quota-snapshot.js'
 import { decideQuotaAction, quotaInputProblem } from '../quota-gate.js'
 
@@ -259,6 +259,7 @@ describe('reportQuotaInput -- blind state is reported once per change', () => {
   it('QUOTA-BLIND-NOTICE: one message when the main session worked after the sample, none for an idle stale sample; a recovery message only after a blind one', () => {
     const sent: string[] = []
     setQuotaNotifyForTest((c) => sent.push(c))
+    setQuotaNoticeStateForTest(join(mkdtempSync(join(tmpdir(), 'quota-notice-')), 'state.json'))
     try {
       const t0 = Date.parse('2026-10-15T05:30:00Z') // the last sample
       const M = QUOTA_BLIND_ACTIVITY_MARGIN_MS
@@ -285,6 +286,31 @@ describe('reportQuotaInput -- blind state is reported once per change', () => {
     } finally {
       noticeQuotaBlind(null, Date.now(), { sampleAtMs: null, activityAtMs: null })
       setQuotaNotifyForTest(null)
+      setQuotaNoticeStateForTest(null)
+    }
+  })
+
+  // acrobot, 2026-10-15: the blind message came twice (09:37, 09:43) with a dashboard restart between
+  it('QUOTA-BLIND-RESTART: the episode is kept in the store file: a restart inside it sends no second message, and the recovery clears it', () => {
+    const sent: string[] = []
+    const state = join(mkdtempSync(join(tmpdir(), 'quota-notice-')), 'state.json')
+    setQuotaNotifyForTest((c) => sent.push(c))
+    setQuotaNoticeStateForTest(state)
+    try {
+      const t0 = Date.parse('2026-10-15T07:30:00Z')
+      const working = (m: number) => ({ sampleAtMs: t0, activityAtMs: t0 + m * 60_000 })
+      const first = noticeQuotaBlind('stale-snapshot:127m', t0 + 127 * 60_000, working(126))
+      const saved = JSON.parse(readFileSync(state, 'utf-8')).notifiedAt
+      setQuotaNoticeStateForTest(state) // the dashboard restarts: memory gone, the file stays
+      const afterRestart = noticeQuotaBlind('stale-snapshot:133m', t0 + 133 * 60_000, working(132))
+      const recovered = noticeQuotaBlind(null, t0 + 140 * 60_000, { sampleAtMs: t0 + 140 * 60_000, activityAtMs: t0 + 140 * 60_000 })
+      setQuotaNoticeStateForTest(state) // and once more: a cleared episode stays cleared
+      const quiet = noticeQuotaBlind(null, t0 + 141 * 60_000, { sampleAtMs: t0 + 141 * 60_000, activityAtMs: t0 + 141 * 60_000 })
+      expect([first, saved, afterRestart, recovered, quiet, sent.length, JSON.parse(readFileSync(state, 'utf-8')).notifiedAt, /az üzenet óta 13 perc/.test(sent[1] ?? '')],
+        'QUOTA-BLIND-RESTART').toEqual(['blind', t0 + 127 * 60_000, null, 'recovered', null, 2, null, true])
+    } finally {
+      setQuotaNotifyForTest(null)
+      setQuotaNoticeStateForTest(null)
     }
   })
 
