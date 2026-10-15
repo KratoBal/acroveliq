@@ -58,6 +58,8 @@ jobs:
       - run: python3 -B scripts/__tests__/gcal-untrusted.test.py
       # the fleet token's expiry: ci-el-or.sh alarms 14 days before it (acrobot 31196)
       - run: python3 -B scripts/__tests__/ci-el-or.test.py
+      # F0-2: who can read which secret, computed from owner, group and mode (fleet-secrets.py --matrix)
+      - run: python3 -B scripts/__tests__/fleet-secrets-matrix.test.py
       # B48 (2): the root broker into agent panes takes no key on a dialog, refuses bad arguments
       - run: python3 -B scripts/__tests__/fleet-pane.test.py
       # reviewer-profil: the git reader (a trapped repo runs nothing through it; script(1)
