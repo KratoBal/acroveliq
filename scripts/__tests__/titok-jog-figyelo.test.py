@@ -4,7 +4,9 @@
 #   - a change in the matrix (new or gone file, mode, owner, group, a new or lost reader, a new fleet
 #     user, an ACL or "?" cell) not reported, or reported with another wording than the literal lines here;
 #   - an unchanged matrix not silent (output, or an exit other than 0);
-#   - the first run (no state yet) alerting instead of recording the baseline silently;
+#   - a missing state recording a silent baseline (barracuda, #193) instead of HIBA and exit 2 with
+#     nothing written; a baseline taken any way but --alap; a --alap over a state not printing what
+#     it absorbs; an unknown argument writing anything;
 #   - a change alerting twice (the state not moved on after a run);
 #   - a mismatch with os.access, or an unreadable state, touching the state or exiting other than 2;
 #   - the state not 0600, a secret's content in the output or the state, or a network call.
@@ -79,13 +81,21 @@ try:
         "socket.create_connection = no", ""]))
     env = {**os.environ, "FLEET_ROOT": T, "TITOK_JOG_STATE": state, "PYTHONPATH": stub}
     seen = []
-    def run():
-        r = subprocess.run([sys.executable, "-B", WATCHER], capture_output=True, text=True, env=env)
+    def run(*args):
+        r = subprocess.run([sys.executable, "-B", WATCHER, *args], capture_output=True, text=True, env=env)
         seen.append(r.stdout + r.stderr)
         return r.returncode, r.stdout.strip()
 
     print("a real run on a scratch store")
-    check("the first run records the baseline silently", (0, ""), run())
+    rc, out = run()
+    check("no state: HIBA, exit 2, no state file written (not a silent baseline)", (2, True, False),
+          (rc, out.startswith("HIBA: nincs elozo allapot"), os.path.exists(state)))
+    rc, out = run("--alapp")
+    check("an unknown argument: usage, exit 2, nothing written", (2, True, False),
+          (rc, out.startswith("HASZNALAT:"), os.path.exists(state)))
+    rc, out = run("--alap")
+    check("--alap records the baseline and says so, exit 0", (0, True, 1),
+          (rc, out.startswith("ALAP felveve: 3 titok, "), len(out.splitlines())))
     check("the state is 0600", "600", oct(os.stat(state).st_mode)[-3:])
     check("an unchanged matrix: silent, exit 0", (0, ""), run())
     os.chmod(os.path.join(store, ".a-token"), 0o644)
@@ -110,8 +120,13 @@ try:
     rc, out = run()
     check("exit 2, a HIBA line, the state as it was", (2, True, "{nem json"),
           (rc, out.startswith("HIBA:"), open(state).read()))
+    rc, out = run("--alap")
+    check("--alap over an unreadable state: overwritten, and it says so", (0, True),
+          (rc, out.endswith("ALAPBA: az elozo allapot nem volt olvashato (JSONDecodeError), felulirva")))
     os.remove(state)
-    check("after it is removed the next run is a silent baseline again", (0, ""), run())
+    rc, out = run()
+    check("a removed state is exit 2 again, not a new baseline", (2, False), (rc, os.path.exists(state)))
+    run("--alap")
 
     # the cases below use their own users, not the host's: a CI runner has no fleet users
     print("a new reader, with injected users")
@@ -126,22 +141,30 @@ try:
         fs.fleet_users = users
         return fs.matrix_rows()
     w.load_matrix = injected
-    def main_quiet():
+    def main_quiet(argv=None):
         buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
         try:
-            rc = w.main()
+            rc = w.main(argv or [])
         finally:
             sys.stdout = old
         return rc, buf.getvalue().strip()
     try:
         os.remove(state)
-        check("baseline with the injected users", (0, ""), main_quiet())
+        rc, out = main_quiet(["--alap"])
+        check("baseline with the injected users (--alap)", (0, True), (rc, out.startswith("ALAP felveve:")))
         os.chmod(os.path.join(store, ".b-key"), 0o644)
         check("640 to 644: the outsider is a new reader", (1, "MOD .b-key: 640 helyett 644" + NL + "UJ OLVASO .b-key: kulso"),
               main_quiet())
         os.chmod(os.path.join(store, ".b-key"), 0o640)
         check("and back: the reader is lost", (1, "MOD .b-key: 644 helyett 640" + NL + "ELVESZETT .b-key: kulso mar nem olvassa"),
               main_quiet())
+
+        os.chmod(os.path.join(store, ".b-key"), 0o644)
+        check("--alap over a readable state: the absorbed change is printed, not swallowed", (0, ["ALAPBA: MOD .b-key: 640 helyett 644", "ALAPBA: UJ OLVASO .b-key: kulso"]),
+              (lambda r: (r[0], r[1].splitlines()[1:]))(main_quiet(["--alap"])))
+        check("and after it the same matrix is silent", (0, ""), main_quiet())
+        os.chmod(os.path.join(store, ".b-key"), 0o640)
+        main_quiet()
 
         print("a mismatch with os.access is exit 2, and the state is not touched")
         before = open(state, "rb").read()

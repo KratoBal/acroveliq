@@ -18,9 +18,13 @@ opened) and compares it with the PREVIOUS run's, kept in STATE. It reports only 
                  "?" (the ACL state could not be read); see fleet-secrets.py
 
 No change: no output, exit 0 (the scheduled task stays silent). A change: one line each, exit 1.
-The very first run, with no STATE yet, records the baseline silently: what stands today (the two
-findings of 2026-10-15 included) does not alert every day. After every run the STATE is the new
-matrix, so a change alerts once.
+After every run the STATE is the new matrix, so a change alerts once.
+
+The baseline is recorded ON PURPOSE only: `titok-jog-figyelo.py --alap`. A missing STATE is not a
+first run but exit 2 with a HIBA line, and nothing is written (barracuda, #193: a deleted state
+followed by a silent new baseline would swallow exactly the change this watcher is for). `--alap`
+over an existing, readable STATE prints what it absorbs (the same lines as a change, each after
+"ALAPBA:"), so a re-baseline is never silent either.
 
 The runner's own row disagreeing with os.access means the computation cannot be trusted, and an
 unreadable STATE means there is nothing to compare with: in both cases the watcher says so and exits
@@ -88,16 +92,43 @@ def write_state(state):
     os.replace(tmp, STATE)
 
 
-def main():
+USAGE = "HASZNALAT: titok-jog-figyelo.py [--alap]  (--alap: az alap kifejezett felvetele)"
+
+
+def record_baseline(new):
+    """The explicit baseline. What an existing state differs by is printed, not swallowed."""
+    absorbed = []
+    if os.path.exists(STATE):
+        try:
+            with open(STATE, encoding="utf-8") as f:
+                old = json.load(f)
+            absorbed = diff(old, new)
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            absorbed = [f"az elozo allapot nem volt olvashato ({type(e).__name__}), felulirva"]
+    write_state(new)
+    print(f"ALAP felveve: {len(new['rows'])} titok, {len(new['users'])} felhasznalo ({STATE})")
+    for line in absorbed:
+        print("ALAPBA: " + line)
+    return 0
+
+
+def main(argv=None):
+    args = sys.argv[1:] if argv is None else argv
+    if args not in ([], ["--alap"]):
+        print(USAGE)
+        return 2
     users, rows, mismatch = load_matrix()
     if mismatch:
         print(f"HIBA: a szamolt matrix a futtato sajat soran elter az os.access-tol ({', '.join(mismatch)}); "
               "a valtozast nem merem, az allapot nem frissul.")
         return 2
     new = {"users": users, "rows": rows}
+    if args == ["--alap"]:
+        return record_baseline(new)
     if not os.path.exists(STATE):
-        write_state(new)
-        return 0
+        print(f"HIBA: nincs elozo allapot ({STATE}); a valtozast nem merem, es csendes uj alapot sem veszek fel. "
+              "Az alapot a --alap futas veszi fel.")
+        return 2
     try:
         with open(STATE, encoding="utf-8") as f:
             old = json.load(f)
