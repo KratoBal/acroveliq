@@ -105,6 +105,23 @@ describe('ensureMainAgentIsolatedConfigDir', () => {
     expect(after.model).toBe('agent-only-model')
   })
 
+  // task kvota-kapu-bemenet: the main agent's statusLine is the quota gate's only input, and it was a
+  // hand-set key; a lost or rebuilt file came up without it and the gate went blind silently.
+  it('MAIN-STATUSLINE: the provisioning writes the measurement statusLine into a file that has none, without --export-usage', async () => {
+    const { MAIN_AGENT_ID } = await import('../config.js')
+    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+    const line = (JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf-8')) as { statusLine?: { type?: string; command?: string } }).statusLine
+    expect([line?.type, line?.command?.includes('measure-statusline.py'), line?.command?.includes(`MEASURE_AGENT=${MAIN_AGENT_ID} `), line?.command?.includes('--export-usage')],
+      'MAIN-STATUSLINE').toEqual(['command', true, true, false])
+  })
+
+  it('MAIN-STATUSLINE-NULL: a shared statusLine: null (which wins the merge) does not leave the main agent without one', () => {
+    writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify({ statusLine: null }))
+    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+    const line = (JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf-8')) as { statusLine?: { command?: string } | null }).statusLine
+    expect(line?.command?.includes('measure-statusline.py'), 'MAIN-STATUSLINE-NULL').toBe(true)
+  })
+
   it('lets the shared file win for every key it DOES define', () => {
     writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify({ model: 'shared-model' }))
     const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
