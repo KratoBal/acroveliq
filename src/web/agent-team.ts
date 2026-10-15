@@ -10,6 +10,14 @@ import { join } from 'node:path'
 import { MAIN_AGENT_ID } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { agentDir, readFileOr, listAgentNames, readAgentSecurityProfile } from './agent-config.js'
+import { loadProfileTemplate } from './profiles.js'
+import {
+  gatedSeed,
+  trustedRecordFor,
+  writeTrustedRecord,
+  type TrustedProfile,
+  type TrustedRecord,
+} from './agent-profile-store.js'
 
 export interface TeamConfig {
   role: 'leader' | 'member'
@@ -31,7 +39,12 @@ export const DEFAULT_TEAM: TeamConfig = {
   trustFrom: [],
 }
 
-export function readAgentTeam(name: string): TeamConfig {
+/**
+ * What the agent's OWN config says about its team. The agent can write this file, so it is never a
+ * source of trust: only the input of a gated seed and the comparison behind a WARN
+ * (agent-profile-store.ts). Everything else reads readAgentTeam(), which overlays the trusted record.
+ */
+function readConfigTeam(name: string): TeamConfig {
   const configPath = join(agentDir(name), 'agent-config.json')
   try {
     const config = JSON.parse(readFileOr(configPath, '{}'))
@@ -75,9 +88,69 @@ export function resolveSecurityProfileId(
   return team.role === 'leader' ? 'applier' : 'default'
 }
 
-/** Read-and-resolve convenience over resolveSecurityProfileId for a live agent. */
+/** What the agent's own config says: only to seed a missing trusted record and to name a difference. */
+function configRecord(name: string): TrustedRecord {
+  const team = readConfigTeam(name)
+  return {
+    profile: readAgentSecurityProfile(name),
+    role: team.role,
+    reportsTo: team.reportsTo,
+    delegatesTo: team.delegatesTo,
+    trustFrom: team.trustFrom ?? [],
+  }
+}
+
+/**
+ * Whether a profile and role would run the agent above the seed's ceiling: the leader role (the
+ * applier pool), or any profile that resolves to permissive mode (--dangerously-skip-permissions;
+ * note that 'default' is permissive too). A seed never gives these; only a dashboard write does.
+ */
+export function isElevatedProfile(t: TrustedProfile): boolean {
+  if (t.role === 'leader') return true
+  return loadProfileTemplate(resolveSecurityProfileId(t.profile, { role: t.role })).permissionMode !== 'strict'
+}
+
+/** The seed a dashboard write uses for an agent with no record yet: gated, never the raw config. */
+function dashboardSeed(name: string): TrustedRecord {
+  return gatedSeed(configRecord(name), isElevatedProfile).record
+}
+
+/**
+ * The trusted record (agent-profile-store.ts): the dashboard's, not the agent's own config, which
+ * the agent can write (barracuda's finding, acrobot 31248; the trust graph, #192 review).
+ */
+export function trustedAgentRecord(name: string): TrustedRecord {
+  return trustedRecordFor(name, configRecord(name), isElevatedProfile)
+}
+
+/** The trusted profile and role. */
+export function trustedAgentProfile(name: string): TrustedProfile {
+  const { profile, role } = trustedAgentRecord(name)
+  return { profile, role }
+}
+
+/**
+ * The team as every caller sees it: the security fields (role and the trust graph: reportsTo,
+ * delegatesTo, trustFrom) from the trusted record, only autoDelegation from the config. The message
+ * router decides <trusted-peer> from this (agent-message-wrap.ts → team-trust.ts), so an agent
+ * writing trustFrom into its own config does not become anybody's trusted peer.
+ */
+export function readAgentTeam(name: string): TeamConfig {
+  const config = readConfigTeam(name)
+  const t = trustedAgentRecord(name)
+  return {
+    role: t.role,
+    reportsTo: t.reportsTo,
+    delegatesTo: [...t.delegatesTo],
+    autoDelegation: config.autoDelegation,
+    trustFrom: [...t.trustFrom],
+  }
+}
+
+/** Read-and-resolve for a live agent: from the trusted record, never from the agent's own config. */
 export function resolveAgentSecurityProfile(name: string): string {
-  return resolveSecurityProfileId(readAgentSecurityProfile(name), readAgentTeam(name))
+  const t = trustedAgentProfile(name)
+  return resolveSecurityProfileId(t.profile, { role: t.role })
 }
 
 export function writeAgentTeam(name: string, team: TeamConfig): void {
@@ -86,6 +159,13 @@ export function writeAgentTeam(name: string, team: TeamConfig): void {
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
   config.team = team
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+  // the role decides the applier pool and the graph decides <trusted-peer>: the trusted record
+  // follows the dashboard's write (and only it)
+  writeTrustedRecord(
+    name,
+    { role: team.role, reportsTo: team.reportsTo, delegatesTo: team.delegatesTo, trustFrom: team.trustFrom ?? [] },
+    dashboardSeed(name),
+  )
 }
 
 // Scrub self-references and unknown agent names from a TeamConfig's name

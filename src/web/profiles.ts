@@ -32,6 +32,25 @@ export const HARDCODED_DEFAULT_PROFILE: ProfileTemplate = {
   filesystem: { allow: [], deny: ['mcp__claude_ai_Supabase__*'] },
 }
 
+// THE CLOSED FAILURE MODE OF THE TRUSTED PROFILE STORE (agent-profile-store.ts, LOCKED_PROFILE_ID):
+// a damaged or unwritable store, or a seed the gate refused, answers this. It is defined in code and
+// checked BEFORE the template files, so no file under templates/profiles/ can redefine it, and an
+// unknown id never reaches it through the permissive 'default' fallback below. Strict mode (no
+// --dangerously-skip-permissions), the agent's own directory readable, nothing else allowed.
+export const LOCKED_PROFILE: ProfileTemplate = {
+  id: 'locked',
+  label: 'Zárolt (hibás vagy hiányzó megbízható profil)',
+  description: 'Fail-closed: the trusted profile record could not be used. Set the profile through the dashboard.',
+  permissionMode: 'strict',
+  filesystem: {
+    allow: ['Read(${AGENT_DIR}/**)'],
+    deny: [
+      'Read(${HOME}/marveen/store/**)', 'Read(${HOME}/.ssh/**)', 'Read(${HOME}/.aws/**)', 'Read(${HOME}/.gnupg/**)',
+      'Read(**/.env)', 'Bash(sudo:*)', 'Bash(/bin/sudo:*)', 'Bash(/usr/bin/sudo:*)', 'WebFetch(*)', 'WebSearch(*)',
+    ],
+  },
+}
+
 export function listProfileTemplates(): ProfileTemplate[] {
   if (!existsSync(PROFILES_DIR)) return [HARDCODED_DEFAULT_PROFILE]
   const out: ProfileTemplate[] = []
@@ -46,6 +65,7 @@ export function listProfileTemplates(): ProfileTemplate[] {
 }
 
 export function loadProfileTemplate(id: string): ProfileTemplate {
+  if (id === LOCKED_PROFILE.id) return LOCKED_PROFILE
   const path = join(PROFILES_DIR, `${id}.json`)
   if (existsSync(path)) {
     try { return JSON.parse(readFileSync(path, 'utf-8')) as ProfileTemplate } catch { /* fall through */ }
