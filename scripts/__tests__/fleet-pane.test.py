@@ -526,6 +526,45 @@ check('G read clones: a real dir with .git qualifies; a symlink, an odd name, a 
       gitline, ['export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0=%s GIT_CONFIG_KEY_1=safe.directory GIT_CONFIG_VALUE_1=%s'
                 % (q(os.path.join(s.work, 'linkelt-cel')), q(os.path.join(s.work, 'olvaso')))])
 
+# the workdir chain (barracuda, #191 review 31282): agents/ and agents/<name> are marveen's, so a
+# symlink anywhere on the way would point root's reads elsewhere. Every element is opened without
+# following a link, and the reads go relative to the checked dir fd.
+s = StartEnv()
+elsewhere = os.path.join(s.dir, 'masik-agents')
+os.rename(os.path.join(s.dir, 'agents'), elsewhere)
+os.symlink(elsewhere, os.path.join(s.dir, 'agents'))
+p = StartPane()
+check('W a symlinked parent of the workdir: refused, nothing written', (s.run(p, ['generate', 'proba']), s.script(), p.calls),
+      ((10, 'workdir-unsafe'), None, []))
+s = StartEnv()
+real = s.work + '-valodi'
+os.rename(s.work, real)
+os.symlink(real, s.work)
+check('W a workdir that is itself a symlink: refused', (s.run(StartPane(), ['generate', 'proba']), s.script()), ((10, 'workdir-unsafe'), None))
+s = StartEnv()
+os.makedirs(os.path.join(s.dir, 'mashol', 'channels', 'telegram'))
+os.symlink(os.path.join(s.dir, 'mashol'), os.path.join(s.work, '.claude'))
+check('W a .claude that is a symlink: counted as a channel, refused (not followed, not guessed)',
+      (s.run(StartPane(), ['generate', 'proba']), s.script()), ((10, 'channel-not-supported'), None))
+s = StartEnv()
+os.makedirs(os.path.join(s.work, '.claude', 'channels', 'slack'))
+check('W an empty channels dir without a token file: not a channel', s.run(StartPane(), ['generate', 'proba'])[0], 0)
+# the swap itself: after the check, the parent is replaced by a symlink to a tree with another
+# config; a read through the fd still sees the checked dir
+s = StartEnv()
+wfd = fp.open_workdir(s.work)
+try:
+    other = os.path.join(s.dir, 'csere', 'proba')
+    os.makedirs(other)
+    with open(os.path.join(other, 'agent-config.json'), 'w') as f:
+        json.dump({'model': 'claude-sonnet-5-5', 'securityProfile': 'reviewer'}, f)
+    os.rename(os.path.join(s.dir, 'agents'), os.path.join(s.dir, 'regi-agents'))
+    os.symlink(os.path.join(s.dir, 'csere'), os.path.join(s.dir, 'agents'))
+    check('W a parent swapped for a symlink after the check: the read stays in the checked dir',
+          fp.read_config(wfd, 'agent-config.json').get('model'), 'claude-opus-5-5')
+finally:
+    os.close(wfd)
+
 # start: the closed launch list (N5), the checks before the new-session
 s = StartEnv()
 s.run(StartPane(), ['generate', 'proba'])

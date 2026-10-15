@@ -41,6 +41,12 @@ The router used to build the launch as a shell string for `tmux new-session`, so
   `settings.json` lists from it. `authMode: api`, `claudePlan`, `claudeConfigDir` and any channel
   refuse; nothing falls back silently. The config is read with `O_NOFOLLOW`, regular files only,
   64 KiB at most, and a refusal names the reason, never the content.
+- **The workdir chain.** `agents/` and `agents/<name>` are `marveen`'s, so root opens the workdir
+  from `/` one element at a time, each without following a link (`workdir-unsafe` on a symlink),
+  and reads the config, the channel token files (stat only) and the read clones relative to that
+  directory fd. A parent swapped for a symlink after the check moves nothing; a `.claude`,
+  `channels` or provider dir that is a symlink counts as a channel and refuses (barracuda, #191
+  review 31282).
 - **The claude binary** the script runs must be root's, with every directory above it, none
   writable by others and no symlink on the way (`claude-bin-...`); otherwise there is no start
   (acrobot 31242, barracuda 31245). Today's `~marveen/.local/share/claude/versions/...` is
