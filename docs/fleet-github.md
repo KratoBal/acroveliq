@@ -1,0 +1,105 @@
+# fleet-github: a flotta GitHub-tokenjei egy App-ból, a tulajdonosi token helyett (D4 2. lépcső)
+
+Terv: `agents/nautilus/biztonsag/d4-2-lepcso-github-app-2026-10-15.md` (barracuda APPROVE, v2 + két mondat). Döntés: Balázs,
+2026-10-15 12:24 UTC, **A változat** (GitHub App a szerző és a beolvasztó, a kötelező jóváhagyást barracuda adja egy gépi
+fiókkal). Feladat: `t-20261015-d4-app-flotta` (acrobot 31402). **Ebben a PR-ban semmi nincs telepítve**, és a kapcsoló
+alapból ki van kapcsolva.
+
+## Mi van benne
+
+| Rész | Hol | Mit csinál |
+|---|---|---|
+| a token-kiadó bróker | `scripts/root/fleet-github.py` (telepítve: `/usr/local/sbin/fleet-github`) | egyetlen ige: `token <owner/repo> <szerep>`; egyórás, egy repóra és a szerep jogaira szűkített telepítési tokent ad. A privát kulcsot csak ez olvassa. Ki mit kérhet: a root-tulajdonú `/etc/fleet-github/app.json` |
+| a szerepek | ugyanott | `olvas` (minden csak olvasás), `push` (tartalom írás), `pr` (PR írás), `beolvaszt` (tartalom írás, PR és ellenőrzés olvasás). Workflows, administration, secrets egyikben sincs |
+| az őrzött jóváhagyó | `scripts/root/fleet-approve.py` (telepítve: `/usr/local/sbin/fleet-approve`) | `approve <owner/repo> <pr> <task_id>`: csak akkor hagy jóvá, ha a hívó (barracuda) legutolsó verdiktje erre a PR-ra APPROVE, és a PR feje az átnézett fej; a jóváhagyás a fejhez kötött (`commit_id`). A gépi fiók tokenje csak rootnak olvasható |
+| a git credential helper | `scripts/git-credential-fleet-github` | az ügynök gitje ezen át kap `push` tokent pontosan arra a repóra |
+| a beolvasztó kapcsolója | `scripts/pr-beolvaszt.sh` | `FLEET_GITHUB_APP=on`: a token a brókertől jön (`beolvaszt`); kikapcsolva a régi út |
+| a minta-konfiguráció | `scripts/root/fleet-github-app.example.json` | a hívók és szerepeik, a jóváhagyók |
+| a tesztek | `scripts/__tests__/fleet-github.test.py` (CI: `test.yml`) | 53 ellenőrzés, kalibrálva 13 szándékos rontással |
+
+**Amit szándékosan nem tud:** a GitHubon a beolvasztás is tartalom-írás, ezért egy `push` token egy jóváhagyott, zöld PR-t
+be tudna olvasztani; a különbség a két szerep közt csak a brókerben és a naplóban van. A `main` és minden telepítést indító
+ág védelme a ruleset (üres megkerülő listával), nem ez a bróker. Munkafolyamat-fájlt érintő PR-hoz nincs szerep: annak útja
+a lap 3. pontja szerint egy későbbi, emberi jóváhagyáshoz kötött ige, addig Balázs keze.
+
+## A 6. lépés (a tulajdonosi token visszavonása) ELŐFELTÉTELE: minden olvasója a brókeren át
+
+A tulajdonosi tokent ma sokan olvassák (mérve 2026-10-15, a fő ágon és az élő fában). A visszavonás pillanatától mind elhasal,
+köztük **a vezérlőpult maga**:
+
+- a vezérlőpult forrása: `src/web/routes/task-handoffs.ts`, `src/web/routes/task-usage.ts`, `src/gpt-package.ts`;
+- flotta-szkriptek: `pr-allapot.sh`, `pr-allas.sh`, `pr-body-mirror.sh`, `github-pr-monitor.sh`, `ci-naplo.sh`, `ci-el-or.sh`,
+  `mar-megvan.sh`, `eles-lemaradas.sh`, `review-csomag.sh`, `beolvadt-esemeny.py`, `git-auth.sh`, `hasonlo-kulcs-orzo.sh`,
+  `fleet-secrets.py` (ez csak a fájl jogát nézi, nem olvassa);
+- ügynökök saját szkriptjei (például murena `pr-body.sh`, `push-ha-nyitva.sh`, `pr-base.sh`, `ci-allapot.sh`; barracuda
+  `hasonlo-kulcs-orzo.sh`; a PR-nyitók).
+
+Ezek átállása **külön PR-ok**, ebben a sorrendben: (1) egy közös `token <repo> <szerep>` hívás a flotta-szkriptekbe, az
+olvasóknak `olvas` szereppel; (2) a vezérlőpult három helye; (3) az ügynökök saját szkriptjei, gazdánként. Amíg ez nincs kész,
+a 6. lépés nem indulhat; a lap visszaállítása addig a régi út.
+
+## Balázs lépései, sorrendben
+
+A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker compose exec`).
+
+1. **Az App létrehozása** a GitHub fiókod alatt (Settings, Developer settings, GitHub Apps): név, webhook kikapcsolva,
+   „Only on this account”. Jogok (Repository permissions): Contents: Read and write; Pull requests: Read and write; Checks:
+   Read; Commit statuses: Read; Actions: Read; Metadata: Read. Más jog ne legyen.
+2. **Telepítés** a négy repóra („Only select repositories”): `acroveliq`, `acropora-os`, `acropora-commerce`,
+   `acropora-ai-agent`. Az App azonosítója (App ID) az App oldalán, a telepítés azonosítója (installation id) a telepítés
+   oldalának címében áll: mindkettő kell az `app.json`-ba.
+3. **A privát kulcs** előállítása (letöltődik a gépedre), és átadása root tulajdonba:
+
+   ```bash
+   cd /opt/marveen-docker
+   docker compose exec -u root marveen install -d -m 700 -o root -g root /etc/fleet-github
+   docker compose cp ./app-key.pem marveen:/etc/fleet-github/app-key.pem
+   docker compose exec -u root marveen sh -c 'chown root:root /etc/fleet-github/app-key.pem && chmod 600 /etc/fleet-github/app-key.pem'
+   ```
+   Utána a letöltött fájl törlése a saját gépedről.
+4. **A gépi fiók** (barracuda jóváhagyója): új GitHub-fiók, 2FA, meghívás közreműködőnek CSAK a négy repóra (írási joggal,
+   különben a jóváhagyása nem számít). A tokenje: mivel közreműködőként más személyes repójára fine-grained token nem adható
+   ki [K, a lap 6. pontja; mérendő], klasszikus token `repo` hatókörrel, és ezért fontos, hogy a fiók csak ezen a négy repón
+   legyen közreműködő. Átadás: `/etc/fleet-github/approver-token`, root 0600 (mint a 3. lépés, a fájlnévvel).
+5. **A vezérlőpult olvasó tokenje a jóváhagyónak** (a feladat idővonalát olvassa): `/etc/fleet-github/dashboard-token`, root
+   0600. Melyik token legyen, acrobot adja meg.
+6. **A konfiguráció:** a `scripts/root/fleet-github-app.example.json` alapján `/etc/fleet-github/app.json`, a két
+   azonosítóval, root 0644.
+7. **A két root szkript telepítése** a fő ágról, és összevetés a fő ággal:
+
+   ```bash
+   cd /opt/marveen-docker
+   docker compose exec -u root marveen install -o root -g root -m 0755 /home/marveen/marveen/scripts/root/fleet-github.py /usr/local/sbin/fleet-github
+   docker compose exec -u root marveen install -o root -g root -m 0755 /home/marveen/marveen/scripts/root/fleet-approve.py /usr/local/sbin/fleet-approve
+   docker compose exec -u root marveen sha256sum /usr/local/sbin/fleet-github /usr/local/sbin/fleet-approve
+   ```
+8. **A sudo sorok** (`/etc/sudoers.d/fleet-github`, root 0440, utána `visudo -c`):
+
+   ```
+   marveen ALL=(root) NOPASSWD: /usr/local/sbin/fleet-github token *
+   agent-nautilus ALL=(root) NOPASSWD: /usr/local/sbin/fleet-github token *
+   agent-murena ALL=(root) NOPASSWD: /usr/local/sbin/fleet-github token *
+   agent-barracuda ALL=(root) NOPASSWD: /usr/local/sbin/fleet-approve approve *
+   ```
+9. **Az ügynökök gitje** (ügynökönként, a saját felhasználójával):
+
+   ```bash
+   cd /opt/marveen-docker
+   docker compose exec -u agent-nautilus marveen git config --global credential.helper /home/marveen/marveen/scripts/git-credential-fleet-github
+   docker compose exec -u agent-nautilus marveen git config --global credential.useHttpPath true
+   ```
+10. **A mért új út** egy próba-PR-on, mindegyik külön (a lap 5. lépése): push; PR nyitása; beolvasztás jóváhagyással;
+    elutasított beolvasztás jóváhagyás nélkül; egy App-jóváhagyás kísérlete (nem számíthat); a workflow-PR útja; a
+    visszaállító kapcsoló.
+11. Utána a lap 6. lépése (a tulajdonosi token kivezetése a fenti előfeltétellel, a 401 méréssel) és 7. lépése (a rulesetek:
+    jóváhagyás 1, a legutóbbi push jóváhagyása, a régi jóváhagyások elvetése).
+
+## Visszaállítás
+
+- **A 6. lépés előtt:** a `FLEET_GITHUB_APP` kapcsoló kikapcsolva (az alapérték) a régi utat adja; a sudo sorok és a két
+  telepített szkript maradhat, kényszer nélkül senki nem hívja; az ügynökök `credential.helper` beállítása visszaírható a
+  régire (`git config --global --unset credential.helper`, utána a régi helper).
+- **A 6. lépés után:** új fine-grained token Balázstól, és a rulesetek jóváhagyás-száma vissza 0-ra, a böngészőből (a
+  flottának ekkor nincs adminisztrációs joga).
+- **Vészhelyzetben:** az App telepítésének eltávolítása azonnal megállít minden flotta-írást a GitHubon.
+- **Kulcs-kompromittálódásnál:** új kulcs előállítása, utána a régi törlése; a kiadott tokenek egy órán belül lejárnak.

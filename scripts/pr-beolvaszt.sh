@@ -134,7 +134,17 @@ if [ -n "$TASK" ]; then
     || PCHK="FIGYELEM (projekt): az ellenorzes nem futott: $(printf '%s' "$PCHK" | head -c 160)"
   echo "$PCHK" >&2
 fi
-TOK="$(cat /home/marveen/marveen/store/.github-token)"
+# D4 2. LEPCSO (Balazs A valtozata, 2026-10-15 12:24 UTC): FLEET_GITHUB_APP=on mellett a token a root
+# brokertol jon (/usr/local/sbin/fleet-github, scripts/root/fleet-github.py): egyoras, csak erre a
+# repora, `beolvaszt` szereppel, es a tulajdonosi token fajlja NEM olvasodik. Kikapcsolva (az
+# alapertek) a regi ut marad: ez a visszaallitas egy kapcsoloval. A broker elutasitasa nem csendes:
+# a beolvasztas nem indul.
+if [ "${FLEET_GITHUB_APP:-off}" = on ]; then
+  TOK="$(sudo -n /usr/local/sbin/fleet-github token "$REPO" beolvaszt)" \
+    || { echo "NEM OLVASZTOK: a token-kiado nem adott beolvaszto tokent erre: ${REPO}" >&2; exit 1; }
+else
+  TOK="$(cat /home/marveen/marveen/store/.github-token)"
+fi
 
 # === A TARTAS-LISTA ===
 #

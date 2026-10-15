@@ -1,0 +1,212 @@
+#!/usr/bin/python3 -I
+"""fleet-approve: the GitHub approval of a fleet PR, given only for a recorded review, run as root (D4 step 2).
+
+Balázs chose option A (2026-10-15 12:24 UTC): the fleet's PRs are authored by the GitHub App, and the
+required approval comes from barracuda through a separate machine account. The machine account's
+token must not be in barracuda's shell: barracuda reads developers' diffs, which is a prompt-injection
+surface (barracuda, the D4 sheet's v2 review). So the token is root-only, and this is the one thing
+that uses it.
+
+THE INSTALLED COPY RUNS, NOT THIS FILE: /usr/local/sbin/fleet-approve, root:root 0755, with
+  agent-barracuda ALL=(root) NOPASSWD: /usr/local/sbin/fleet-approve approve *
+It reads nothing from the repository at run time: no script, no module, no config from the tree.
+
+One verb:
+  approve <owner/repo> <pr> <task_id>
+
+It approves ONLY if all of these hold, each measured here, none taken from the caller:
+  1. the caller (SUDO_UID) is on the root config's `approvers` list;
+  2. the repository is a fleet repository (the config's `owner` and `repos`);
+  3. the task's timeline (the dashboard API) has a `verdict` event by the CALLER for exactly this
+     owner/repo#N, and the LATEST such verdict is APPROVE (review-ellenoriz.sh writes it:
+     "APPROVE owner/repo#N pr-<packet> fej <sha>");
+  4. the PR is open, its base is main, and its head starts with that verdict's sha.
+Then it posts an APPROVE review pinned to that head (`commit_id`), so a push after the review is not
+covered: with "require approval of the most recent push" on, GitHub asks again.
+
+WHAT THIS DOES NOT DO: it does not judge the code. A wrong APPROVE verdict is approved; what this
+removes is the way around the verdict (a token in a shell, an approval of a head nobody reviewed).
+
+Exit codes: 0 approved; 2 usage; 10 refused (nothing posted); 13 the dashboard or GitHub failed.
+"""
+import json
+import os
+import pwd
+import re
+import stat
+import sys
+import time
+import urllib.error
+import urllib.request
+
+CONFIG_FILE = '/etc/fleet-github/app.json'
+APPROVER_TOKEN_FILE = '/etc/fleet-github/approver-token'
+DASHBOARD_TOKEN_FILE = '/etc/fleet-github/dashboard-token'
+DASHBOARD = 'http://localhost:3420'
+LOG_FILE = '/var/log/fleet-approve.log'
+API = 'https://api.github.com'
+
+OWNER_RX = re.compile(r'^[A-Za-z0-9][A-Za-z0-9-]{0,38}$')
+REPO_RX = re.compile(r'^[A-Za-z0-9._-]{1,100}$')
+TASK_RX = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$')
+USER_RX = re.compile(r'^[a-z_][a-z0-9_-]{0,31}$')
+USAGE = 'usage: fleet-approve approve <owner/repo> <pr> <task_id>'
+
+
+class Refused(Exception):
+    pass
+
+
+class Failed(Exception):
+    pass
+
+
+def root_file(path, getstat=os.lstat, secret=False):
+    """A root-owned regular file, not a symlink, not writable by group or others; a secret also not
+    readable by them."""
+    try:
+        st = getstat(path)
+    except OSError:
+        raise Refused(f'missing: {path}')
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & (0o077 if secret else 0o022):
+        raise Refused(f'not a root-owned regular file with {"0600" if secret else "no group or other write"}: {path}')
+    return st
+
+
+def read_secret(path, getstat=os.lstat):
+    root_file(path, getstat, secret=True)
+    value = open(path, encoding='utf-8').read().strip()
+    if not value or any(c.isspace() for c in value):
+        raise Refused(f'malformed: {path}')
+    return value
+
+
+def parse(argv):
+    if len(argv) != 4 or argv[0] != 'approve':
+        raise ValueError(USAGE)
+    owner, _, repo = argv[1].partition('/')
+    if not OWNER_RX.match(owner) or not REPO_RX.match(repo) or not argv[2].isdigit() or not TASK_RX.match(argv[3]):
+        raise ValueError(USAGE)
+    return owner, repo, int(argv[2]), argv[3]
+
+
+def latest_verdict(items, actor, owner, repo, pr):
+    """(verdict, sha) of the actor's latest verdict on exactly owner/repo#pr, or None."""
+    rx = re.compile(rf'^(APPROVE|CHANGES) {re.escape(owner)}/{re.escape(repo)}#{pr} pr-\S+ fej ([0-9a-f]{{7,40}})$')
+    found = []
+    for i in items:
+        if i.get('source') != 'event' or i.get('kind') != 'verdict' or i.get('actor') != actor:
+            continue
+        m = rx.match((i.get('ref') or '').strip())
+        if m:
+            found.append((i.get('at') or 0, m.group(1), m.group(2)))
+    if not found:
+        return None
+    _, verdict, sha = max(found, key=lambda f: f[0])
+    return verdict, sha
+
+
+def http(method, url, token, body=None, auth='Bearer'):
+    req = urllib.request.Request(url, method=method, data=None if body is None else json.dumps(body).encode(), headers={
+        'Authorization': f'{auth} {token}', 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'fleet-approve', 'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status, json.loads(r.read().decode() or '{}')
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode() or '{}')
+        except ValueError:
+            return e.code, {}
+    except (urllib.error.URLError, TimeoutError, ValueError) as e:
+        raise Failed(f'no answer from {url.split("/")[2]}: {e.__class__.__name__}')
+
+
+def decide(cfg, caller, owner, repo, pr, task, get_timeline, get_pr, post_review):
+    if caller not in cfg.get('approvers', []):
+        raise Refused(f'{caller} is not an approver')
+    if owner != cfg.get('owner') or repo not in cfg.get('repos', []):
+        raise Refused(f'not a fleet repository: {owner}/{repo}')
+    actor = caller[len('agent-'):] if caller.startswith('agent-') else caller
+    v = latest_verdict(get_timeline(task), actor, owner, repo, pr)
+    if v is None:
+        raise Refused(f'no verdict by {actor} on {owner}/{repo}#{pr} in task {task}')
+    verdict, sha = v
+    if verdict != 'APPROVE':
+        raise Refused(f'the latest verdict by {actor} is {verdict}')
+    p = get_pr(owner, repo, pr)
+    head = ((p.get('head') or {}).get('sha') or '')
+    if p.get('state') != 'open' or (p.get('base') or {}).get('ref') != 'main':
+        raise Refused(f'the PR is {p.get("state")}, base {(p.get("base") or {}).get("ref")}')
+    if not head.startswith(sha):
+        raise Refused(f'the reviewed head {sha} is not the PR head {head[:12]}: a push came after the review')
+    post_review(owner, repo, pr, {'commit_id': head, 'event': 'APPROVE',
+                                  'body': f'fleet-approve: {actor} APPROVE on {sha}, task {task}'})
+    return head
+
+
+def log(path, entry):
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+    except OSError:
+        pass
+
+
+def run(argv, env):
+    entry = {'ts': int(time.time()), 'caller': env['caller'], 'argv': argv[:4]}
+    try:
+        owner, repo, pr, task = parse(argv)
+    except ValueError as e:
+        log(env['log_file'], {**entry, 'result': 'usage'})
+        return 2, str(e)
+    try:
+        if not USER_RX.match(env['caller'] or ''):
+            raise Refused('unknown caller')
+        getstat = env.get('getstat', os.lstat)
+        root_file(env['config_file'], getstat)
+        cfg = json.load(open(env['config_file'], encoding='utf-8'))
+        head = decide(cfg, env['caller'], owner, repo, pr, task, env['get_timeline'], env['get_pr'], env['post_review'])
+    except Refused as e:
+        log(env['log_file'], {**entry, 'result': 'refused', 'why': str(e)})
+        return 10, f'fleet-approve: refused: {e}'
+    except (Failed, ValueError, OSError) as e:
+        log(env['log_file'], {**entry, 'result': 'failed', 'why': f'{e.__class__.__name__}: {e}'[:200]})
+        return 13, f'fleet-approve: failed: {e}'
+    log(env['log_file'], {**entry, 'result': 'approved', 'head': head})
+    return 0, f'approved {owner}/{repo}#{pr} at {head}'
+
+
+def real_env():
+    def timeline(task):
+        code, d = http('GET', f'{DASHBOARD}/api/tasks/{task}/timeline', read_secret(DASHBOARD_TOKEN_FILE))
+        if code != 200 or not isinstance(d.get('items'), list):
+            raise Failed(f'dashboard timeline HTTP {code}')
+        return d['items']
+
+    def get_pr(owner, repo, pr):
+        code, d = http('GET', f'{API}/repos/{owner}/{repo}/pulls/{pr}', read_secret(APPROVER_TOKEN_FILE))
+        if code != 200:
+            raise Failed(f'GitHub PR HTTP {code}')
+        return d
+
+    def post_review(owner, repo, pr, body):
+        code, d = http('POST', f'{API}/repos/{owner}/{repo}/pulls/{pr}/reviews', read_secret(APPROVER_TOKEN_FILE), body)
+        if code != 200 or d.get('state') != 'APPROVED':
+            raise Failed(f'GitHub review HTTP {code}: {str(d.get("message", ""))[:160]}')
+
+    uid = os.environ.get('SUDO_UID')
+    try:
+        caller = pwd.getpwuid(int(uid) if uid and uid.isdigit() else os.getuid()).pw_name
+    except KeyError:
+        caller = ''
+    return {'config_file': CONFIG_FILE, 'log_file': LOG_FILE, 'caller': caller,
+            'get_timeline': timeline, 'get_pr': get_pr, 'post_review': post_review}
+
+
+if __name__ == '__main__':
+    os.umask(0o077)
+    code, out = run(sys.argv[1:], real_env())
+    (sys.stdout if code == 0 else sys.stderr).write(out + '\n')
+    sys.exit(code)
