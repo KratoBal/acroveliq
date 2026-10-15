@@ -90,6 +90,17 @@ describe('feladat-pr-szerint.py', () => {
     expect((await find('KratoBal/marveen', '76')).out).toBe('csak-verdict\n')
   })
 
+  // the fleet repo was renamed KratoBal/marveen -> KratoBal/acroveliq (2026-10-15): events written before
+  // name the old repo, the merge after it the new one; either way it is the same task (acrobot 30912)
+  it('the renamed fleet repo: an old-name ref is found by the new name and the other way round; another repo is still not', async () => {
+    timelines = {
+      'regi-nev': [ev('review_requested', 'KratoBal/marveen#140 fej a1')],
+      'uj-nev': [ev('verdict', 'APPROVE KratoBal/acroveliq#141 pr-marveen141 fej b2')],
+    }
+    const r = await Promise.all([find('KratoBal/acroveliq', '140'), find('kratobal/MARVEEN', '141'), find('KratoBal/acropora-os', '140')])
+    expect(r.map((x) => [x.code, x.out]), 'RENAMED-REPO').toEqual([[0, 'regi-nev\n'], [0, 'uj-nev\n'], [4, '']])
+  })
+
   it('two tasks name it: no choice, both listed, exit 3, nothing on stdout', async () => {
     timelines['masodik'] = [ev('review_requested', 'KratoBal/marveen#97 fej 9999999')]
     const r = await find('KratoBal/marveen', '97')

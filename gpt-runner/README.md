@@ -50,7 +50,7 @@ OSSZESITES ok=<n> fail=<n> nem_merheto=<n>
 /opt/gpt-futtato/            root:root 755
   compose.yaml               copy of gpt-runner/compose.yaml, root 644
   .env                       root 644, two lines (see below)
-  src/                       git clone of KratoBal/marveen at the reviewed commit, root-owned
+  src/                       git clone of KratoBal/acroveliq at the reviewed commit, root-owned
 ```
 
 ```

@@ -25,7 +25,7 @@
 #   bash /home/marveen/marveen/scripts/mar-megvan.sh scope hatokor
 #   bash /home/marveen/marveen/scripts/mar-megvan.sh --nap 14 spec
 #   bash /home/marveen/marveen/scripts/mar-megvan.sh            # az osszes, szures nelkul
-#   PR_REPO=KratoBal/marveen bash .../mar-megvan.sh update
+#   PR_REPO=KratoBal/acroveliq bash .../mar-megvan.sh update
 #   bash .../mar-megvan.sh --repo commerce fulek     # az acropora-commerce repoban
 #
 # A --repo KAPCSOLO MIERT KELLETT (nautilus merese, 2026-09-07, KET eset egy napon):

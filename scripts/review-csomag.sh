@@ -3,7 +3,7 @@
 #
 # review-csomag.sh <os|commerce|marveen|ai> <PR> <task_id> [cimke]
 #   -> review-csomagok/pr-<PR> (os), pr-c<PR> (commerce), pr-marveen<PR> (a flotta
-#      repoja, KratoBal/marveen) vagy pr-ai<PR> (KratoBal/acropora-ai-agent): diff.patch + README.md
+#      repoja, KratoBal/acroveliq, 2026-10-15 elott KratoBal/marveen) vagy pr-ai<PR> (KratoBal/acropora-ai-agent): diff.patch + README.md
 #      (pr: owner/repo#N, task_id, fej, merge-base, origin/main). Ha a mappa mar letezik, diff-vN.patch-et ir,
 #      a kovetkezo szabad N-nel, a README-hez egy sort fuz.
 #   A task_id KOTELEZO (TC-Lite L4): barracuda a verdict esemenyt erre irja, es eddig
@@ -132,7 +132,7 @@ case "${1:-}" in
   # The fleet's own repo. Until 2026-10-13 these packets were made by hand, with three
   # README shapes (task_id:, task:, "task X" in the title): review-ellenoriz.sh binds a
   # verdict to the task the README names, so the shape now comes from here.
-  marveen) DEFAULT_REPO=/home/marveen/marveen; PFX="pr-marveen"; SLUG=KratoBal/marveen ;;
+  marveen) DEFAULT_REPO=/home/marveen/marveen; PFX="pr-marveen"; SLUG=KratoBal/acroveliq; SLUG_OLD=KratoBal/marveen ;;
   # the AI service (acrobot, 2026-10-14, msg 30257: pr-ai37 was made by hand, and the
   # reviewer's two scripts did not know the prefix; barracuda 30249)
   ai) DEFAULT_REPO=/home/marveen/work/acropora-ai-agent; PFX="pr-ai"; SLUG=KratoBal/acropora-ai-agent ;;
@@ -157,7 +157,10 @@ fi
 # Task Core binds it to the merge (#78). The name comes from the mode, so the clone must
 # BE that repo: a clone of another repo would fetch another repo's PR under this name.
 ORIGIN="$(git -C "$REPO" remote get-url origin 2>/dev/null || true)"
-if ! [[ "$ORIGIN" =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)${SLUG}(\.git)?/?$ ]]; then
+# the fleet repo was renamed (KratoBal/marveen -> KratoBal/acroveliq, 2026-10-15); a clone made before
+# still has the old origin, which GitHub redirects: either name is this repo
+if ! [[ "$ORIGIN" =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)${SLUG}(\.git)?/?$ ]] \
+   && ! { [ -n "${SLUG_OLD:-}" ] && [[ "$ORIGIN" =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)${SLUG_OLD}(\.git)?/?$ ]]; }; then
   echo "FAIL: a klon ($REPO) origin-ja nem a $SLUG repo: '${ORIGIN}'" >&2
   exit 1
 fi

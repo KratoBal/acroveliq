@@ -66,14 +66,17 @@ describe('the registry', () => {
     // acrobot's measurement: acropora 101, marveen 11, seo 6, seo-p1 2, acroveliq 1, acropora-os 1, token-proba 1
     expect(['acropora', 'marveen', 'seo', 'seo-p1', 'acroveliq', 'acropora-os', 'token-proba', 'nincs-ilyen', ''].map((v) => resolveProject(getDb(), v)))
       .toEqual(['acropora', 'acropora', 'acropora', 'acropora', 'acropora', 'os', 'acropora', null, null])
-    expect(projectRepos(getDb(), 'acropora').sort()).toEqual(['KratoBal/Acrobot', 'KratoBal/acropora-ai-agent', 'KratoBal/acropora-commerce', 'KratoBal/acropora-os', 'KratoBal/marveen'])
+    // the fleet repo was renamed KratoBal/marveen -> KratoBal/acroveliq (2026-10-15): both names, old records keep the old
+    expect(projectRepos(getDb(), 'acropora').sort()).toEqual(['KratoBal/Acrobot', 'KratoBal/acropora-ai-agent', 'KratoBal/acropora-commerce', 'KratoBal/acropora-os', 'KratoBal/acroveliq', 'KratoBal/marveen'])
+    expect([repoFits(getDb(), 'acropora', 'KratoBal/acroveliq'), repoFits(getDb(), 'acropora', 'KratoBal/marveen'), repoFits(getDb(), 'os', 'KratoBal/acroveliq') !== null])
+      .toEqual([null, null, true])
     expect([projectRepos(getDb(), 'reefclub'), repoFits(getDb(), 'os', 'KratoBal/marveen') !== null, repoFits(getDb(), 'acropora-os', 'KratoBal/acropora-os')])
       .toEqual([['KratoBal/acropora-commerce'], true, null])
   })
 
   it('GET /api/projects: the four, repos expanded; the AcrovelIQ host reads it, and the change route is not on it', async () => {
     const r = await call(tryHandleTaskUsage, 'GET', '/api/projects', undefined, SESSION)
-    expect([r.status, r.body.map((p: { id: string }) => p.id), r.body[0].legacy_mixed, r.body[0].repos.length]).toEqual([200, ['acropora', 'os', 'commerce', 'reefclub'], true, 5])
+    expect([r.status, r.body.map((p: { id: string }) => p.id), r.body[0].legacy_mixed, r.body[0].repos.length]).toEqual([200, ['acropora', 'os', 'commerce', 'reefclub'], true, 6])
     expect([acroveliqAllows('GET', '/api/projects'), acroveliqAllows('POST', '/api/tasks/x/project')]).toEqual([true, false])
   })
 })

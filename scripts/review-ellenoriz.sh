@@ -56,7 +56,7 @@ elif [[ "$C" =~ ^(c|marveen|ai)?([1-9][0-9]{0,5})$ ]]; then
   DIRNAME="pr-$C"
   case "${BASH_REMATCH[1]}" in
     c) PRREF="KratoBal/acropora-commerce#${BASH_REMATCH[2]}" ;;
-    marveen) PRREF="KratoBal/marveen#${BASH_REMATCH[2]}" ;;
+    marveen) PRREF="KratoBal/acroveliq#${BASH_REMATCH[2]}"; PRREF_OLD="KratoBal/marveen#${BASH_REMATCH[2]}" ;;
     ai) PRREF="KratoBal/acropora-ai-agent#${BASH_REMATCH[2]}" ;;
     *) PRREF="KratoBal/acropora-os#${BASH_REMATCH[2]}" ;;
   esac
@@ -140,6 +140,10 @@ if [ "$DOCS" = 1 ]; then
   [ "$(stat -c %U "$COPY")" = "$DO" ] || { echo "FAIL: a masolat ($COPY) tulajdonosa nem a csomagolo ($DO)" >&2; exit 1; }
   GOT="$(sha256sum < "$COPY")"; GOT="${GOT%% *}"
   [ "$GOT" = "$SHA" ] || { echo "FAIL: a masolat lenyomata ($GOT) nem az, amit a README nevez ($SHA): csomagolas utan valtozott" >&2; exit 1; }
+elif [ -n "$README_PR" ] && [ -n "${PRREF_OLD:-}" ] && [ "$README_PR" = "$PRREF_OLD" ]; then
+  # a package made before the fleet repo's rename (KratoBal/marveen -> KratoBal/acroveliq, 2026-10-15)
+  # names the old repo: the same PR; the verdict keeps the README's name, so it binds to that package
+  PRREF="$README_PR"
 elif [ -n "$README_PR" ] && [ "$README_PR" != "$PRREF" ]; then
   echo "FAIL: a csomag neve ($C) a $PRREF PR-t jelenti, a README pr: sora mast: '$README_PR'" >&2; exit 1
 fi

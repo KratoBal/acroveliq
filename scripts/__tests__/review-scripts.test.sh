@@ -85,7 +85,7 @@ echo 'review-ellenoriz: the one write it may do'
 check 'the packet task, APPROVE -> 0' 0 "$(ell marveen70 tsk-a APPROVE)"
 check '... one event' 1 "$(events)"
 check '... kind verdict, actor the caller, ref from the packet' \
-  "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/marveen#70 pr-marveen70 fej 1234567" "$(tail -n1 "$EV")"
+  "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/acroveliq#70 pr-marveen70 fej 1234567" "$(tail -n1 "$EV")"
 check '... and it says it read it back' 1 "$(grep -c '^OK verdict rogzitve' "$T/out")"
 check 'the same verdict again (a second round) -> 0, read back as a NEW line' 0 "$(ell marveen70 tsk-a APPROVE)"
 check 'hand-made README with task: -> 0' 0 "$(ell 1700 tsk-b CHANGES)"
@@ -130,7 +130,11 @@ mkdir "$Z/pr-1709"; printf 'os PR 1709 \ntask_id: tsk-a\nfej: 1111111aaaa\nv2: t
 check 'a later round line (vN: task_id X,) binds that task -> 0' 0 "$(ell 1709 tsk-b CHANGES)"
 check '... and the ref names THAT round head, not the first' "task-event tsk-b verdict $ACTOR  CHANGES KratoBal/acropora-os#1709 pr-1709 fej 2222222" "$(tail -n1 "$EV")"
 mkdir "$Z/pr-marveen73"; printf 'marveen PR 73 \npr: KratoBal/marveen#73\ntask_id: tsk-a\nfej: 3333333cccc\n' > "$Z/pr-marveen73/README.md"
-check 'a README pr: line that agrees (review-csomag.sh shape) -> 0' 0 "$(ell marveen73 tsk-a APPROVE)"
+check 'a README pr: line with the fleet repo old name (a packet from before the rename) -> 0' 0 "$(ell marveen73 tsk-a APPROVE)"
+check '... and the verdict keeps the name the README gave' "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/marveen#73 pr-marveen73 fej 3333333" "$(tail -n1 "$EV")"
+mkdir "$Z/pr-marveen74"; printf 'marveen PR 74 \npr: KratoBal/acroveliq#74\ntask_id: tsk-a\nfej: 4444444dddd\n' > "$Z/pr-marveen74/README.md"
+check 'a README pr: line that agrees (review-csomag.sh shape, the new name) -> 0' 0 "$(ell marveen74 tsk-a APPROVE)"
+check '... ref KratoBal/acroveliq#74' "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/acroveliq#74 pr-marveen74 fej 4444444" "$(tail -n1 "$EV")"
 n="$(events)"
 
 echo 'the profile: the Task Core writers are denied for the reviewer only'

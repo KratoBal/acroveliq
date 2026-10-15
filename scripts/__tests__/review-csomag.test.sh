@@ -19,6 +19,8 @@ check() {  # name, expected rc, actual rc
 }
 git init -q "$T/repo"; git -C "$T/repo" remote add origin https://github.com/KratoBal/acropora-os.git
 git init -q "$T/mrepo"; git -C "$T/mrepo" remote add origin git@github.com:KratoBal/marveen.git
+# the fleet repo renamed KratoBal/marveen -> KratoBal/acroveliq (2026-10-15): a fresh clone has the new origin
+git init -q "$T/arepo"; git -C "$T/arepo" remote add origin https://github.com/KratoBal/acroveliq.git
 run() { REVIEW_CSOMAG_REPO="$T/repo" REVIEW_CSOMAG_DIR="$1" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" os "$2" tcl-proba >/dev/null 2>&1; echo $?; }
 # TC-Lite L4: the third place is a task id, mandatory, checked before the zone is touched
 run3() { REVIEW_CSOMAG_REPO="$T/repo" REVIEW_CSOMAG_DIR="$1" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" os "$2" "$3" >/dev/null 2>&1; echo $?; }
@@ -56,7 +58,8 @@ check 'caller with umask 002: the script runs with 0022' 'umask=0022' "${out##* 
 echo 'card f1e388e5: the packet names its PR as owner/repo#N, and the clone must be that repo'
 g() { REVIEW_CSOMAG_REPO="$1" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$S" "$2" "$3" tcl-proba 2>&1; }
 check 'os -> KratoBal/acropora-os#N' 1 "$(g "$T/repo" os 111 | grep -c ' pr: KratoBal/acropora-os#111 umask=')"
-check 'marveen over ssh -> KratoBal/marveen#N' 1 "$(g "$T/mrepo" marveen 112 | grep -c ' pr: KratoBal/marveen#112 umask=')"
+check 'marveen, a clone with the old origin -> KratoBal/acroveliq#N' 1 "$(g "$T/mrepo" marveen 112 | grep -c ' pr: KratoBal/acroveliq#112 umask=')"
+check 'marveen, a clone with the new origin -> KratoBal/acroveliq#N' 1 "$(g "$T/arepo" marveen 116 | grep -c ' pr: KratoBal/acroveliq#116 umask=')"
 check 'the README line review-ellenoriz.sh reads' 1 "$(grep -c '"%s PR %s %s\\npr: %s\\ntask_id: %s' "$S")"
 check 'a clone of another repo for the mode -> refuse' 1 "$(g "$T/repo" marveen 113 >/dev/null; echo $?)"
 check '... and no packet folder left behind' 1 "$([ -e "$T/zona/pr-marveen113" ] && echo 0 || echo 1)"
@@ -136,7 +139,7 @@ n="\${4#pull/}"; n="\${n%%/*}"
 git update-ref refs/remotes/origin/main $C1 && git branch -f "pr-\$n" "\$(cat $T/fetched-head)" >/dev/null
 STUB
 printf 'titok\n' > "$T/tok"
-api() { mkdir -p "$T/api/repos/KratoBal/marveen/pulls"; printf '%s' "$2" > "$T/api/repos/KratoBal/marveen/pulls/$1"; }
+api() { mkdir -p "$T/api/repos/KratoBal/acroveliq/pulls"; printf '%s' "$2" > "$T/api/repos/KratoBal/acroveliq/pulls/$1"; }
 sed -e "s|^GIT_AUTH=.*|GIT_AUTH=$T/git-auth-stub.sh|" -e "s|^GH_API=.*|GH_API=file://$T/api|" -e "s|^TOKEN_FILE=.*|TOKEN_FILE=$T/tok|" "$S" > "$T/csomag.sh"
 check 'the copy points at the stubs' 3 "$(grep -cE "^(GIT_AUTH=$T/git-auth-stub.sh|GH_API=file://$T/api|TOKEN_FILE=$T/tok)\$" "$T/csomag.sh")"
 pk() { REVIEW_CSOMAG_REPO="$F" REVIEW_CSOMAG_DIR="$T/zona" bash "$T/csomag.sh" marveen "$1" tcl-proba 2>&1; }
