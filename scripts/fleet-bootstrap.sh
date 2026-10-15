@@ -256,6 +256,110 @@ fi
 rm -f "$tmp"
 fi
 
+step "4a. the D4 GitHub broker: its two root scripts and their sudo rule (docs/fleet-github.md)"
+# A CONTAINER RECREATE TAKES THESE WITH IT (acrobot 31595, the D4 step list E2): /usr/local/sbin and
+# /etc/sudoers.d come back from the image, so without this step every recreate stops all fleet
+# writes on GitHub until a human reinstalls steps 7 and 8. The key, the approver token and
+# app.json are NOT handled here: they live on the host and come in read-only as /etc/fleet-github
+# (the bind mount, step 6b), so they survive by themselves.
+#
+# ONLY WHERE D4 IS DEPLOYED. The mount (mountpoint -q, not a mere directory) is the sign that
+# the owner did step 6b; without it this step installs nothing, because a sudo rule installed
+# on its own would be a permission change nobody asked for.
+#
+# THE PINNED HASHES ARE THE REVIEWED VERSIONS (main a0e9fb4). The source is the router's tree,
+# so a pin here does not stop the router itself (at boot it holds the blanket line anyway); it
+# stops an unreviewed or half-updated tree from becoming root code. scripts/__tests__/
+# fleet-bootstrap-d4.test.py fails while a pin differs from the file, so a change to either
+# script carries its new pin in the same PR.
+#
+# NEVER `fail` HERE: step 4b below removes the blanket line, and an exit before it would leave
+# the whole fence open, which is worse than a missing broker. Problems are counted (D4_RC) and
+# step 7 reports them.
+D4_MOUNT=/etc/fleet-github
+# Only a dry run may look at another directory (the tests); a real run always checks the mount.
+if (( DRY )) && [[ -n "${FLEET_D4_MOUNT_DRYRUN:-}" ]]; then D4_MOUNT="$FLEET_D4_MOUNT_DRYRUN"; fi
+D4_SUDOERS=/etc/sudoers.d/fleet-github
+D4_SBIN=/usr/local/sbin
+# source-in-scripts/root:installed-name:sha256
+D4_SCRIPTS="fleet-github.py:fleet-github:9c1e090aea5401d649f5174bfc93759459d62a435fa5e28eb525f1955857457e
+fleet-approve.py:fleet-approve:11213d237967b3c2510006961570c2dba3d1fef62ade03d35f0980f3ef416a10"
+D4_RC=0
+D4_DEPLOYED=0
+as_root() { if (( AS_ROOT )); then run "$@"; else run sudo -n "$@"; fi }
+d4_sudoers_content() {
+  echo "# The D4 GitHub broker and the guarded approver (docs/fleet-github.md, step 8). Written by fleet-bootstrap.sh 4a."
+  echo "$ROUTER_USER ALL=(root) NOPASSWD: $D4_SBIN/fleet-github token *"
+  echo "agent-nautilus ALL=(root) NOPASSWD: $D4_SBIN/fleet-github token *"
+  echo "agent-murena ALL=(root) NOPASSWD: $D4_SBIN/fleet-github token *"
+  echo "agent-barracuda ALL=(root) NOPASSWD: $D4_SBIN/fleet-approve approve *"
+}
+d4_tmpdir="$(mktemp -d)"
+d4_src_ok=1
+# The source is copied FIRST and the copy is hashed and installed: checking the file and then
+# installing it by name would leave a window in which it could change.
+while IFS=: read -r src dst want; do
+  [[ -n "$src" ]] || continue
+  path="$ROOT/scripts/root/$src"
+  if [[ -L "$path" ]]; then
+    echo "REFUSED: $path is a symlink; not reading or installing it" >&2; d4_src_ok=0; continue
+  fi
+  if ! cat -- "$path" > "$d4_tmpdir/$dst" 2>/dev/null; then
+    echo "MISSING: $path (the live tree is not on the main branch?)" >&2; d4_src_ok=0; continue
+  fi
+  got="$(sha256sum < "$d4_tmpdir/$dst" | cut -d' ' -f1)"
+  if [[ "$got" == "$want" ]]; then
+    echo "ok: scripts/root/$src is the pinned version"
+  else
+    echo "MISMATCH: scripts/root/$src sha256 $got, pinned $want: not installing it" >&2; d4_src_ok=0
+  fi
+done <<< "$D4_SCRIPTS"
+# A real run asks whether it is a MOUNT, not a directory (barracuda, #205): a directory made by
+# hand inside the container, or left from an older in-container layout, is not the owner's step 6b.
+d4_mounted() {
+  if (( DRY )) && [[ -n "${FLEET_D4_MOUNT_DRYRUN:-}" ]]; then test -d "$D4_MOUNT"; else mountpoint -q -- "$D4_MOUNT"; fi
+}
+if ! d4_mounted; then
+  echo "skip: $D4_MOUNT is not mounted, D4 is not deployed here: nothing installed"
+elif (( ! d4_src_ok )); then
+  D4_DEPLOYED=1; D4_RC=1
+  echo "NOT INSTALLED: D4 is deployed ($D4_MOUNT is there), but a source above is not the pinned version" >&2
+elif (( ! DRY && ! AS_ROOT )) && ! test -f "$BLANKET"; then
+  D4_DEPLOYED=1
+  echo "ok: not root and no blanket line: nothing can be written from here; step 7 checks the installed copies"
+else
+  D4_DEPLOYED=1
+  while IFS=: read -r src dst want; do
+    [[ -n "$src" ]] || continue
+    have="$(sha256sum < "$D4_SBIN/$dst" 2>/dev/null | cut -d' ' -f1)"
+    if [[ "$have" == "$want" ]]; then echo "ok: $D4_SBIN/$dst is the pinned version"; continue; fi
+    if as_root install -o root -g root -m 0755 "$d4_tmpdir/$dst" "$D4_SBIN/$dst"; then
+      echo "installed: $D4_SBIN/$dst"
+    else
+      echo "FAILED: could not install $D4_SBIN/$dst" >&2; D4_RC=1
+    fi
+  done <<< "$D4_SCRIPTS"
+  d4_sudoers_content > "$d4_tmpdir/sudoers"
+  current="$d4_tmpdir/current"
+  if (( AS_ROOT )); then cat -- "$D4_SUDOERS" > "$current" 2>/dev/null || : > "$current"
+  else sudo -n cat -- "$D4_SUDOERS" > "$current" 2>/dev/null || : > "$current"; fi
+  if cmp -s "$d4_tmpdir/sudoers" "$current"; then
+    echo "ok: $D4_SUDOERS is exactly the generated content"
+  elif (( DRY )); then
+    echo "DRY: install $D4_SUDOERS (0440) with:"; sed 's/^/DRY:   /' "$d4_tmpdir/sudoers"
+  else
+    # Never install a sudoers file that does not parse: that can lock sudo out.
+    if ! as_root visudo -c -f "$d4_tmpdir/sudoers" >/dev/null; then
+      echo "FAILED: the generated $D4_SUDOERS does not parse; nothing installed" >&2; D4_RC=1
+    elif as_root install -o root -g root -m 0440 "$d4_tmpdir/sudoers" "$D4_SUDOERS"; then
+      echo "installed: $D4_SUDOERS"
+    else
+      echo "FAILED: could not install $D4_SUDOERS" >&2; D4_RC=1
+    fi
+  fi
+fi
+rm -rf -- "$d4_tmpdir"
+
 step "4b. the dev-database sudo rule, and the removal of the blanket line"
 # 2026-08-24, Balazs approved on Discord at 16:13 ("Kivezetheted ha jonak latod").
 # The blanket "marveen ALL=(ALL) NOPASSWD:ALL" line lives in /etc/sudoers.d/marveen,
@@ -384,6 +488,25 @@ for pair in $AGENTS; do
     echo "TOO WIDE: $user also allows /usr/bin/cat, the rule is not tmux-only" >&2; rc=1
   fi
 done
+# D4 (step 4a): where the broker is deployed, the installed copies are the pinned versions and the
+# sudo rule file is there. Read as the router: the scripts are 0755, the rule file is checked by
+# existence, and the router's own line by capability (sudo -l asks the policy, runs nothing).
+if (( D4_RC )); then echo "D4: step 4a reported a problem above" >&2; rc=1; fi
+if (( D4_DEPLOYED && ! DRY )); then
+  while IFS=: read -r src dst want; do
+    [[ -n "$src" ]] || continue
+    if [[ "$(sha256sum < "$D4_SBIN/$dst" 2>/dev/null | cut -d' ' -f1)" == "$want" ]]; then
+      echo "ok: $D4_SBIN/$dst is the pinned version"
+    else
+      echo "MISSING: $D4_SBIN/$dst is absent or not the pinned version" >&2; rc=1
+    fi
+  done <<< "$D4_SCRIPTS"
+  test -f "$D4_SUDOERS" || { echo "MISSING: $D4_SUDOERS" >&2; rc=1; }
+  if (( ! AS_ROOT )); then
+    sudo -n -l "$D4_SBIN/fleet-github" token KratoBal/acroveliq olvas >/dev/null 2>&1 \
+      || { echo "MISSING: $ROUTER_USER cannot run fleet-github token" >&2; rc=1; }
+  fi
+fi
 # B45 B2-4: the last daily write check (scripts/b45-jogellenorzo-napi.py, as marveen). A
 # JELZES fails this step: a recreate is exactly when a lost ACL or a wrong owner comes back.
 # It is DATA, read with the router's rights, never a script run as root (the file and the

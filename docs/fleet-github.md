@@ -148,6 +148,24 @@ A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker 
   megnevez, a README-t viszont a fejlesztő írja, barracuda pedig a `diff.patch`-et olvassa. Egy fej, amiben több áll, mint a
   diffben, ma átmenne. A választott alak a (b): a reviewer nem a fejlesztő állítását olvassa, hanem a fejből előállított diffet.
 
+## Konténer-újrateremtés után (fleet-bootstrap.sh 4a)
+
+A `docker compose up -d` a képből teremti újra a konténert: a `/usr/local/sbin` és a `/etc/sudoers.d` gyári állapotba
+áll. Ezért a `scripts/fleet-bootstrap.sh` 4a lépése (a boot útján, a `run-dashboard.sh` előtt fut) visszaállítja a 7. és a
+8. lépés eredményét, ember nélkül:
+
+- **csak ahol a D4 telepítve van**, vagyis a `/etc/fleet-github` áll (a hostról, csak olvasható bind mounttal); enélkül
+  semmit nem telepít, mert egy magától megjelenő sudo-sor jogosultság-változás volna;
+- a két szkriptet a `scripts/root/` alól, **egy másolatot hash-el és telepít** (nem a fájlt név szerint), és csak ha a
+  lenyomata a bootstrapba rögzített érték; eltérésnél és symlinknél nem telepít, hanem a 7. lépésben hibát jelez;
+- a sudo-sort a bootstrap maga építi (a 8. lépés négy sora), `visudo -c -f` után, és csak ha a meglévőtől eltér;
+- **soha nem áll meg**: utána jön a teljes NOPASSWD sor törlése (4b), aminek mindig le kell futnia.
+
+A kulcs, a jóváhagyó tokenje és az `app.json` nem a bootstrapé: a hosti könyvtárból a mounttal jönnek. **Ha a
+`fleet-github.py` vagy a `fleet-approve.py` változik, ugyanabban a PR-ban a bootstrap rögzített lenyomata is**: a
+`scripts/__tests__/fleet-bootstrap-d4.test.py` addig piros. A rögzítés nem a router ellen véd (a boot útján az amúgy is
+root-egyenértékű a NOPASSWD sorral), hanem az ellen, hogy egy át nem nézett vagy félig frissített fa root-kód legyen.
+
 ## Visszaállítás
 
 - **A 6. lépés előtt:** a `FLEET_GITHUB_APP` kapcsoló kikapcsolva (az alapérték) a régi utat adja; a sudo sorok és a két
