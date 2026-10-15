@@ -40,8 +40,7 @@
 set -uo pipefail
 ROOT=/home/marveen/marveen
 REPO="${PR_REPO:-KratoBal/acropora-os}"
-TOKEN_FILE="$ROOT/store/.github-token"
-[ -r "$TOKEN_FILE" ] || { echo "FAIL: nincs github token itt: $TOKEN_FILE" >&2; exit 1; }
+. "$(dirname "${BASH_SOURCE[0]}")/lib/github-token.sh"   # github_token <owner/repo> <role> (FLEET_GITHUB_APP)
 
 # A NULLA A KERDES TULAJDONSAGA IS LEHET, ES ITT AZ ALAPERTELMEZES MUTAT ROSSZ IRANYBA
 # (murena merese, 2026-09-10): a `lap-vaz` keresese az acropora-os repoban NULLAT adott,
@@ -56,7 +55,9 @@ for _a in "$@"; do [ "$_a" = "--repo" ] && REPO_VALASZTVA=1; done
 
 futtat() {
   _repo="$1"; shift
-  TOKEN="$(cat "$TOKEN_FILE")" REPO="$_repo" python3 - "$@" <<'PY'
+  # a broker token covers ONE repository: asked again for each one searched
+  _tok="$(github_token "$_repo" olvas)" || return 1
+  TOKEN="$_tok" REPO="$_repo" python3 - "$@" <<'PY'
 import json, os, subprocess, sys, datetime, unicodedata, time
 
 tok, repo = os.environ["TOKEN"], os.environ["REPO"]

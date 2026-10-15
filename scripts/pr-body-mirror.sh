@@ -71,15 +71,14 @@
 set -u
 
 REPO="${PR_MIRROR_REPO:-KratoBal/acropora-os}"
-TOKEN_FILE="/home/marveen/marveen/store/.github-token"
+. "$(dirname "${BASH_SOURCE[0]}")/lib/github-token.sh"   # github_token <owner/repo> <role> (FLEET_GITHUB_APP)
 OUT_DIR="/home/marveen/marveen/docs/pr-bodies"
 NOW_SH="/home/marveen/marveen/scripts/local-now.sh"
 
 [ $# -ge 1 ] || { echo "usage: pr-body-mirror.sh <PR-szam> [...]" >&2; exit 2; }
-[ -r "$TOKEN_FILE" ] || { echo "nincs olvashato github token: $TOKEN_FILE" >&2; exit 1; }
 
 mkdir -p "$OUT_DIR"
-TOKEN=$(cat "$TOKEN_FILE")
+TOKEN="$(github_token "$REPO" olvas)" || exit 1
 # Az idopontot MERJUK, nem gepeljuk: ugyanaz a szabaly, mint a napi naplonal.
 STAMP=$(bash "$NOW_SH" full 2>/dev/null || date '+%Y-%m-%d %H:%M:%S%z')
 

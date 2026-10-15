@@ -50,12 +50,17 @@ fi
 # Mindket ut elbukott, tehat a WARN ag futott -- csak epp STDERR-en, egy idozitett
 # futasban, ahol senki nem olvassa. Ez a mai est visszatero alakja: egy orzo, ami
 # szol, es kozben a muvelet ugy megy tovabb, mintha nem tortent volna semmi.
-if [ -n "$NODE_BIN" ]; then
+# FLEET_GITHUB_APP=on: the broker's read token for this repository, and neither the vault copy nor the
+# owner token file is read (the owner token's retirement, PR 1, docs/fleet-github.md)
+. "$INSTALL_DIR/scripts/lib/github-token.sh"
+if [ "${FLEET_GITHUB_APP:-off}" = on ]; then
+  GH_TOKEN="$(github_token "$REPO" olvas)" || GH_TOKEN=""
+elif [ -n "$NODE_BIN" ]; then
   GH_TOKEN="$(printf 'GH_TOKEN=github-github_token\n' | "$NODE_BIN" "$INSTALL_DIR/scripts/vault-resolve.mjs" 2>/dev/null | cut -d= -f2- || true)"
 fi
 # Tartalek: a lemezen allo fajl, ha a vault nem oldotta fel (nincs build vagy nincs
 # node). A sec-github csoport tagjai olvashatjak.
-if [ -z "${GH_TOKEN:-}" ] && [ -f store/.github-token ]; then
+if [ -z "${GH_TOKEN:-}" ] && [ "${FLEET_GITHUB_APP:-off}" != on ] && [ -f store/.github-token ]; then
   GH_TOKEN="$(cat store/.github-token)"
 fi
 [ -n "${GH_TOKEN:-}" ] && export GH_TOKEN || echo "WARN: no GH_TOKEN (vault+file both empty), gh calls may fail" >&2

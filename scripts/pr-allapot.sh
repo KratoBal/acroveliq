@@ -61,11 +61,11 @@ set -- ${ARGS+"${ARGS[@]}"}
 if [ -n "$PR_REPO_CLI" ]; then REPO_FORRAS="--repo"; REPO="$PR_REPO_CLI"
 elif [ -n "${PR_REPO:-}" ]; then REPO_FORRAS="PR_REPO"; REPO="$PR_REPO"
 else REPO_FORRAS="ALAPERTELMEZES -- ha a commerce kell: --repo KratoBal/acropora-commerce"; REPO="KratoBal/acropora-os"; fi
-TOKEN_FILE="$ROOT/store/.github-token"
-[ -r "$TOKEN_FILE" ] || { echo "FAIL: nincs github token itt: $TOKEN_FILE" >&2; exit 1; }
+. "$(dirname "${BASH_SOURCE[0]}")/lib/github-token.sh"   # github_token <owner/repo> <role> (FLEET_GITHUB_APP)
 [ "$#" -ge 1 ] || { echo "HASZNALAT: pr-allapotom.sh <PR-szam> [PR-szam ...]" >&2; exit 2; }
 
-TOKEN="$(cat "$TOKEN_FILE")" REPO="$REPO" REPO_FORRAS="$REPO_FORRAS" python3 - "$@" <<'PY'
+GH_TOK="$(github_token "$REPO" olvas)" || exit 1
+TOKEN="$GH_TOK" REPO="$REPO" REPO_FORRAS="$REPO_FORRAS" python3 - "$@" <<'PY'
 import calendar, json, os, subprocess, sys, datetime, time
 
 tok, repo = os.environ["TOKEN"], os.environ["REPO"]
