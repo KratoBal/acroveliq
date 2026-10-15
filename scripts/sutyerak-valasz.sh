@@ -29,6 +29,10 @@ text = open(sys.argv[2], encoding="utf-8").read().strip()
 if not text:
     sys.exit("ures valasz")
 body = {"text": text}
+# The widget thread the question came from (#1526): the answer also shows in that
+# widget conversation, not only in Messages.
+if h.get("threadId"):
+    body["threadId"] = h["threadId"]
 if h.get("conversationId"):
     body["conversationId"] = h["conversationId"]
 elif h.get("userId"):
