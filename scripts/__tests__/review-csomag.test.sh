@@ -140,8 +140,13 @@ git update-ref refs/remotes/origin/main $C1 && git branch -f "pr-\$n" "\$(cat $T
 STUB
 printf 'titok\n' > "$T/tok"
 api() { mkdir -p "$T/api/repos/KratoBal/acroveliq/pulls"; printf '%s' "$2" > "$T/api/repos/KratoBal/acroveliq/pulls/$1"; }
-sed -e "s|^GIT_AUTH=.*|GIT_AUTH=$T/git-auth-stub.sh|" -e "s|^GH_API=.*|GH_API=file://$T/api|" -e "s|^TOKEN_FILE=.*|TOKEN_FILE=$T/tok|" "$S" > "$T/csomag.sh"
-check 'the copy points at the stubs' 3 "$(grep -cE "^(GIT_AUTH=$T/git-auth-stub.sh|GH_API=file://$T/api|TOKEN_FILE=$T/tok)\$" "$T/csomag.sh")"
+sed -e "s|^GIT_AUTH=.*|GIT_AUTH=$T/git-auth-stub.sh|" -e "s|^GH_API=.*|GH_API=file://$T/api|" "$S" > "$T/csomag.sh"
+# the token comes from lib/github-token.sh next to the script (the owner token's retirement, PR 1): the
+# copy gets its own copy of the helper, its owner token file pointed here (the switch is off)
+mkdir -p "$T/lib"
+sed -e "s|^GITHUB_OWNER_TOKEN_FILE=.*|GITHUB_OWNER_TOKEN_FILE=$T/tok|" "$HERE/../lib/github-token.sh" > "$T/lib/github-token.sh"
+check 'the copy points at the stubs' 2 "$(grep -cE "^(GIT_AUTH=$T/git-auth-stub.sh|GH_API=file://$T/api)\$" "$T/csomag.sh")"
+check '... and its helper at the test token' 1 "$(grep -c "^GITHUB_OWNER_TOKEN_FILE=$T/tok\$" "$T/lib/github-token.sh")"
 pk() { REVIEW_CSOMAG_REPO="$F" REVIEW_CSOMAG_DIR="$T/zona" bash "$T/csomag.sh" marveen "$1" tcl-proba 2>&1; }
 pkr() { pk "$@" >"$T/pk.out"; echo $?; }
 printf '%s' "$C2" > "$T/fetched-head"
@@ -167,7 +172,7 @@ chmod 000 "$T/tok"
 if [ -r "$T/tok" ]; then echo '  [SKIP] an unreadable token (this user reads a 000 file: root)'; else
   check 'an unreadable token -> 1, no packet' 1 "$(pkr 123)"
   check '... no folder' 1 "$([ -e "$T/zona/pr-marveen123" ] && echo 0 || echo 1)"
-  check '... and names the token as the reason (the API branch would close it too, but say why)' 1 "$(grep -c 'a token nem olvashato' "$T/pk.out")"
+  check '... and names the token as the reason (the API branch would close it too, but say why)' 1 "$(grep -c 'nincs olvaso token' "$T/pk.out")"
 fi
 chmod 600 "$T/tok"
 check 'the token is not on the command line: read inside python, sent on stdin' 1 \
