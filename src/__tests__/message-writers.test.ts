@@ -1,8 +1,9 @@
 // Every writer of a message row stores the cleaned text (barracuda, #177 review: two wrote
 // around createAgentMessage). WHAT TURNS THIS RED:
-//   - an `INSERT INTO agent_messages` in src/ or scripts/ outside the three known writers, or one
+//   - an insert into agent_messages in src/ or scripts/ outside the three known writers, or one
 //     of them without a cleanMessageText call (a new writer must clean, or go through
-//     createAgentMessage);
+//     createAgentMessage). Any case, `INSERT OR IGNORE|REPLACE`, a quoted table name;
+//   - any UPDATE of agent_messages that sets `content` (none today; barracuda, #177 review);
 //   - the copy in scripts/guard-alert.mjs drifting from src/prompt-safety.ts;
 //   - the channel handoff, the guard alert or an agent's written-back result stored raw.
 import { describe, it, expect } from 'vitest'
@@ -28,10 +29,17 @@ function files(dir: string, out: string[] = []): string[] {
   return out
 }
 
+// barracuda, #177 review: the exact `INSERT INTO agent_messages` missed `INSERT OR IGNORE`, a
+// lower-case insert and a quoted table name, and an UPDATE of the content was not watched at all
+const INSERT_RX = /insert\s+(?:or\s+\w+\s+)?into\s+["`\[]?agent_messages\b/i
+// the SET list within one statement: no `;`, and at most 300 characters, so it cannot run on into
+// unrelated code that happens to assign a `content`
+const UPDATE_CONTENT_RX = /update\s+["`\[]?agent_messages["`\]]?\s+set\b[^;]{0,300}?\bcontent\s*=/i
+
 describe('the writers of agent_messages', () => {
   it('MSG-WRITERS: only the three known writers insert a message row, and each cleans the text', () => {
     const writers = [...files(join(ROOT, 'src')), ...files(join(ROOT, 'scripts'))]
-      .filter((f) => /INSERT INTO agent_messages/.test(readFileSync(f, 'utf-8')))
+      .filter((f) => INSERT_RX.test(readFileSync(f, 'utf-8')))
       .map((f) => relative(ROOT, f))
       .sort()
     const cleaning = writers.map((f) => /cleanMessageText\(/.test(readFileSync(join(ROOT, f), 'utf-8')))
@@ -39,6 +47,27 @@ describe('the writers of agent_messages', () => {
       ['scripts/guard-alert.mjs', 'src/channel-coordinator/ingest.ts', 'src/db.ts'],
       [true, true, true],
     ])
+  })
+
+  it('MSG-WRITERS-PATTERNS: the watch sees every spelling of an insert, and an UPDATE of the content', () => {
+    const inserts = [
+      'INSERT INTO agent_messages (a) VALUES (?)',
+      'insert into agent_messages (a)',
+      'INSERT OR IGNORE INTO agent_messages (a)',
+      'INSERT OR REPLACE INTO "agent_messages" (a)',
+      'INSERT\n  INTO `agent_messages`',
+    ]
+    const notInserts = ['INSERT INTO agent_messages_archive (a)', 'SELECT * FROM agent_messages']
+    const updates = ["UPDATE agent_messages SET content = ? WHERE id = ?", "update \"agent_messages\"\n SET status = 'x', content = ?"]
+    const notUpdates = ["UPDATE agent_messages SET status = 'done', result = ? WHERE id = ?"]
+    const contentWriters = [...files(join(ROOT, 'src')), ...files(join(ROOT, 'scripts'))]
+      .filter((f) => UPDATE_CONTENT_RX.test(readFileSync(f, 'utf-8')))
+      .map((f) => relative(ROOT, f))
+    expect([
+      inserts.map((t) => INSERT_RX.test(t)), notInserts.map((t) => INSERT_RX.test(t)),
+      updates.map((t) => UPDATE_CONTENT_RX.test(t)), notUpdates.map((t) => UPDATE_CONTENT_RX.test(t)),
+      contentWriters,
+    ], 'MSG-WRITERS-PATTERNS').toEqual([[true, true, true, true, true], [false, false], [true, true], [false], []])
   })
 
   it('MSG-WRITERS-COPY: the guard alert\'s copy of cleanMessageText is the same two replacements', () => {
