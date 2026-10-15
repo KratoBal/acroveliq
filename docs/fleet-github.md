@@ -66,14 +66,17 @@ ellenőrizni kell; ami nem került a brókerre, az a 401-gyel csendben eltörik:
   acropora-commerce}` a tulajdonosi fájlt adják; az `agents/nautilus/commerce-work` a `.github-token-commerce`-t. A
   `/home/marveen/work/*` klónok a `marveen` felhasználóé, nautilusként nem olvashatók: azokat a tulajdonosuk mérje.
   Tokenes klón-cím (userinfo a `github.com` előtt) a 14 olvasható klónban nincs (egy klón konfigja nem olvasható).
-- **A második token, a `.github-token-commerce`**: két olvasója van (a fenti klón és a `fleet-secrets.py` leltára). Ha a
-  tulajdonosi tokennel együtt megy, a 6. lépés erre is vonatkozik; ha nem, külön döntés.
+- **A második token, a `.github-token-commerce`**: két olvasója van (a fenti klón és a `fleet-secrets.py` leltára).
+  Ugyanazt az utat járja, mint a tulajdonosi token: a 9. lépésben vált át, külön döntés nem kell hozzá (acrobot 31690).
 - **Skillek, amelyek a fájl olvasását írják elő** (szöveg, nem kód; a token visszavonása után rossz utat tanítanak): a
   globális `agens-agabol-pull-request`, `ios-testflight-bekotes`, `agent-report-review`, `agens-jogosultsag-megadasa`,
-  `deploy-ellenorzo-lista`, és a projekt-szintű `council-dontes-rogzitese`. A globális skill átírása flotta-szintű döntés.
+  `deploy-ellenorzo-lista`, és a projekt-szintű `council-dontes-rogzitese`. Az átírásuk a 9. lépés része, a
+  `FLEET_GITHUB_APP` bekapcsolásakor; előtte nem, mert addig a fájl az élő forrás, és egy brókerre tanító skill rossz utat
+  mutatna (acrobot 31690).
 - **Hookok:** a `/home/marveen/.claude/hooks` és a `/home/marveen/.claude/settings.json` nem nevezi meg a tokent.
-- **Nem mérve, mert nautilusként nem olvasható:** az ütemezett feladatok (`/home/marveen/.claude/scheduled-tasks`), a
-  projekt `.claude/settings.json`-ja és a `store/tokens`. Ezeket a `marveen` felhasználó mérje (acrobot).
+- **A `marveen` felhasználóval mérve (acrobot, 31690):** az ütemezett feladatok közül egy nevezi meg a tokent
+  (`pr-993-figyeles`), az KIKAPCSOLT (`enabled: false`), és törlésre jelölt, nem átírandó; a projekt
+  `.claude/settings*.json` fájljai: 0 találat; a `store/tokens` alatt nincs git vagy gh nevű token; a hookok: 0 találat.
 - **Nem mérve, szándékosan:** a `.env` fájlok (általános kiolvasásuk tilos); a vault-másolatot (`github-github_token`) a
   fenti második kivétel nevezi meg.
 
