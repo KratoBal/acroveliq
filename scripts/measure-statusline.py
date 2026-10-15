@@ -59,6 +59,11 @@ import time
 
 MIN_INTERVAL_S = 300
 EXPORT_INTERVAL_S = 60
+# Tests shorten it; the fleet runs the default.
+try:
+    EXPORT_INTERVAL_S = max(1, int(os.environ.get("MEASURE_EXPORT_INTERVAL_S", "")))
+except ValueError:
+    pass
 ROOT = os.environ.get("MARVEEN_ROOT", "/home/marveen/marveen")
 MEASURE_DIR = os.environ.get("MEASURE_DIR", os.path.join(ROOT, "store", "measurements"))
 OUT = os.environ.get("MEASURE_QUOTA_FILE", os.path.join(MEASURE_DIR, "quota-samples.jsonl"))
@@ -308,7 +313,13 @@ def maybe_export(data, agent):
     project_dir = os.path.dirname(tp)
     stamp = os.path.join(USAGE_DIR, agent, ".last-export")
     try:
-        if time.time() - os.stat(stamp).st_mtime < EXPORT_INTERVAL_S:
+        age = time.time() - os.stat(stamp).st_mtime
+        if age < EXPORT_INTERVAL_S:
+            # Throttled. The statusline is drawn only while the agent works, so a skipped export
+            # was not made up for until the agent moved again: its last calls stayed out of the
+            # measurement (acrobot, 2026-10-15 08:56, korall; card 88a21124). A trailing export
+            # runs once when the stamp has aged out.
+            schedule_trailing(agent, project_dir, stamp, EXPORT_INTERVAL_S - age)
             return
     except OSError:
         pass
@@ -319,17 +330,62 @@ def maybe_export(data, agent):
     if pid:
         return  # parent: print the status line and exit
     try:
-        os.setsid()
-        devnull = os.open(os.devnull, os.O_RDWR)
-        for fd in (0, 1, 2):
-            os.dup2(devnull, fd)
+        detach()
+        run_export(agent, project_dir, stamp)
+    except Exception:
+        pass
+    finally:
+        os._exit(0)
+
+
+def detach():
+    os.setsid()
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
+
+
+def run_export(agent, project_dir, stamp):
+    ensure_dir(os.path.dirname(USAGE_DIR), 0o2775)
+    ensure_dir(USAGE_DIR, 0o2775)
+    ensure_dir(os.path.join(USAGE_DIR, agent), 0o2750)
+    with open(stamp, "a"):
+        pass
+    os.utime(stamp, None)
+    export_usage(agent, project_dir)
+
+
+def schedule_trailing(agent, project_dir, stamp, delay):
+    """A detached export that runs once when the throttle stamp has aged out.
+
+    At most one waits per agent: it holds .trailing.lock for its whole wait, and a second
+    throttled draw finds it held and leaves. Each start appends one line to .trailing.log
+    (time and delay), which says afterwards whether the trailing export ran."""
+    try:
+        pid = os.fork()
+    except OSError:
+        return
+    if pid:
+        return  # parent: print the status line and exit
+    try:
+        import fcntl
+        detach()
+        agent_dir = os.path.join(USAGE_DIR, agent)
         ensure_dir(os.path.dirname(USAGE_DIR), 0o2775)
         ensure_dir(USAGE_DIR, 0o2775)
-        ensure_dir(os.path.join(USAGE_DIR, agent), 0o2750)
-        with open(stamp, "a"):
-            pass
-        os.utime(stamp, None)
-        export_usage(agent, project_dir)
+        ensure_dir(agent_dir, 0o2750)
+        lock_fd = os.open(os.path.join(agent_dir, ".trailing.lock"), os.O_WRONLY | os.O_CREAT, 0o640)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return  # one is already waiting for this agent
+        fd = os.open(os.path.join(agent_dir, ".trailing.log"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
+        try:
+            os.write(fd, ("%d %.1f\n" % (int(time.time()), delay)).encode("ascii"))
+        finally:
+            os.close(fd)
+        time.sleep(max(0.0, delay) + 0.5)
+        run_export(agent, project_dir, stamp)
     except Exception:
         pass
     finally:
