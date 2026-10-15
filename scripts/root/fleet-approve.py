@@ -30,6 +30,12 @@ step 7; barracuda, #200 review):
   - it trusts that the verdict event is barracuda's. The events route accepts a verdict only with the
     task reviewer's own agent token (src/web/routes/task-usage.ts, this PR); before that is deployed,
     anyone with the shared token can write one in barracuda's name;
+  - and the route is not the only way in: the database (store/claudeclaw.db, 0600 marveen) can be written
+    directly by any process running as marveen, the main agent and the dashboard included, around the
+    route (barracuda, #202 review). An approval is therefore worth as much as the main agent's session,
+    which also reads outside text. The decided fix (acrobot 31484, a separate PR before step 7):
+    review-ellenoriz also writes the verdict through a root helper (sudo, agent-barracuda) to a root-owned
+    place, and this script reads it from there;
   - it binds the approval to the head the PACKET names, and the packet is the developer's: its README
     head line is a claim, and diff.patch is what barracuda read. A head with more in it than the diff
     would pass every check here. Closing this is a separate decision (acrobot): the verdict carrying the

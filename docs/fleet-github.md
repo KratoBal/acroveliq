@@ -102,7 +102,10 @@ A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker 
     elutasított beolvasztás jóváhagyás nélkül; egy App-jóváhagyás kísérlete (nem számíthat); a workflow-PR útja; a
     visszaállító kapcsoló. **A bizonyíték minden lépésnél a bróker naplósora** (`/var/log/fleet-github.log`: `result ok`,
     a token lenyomata, időben a művelethez illesztve), és a jóváhagyásnál a `/var/log/fleet-approve.log` sora, nem a
-    művelet sikere: egy régi tokennel lefutott push ugyanúgy sikeres.
+    művelet sikere: egy régi tokennel lefutott push ugyanúgy sikeres. **A jóváhagyó rootként futó ágát is itt kell
+    mérni** (a tesztek nem rootként futnak): egy próba-jóváhagyás után a `store/claudeclaw.db-shm` és a `-wal` tulajdonosa
+    marveen, és a vezérlőpult utána is ír az adatbázisba. Ha valaha root marad a tulajdonos, a vezérlőpult csendben
+    elveszíti az írást a saját adatbázisába.
 11. Utána a lap 6. lépése (a tulajdonosi token kivezetése a fenti előfeltétellel, a 401 méréssel) és 7. lépése (a rulesetek:
     jóváhagyás 1, a legutóbbi push jóváhagyása, a régi jóváhagyások elvetése).
 
@@ -114,6 +117,12 @@ A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker 
   „using the shared token” sort ír a stderr-re); ha nem, a verdiktjei 403-at kapnának.
 - **A verdikt a teljes, 40 karakteres fejet hordozza** (ez a PR: `review-ellenoriz.sh` nem rövidít), és a jóváhagyó csak
   ilyet fogad el; a régi, 7 karakteres verdiktekre nem hagy jóvá.
+- **A verdikt root tulajdonú helyre is (ELDÖNTVE, acrobot 31484, külön PR a 7. lépés előtt).** A jóváhagyó a
+  `task_events` táblának hisz, a `store/claudeclaw.db` viszont 0600 marveen: minden marveen-ként futó folyamat, a főágens
+  és a vezérlőpult is, közvetlenül beírhat egy verdikt-sort barracuda nevében, a route-ot megkerülve (barracuda, #202).
+  Addig a jóváhagyás annyit ér, amennyit a főágens munkamenete, ami külső szöveget is olvas. A javítás: a
+  `review-ellenoriz.sh` a verdiktet egy root segéden át (sudo, agent-barracuda) egy root tulajdonú helyre is írja, és a
+  jóváhagyó onnan olvas.
 - **A csomag és a fej kötése: ELDÖNTVE (acrobot, 31441): (b), a review-csomag diffjét a reviewer eszköze állítja elő a teljes fejből; amíg ez nincs bent, a 7. lépés vár.** A jóváhagyó azt a fejet hagyja jóvá, amit a csomag README-je
   megnevez, a README-t viszont a fejlesztő írja, barracuda pedig a `diff.patch`-et olvassa. Egy fej, amiben több áll, mint a
   diffben, ma átmenne. A választott alak a (b): a reviewer nem a fejlesztő állítását olvassa, hanem a fejből előállított diffet.
