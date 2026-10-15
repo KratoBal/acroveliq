@@ -6,6 +6,8 @@
 //     decided with any token, the shared token on a critical route);
 //   - the shared token, another agent or a device getting a critical route
 //     outside the named exceptions;
+//   - the shared token (L) open on any route outside LEGACY_KEPT, or a kept
+//     route that no rule answers any more (the legacy minimum, P0-1 point 6);
 //   - docs/access-matrix.md drifting from the code.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -13,7 +15,7 @@ import { join } from 'node:path'
 
 import { ROUTE_RULES } from '../web/route-rules.js'
 import { matchRouteRule } from '../web/route-match.js'
-import { accessOf, COLUMNS, decide, renderAccessMatrix, type Caller, type Column } from '../web/route-access.js'
+import { accessOf, COLUMNS, decide, LEGACY_KEPT, renderAccessMatrix, type Caller, type Column } from '../web/route-access.js'
 
 const S: Caller = { column: 'S', name: 'session:balazs' }
 const A: Caller = { column: 'A', name: 'acrobot' }
@@ -102,6 +104,18 @@ describe('the access matrix', () => {
       ['GET', '/api/voice/directive', G, 'nautilus', false],
       ['GET', '/api/voice/directive', L, undefined, false],
       ['GET', '/api/voice/directive', D, undefined, false],
+      // the legacy minimum: the shared token keeps the routes its residual callers used, nothing else
+      ['GET', '/api/kanban', L, undefined, true],
+      ['GET', '/api/memories', L, undefined, true],
+      ['GET', '/api/messages', L, undefined, true],
+      ['GET', '/api/recall', L, undefined, false],
+      ['GET', '/api/recall', G, undefined, true],
+      ['GET', '/api/recall', D, undefined, true],
+      ['POST', '/api/tool-log', L, undefined, false],
+      ['POST', '/api/tool-log', G, undefined, true],
+      ['POST', '/api/kanban/0a1b2c3d/comments', L, undefined, false],
+      ['POST', '/api/memories', L, 'legacy', false],
+      ['GET', '/api/tasks/t-1/timeline', L, undefined, false],
       // reads and telemetry: everyone
       ['GET', '/api/agents/activity', G, undefined, true],
       ['POST', '/api/token-usage/collect', G, undefined, true],
@@ -125,8 +139,8 @@ describe('the access matrix', () => {
       S: new Set(),
       A: new Set(),
       // a message may be sent by anyone; its sender is set from the token
-      // the plan lets the shared token write cards during the transition (plan 3: "kártya írása ✓ átmenetileg")
-      L: new Set(['message-send', 'message-state', 'approval-request', 'kanban-card-change']),
+      // the legacy minimum leaves the shared token one critical route: sending a message (LEGACY_KEPT)
+      L: new Set(['message-send']),
       G: new Set(['message-send', 'message-state', 'approval-request', 'schedule-create', 'schedule-change', 'session-read', 'agent-taskstate', 'kanban-card-change']),
       D: new Set(['message-send', 'message-state', 'approval-request', 'session-read', 'kanban-card-change']),
     }
@@ -141,6 +155,24 @@ describe('the access matrix', () => {
       .filter((a) => a.grants.D !== 'no' || a.grants.L !== 'no' || a.grants.G !== 'no')
       .map((a) => a.group)
     expect([open, deviceAdmin], 'ACCESS-INVARIANTS').toEqual([[], []])
+  })
+
+  it('ACCESS-LEGACY-MINIMUM: the shared token is open exactly on LEGACY_KEPT, and a denial names the minimum', () => {
+    const open = ROUTE_RULES.filter((rule) => accessOf(rule).grants.L !== 'no').map((rule) => `${rule.method} ${rule.path}`)
+    const ruled = new Set(ROUTE_RULES.map((rule) => `${rule.method} ${rule.path}`))
+    const stale = [...LEGACY_KEPT].filter((key) => !ruled.has(key))
+    const reason = decide(matchRouteRule('GET', '/api/recall'), L).reason
+    // a literal, not LEGACY_KEPT: comparing the set with itself could not fail (acrobot's measurement, 30997)
+    const measured = [
+      'GET /api/agents', 'GET /api/agents/activity', 'GET /api/daily-log', 'GET /api/kanban', 'GET /api/memories',
+      'GET /api/messages', 'GET /api/schedules', 'GET /api/terminal-input', 'GET /api/updates', 'GET /api/updates/status',
+      'POST /api/messages',
+    ]
+    expect([open.sort(), stale, reason.startsWith('class:OLVASO: legacy-minimum:')], 'ACCESS-LEGACY-MINIMUM').toEqual([
+      measured.sort(),
+      [],
+      true,
+    ])
   })
 
   it('ACCESS-DOC: docs/access-matrix.md is the code\'s matrix', () => {

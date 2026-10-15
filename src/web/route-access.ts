@@ -52,6 +52,8 @@ export interface Access {
   /** The group that set this, or the class default. */
   group: string
   why: string
+  /** Set when the group gave the shared token (L) this route and the legacy minimum took it away. */
+  legacyMinimum?: true
 }
 
 const g = (S: Grant, A: Grant, G: Grant, L: Grant, D: Grant): Record<Column, Grant> => ({ S, A, G, L, D })
@@ -242,14 +244,57 @@ const GROUPS: Group[] = [
   },
 ]
 
-/** The access of one rule: its group's, or its class default. */
+/**
+ * The legacy minimum (P0-1 deployment steps, point 6): the old shared token
+ * (L) keeps only the routes its residual callers really used. Every other
+ * route is L `no`, whatever its group or class says; S, A, G and D do not
+ * change.
+ *
+ * The evidence (acrobot, 2026-10-15, 30997): the request_actors log of the
+ * last 24 hours, actor `legacy`, read on the live tree. The agents moved to
+ * their own tokens around 2026-10-14 09:45; these are the routes the shared
+ * token still called after that. The heavy legacy rows of the same 24 hours
+ * (task timeline, recall, tool log, drain-inbox...) all stopped at the move:
+ * they were the agents themselves. GET /api/agents/:name/pane/stream was
+ * called once after it too, but it is a session read and stays L `no` (its
+ * group already says so).
+ *
+ * In `naplo` (the setting today) this denies nothing: it only changes what
+ * the log records as would-deny. Before `legacy-szukitett`, the preflight
+ * (`npx tsx scripts/access-preflight.ts --mode legacy-szukitett --napok N`)
+ * lists whatever rarer caller this list missed. Adding a route here is a
+ * code change with a review, like any other grant.
+ */
+export const LEGACY_KEPT: ReadonlySet<string> = new Set([
+  'GET /api/messages',
+  // the channels.sh guard's alert, until the server-side write (#162) runs on the live tree
+  'POST /api/messages',
+  'GET /api/daily-log',
+  'GET /api/kanban',
+  'GET /api/schedules',
+  'GET /api/agents',
+  'GET /api/agents/activity',
+  'GET /api/updates',
+  'GET /api/updates/status',
+  'GET /api/terminal-input',
+  'GET /api/memories',
+])
+
+const LEGACY_MINIMUM_WHY =
+  'the shared token keeps only the routes its residual callers used (P0-1 deployment steps, point 6; route-access.ts LEGACY_KEPT)'
+
+/** The access of one rule: its group's, or its class default, then the legacy minimum. */
 export function accessOf(rule: RouteRule): Access {
   const group = GROUPS.find((candidate) => candidate.match(rule))
+  let access: Access
   if (group) {
     const { name, match: _match, ...rest } = group
-    return { ...rest, group: name }
+    access = { ...rest, group: name }
+  } else {
+    access = { ...CLASS_DEFAULT[rule.class], group: `class:${rule.class}` }
   }
-  return { ...CLASS_DEFAULT[rule.class], group: `class:${rule.class}` }
+  if (access.grants.L === 'no' || LEGACY_KEPT.has(`${rule.method} ${rule.path}`)) return access
+  return { ...access, grants: { ...access.grants, L: 'no' }, legacyMinimum: true }
 }
 
 export type Caller =
@@ -281,7 +326,10 @@ export function decide(rule: RouteRule | null, caller: Caller, owner?: string | 
   const access = accessOf(rule)
   const grant = access.grants[caller.column]
   if (grant === 'yes') return { allowed: true, reason: access.group }
-  if (grant === 'no') return { allowed: false, reason: `${access.group}: ${access.why}` }
+  if (grant === 'no') {
+    const why = caller.column === 'L' && access.legacyMinimum ? `legacy-minimum: ${LEGACY_MINIMUM_WHY}` : access.why
+    return { allowed: false, reason: `${access.group}: ${why}` }
+  }
   const owners = owner == null ? [] : typeof owner === 'string' ? [owner] : owner
   if (owners.includes(caller.name)) return { allowed: true, reason: `${access.group}: own` }
   return { allowed: false, reason: `${access.group}: not its own (owner ${owners.join(', ') || 'unknown'})` }
@@ -308,7 +356,10 @@ const BEFORE_ENFORCING = [
   '3. **A régi token (L) kritikus útjai.** Amit ma a közös token kritikus úton hív, az a kikényszerítéskor',
   '   eltörik (például a `POST /api/schedules`). A kapcsoló csak akkor fordul, ha az',
   '   `npx tsx scripts/access-preflight.ts` listája üres (kilépési kód 0): ez a naplóból sorolja fel, mit',
-  '   tiltott volna. Ez eljárás, nem zár: a beállítást a kód nem tagadja meg.',
+  '   tiltott volna. Ez eljárás, nem zár: a beállítást a kód nem tagadja meg. Az L oszlop 2026-10-15 óta a',
+  '   minimum: csak az az útvonal ✓, amit a régi token az ágensek saját tokenre váltása után még hívott (lásd',
+  '   lent, „A régi token minimuma”). Egy ritkábban futó hívót a 24 órás mérés nem lát: a preflight több napra',
+  '   (`--napok N`) mutatja meg.',
   '4. **Az önbevallott szereplők.** Az üzenet feladóját, a jóváhagyás kérőjét és eldöntőjét, az átadó rekord',
   '   `agent` mezőjét, a tokenmérési esemény `actor` mezőjét és az ütemezett feladat szerzőjét a szerver a',
   '   tokenből tölti ki (`src/web/actor-claims.ts`). A régi közös token senkit nem nevez meg: `naplo` állásban',
@@ -350,6 +401,9 @@ export function renderAccessMatrix(rules: readonly RouteRule[] = ROUTE_RULES): s
     const cells = COLUMNS.map((column) => mark(access.grants[column]))
     lines.push(`| ${rule.method} | \`${rule.path.replace(/\|/g, '\\|')}\` | ${rule.class} | ${cells.join(' | ')} | ${access.group} | ${owner(access.owner)} |`)
   }
+  lines.push('', '## A régi token minimuma', '')
+  lines.push('Az L oszlopban csak ezek ✓, akármit ad a csoport vagy az osztály (a többi sor L ✗-je innen jön):', '')
+  for (const key of LEGACY_KEPT) lines.push(`- \`${key}\``)
   lines.push('', '## A csoportok indoka', '')
   for (const group of GROUPS) lines.push(`- **${group.name}**: ${group.why}`)
   for (const [cls, def] of Object.entries(CLASS_DEFAULT)) lines.push(`- **class:${cls}** (ha egy csoport sem illik): ${def.why}`)
