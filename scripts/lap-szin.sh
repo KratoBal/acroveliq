@@ -70,6 +70,8 @@ ROOT=/home/marveen/marveen
 # =============================================================================
 # The test storefront sits behind HTTP basic auth since 2026-10-15 (Balazs, stage P1-00b).
 # node reads the credentials from this file itself; they never reach argv or the env.
+# They go ONLY to an exact https stage host, pinned with Playwright's origin field, so a
+# redirect or a third-party resource answering 401 never receives them.
 STAGE_AUTH_FILE="/home/marveen/marveen/store/.stage-basic-auth"
 if [ "${1:-}" = "--allit" ]; then
   SOTET="${2:-https://shop-staging.acropora.hu/hu/products/acropora-austea-tricolor}"
@@ -154,7 +156,7 @@ if [ "${1:-}" = "--allit" ]; then
   const MINIMUM_TOKEN = 20 // az orzo szamolja magat: ennyi alatt a meres hasznalhatatlan
 
   async function merd(b, url) {
-    const p = await b.newPage({ httpCredentials: (() => { try { const [u, pw] = require("fs").readFileSync(process.env.STAGE_AUTH_FILE || "/home/marveen/marveen/store/.stage-basic-auth", "utf8").split("\n"); return u && pw ? { username: u, password: pw } : undefined } catch { return undefined } })(), viewport: { width: 1440, height: 1000 } })
+    const p = await b.newPage({ httpCredentials: ((u) => { const h = new URL(u).host; if (!["staging.acropora.hu", "partner-staging.acropora.hu", "shop-staging.acropora.hu"].includes(h) || new URL(u).protocol !== "https:") return undefined; try { const [n, pw] = require("fs").readFileSync(process.env.STAGE_AUTH_FILE || "/home/marveen/marveen/store/.stage-basic-auth", "utf8").split("\n"); return n && pw ? { username: n, password: pw, origin: "https://" + h } : undefined } catch { return undefined } })(url), viewport: { width: 1440, height: 1000 } })
     const valasz = await p.goto(url, { waitUntil: "networkidle", timeout: 60000 })
     const allapot = valasz ? valasz.status() : 0
     const vilag = await p.evaluate(() =>
@@ -322,7 +324,7 @@ if [ "${1:-}" = "--kep" ]; then
   const { chromium } = require("playwright")
   ;(async () => {
     const b = await chromium.launch()
-    const p = await b.newPage({ httpCredentials: (() => { try { const [u, pw] = require("fs").readFileSync(process.env.STAGE_AUTH_FILE || "/home/marveen/marveen/store/.stage-basic-auth", "utf8").split("\n"); return u && pw ? { username: u, password: pw } : undefined } catch { return undefined } })(), viewport: { width: Number(process.env.LAP_SZEL), height: 1200 } })
+    const p = await b.newPage({ httpCredentials: ((u) => { const h = new URL(u).host; if (!["staging.acropora.hu", "partner-staging.acropora.hu", "shop-staging.acropora.hu"].includes(h) || new URL(u).protocol !== "https:") return undefined; try { const [n, pw] = require("fs").readFileSync(process.env.STAGE_AUTH_FILE || "/home/marveen/marveen/store/.stage-basic-auth", "utf8").split("\n"); return n && pw ? { username: n, password: pw, origin: "https://" + h } : undefined } catch { return undefined } })(process.env.LAP_URL), viewport: { width: Number(process.env.LAP_SZEL), height: 1200 } })
     const valasz = await p.goto(process.env.LAP_URL, { waitUntil: "networkidle", timeout: 60000 })
     const allapot = valasz ? valasz.status() : 0
     if (allapot !== 200) {
@@ -365,7 +367,7 @@ const mod = process.env.LAP_MOD
 
 ;(async () => {
   const b = await chromium.launch()
-  const p = await b.newPage({ httpCredentials: (() => { try { const [u, pw] = require("fs").readFileSync(process.env.STAGE_AUTH_FILE || "/home/marveen/marveen/store/.stage-basic-auth", "utf8").split("\n"); return u && pw ? { username: u, password: pw } : undefined } catch { return undefined } })(), viewport: { width: 1440, height: 1000 } })
+  const p = await b.newPage({ httpCredentials: ((u) => { const h = new URL(u).host; if (!["staging.acropora.hu", "partner-staging.acropora.hu", "shop-staging.acropora.hu"].includes(h) || new URL(u).protocol !== "https:") return undefined; try { const [n, pw] = require("fs").readFileSync(process.env.STAGE_AUTH_FILE || "/home/marveen/marveen/store/.stage-basic-auth", "utf8").split("\n"); return n && pw ? { username: n, password: pw, origin: "https://" + h } : undefined } catch { return undefined } })(url), viewport: { width: 1440, height: 1000 } })
   const valasz = await p.goto(url, { waitUntil: "networkidle", timeout: 60000 })
   console.log(`--- lap-szin  ${url}`)
   console.log(`    HTTP ${valasz ? valasz.status() : "?"}   cim: ${await p.title()}`)

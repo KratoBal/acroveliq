@@ -44,9 +44,13 @@ UT="${2:-/api/health}"
 # The test storefront sits behind HTTP basic auth since 2026-10-15 (Balazs, stage P1-00b).
 # The credentials go to curl through a config file on a process-substitution fd, never on
 # argv; without them a stage host answers 401 and the fingerprint would read as missing.
+# The password is generated alphanumeric-safe (token_urlsafe): a quote or backslash in it
+# would break curl's config parsing.
 AUTH_FILE="/home/marveen/marveen/store/.stage-basic-auth"
 lekeres() {
-  if [[ "$ALAP" == *staging* && -r "$AUTH_FILE" ]]; then
+  # Exact host match, https only: a substring test would hand the password to
+  # https://staging.anything.example or https://anything.example/staging.
+  if [[ "$ALAP" =~ ^https://(staging|partner-staging|shop-staging)\.acropora\.hu(/|:|$) && -r "$AUTH_FILE" ]]; then
     curl -s -m 20 -K <(printf 'user = "%s:%s"\n' "$(sed -n 1p "$AUTH_FILE")" "$(sed -n 2p "$AUTH_FILE")") "$1"
   else
     curl -s -m 20 "$1"
