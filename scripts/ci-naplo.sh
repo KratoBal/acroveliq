@@ -59,11 +59,11 @@
 set -uo pipefail
 ROOT=/home/marveen/marveen
 REPO="${PR_REPO:-KratoBal/acropora-os}"
-TOKEN_FILE="$ROOT/store/.github-token"
-[ -r "$TOKEN_FILE" ] || { echo "FAIL: nincs github token itt: $TOKEN_FILE" >&2; exit 1; }
+. "$(dirname "${BASH_SOURCE[0]}")/lib/github-token.sh"   # github_token <owner/repo> <role> (FLEET_GITHUB_APP)
 [ "$#" -ge 1 ] || { echo "HASZNALAT: ci-naplo.sh <PR-szam> | --sha <sha> | --job <id>" >&2; exit 2; }
 
-TOKEN="$(cat "$TOKEN_FILE")" REPO="$REPO" python3 - "$@" <<'PY'
+GH_TOK="$(github_token "$REPO" olvas)" || exit 1
+TOKEN="$GH_TOK" REPO="$REPO" python3 - "$@" <<'PY'
 import json, os, re, subprocess, sys, datetime, tempfile, time
 
 tok, repo = os.environ["TOKEN"], os.environ["REPO"]

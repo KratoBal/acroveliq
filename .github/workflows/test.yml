@@ -62,6 +62,8 @@ jobs:
       - run: python3 -B scripts/__tests__/fleet-secrets-matrix.test.py
       # D4 step 2: the GitHub App token broker, the guarded approver, the credential helper, the merge switch
       - run: python3 -B scripts/__tests__/fleet-github.test.py
+      # the owner token's retirement, PR 1: the github_token helpers and the guard on direct readers
+      - run: python3 -B scripts/__tests__/github-token.test.py
       # M-3: the daily permission-change watcher on that matrix (titok-jog-figyelo.py)
       - run: python3 -B scripts/__tests__/titok-jog-figyelo.test.py
       # D5: the fleet publishes no production OTA update, mobil-ota.sh only prints Balázs's line

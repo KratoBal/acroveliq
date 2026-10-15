@@ -45,14 +45,14 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TOKEN_FILE="$ROOT/store/.github-token"
-[ -r "$TOKEN_FILE" ] || { echo "FAIL: nincs github token: $TOKEN_FILE" >&2; exit 1; }
+. "$(dirname "${BASH_SOURCE[0]}")/lib/github-token.sh"   # github_token <owner/repo> <role> (FLEET_GITHUB_APP)
+GH_TOK="$(github_token KratoBal/acropora-os olvas)" || exit 1
 
-GH_TOKEN_FILE="$TOKEN_FILE" python3 - <<'PYEOF'
+GH_TOK="$GH_TOK" python3 - <<'PYEOF'
 import json, os, subprocess, urllib.error, urllib.request
 
 REPO = "KratoBal/acropora-os"
-TOK = open(os.environ["GH_TOKEN_FILE"]).read().strip()
+TOK = os.environ.pop("GH_TOK", "").strip()
 
 # name, health url  (a commerce szandekosan itt all, hogy a hianya LATSZODJON)
 TARGETS = [

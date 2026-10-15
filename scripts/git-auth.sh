@@ -27,6 +27,14 @@
 
 set -uo pipefail
 
+# FLEET_GITHUB_APP=on: the agent's git asks the credential helper (scripts/git-credential-fleet-github),
+# which gets a token for exactly the repository git talks to; this script adds no header and reads no
+# owner token (the owner token's retirement, PR 1, docs/fleet-github.md)
+if [ "${FLEET_GITHUB_APP:-off}" = on ]; then
+  [ $# -ge 1 ] || { echo "FAIL: adj meg git parancsot, pl.: git-auth.sh fetch origin" >&2; exit 1; }
+  exec git "$@"
+fi
+
 TOKEN_FILE="/home/marveen/marveen/store/.github-token"
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: nem olvashato: $TOKEN_FILE (sec-github csoport kell hozza)" >&2; exit 1; }
 [ $# -ge 1 ] || { echo "FAIL: adj meg git parancsot, pl.: git-auth.sh fetch origin" >&2; exit 1; }

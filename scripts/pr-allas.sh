@@ -49,10 +49,10 @@ if [ "$REPO" = "KratoBal/acropora-os" ]; then
 else
   OUT="$ROOT/docs/PR-ALLAS-${REPO##*/}.md"
 fi
-TOKEN_FILE="$ROOT/store/.github-token"
-[ -r "$TOKEN_FILE" ] || { echo "FAIL: no github token at $TOKEN_FILE" >&2; exit 1; }
+. "$(dirname "${BASH_SOURCE[0]}")/lib/github-token.sh"   # github_token <owner/repo> <role> (FLEET_GITHUB_APP)
 
-TOKEN="$(cat "$TOKEN_FILE")" REPO="$REPO" REPO_FORRAS="$REPO_FORRAS" python3 - "$OUT" <<'PY'
+GH_TOK="$(github_token "$REPO" olvas)" || exit 1
+TOKEN="$GH_TOK" REPO="$REPO" REPO_FORRAS="$REPO_FORRAS" python3 - "$OUT" <<'PY'
 import json, os, subprocess, sys
 out_path = sys.argv[1]
 tok, repo = os.environ["TOKEN"], os.environ["REPO"]
