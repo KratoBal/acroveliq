@@ -38,7 +38,7 @@ async function call(method: string, path: string, body: unknown, who: Auth): Pro
   return status
 }
 
-function pythonRead(db: string, task: string): any[] {
+function pythonRead(db: string, task: string): { items: any[]; latest: unknown } {
   const code = [
     'import importlib.util, json, sys',
     'spec = importlib.util.spec_from_file_location("fa", sys.argv[1])',
