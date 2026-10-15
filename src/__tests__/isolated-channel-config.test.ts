@@ -56,6 +56,14 @@ afterEach(() => {
 })
 
 describe('ensureIsolatedChannelConfigDir', () => {
+  // task kvota-kapu-bemenet: the provisioning writes the measurement statusLine for the MAIN agent only;
+  // a sub-agent's (with --export-usage, under its own name) comes from its project settings
+  it('SUB-NO-MAIN-STATUSLINE: a sub-agent\'s isolated settings.json does not get the main agent\'s statusLine', () => {
+    const dir = ensureIsolatedChannelConfigDir('murena', 'telegram')!
+    const settings = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf-8')) as { statusLine?: unknown }
+    expect(settings.statusLine, 'SUB-NO-MAIN-STATUSLINE').toBeUndefined()
+  })
+
   it('returns the per-agent .claude-config path', () => {
     const cfg = ensureIsolatedChannelConfigDir('testagent', 'telegram')
     expect(cfg).toBe(join(SANDBOX, 'agents', 'testagent', '.claude-config'))

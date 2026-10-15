@@ -49,6 +49,7 @@ import {
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE } from '../config.js'
+import { injectMeasureStatusLine } from './measure-statusline.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate } from './profiles.js'
@@ -752,6 +753,13 @@ function provisionIsolatedConfigDir(
     // content back. A torn write would fail the parse on the next start, the
     // code would fall back to the shared file, and that is precisely the
     // key-loss this commit fixes.
+    // The main agent's statusLine is the quota gate's only input (it writes store/quota-gate-sample.json
+    // as the router user). It used to be a hand-set target-only key, so a rebuilt or lost file came up
+    // without it and the gate went blind with no error (task kvota-kapu-bemenet, card 5edd4843). The
+    // provisioning writes it now, the same way the worker's is written (agent-worker.ts): a missing or
+    // older measurement line is set, a statusLine someone set on purpose is kept. No --export-usage:
+    // the router reads its own transcripts.
+    if (name === MAIN_AGENT_ID) injectMeasureStatusLine(settings, MAIN_AGENT_ID, false)
     writeJsonAtomic(ownSettingsPath, settings)
 
     // 3. Own plugins/ dir: symlink the heavy shared parts, own the install state.
