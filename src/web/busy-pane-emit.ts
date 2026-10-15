@@ -40,12 +40,35 @@ export const SEND_KEYS_CHUNK = 80
 const MAX_SLIDE = 8
 
 /**
- * The send-keys chunks of one line. tmux send-keys has no `--`, so a chunk starting with
- * '-' would parse as a flag ("unknown flag -s" on Hungarian suffixes like -szal): the
- * boundary slides past up to MAX_SLIDE dashes, and a chunk that still starts with one gets
- * a leading space. The same rule the idle path in sendPromptToSession applies.
+ * The piece that types one ';'. tmux (3.3a, measured 2026-10-15) takes an argument that ENDS in
+ * ';' as a command separator: `E;` types `E` (the ';' is lost), `A\;` types `A;`, a lone `\;`
+ * types `;`. A ';' inside an argument is typed as is. (fleet-pane.py applies the same rule.)
+ */
+export const SEND_KEYS_SEMICOLON = '\\;'
+
+/** What tmux types for these chunks: the inverse of splitForSendKeys (the escaped ';' pieces). */
+export function typedFromChunks(chunks: readonly string[]): string {
+  return chunks.map((c) => (c === SEND_KEYS_SEMICOLON ? ';' : c)).join('')
+}
+
+/**
+ * The send-keys chunks of one line, used by BOTH the idle path (sendPromptToSession) and the
+ * busy path. A chunk starting with '-' would parse as a flag ("unknown flag -s" on Hungarian
+ * suffixes like -szal): the boundary slides past up to MAX_SLIDE dashes, and a chunk that still
+ * starts with one gets a leading space. No chunk ends in ';' (tmux would drop it, see
+ * SEND_KEYS_SEMICOLON): trailing semicolons go as their own escaped pieces.
  */
 export function splitForSendKeys(oneLine: string, chunkSize = SEND_KEYS_CHUNK): string[] {
+  const out: string[] = []
+  for (const chunk of splitAtDashes(oneLine, chunkSize)) {
+    const body = chunk.replace(/;+$/, '')
+    if (body) out.push(body)
+    for (let k = body.length; k < chunk.length; k++) out.push(SEND_KEYS_SEMICOLON)
+  }
+  return out
+}
+
+function splitAtDashes(oneLine: string, chunkSize: number): string[] {
   const out: string[] = []
   let i = 0
   while (i < oneLine.length) {
@@ -138,7 +161,7 @@ export async function emitIntoBusyPane(oneLine: string, io: BusyPaneIo, cfg: Bus
     const refusal = liveInputRefusal(io.capture())
     if (refusal) return notLanded('chunk', refusal, i + 1)
     io.typeChunk(chunks[i]!)
-    typed += chunks[i]!
+    typed += typedFromChunks([chunks[i]!])
     if (i < chunks.length - 1) await io.delay(cfg.chunkGapMs)
   }
   const head = payloadHead(oneLine)
