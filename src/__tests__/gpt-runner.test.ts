@@ -958,7 +958,7 @@ case "$4" in
   GPTF-TOVABB) printf -- '-N GPTF-TOVABB\\n-A GPTF-TOVABB -i gptki0 -j GPTF-PRIVAT\\n-A GPTF-TOVABB -o gptki0 -j GPTF-BE\\n'; [ -f "${dir}/accept-nincs" ] || printf -- '-A GPTF-TOVABB -s 10.0.2.4/32 -d 10.0.5.10/32 -o gptki0 -p tcp -m tcp --dport 8790 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT\\n-A GPTF-TOVABB -s 10.0.5.10/32 -d 10.0.2.4/32 -i gptki0 -p tcp -m tcp --sport 8790 -m conntrack --ctstate ESTABLISHED -j ACCEPT\\n' ;;
 esac
 `, { mode: 0o755 })
-    writeFileSync(join(bin, 'systemctl'), `#!/bin/bash\n${log}\n[ "$1" = is-enabled ] && [ -f "${dir}/aktivalva" ] && exit 0\nexit 1\n`, { mode: 0o755 })
+    writeFileSync(join(bin, 'systemctl'), `#!/bin/bash\n${log}\n[ "$1" = is-enabled ] && [ -f "${dir}/aktivalva" ] && exit 0\n[ "$1" = is-active ] && [ -f "${dir}/fut" ] && exit 0\nexit 1\n`, { mode: 0o755 })
     writeFileSync(join(bin, 'timeout'), `#!/bin/bash
 ${log}
 t="$4"; t="\${t#*/dev/tcp/}"; t="\${t%% *}"; hp="\${t%/*}:\${t##*/}"
@@ -1001,14 +1001,16 @@ grep -qxF "$hp" "${dir}/nyitott"
     expect([c[c.length - 2], c[c.length - 1], /^a gpt-szolga allapota a leallitas utan: exited$/m.test(r.stdout)]).toEqual(['docker compose --profile szolga stop gpt-szolga', expect.stringMatching(/^docker inspect -f .* gpt-szolga$/), true])
   }))
 
-  it('CSAT-ACTIVE: after the activation (gpt-szolga.service enabled) the measurement STOPs at once and touches neither the service nor anything else', () => {
-    const dir = setup({})
-    writeFileSync(join(dir, 'aktivalva'), '')
-    try {
-      const r = go(dir)
-      const c = calls(dir)
-      expect([r.status, r.stdout.includes('STOP: a gpt-szolga.service engedelyezve (aktivalva)'), c.filter((x) => !x.startsWith('systemctl is-enabled'))]).toEqual([1, true, []])
-    } finally { rmSync(dir, { recursive: true, force: true }) }
+  it('CSAT-ACTIVE: gpt-szolga.service enabled, or started by hand without enable: the measurement STOPs at once and touches neither the service nor anything else', () => {
+    for (const file of ['aktivalva', 'fut']) {
+      const dir = setup({})
+      writeFileSync(join(dir, file), '')
+      try {
+        const r = go(dir)
+        const c = calls(dir)
+        expect([file, r.status, r.stdout.includes('STOP: a gpt-szolga.service engedelyezve vagy fut'), c.filter((x) => !/^systemctl is-(enabled|active) /.test(x))]).toEqual([file, 1, true, []])
+      } finally { rmSync(dir, { recursive: true, force: true }) }
+    }
   })
 
   it('CSAT-REORDER: Docker puts its rules above ours (the probe\'s down/up, the service\'s start): the script ORDERS (tuzfal.sh) and only then checks; no STOP, and the measurement runs after the order', () => run({}, (dir, r) => {
@@ -1117,7 +1119,8 @@ describe('gpt-runner activation on the host (host/aktivalas.sh, host/gpt-szolga.
     writeFileSync(join(dir, 'forras'), o.forras ?? '192.168.250.2')
     writeFileSync(join(dir, 'opt', 'tuzfal.sh'), `echo tuzfal >> "${dir}/calls"\n`)
     const log = `echo "$(basename "$0") $*" >> "${dir}/calls"`
-    writeFileSync(join(bin, 'docker'), `#!/bin/bash\n${log}\ncase "$1 $2" in\n  "compose run") exit 0 ;;\n  "logs gpt-szolga") echo "SZOLGA figyel 10.0.5.10:8790" ;;\n  "exec marveen") cat "${dir}/forras"; echo ;;\n  "inspect -f") if [ -f "${dir}/restart-szabaly" ]; then cat "${dir}/restart-szabaly"; else echo no; fi ;;\nesac\nexit 0\n`, { mode: 0o755 })
+    // exec answers the forras file line by line (the last line repeats); inspect: Running or the restart policy
+    writeFileSync(join(bin, 'docker'), `#!/bin/bash\n${log}\ncase "$1 $2" in\n  "compose run") exit 0 ;;\n  "logs --since") echo "SZOLGA figyel 10.0.5.10:8790" ;;\n  "exec marveen") f="${dir}/forras"; head -1 "$f"; [ "$(grep -c '' "$f")" -gt 1 ] && sed -i 1d "$f"; true ;;\n  "inspect -f") case "$3" in *State.Running*) echo true ;; *) if [ -f "${dir}/restart-szabaly" ]; then cat "${dir}/restart-szabaly"; else echo no; fi ;; esac ;;\nesac\nexit 0\n`, { mode: 0o755 })
     writeFileSync(join(bin, 'systemctl'), `#!/bin/bash\n${log}\ncase "$1" in\n  is-active) [ "$2" = --quiet ] && n="$3" || n="$2"; [ -f "${dir}/inaktiv-$n" ] && exit 3; echo active ;;\n  is-enabled) echo enabled ;;\nesac\nexit 0\n`, { mode: 0o755 })
     writeFileSync(join(bin, 'install'), `#!/bin/bash\n${log}\ncp "\${@: -2:1}" "\${@: -1}"\n`, { mode: 0o755 })
     if (o.inaktiv) writeFileSync(join(dir, `inaktiv-${o.inaktiv}`), '')
@@ -1141,6 +1144,18 @@ describe('gpt-runner activation on the host (host/aktivalas.sh, host/gpt-szolga.
     expect([r.status, en > 0, en < order2, order2 < measure, existsSync(join(dir, 'units', 'gpt-szolga.service'))]).toEqual([0, true, true, true, true])
     for (const l of ['DEBATE_GPT_RUNNER_ENABLED=on', 'DEBATE_GPT_RUNNER_URL=http://192.168.250.1:8790', 'a kontener ujrainditasi szabalya: no']) expect([l, r.stdout.includes(l)]).toEqual([l, true])
     expect([r.stdout.includes(TOKEN), c.some((x) => /supervisorctl/.test(x))]).toEqual([false, false])
+  }))
+
+  it('AKT-FRESH-START: the old container is removed BEFORE the enable, and only log lines since this start count (the 08:47 UTC run passed on an old line)', () => run({}, (dir, r) => {
+    const c = calls(dir)
+    const rm = c.findIndex((x) => x === 'docker compose --profile szolga rm -sf gpt-szolga')
+    const en = c.indexOf('systemctl enable --now gpt-szolga.service')
+    const logs = c.filter((x) => x.startsWith('docker logs'))
+    expect([r.status, rm >= 0 && rm < en, logs.length > 0 && logs.every((x) => /^docker logs --since \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ gpt-szolga$/.test(x)), c.some((x) => x.includes('{{.State.Running}}'))]).toEqual([0, true, true, true])
+  }))
+
+  it('AKT-RETRY: a connection error right after the start is retried; the right source then passes', () => run({ forras: 'HIBA fetch failed\nHIBA fetch failed\n192.168.250.2' }, (dir, r) => {
+    expect([r.status, calls(dir).filter((x) => x.startsWith('docker exec marveen')).length, r.stdout.includes('a szolgaltatas ezt latta: 192.168.250.2')]).toEqual([0, 3, true])
   }))
 
   it('AKT-TOKEN: the fleet token does not match the runner\'s hash: STOP before anything is enabled, the token never printed', () => run({ hash: 'a'.repeat(64) }, (dir, r) => {

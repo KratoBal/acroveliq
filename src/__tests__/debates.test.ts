@@ -205,6 +205,15 @@ describe('GPT runs (the multi-model plan\'s PR 2)', () => {
     expect([gpt, posts.some((p) => p.text.includes('Balázs 1. üzenete titok-alakot')), posts.some((p) => p.text.includes('GPT válasz'))], 'DEB-BLOCKED').toEqual([['blocked', 'answered'], true, true])
   })
 
+  it('DEB-FOREIGN-ERROR: an error that is not one of ours never puts its own text into the thread, even with a publicMessage field', async () => {
+    const id = await start('vita os gpt: kérdés', true)
+    const odd = Object.assign(new Error('belso'), { publicMessage: 'IDEGEN SZOVEG A SZALBA' })
+    const d: DebateDeps = { ...deps(true), runGpt: async () => { throw odd } }
+    await handleOwnerMessage(db(), d, cfg, THREAD, { id: 'f1', content: 'gpt: kérdés' }, OWNER)
+    const gpt = debateTurns(db(), id).filter((t) => t.speaker === 'gpt').map((t) => [t.status, t.text])
+    expect([posts.some((p) => p.text.includes('IDEGEN SZOVEG')), posts.some((p) => /futtató hibát adott/.test(p.text)), gpt], 'DEB-FOREIGN-ERROR').toEqual([false, true, [['failed', 'a futtató hibát adott']]])
+  })
+
   it('DEB-DEFER: with GPT in the debate, the hand-in is answered once Acrobot\'s text is posted; GPT runs after, in the background', async () => {
     const id = await start('vita os gpt: kérdés', true)
     const queued: (() => Promise<void>)[] = []
