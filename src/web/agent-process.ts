@@ -58,6 +58,7 @@ import { resolveAgentSecurityProfile } from './agent-team.js'
 import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureSkillsPathTrapSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { clearAbandonedPrompt, recordAbandonedPrompt, recordInjectedPrompt } from './injected-prompt-registry.js'
+import { agentOfSession, brokerArgsForTmux, brokerInvocation, callBroker, callBrokerSync, deliverOutcome, fleetPaneBrokerOn, LEGACY } from './fleet-pane.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
@@ -1163,7 +1164,41 @@ export function tmuxInvocationFor(tmuxArgs: string[], target: string | null | Tm
   // call (idempotent, ~free). Without this a watcher-first remote call after a
   // marveen restart would lose connection multiplexing and re-handshake each tick.
   if (host) ensureControlDir()
+  // B48 (2): with the broker on, an agent under its own user is reached ONLY through a broker
+  // verb; a shape with no verb is refused here, never sent down the old sudo line (fleet-pane.ts)
+  if (host == null && runAsUser && fleetPaneBrokerOn()) {
+    const agent = agentForTmuxCall(tmuxArgs, runAsUser)
+    const verb = agent ? brokerArgsForTmux(tmuxArgs, agent) : null
+    if (verb === null) throw new Error(`fleet-pane: no broker verb for tmux ${tmuxArgs[0] ?? ''} (refused)`)
+    if (verb !== LEGACY) return brokerInvocation(verb)
+  }
   return buildTmuxInvocation(host, tmuxBin(), tmuxArgs, 'tmux', runAsUser ?? null)
+}
+
+/** The agent a tmux call aims at: from its -t/-s session, or (list-sessions) the one session of that user. */
+function agentForTmuxCall(tmuxArgs: string[], runAsUser: string): string | null {
+  for (let i = 0; i < tmuxArgs.length - 1; i++) {
+    if (tmuxArgs[i] === '-t' || tmuxArgs[i] === '-s') return agentOfSession(tmuxArgs[i + 1]!.split(':')[0]!)
+  }
+  const sessions = [...sessionRunAsUserMap()].filter(([, u]) => u === runAsUser).map(([s]) => s)
+  return sessions.length === 1 ? agentOfSession(sessions[0]!) : null
+}
+
+/** The agent name when this session's keys must go through the broker (on, local, own user), else null. */
+export function brokerAgentFor(session: string, host: string | null = null): string | null {
+  if (host != null || !fleetPaneBrokerOn()) return null
+  return sessionRunAsUserMap().has(session) ? agentOfSession(session) : null
+}
+
+/** A dialog's keys: from the broker when it is on (it matches the dialog itself), else `keys`. */
+async function dialogKeys(session: string, host: string | null, kind: string, keys: () => Promise<void> | void): Promise<void> {
+  const agent = brokerAgentFor(session, host)
+  if (!agent) {
+    await keys()
+    return
+  }
+  const r = await callBroker(['dismiss', agent, kind])
+  if (r.code !== 0) throw new Error(`fleet-pane dismiss ${kind}: ${r.out || r.code}`)
 }
 
 // True when this tmux call has to be routed through another OS user or host --
@@ -1971,7 +2006,7 @@ async function dismissSurveyModalIfPresent(session: string, host: string | null 
   try {
     const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
     if (!SURVEY_MODAL_RX.test(pane)) return
-    runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 })
+    await dialogKeys(session, host, 'survey', () => runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 }))
     // Modal close is one frame; settle window so the next send-keys lands in
     // the prompt input, not the now-stale modal handler.
     await delay(300)
@@ -1993,9 +2028,11 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
   try {
     const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
     if (!RESUME_SUMMARY_MODAL_RX.test(pane)) return
-    runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
-    await delay(100)
-    runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    await dialogKeys(session, host, 'resume-summary', async () => {
+      runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
+      await delay(100)
+      runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    })
     // /compact starts immediately and can run for minutes; we only need to
     // unblock the modal so detectPaneState can transition off 'unknown'.
     await delay(300)
@@ -2050,13 +2087,16 @@ export async function dismissFeedbackDraftModalIfPresent(session: string, host: 
   try {
     const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
     if (!detectsFeedbackDraftModal(pane)) return
-    runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 })
-    await delay(300)
-    const after = captureTmux(host, ['capture-pane', '-t', session, '-p'])
-    if (detectsFeedbackOptOutPrompt(after)) {
-      runTmux(host, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
+    // the broker's feedback-draft answer includes the opt-out offer's Esc (keep)
+    await dialogKeys(session, host, 'feedback-draft', async () => {
+      runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 })
       await delay(300)
-    }
+      const after = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+      if (detectsFeedbackOptOutPrompt(after)) {
+        runTmux(host, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
+        await delay(300)
+      }
+    })
     logger.info({ session }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
   } catch (err) {
     logger.warn({ err, session }, 'Failed to probe/dismiss feedback-draft modal')
@@ -2078,9 +2118,11 @@ export async function dismissModelConsentDialogIfPresent(session: string, host: 
   try {
     const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
     if (!detectsModelConsentDialog(pane)) return
-    runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
-    await delay(150)
-    runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    await dialogKeys(session, host, 'model-consent', async () => {
+      runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
+      await delay(150)
+      runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    })
     await delay(300)
     logger.info({ session }, 'Answered model usage-credit consent dialog: kept the configured model (option 1, never the switch default)')
   } catch (err) {
@@ -2119,18 +2161,20 @@ export async function answerFirstRunGates(
     if (gate == null) return acted ? 'cleared' : 'unchanged'
     if (gate === 'login') return 'login'
     try {
-      if (gate === 'trust') {
-        runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
-        await delay(150)
-        runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
-      } else if (gate === 'bypass-permissions') {
-        runTmux(host, ['send-keys', '-t', session, '2'], { timeout: 5000 })
-        await delay(150)
-        runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
-      } else {
-        // theme / welcome: Enter accepts the highlighted default and moves on.
-        runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
-      }
+      await dialogKeys(session, host, gate === 'bypass-permissions' ? 'bypass' : gate, async () => {
+        if (gate === 'trust') {
+          runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
+          await delay(150)
+          runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+        } else if (gate === 'bypass-permissions') {
+          runTmux(host, ['send-keys', '-t', session, '2'], { timeout: 5000 })
+          await delay(150)
+          runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+        } else {
+          // theme / welcome: Enter accepts the highlighted default and moves on.
+          runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+        }
+      })
     } catch (err) {
       logger.warn({ err, session, gate }, 'first-run gate: answer keystroke failed')
       return acted ? 'cleared' : 'unchanged'
@@ -2267,6 +2311,8 @@ export async function waitForPaneIdle(
 // A caller about to type a message again must not do it on false: a copy typed on top of text
 // that did not clear is how one message stood in a box about fourteen times (acrobot 31076).
 export async function clearInputBuffer(session: string, host: string | null = null): Promise<boolean> {
+  const brokerAgent = brokerAgentFor(session, host)
+  if (brokerAgent) return brokerClear(brokerAgent, session)
   try {
     const pane = capturePane(session, host)
     for (const key of parkedClearSequence(pane != null ? parkedInputRowCount(pane) : 0)) {
@@ -2304,6 +2350,8 @@ const PLACEHOLDER_DISCARD_SETTLE_MS = 450
 // press and stop the instant the placeholder is gone, so we never press Ctrl-C
 // into an already-empty box. Returns true if the placeholder was cleared.
 async function discardPlaceholderBuffer(session: string, host: string | null = null): Promise<boolean> {
+  const brokerAgent = brokerAgentFor(session, host)
+  if (brokerAgent) return brokerClear(brokerAgent, session)
   for (let i = 0; i < PLACEHOLDER_DISCARD_MAX; i++) {
     const pane = capturePane(session, host)
     // Stop pressing once the stub is gone -- a further Ctrl-C on an empty box
@@ -2346,6 +2394,8 @@ export async function sendPromptToSession(
   host: string | null = null,
   opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode; busyTarget?: boolean; onBusyReport?: (r: BusyPaneReport) => void } = {},
 ): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'not-landed'> {
+  const brokerAgent = brokerAgentFor(session, host)
+  if (brokerAgent) return sendPromptViaBroker(brokerAgent, session, text, host, opts)
   const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
   // PANEWRITERS805: the three modal dismissals are probe+act keystroke writers
   // that ran BEFORE the lane lock -- so they could press Escape/Enter into a
@@ -2581,6 +2631,59 @@ export async function sendPromptToSession(
   return lockResult.value ?? 'sent'
 }
 
+/** The broker's clear; true when the box is empty afterwards (or already was). */
+async function brokerClear(agent: string, session: string): Promise<boolean> {
+  const r = await callBroker(['clear', agent])
+  if (r.code !== 0 && r.out !== 'box-empty') logger.warn({ session, code: r.code, why: r.out }, 'fleet-pane clear: refused or not emptied')
+  return r.code === 0 || r.out === 'box-empty'
+}
+
+/**
+ * sendPromptToSession for an agent behind the broker (B48 (2)). The router's own look is not the
+ * gate any more: the broker looks before every key and refuses instead of sending best-effort
+ * (plan 4.3 #7: no "send anyway" after the idle budget). The router's dialog answers go through
+ * the broker's dismiss; the lane lock and the stuck-input records stay as on the direct path.
+ */
+async function sendPromptViaBroker(
+  agent: string,
+  session: string,
+  text: string,
+  host: string | null,
+  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode; busyTarget?: boolean; onBusyReport?: (r: BusyPaneReport) => void },
+): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'not-landed'> {
+  const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
+  await dismissSurveyModalIfPresent(session, host)
+  await dismissResumeSummaryModalIfPresent(session, host)
+  await dismissModelConsentDialogIfPresent(session, host)
+  await dismissFeedbackDraftModalIfPresent(session, host)
+  if (!opts.busyTarget && opts.waitForIdle !== false && !(await waitForPaneIdle(session, host, opts.idleTimeoutMs)) && opts.onBusyTimeout === 'abort') {
+    return 'aborted-busy'
+  }
+  const line = typedLine(text)
+  const emit = async (): Promise<'sent' | 'not-landed' | 'aborted-busy'> => {
+    if (!opts.busyTarget) recordInjectedPrompt(session, line)
+    let r = await callBroker(['deliver', agent, ...(opts.busyTarget ? ['--queued'] : [])], line)
+    // a caller that does not wait for idle (forceSend, the wake-ups) relied on Claude Code
+    // queueing into a running turn: the broker's queued path, with its own looks
+    if (!opts.busyTarget && opts.waitForIdle === false && r.code === 10 && /^busy/.test(r.out)) {
+      r = await callBroker(['deliver', agent, '--queued'], line)
+    }
+    const outcome = deliverOutcome(r)
+    if (opts.busyTarget) {
+      if (outcome === 'sent') clearAbandonedPrompt(session)
+      // typed but not landed into a running turn: the stuck-input recovery clears it, never submits
+      else if (r.code === 11) recordAbandonedPrompt(session, line)
+      opts.onBusyReport?.({ result: outcome === 'sent' ? 'sent' : 'not-landed', reason: outcome === 'sent' ? undefined : `fleet-pane:${r.out || r.code}`, chunks: 0, retries: 0 })
+    }
+    if (outcome !== 'sent') logger.info({ session, code: r.code, why: r.out }, 'sendPromptToSession: the broker did not deliver; the caller keeps the message')
+    return outcome
+  }
+  if (lockMode === 'held') return emit()
+  const lockResult = await withSessionSendLock(session, host, lockMode, emit)
+  if (!lockResult.ran) return 'skipped-locked'
+  return lockResult.value ?? 'not-landed'
+}
+
 /**
  * May a message be typed into this session's BUSY pane, for Claude Code to queue
  * (paneAcceptsQueuedPrompt)? Two captures PANE_READY_CONFIRM_DELAY_MS apart must both say
@@ -2621,6 +2724,13 @@ const PANE_READY_CONFIRM_DELAY_MS = 250
 // the text, so the post-send retry budget never ran). Best-effort: a
 // tmux failure is logged and swallowed so the watcher loop keeps going.
 export function sendEnterToSession(session: string, host: string | null = null): boolean {
+  const brokerAgent = brokerAgentFor(session, host)
+  if (brokerAgent) {
+    // the broker presses it only on a parked box with no dialog and no running turn
+    const r = callBrokerSync(['submit', brokerAgent])
+    if (r.code !== 0) logger.warn({ session, code: r.code, why: r.out }, 'sendEnterToSession: the broker refused the Enter')
+    return r.code === 0
+  }
   try {
     runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
     return true
@@ -2870,13 +2980,18 @@ export async function clearStaleParkedInput(session: string, host: string | null
   // single C-a + C-k escalation could only ever strip ONE line off a multi-line
   // box. Re-check every few keystrokes so a box that empties early stops
   // immediately instead of spending the whole budget.
-  const sequence = parkedClearSequence(parkedInputRowCount(a))
-  for (let i = 0; i < sequence.length; i++) {
-    runTmux(host, ['send-keys', '-t', session, sequence[i]], { timeout: 5000 })
-    if (i % PARKED_CLEAR_RECHECK_EVERY === PARKED_CLEAR_RECHECK_EVERY - 1) {
-      await delay(PARKED_CLEAR_SETTLE_MS)
-      const after = capturePane(session, host)
-      if (after == null || detectPaneState(after) !== 'typing') break
+  const brokerAgent = brokerAgentFor(session, host)
+  if (brokerAgent) {
+    await brokerClear(brokerAgent, session)
+  } else {
+    const sequence = parkedClearSequence(parkedInputRowCount(a))
+    for (let i = 0; i < sequence.length; i++) {
+      runTmux(host, ['send-keys', '-t', session, sequence[i]], { timeout: 5000 })
+      if (i % PARKED_CLEAR_RECHECK_EVERY === PARKED_CLEAR_RECHECK_EVERY - 1) {
+        await delay(PARKED_CLEAR_SETTLE_MS)
+        const after = capturePane(session, host)
+        if (after == null || detectPaneState(after) !== 'typing') break
+      }
     }
   }
   await delay(PARKED_CLEAR_SETTLE_MS)

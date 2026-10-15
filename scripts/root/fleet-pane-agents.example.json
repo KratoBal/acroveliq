@@ -1,0 +1,6 @@
+{
+  "agents": {
+    "barracuda": { "user": "agent-barracuda", "workdir": "/home/marveen/marveen/agents/barracuda" },
+    "murena": { "user": "agent-murena", "workdir": "/home/marveen/marveen/agents/murena" }
+  }
+}
