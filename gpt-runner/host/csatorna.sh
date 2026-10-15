@@ -196,7 +196,7 @@ masik() { docker run --rm --network "$NET" --user 10002:10002 --cap-drop ALL --r
 k1=$(masik "$VEZ" 3420); n1=$(masik "$KOZZ" "$PORT"); n2=$(masik "$SZOLGA" "$PORT")
 echo "kontroll: a flotta sajat portja ($VEZ:3420): $k1"
 echo "a kozzetett port ($KOZZ:$PORT): $n1"
-echo "a szolgaltatas cime ($SZOLGA:$PORT): $n2"
+echo "a szolgaltatas cime ($SZOLGA:$PORT): $n2 (ezt a Docker sajat raw-orzoje is zarja: NEM a mi GPTF-BE-nket bizonyitja, azt a kozzetett port sora meri)"
 [ "$k1" = NYITOTT ] || stop "a kontroll sem ert el semmit a masik kontenerbol: a negativ eredmeny igy nem bizonyit"
 [[ "$n1" == ZART* && "$n2" == ZART* ]] || stop "egy masik kontener a flotta-halon eleri a futtato szolgaltatasat"
 echo "== negativ kontroll: maga a gep"

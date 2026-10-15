@@ -291,6 +291,8 @@ describe('gpt-runner host firewall (host/tuzfal.sh) against a stateful fake ipta
   // chain is never flushed)
   const FAKE = `#!/bin/bash
 S="$FAKE_STATE"; touch "$S"
+# each call is atomic, like iptables -w (the xtables lock): a race can only be BETWEEN calls
+exec 8>"$S.xlock"; flock 8
 w=""; if [ "$1" = "-w" ]; then w="W "; shift 2; fi
 echo "$w$*" >> "$S.calls"
 # -t nat: its chains are stored as nat:<chain>; -S prints the plain name, like iptables
@@ -319,7 +321,7 @@ esac
   const fw = (dir: string) => spawnSync('bash', [join(__dirname, '..', '..', 'gpt-runner', 'host', 'tuzfal.sh')], {
     env: {
       PATH: `${dir}:/usr/bin:/bin`, FAKE_STATE: join(dir, 'state'), IPTABLES: join(dir, 'iptables'),
-      GPT_FUTTATO_ENV: join(dir, 'env'), GPT_FUTTATO_ALLAPOT_DIR: join(dir, 'allapot'),
+      GPT_FUTTATO_ENV: join(dir, 'env'), GPT_FUTTATO_ALLAPOT_DIR: join(dir, 'allapot'), GPT_FUTTATO_ZAR: join(dir, 'tuzfal.lock'),
     },
     encoding: 'utf8', timeout: 20_000,
   })
@@ -388,6 +390,30 @@ esac
       expect(c.findIndex((x) => /^W -I INPUT 1 -i gptki0 -j GPTF-GEP$/.test(x)) < c.findIndex((x) => /^W -D INPUT /.test(x))).toBe(true)
       expect(chain(dir, 'INPUT')).toEqual(['-i gptki0 -j GPTF-GEP', '-j ufw-before-input'])
     }))
+
+  it('FW-ONE-AT-A-TIME: two runs at the same moment (the timer and csatorna.sh after a Docker re-order) leave exactly one jump first and full chains (barracuda, #161)', async () => {
+    const { spawn } = await import('node:child_process')
+    const runAsync = (dir: string) => new Promise<number>((res) => {
+      const ch = spawn('bash', [join(__dirname, '..', '..', 'gpt-runner', 'host', 'tuzfal.sh')], {
+        env: { PATH: `${dir}:/usr/bin:/bin`, FAKE_STATE: join(dir, 'state'), IPTABLES: join(dir, 'iptables'), GPT_FUTTATO_ENV: join(dir, 'env'), GPT_FUTTATO_ALLAPOT_DIR: join(dir, 'allapot'), GPT_FUTTATO_ZAR: join(dir, 'tuzfal.lock') },
+        stdio: 'ignore',
+      })
+      ch.on('close', (code) => res(code ?? -1))
+    })
+    // a Docker re-order: Docker's rules ABOVE our jumps, the private chain in its old form
+    const start = `R|INPUT|-j ufw-before-input\nR|INPUT|-i gptki0 -j GPTF-GEP\nR|DOCKER-USER|-j DOCKER-X\nR|DOCKER-USER|-j GPTF-TOVABB\nN|GPTF-PRIVAT\n${['10.0.0.0/8', '172.16.0.0/12'].map((r) => `R|GPTF-PRIVAT|-d ${r} -j DROP`).join('\n')}\n`
+    const bad: string[] = []
+    for (let round = 0; round < 8; round++) {
+      const dir = setup(start)
+      try {
+        const codes = await Promise.all([runAsync(dir), runAsync(dir)])
+        const got = JSON.stringify([codes, chain(dir, 'INPUT'), chain(dir, 'DOCKER-USER'), chain(dir, 'GPTF-PRIVAT')])
+        const want = JSON.stringify([[0, 0], ['-i gptki0 -j GPTF-GEP', '-j ufw-before-input'], ['-j GPTF-TOVABB', '-j DOCKER-X'], PRIVATE])
+        if (got !== want) bad.push(got)
+      } finally { rmSync(dir, { recursive: true, force: true }) }
+    }
+    expect(bad).toEqual([])
+  }, 120_000)
 
   it('FW-LOCK-WAIT: every iptables call of the script waits for the xtables lock (-w)', () => run('', (dir) => {
     fw(dir)
