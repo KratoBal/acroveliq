@@ -54,6 +54,8 @@ jobs:
       - run: python3 -B scripts/__tests__/b45-jogellenorzo-napi.test.py
       # P0-1 L4: the daily access preflight wrapper
       - run: python3 -B scripts/__tests__/access-preflight-napi.test.py
+      # P1-00f point 1: gcal.sh prints a mail sender's text only inside an untrusted envelope
+      - run: python3 -B scripts/__tests__/gcal-untrusted.test.py
       # reviewer-profil: the git reader (a trapped repo runs nothing through it; script(1)
       # gives git a terminal for the pager trap), the packet reader and the verdict writer.
       - run: bash scripts/__tests__/git-olvas.test.sh
