@@ -9,9 +9,11 @@
 //   - typing goes through the broker's own verbs (deliver, dismiss, clear, submit, interrupt),
 //     called by the router's typing functions (agent-process.ts), and the broker looks at the
 //     pane before every key: the router's look is no longer the gate;
-//   - any other tmux shape (raw send-keys, run-shell, ...) has NO verb and is refused here,
-//     loudly: an unknown call must not fall back to the old sudo line;
-//   - new-session (start) stays on the old line until the second PR (the generated start scripts).
+//   - a start goes through `generate` (the broker rewrites the agent's root-owned start script
+//     from root's files and value-set-checked config fields) and `start` (that script, with one
+//     item of the closed launch list): brokerStartAgent below, called by startAgentProcess;
+//   - any other tmux shape (raw send-keys, run-shell, new-session, ...) has NO verb and is refused
+//     here, loudly: an unknown call must not fall back to the old sudo line.
 // The switch goes on only after the broker is installed (Balázs's step), on the stage first.
 import { execFile, execFileSync } from 'node:child_process'
 import { FLEET_PANE_BROKER } from '../config.js'
@@ -33,20 +35,17 @@ export function agentOfSession(session: string): string | null {
   return m ? m[1]! : null
 }
 
-/** A tmux call that stays on the old sudo line in this PR (start: the second PR). */
-export const LEGACY = 'legacy' as const
-
 /**
- * The broker verb for a tmux call aimed at `agent`, LEGACY for start, or null when the shape
- * has no verb (refused). Only the exact shapes the router uses are known; anything else is null.
+ * The broker verb for a tmux call aimed at `agent`, or null when the shape has no verb (refused).
+ * Only the exact read and lifecycle shapes the router uses are known; anything else is null. A
+ * new-session is null too: the router's command string must never reach the broker, a start is
+ * brokerStartAgent.
  */
-export function brokerArgsForTmux(tmuxArgs: readonly string[], agent: string): string[] | typeof LEGACY | null {
+export function brokerArgsForTmux(tmuxArgs: readonly string[], agent: string): string[] | null {
   const a = [...tmuxArgs]
   const session = `agent-${agent}`
   const targets = (i: number) => a[i] === '-t' && a[i + 1] === session
   switch (a[0]) {
-    case 'new-session':
-      return LEGACY
     case 'has-session':
       return a.length === 3 && targets(1) ? ['status', agent] : null
     case 'list-sessions':
@@ -122,6 +121,20 @@ export function callBrokerSync(verbArgs: readonly string[]): BrokerResult {
     const status = (err as { status?: unknown }).status
     return { code: typeof status === 'number' ? status : -1, out: String((err as { stdout?: unknown }).stdout ?? '').trim() }
   }
+}
+
+/**
+ * Start an agent through the broker: `generate` rewrites its start script, `start` runs it.
+ * `launch` is the closed list (nautilus 31151): [] | ['--continue'] | ['--session-id', <uuid>];
+ * the broker checks it again. A refusal names the broker's reason (model-not-allowed,
+ * profile-mismatch, claude-bin-..., running) and nothing was started.
+ */
+export async function brokerStartAgent(agent: string, launch: readonly string[]): Promise<{ ok: boolean; error?: string }> {
+  const gen = await callBroker(['generate', agent], undefined, 30_000)
+  if (gen.code !== 0) return { ok: false, error: `fleet-pane generate refused: ${gen.out || gen.code}` }
+  const st = await callBroker(['start', agent, ...launch], undefined, 30_000)
+  if (st.code !== 0) return { ok: false, error: `fleet-pane start refused: ${st.out || st.code}` }
+  return { ok: true }
 }
 
 /** The broker's deliver limit (scripts/root/fleet-pane.py MAX_TEXT), and its piece size. */

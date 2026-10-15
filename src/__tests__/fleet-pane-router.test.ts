@@ -9,7 +9,10 @@
 //     (another session, a longer history, an extra flag);
 //   - the message text reaches the broker anywhere but its stdin, or the broker's refusal
 //     reads as delivered;
-//   - with the switch OFF (the default), anything changes: the old path, unchanged.
+//   - with the switch OFF (the default), anything changes: the old path, unchanged;
+//   - a new-session (the router's command string) reaches the broker or the old line with the
+//     switch on; a start skips `generate`, starts after a refused generate, or passes anything
+//     but the closed launch list; a broker-started agent still gets a typed `/name`.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 
@@ -53,11 +56,12 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
   return { ...orig, listAgentNames: () => ['proba'], readAgentRunAsUser: (n: string) => (n === 'proba' ? 'agent-proba' : null) }
 })
 
-import { brokerArgsForTmux, LEGACY, _setFleetPaneBrokerForTest, FLEET_PANE_BIN, deliverOutcome, deliverTimeoutMs, DELIVER_MAX_CHARS } from '../web/fleet-pane.js'
+import { brokerArgsForTmux, brokerStartAgent, _setFleetPaneBrokerForTest, FLEET_PANE_BIN, deliverOutcome, deliverTimeoutMs, DELIVER_MAX_CHARS } from '../web/fleet-pane.js'
 import { readFileSync } from 'node:fs'
+import { logger } from '../logger.js'
 import { join } from 'node:path'
 import { FLEET_PANE_BROKER } from '../config.js'
-import { tmuxInvocationFor, sendPromptToSession, sendEnterToSession, clearInputBuffer, dismissResumeSummaryModalIfPresent } from '../web/agent-process.js'
+import { tmuxInvocationFor, sendPromptToSession, sendEnterToSession, clearInputBuffer, dismissResumeSummaryModalIfPresent, scheduleIdentitySetup } from '../web/agent-process.js'
 import { getAbandonedPrompt, _resetInjectedPromptsForTest } from '../web/injected-prompt-registry.js'
 
 const S = 'agent-proba'
@@ -77,7 +81,7 @@ beforeEach(() => {
 afterEach(() => _setFleetPaneBrokerForTest(null))
 
 describe('the translation (brokerArgsForTmux)', () => {
-  it('FP-TRANSLATE: every read and lifecycle shape the router uses has its exact verb; start stays legacy', () => {
+  it('FP-TRANSLATE: every read and lifecycle shape the router uses has its exact verb; a new-session has none', () => {
     expect([
       brokerArgsForTmux(['has-session', '-t', S], 'proba'),
       brokerArgsForTmux(['list-sessions', '-F', '#{session_name}'], 'proba'),
@@ -89,7 +93,7 @@ describe('the translation (brokerArgsForTmux)', () => {
       brokerArgsForTmux(['new-session', '-d', '-s', S, '-x', '200', '-y', '24', 'claude'], 'proba'),
     ]).toEqual([
       ['status', 'proba'], ['status', 'proba'], ['status', 'proba', '--created'], ['capture', 'proba'], ['capture', 'proba', '--ansi'],
-      ['capture', 'proba', '--lines', '2000', '--ansi'], ['stop', 'proba'], LEGACY,
+      ['capture', 'proba', '--lines', '2000', '--ansi'], ['stop', 'proba'], null,
     ])
   })
 
@@ -114,12 +118,47 @@ describe('with the switch OFF (the default)', () => {
 describe('with the switch ON', () => {
   beforeEach(() => _setFleetPaneBrokerForTest(true))
 
-  it('FP-INVOKE: reads go to the broker verb; a shape with no verb throws (never the old line); start is legacy', () => {
+  it('FP-INVOKE: reads go to the broker verb; a shape with no verb throws (never the old line), a new-session too', () => {
     expect(tmuxInvocationFor(['capture-pane', '-t', S, '-e', '-p'])).toEqual({ file: 'sudo', args: ['-n', FLEET_PANE_BIN, 'capture', 'proba', '--ansi'] })
     expect(tmuxInvocationFor(['list-sessions', '-F', '#{session_name}'], { host: null, runAsUser: 'agent-proba' })).toEqual({ file: 'sudo', args: ['-n', FLEET_PANE_BIN, 'status', 'proba'] })
     expect(() => tmuxInvocationFor(['send-keys', '-t', S, 'Enter'])).toThrow(/fleet-pane: no broker verb for tmux send-keys/)
     expect(() => tmuxInvocationFor(['run-shell', '-t', S, 'id'])).toThrow(/no broker verb/)
-    expect(tmuxInvocationFor(['new-session', '-d', '-s', S, 'claude']).args.slice(0, 3)).toEqual(['-n', '-u', 'agent-proba'])
+    expect(() => tmuxInvocationFor(['new-session', '-d', '-s', S, '-x', '200', '-y', '24', 'claude'])).toThrow(/no broker verb for tmux new-session/)
+  })
+
+  it('FP-START: generate, then start with exactly the launch list; a refused generate starts nothing', async () => {
+    const UUID = '0f8fad5b-d9cb-469f-a165-70867728950e'
+    for (const launch of [[], ['--continue'], ['--session-id', UUID]]) {
+      calls.length = 0
+      expect(await brokerStartAgent('proba', launch)).toEqual({ ok: true })
+      expect(brokerCalls()).toEqual([['generate', 'proba'], ['start', 'proba', ...launch]])
+    }
+    calls.length = 0
+    brokerAnswer = (a) => (a[0] === 'generate' ? { code: 10, out: 'profile-mismatch' } : { code: 0, out: 'started' })
+    expect(await brokerStartAgent('proba', [])).toEqual({ ok: false, error: 'fleet-pane generate refused: profile-mismatch' })
+    expect(brokerCalls()).toEqual([['generate', 'proba']])
+    calls.length = 0
+    brokerAnswer = (a) => (a[0] === 'start' ? { code: 12, out: 'running' } : { code: 0, out: 'generated x' })
+    expect(await brokerStartAgent('proba', [])).toEqual({ ok: false, error: 'fleet-pane start refused: running' })
+  })
+
+  it('FP-NAME: a broker-started agent gets no typed /name (it has --name); the dialog checks still run', async () => {
+    const logged: string[] = []
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(((_o: unknown, msg?: string) => { logged.push(String(msg)) }) as never)
+    const info = vi.spyOn(logger, 'info').mockImplementation(((_o: unknown, msg?: string) => { logged.push(String(msg)) }) as never)
+    vi.useFakeTimers()
+    try {
+      await scheduleIdentitySetup(S, 'Proba Nev')
+      await vi.advanceTimersByTimeAsync(20_000)
+    } finally {
+      vi.useRealTimers()
+      warn.mockRestore()
+      info.mockRestore()
+    }
+    // the raw send-keys would be refused anyway (no verb): what must not happen is the attempt
+    const all = JSON.stringify(calls)
+    expect([all.includes('/name'), calls.some((c) => c.args.includes('send-keys')), brokerCalls().some((a) => a[0] === 'capture'),
+      logged.filter((m) => /\/name/.test(m))]).toEqual([false, false, true, []])
   })
 
   it('FP-TIMEOUT: the deliver limit grows with the text (250 ms a piece over 30 s), and the max matches the broker', async () => {

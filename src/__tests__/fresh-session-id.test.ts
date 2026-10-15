@@ -28,6 +28,7 @@ const asyncHelp = { text: '' }
 import { agentDir, setAgentRemoteHostsFileForTests, writeAgentRemoteConfig } from '../web/agent-config.js'
 import {
   claudeSupportsSessionId,
+  launchSessionArgs,
   launchSessionFlag,
   restartAgentProcess,
   sessionIdLaunchError,
@@ -79,6 +80,18 @@ describe('the flag at the --continue position', () => {
       for (const fresh of [false, true])
         for (const hasChannel of [false, true])
           expect(launchSessionFlag({ hasPriorSession, fresh, hasChannel })).toBe(old(hasPriorSession, fresh, hasChannel))
+  })
+
+  it('the broker gets the same choice as separate arguments, from the closed list only', () => {
+    for (const hasPriorSession of [false, true])
+      for (const fresh of [false, true])
+        for (const hasChannel of [false, true])
+          for (const sessionId of [undefined, UUID]) {
+            const o = { hasPriorSession, fresh, hasChannel, sessionId }
+            const args = launchSessionArgs(o)
+            expect([[], ['--continue'], ['--session-id', UUID]]).toContainEqual(args)
+            expect(launchSessionFlag(o)).toBe(args.length ? `${args.join(' ')} ` : '')
+          }
   })
 
   it('with a session id it is --session-id <uuid>, and never --continue', () => {

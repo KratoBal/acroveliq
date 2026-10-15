@@ -58,7 +58,7 @@ import { resolveAgentSecurityProfile } from './agent-team.js'
 import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureSkillsPathTrapSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { clearAbandonedPrompt, recordAbandonedPrompt, recordInjectedPrompt } from './injected-prompt-registry.js'
-import { agentOfSession, brokerArgsForTmux, brokerInvocation, callBroker, callBrokerSync, deliverOutcome, deliverTimeoutMs, fleetPaneBrokerOn, LEGACY } from './fleet-pane.js'
+import { agentOfSession, brokerArgsForTmux, brokerInvocation, brokerStartAgent, callBroker, callBrokerSync, deliverOutcome, deliverTimeoutMs, fleetPaneBrokerOn } from './fleet-pane.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
@@ -1170,7 +1170,7 @@ export function tmuxInvocationFor(tmuxArgs: string[], target: string | null | Tm
     const agent = agentForTmuxCall(tmuxArgs, runAsUser)
     const verb = agent ? brokerArgsForTmux(tmuxArgs, agent) : null
     if (verb === null) throw new Error(`fleet-pane: no broker verb for tmux ${tmuxArgs[0] ?? ''} (refused)`)
-    if (verb !== LEGACY) return brokerInvocation(verb)
+    return brokerInvocation(verb)
   }
   return buildTmuxInvocation(host, tmuxBin(), tmuxArgs, 'tmux', runAsUser ?? null)
 }
@@ -1389,8 +1389,14 @@ export interface LaunchOpts {
  * to that for every combination).
  */
 export function launchSessionFlag(o: { hasPriorSession: boolean; fresh?: boolean; hasChannel: boolean; sessionId?: string }): string {
-  if (o.sessionId) return `--session-id ${o.sessionId} `
-  return (o.hasPriorSession && !o.fresh && !o.hasChannel) ? '--continue ' : ''
+  const args = launchSessionArgs(o)
+  return args.length ? `${args.join(' ')} ` : ''
+}
+
+/** The same choice as separate arguments: the fleet-pane broker's closed launch list. */
+export function launchSessionArgs(o: { hasPriorSession: boolean; fresh?: boolean; hasChannel: boolean; sessionId?: string }): string[] {
+  if (o.sessionId) return ['--session-id', o.sessionId]
+  return (o.hasPriorSession && !o.fresh && !o.hasChannel) ? ['--continue'] : []
 }
 
 // The CLI's own help decides whether `--session-id` exists. Cached per binary,
@@ -1898,7 +1904,17 @@ export async function startAgentProcess(name: string, opts: LaunchOpts = {}): Pr
     // not send the launch, with the router's ssh key and the OAuth token in cmd, to a
     // host the agent named (barracuda, review of #57 v2).
     const startTarget = launchTarget
-    runTmux(startTarget, ['new-session', '-d', '-s', session, ...AGENT_PANE_SIZE, cmd], { timeout: 10000 })
+    if (fleetPaneBrokerOn() && startTarget.runAsUser) {
+      // B48 (2): the broker starts the agent from its root-owned script; `cmd` never leaves here.
+      // The same launch choice as the string above, as the broker's closed list.
+      const r = await brokerStartAgent(name, launchSessionArgs({ hasPriorSession, fresh: opts.fresh, hasChannel, sessionId: opts.sessionId }))
+      if (!r.ok) {
+        logger.error({ name, error: r.error }, 'Agent start refused by fleet-pane')
+        return { ok: false, error: r.error }
+      }
+    } else {
+      runTmux(startTarget, ['new-session', '-d', '-s', session, ...AGENT_PANE_SIZE, cmd], { timeout: 10000 })
+    }
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
 
@@ -2218,6 +2234,8 @@ export async function scheduleIdentitySetup(session: string, displayName: string
       } catch (err) {
         logger.warn({ err, session }, 'Post-restart modal dismiss failed')
       }
+      // a broker-started agent got its name as `--name` (the broker types no '/' command)
+      if (brokerAgentFor(session, host)) return
       setTimeout(() => {
         void (async () => {
           try {

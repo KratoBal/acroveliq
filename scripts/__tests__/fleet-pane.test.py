@@ -583,6 +583,13 @@ for bad in (['--continue;id'], ['$(id)'], ['--session-id', UUID.upper()], ['--se
     check('N5 the script itself refuses %r: exit 64, claude never runs' % (bad,), (r.returncode, os.path.exists(s.out)), (64, False))
 del os.environ['BASH_ENV']
 
+# the example files the installer copies are what the loaders accept (a stale example is a broken install)
+ex_values = fp.load_values(os.path.join(SCRIPTS, 'root', 'fleet-pane-start-values.example.json'), False)
+ex_agents = fp.load_agents(os.path.join(SCRIPTS, 'root', 'fleet-pane-agents.example.json'), False)
+check('the example values and agents load, every example agent has a workdir and a profile from the value set',
+      (sorted(ex_values['profiles']), all(a['workdir'] and a['profile'] in ex_values['profiles'] for a in ex_agents.values())),
+      (['designer', 'developer-senior', 'marketer', 'researcher-reader', 'reviewer'], True))
+
 # --- the installed form -----------------------------------------------------------------------
 src = open(os.path.join(SCRIPTS, 'root', 'fleet-pane.py'), encoding='utf-8').read()
 check('the entry runs isolated (-I), with the fixed paths', (src.split('\n')[0], "AGENTS_FILE = '/etc/fleet-pane/agents.json'" in src,

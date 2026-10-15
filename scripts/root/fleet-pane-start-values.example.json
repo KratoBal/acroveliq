@@ -1,0 +1,15 @@
+{
+  "claudeBin": "/opt/fleet-claude/2.1.300/claude",
+  "oauthTokenFile": "/home/marveen/marveen/store/.claude-oauth-token",
+  "tz": "Europe/Budapest",
+  "gitCeiling": "/home/marveen/marveen/agents",
+  "routerUser": "marveen",
+  "models": ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"],
+  "profiles": {
+    "developer-senior": "permissive",
+    "designer": "strict",
+    "marketer": "strict",
+    "researcher-reader": "strict",
+    "reviewer": "strict"
+  }
+}
