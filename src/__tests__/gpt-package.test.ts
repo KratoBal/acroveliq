@@ -171,6 +171,32 @@ describe('filter 2: personal data (the JEV boundary, full mode)', () => {
     expect(JSON.stringify(log).includes('Kovács') || JSON.stringify(log).includes('szerviz')).toBe(false)
   })
 
+  // acrobot 31072: in the first live debate GPT called the owner <PERSON_1>
+  it('PKG-PARTICIPANTS: the participants keep their names, inflected and unaccented too; every other person masks, a namesake whole', async () => {
+    const d = debate()
+    owner('v1', 'm1', 'Balázsnak írtam, Balazs is látta, Acrobottal egyeztettem, a GPT-nek is. Kovács Péter is ott volt, és Kovács Balázs, meg Balázs Nagy.', 110)
+    turn('v1', 'acrobot', 'answered', 'Balázzsal megbeszéltem.', 120)
+    const pkg = await buildPackage(getDb(), d, 'Mit javasolsz?', opts())
+    const kept = ['[gazda] Balázs, a döntéshozó', '[acrobot] Acrobot', 'Balázsnak írtam', 'Balazs is látta', 'Acrobottal', 'GPT-nek', 'Balázzsal megbeszéltem']
+    const gone = ['Kovács', 'Péter', 'Nagy']
+    expect([
+      kept.filter((k) => !pkg.prompt.includes(k)),
+      gone.filter((g) => pkg.prompt.includes(g)),
+      // the namesake (Kovács Balázs, Balázs Nagy) is not half-shown
+      /<PERSON_\d+> Balázs|Balázs <PERSON_\d+>/.test(pkg.prompt),
+      /Kivetel[a-z]{12}/.test(pkg.prompt),
+    ], 'PKG-PARTICIPANTS').toEqual([[], [], false, false])
+  })
+
+  it('PKG-KEEP-SHAPE: the boundary refuses a keep list that is not a few single capitalised words', () => {
+    const code = `import sys, json; sys.path.insert(0, ${JSON.stringify(join(ROOT, 'scripts', 'gpt-csomag'))})
+import hatar
+hatar.gate_green = lambda: True
+print(json.dumps([hatar.decide("Kovács Péter írt.", k)["ok"] for k in (["Kovács Péter"], ["kovacs"], ["A1b"], ["Kovács@x"], ["A", "Bb", "Cc", "Dd", "Ee", "Ff"], "Balázs", ["Balázs"])]))`
+    const r = spawnSync('python3', ['-I', '-c', code], { env: { PATH: '/usr/bin:/bin', ...jevEnv }, encoding: 'utf8' })
+    expect(JSON.parse(r.stdout), 'PKG-KEEP-SHAPE').toEqual([false, false, false, false, false, false, true])
+  })
+
   it('PKG-GATE-RED: the leak gate not green for this redactor code: blocked, never the raw text', async () => {
     const d = debate()
     owner('v1', 'm1', 'Kovács Péter kérdezte.', 110)
