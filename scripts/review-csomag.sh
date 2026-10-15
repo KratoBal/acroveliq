@@ -177,8 +177,8 @@ H=$(git rev-parse "pr-$PR"); M=$(git rev-parse origin/main); B=$(git merge-base 
 # (2026-10-14) was packaged from 73f560c while the PR stood at 857d6ca, its README named the
 # old head, and the stale diff looked like a fresh round. The API's head.sha follows the
 # branch at once, so the two are compared, and a difference stops BEFORE anything is
-# written. The token is read inside python from its file and goes to curl on stdin: not on
-# any command line (P0-1).
+# written. The token comes from github_token (lib/github-token.sh) into python through the
+# environment, and goes to curl on stdin: not on any command line (P0-1).
 if ! GH_TOK="$(github_token "$SLUG" olvas)"; then
   echo "FAIL: a PR fejet nem tudom ellenorizni: nincs olvaso token a(z) $SLUG repohoz" >&2
   rmdir "$D" 2>/dev/null; exit 1

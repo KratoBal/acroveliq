@@ -27,7 +27,11 @@ function stageTree(scriptNames: string[]): { bin: string } {
   for (const s of scriptNames) cpSync(join(ROOT, 'scripts', s), join(scripts, s))
   cpSync(join(ROOT, 'scripts', 'lib', 'send-telegram.sh'), join(scripts, 'lib', 'send-telegram.sh'))
   // the GitHub token helper the scripts source (the owner token's retirement, PR 1), its owner file in the stage
-  writeFileSync(join(scripts, 'lib', 'github-token.sh'), readFileSync(join(ROOT, 'scripts', 'lib', 'github-token.sh'), 'utf8')
+  // the replacement is checked first: if the line ever changed, a silent no-op would hand the real owner
+  // token (readable on a sec-github machine) to the curl shim, which logs its argv and stdin (barracuda, #201)
+  const tokenLib = readFileSync(join(ROOT, 'scripts', 'lib', 'github-token.sh'), 'utf8')
+  expect(tokenLib).toContain('GITHUB_OWNER_TOKEN_FILE=/home/marveen/marveen/store/.github-token\n')
+  writeFileSync(join(scripts, 'lib', 'github-token.sh'), tokenLib
     .replace('GITHUB_OWNER_TOKEN_FILE=/home/marveen/marveen/store/.github-token', `GITHUB_OWNER_TOKEN_FILE=${join(stage, 'store', '.github-token')}`))
   const bin = join(stage, 'bin')
   mkdirSync(bin, { recursive: true })
