@@ -1,0 +1,37 @@
+{
+  "app_id": "<az App azonositoja (App ID), a GitHub App beallitasaibol>",
+  "installation_id": 0,
+  "owner": "KratoBal",
+  "repos": [
+    "acroveliq",
+    "acropora-os",
+    "acropora-commerce",
+    "acropora-ai-agent"
+  ],
+  "callers": {
+    "marveen": {
+      "*": [
+        "olvas",
+        "pr",
+        "beolvaszt"
+      ]
+    },
+    "agent-nautilus": {
+      "*": [
+        "olvas",
+        "push",
+        "pr"
+      ]
+    },
+    "agent-murena": {
+      "*": [
+        "olvas",
+        "push",
+        "pr"
+      ]
+    }
+  },
+  "approvers": [
+    "agent-barracuda"
+  ]
+}

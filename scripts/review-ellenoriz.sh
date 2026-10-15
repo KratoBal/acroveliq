@@ -5,7 +5,7 @@
 #   csomag: a review-csomag neve a pr- utan (1650, c512, marveen68, ai37), VAGY egy dokumentum-
 #      csomag teljes neve (doc-<task_id>, review-csomag.sh docs)
 #   -> egy `verdict` esemeny a feladaton, a szereplo a HIVO (az OS-felhasznalobol), a
-#      hivatkozas "<ITELET> <owner/repo>#<N> pr-<csomag> fej <sha7>", dokumentumnal
+#      hivatkozas "<ITELET> <owner/repo>#<N> pr-<csomag> fej <sha>", dokumentumnal
 #      "<ITELET> <fajl utja> doc-<task_id> sha256 <12 jegy>"; utana visszaolvasva,
 #      hogy tenyleg ott van.
 #
@@ -111,7 +111,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   elif [[ "$line" =~ ^v[0-9]+:[[:space:]]+task_id[[:space:]]+$ID_RE(,|[[:space:]]|$) ]]; then
     NAMED="$NAMED${BASH_REMATCH[1]} "
     # a later round: its head replaces the first one
-    [[ "$line" =~ [[:space:]]fej[[:space:]]+([0-9a-f]{7,40}) ]] && HEAD7="${BASH_REMATCH[1]:0:7}"
+    [[ "$line" =~ [[:space:]]fej[[:space:]]+([0-9a-f]{7,40}) ]] && HEAD7="${BASH_REMATCH[1]}"
     # ... and for a document, its file and its copy's hash
     if [[ "$line" =~ ^v([0-9]+):.*[[:space:]]fajl[[:space:]]+([^,[:space:]]+),[[:space:]]+sha256[[:space:]]+([0-9a-f]{64})([[:space:]]|$) ]]; then
       ROUND="${BASH_REMATCH[1]}"; FAJL="${BASH_REMATCH[2]}"; SHA="${BASH_REMATCH[3]}"
@@ -124,7 +124,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     README_PR="${BASH_REMATCH[1]}"
   fi
   if [ -z "$HEAD7" ] && [[ "$line" =~ ^(fej|head):?[[:space:]]+([0-9a-f]{7,40}) ]]; then
-    HEAD7="${BASH_REMATCH[2]:0:7}"
+    HEAD7="${BASH_REMATCH[2]}"
   fi
   if [ "$ROUND" = 1 ] && [[ "$line" =~ ^fajl:[[:space:]]+([^[:space:]]+)[[:space:]]*$ ]]; then FAJL="${BASH_REMATCH[1]}"; fi
   if [ "$ROUND" = 1 ] && [[ "$line" =~ ^sha256:[[:space:]]+([0-9a-f]{64})[[:space:]]*$ ]]; then SHA="${BASH_REMATCH[1]}"; fi
