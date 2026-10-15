@@ -263,9 +263,9 @@ step "4a. the D4 GitHub broker: its two root scripts and their sudo rule (docs/f
 # app.json are NOT handled here: they live on the host and come in read-only as /etc/fleet-github
 # (the bind mount, step 6b), so they survive by themselves.
 #
-# ONLY WHERE D4 IS DEPLOYED. The mount is the sign that the owner did step 6b; without it this
-# step installs nothing, because a sudo rule installed on its own would be a permission change
-# nobody asked for.
+# ONLY WHERE D4 IS DEPLOYED. The mount (mountpoint -q, not a mere directory) is the sign that
+# the owner did step 6b; without it this step installs nothing, because a sudo rule installed
+# on its own would be a permission change nobody asked for.
 #
 # THE PINNED HASHES ARE THE REVIEWED VERSIONS (main a0e9fb4). The source is the router's tree,
 # so a pin here does not stop the router itself (at boot it holds the blanket line anyway); it
@@ -314,7 +314,12 @@ while IFS=: read -r src dst want; do
     echo "MISMATCH: scripts/root/$src sha256 $got, pinned $want: not installing it" >&2; d4_src_ok=0
   fi
 done <<< "$D4_SCRIPTS"
-if ! test -d "$D4_MOUNT"; then
+# A real run asks whether it is a MOUNT, not a directory (barracuda, #205): a directory made by
+# hand inside the container, or left from an older in-container layout, is not the owner's step 6b.
+d4_mounted() {
+  if (( DRY )) && [[ -n "${FLEET_D4_MOUNT_DRYRUN:-}" ]]; then test -d "$D4_MOUNT"; else mountpoint -q -- "$D4_MOUNT"; fi
+}
+if ! d4_mounted; then
   echo "skip: $D4_MOUNT is not mounted, D4 is not deployed here: nothing installed"
 elif (( ! d4_src_ok )); then
   D4_DEPLOYED=1; D4_RC=1
