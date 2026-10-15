@@ -18,9 +18,14 @@ opened) and compares it with the PREVIOUS run's, kept in STATE. It reports only 
                  "?" (the ACL state could not be read); see fleet-secrets.py
 
 No change: no output, exit 0 (the scheduled task stays silent). A change: one line each, exit 1.
-The very first run, with no STATE yet, records the baseline silently: what stands today (the two
-findings of 2026-10-15 included) does not alert every day. After every run the STATE is the new
-matrix, so a change alerts once.
+After every run the STATE is the new matrix, so a change alerts once.
+
+THE BASELINE IS TAKEN ONLY BY AN EXPLICIT `--alap` RUN (barracuda, #193 review): the operator runs it
+once at deploy, and what stands then (the two findings of 2026-10-15 included) does not alert every
+day. A scheduled run with no STATE does NOT take a new baseline silently: whoever loosens a secret's
+mode can delete the state with the same write right on store/, and a silent re-baseline would then
+swallow exactly that change. It says so and exits 2. `--alap` over an existing STATE prints the
+changes it absorbs before it replaces the baseline, so a re-baseline is never silent either.
 
 The runner's own row disagreeing with os.access means the computation cannot be trusted, and an
 unreadable STATE means there is nothing to compare with: in both cases the watcher says so and exits
@@ -95,8 +100,13 @@ def main():
               "a valtozast nem merem, az allapot nem frissul.")
         return 2
     new = {"users": users, "rows": rows}
+    baseline = "--alap" in sys.argv[1:]
     if not os.path.exists(STATE):
+        if not baseline:
+            print(f"HIBA: nincs alap ({STATE}); a valtozast nem merem. Az alapot egy kifejezett --alap futas veszi fel.")
+            return 2
         write_state(new)
+        print(f"ALAP rogzitve: {len(rows)} titok-fajl, {len(users)} felhasznalo.")
         return 0
     try:
         with open(STATE, encoding="utf-8") as f:
@@ -111,6 +121,9 @@ def main():
     write_state(new)
     for line in changes:
         print(line)
+    if baseline:
+        print(f"ALAP felulirva: {len(rows)} titok-fajl, {len(users)} felhasznalo; a fenti {len(changes)} valtozas bekerult az alapba.")
+        return 0
     return 1 if changes else 0
 
 

@@ -4,7 +4,8 @@
 #   - a change in the matrix (new or gone file, mode, owner, group, a new or lost reader, a new fleet
 #     user, an ACL or "?" cell) not reported, or reported with another wording than the literal lines here;
 #   - an unchanged matrix not silent (output, or an exit other than 0);
-#   - the first run (no state yet) alerting instead of recording the baseline silently;
+#   - a run with no state taking a baseline silently instead of exit 2 (only --alap takes one), or
+#     --alap not recording it, or an --alap over an existing state hiding what it absorbs;
 #   - a change alerting twice (the state not moved on after a run);
 #   - a mismatch with os.access, or an unreadable state, touching the state or exiting other than 2;
 #   - the state not 0600, a secret's content in the output or the state, or a network call.
@@ -79,13 +80,17 @@ try:
         "socket.create_connection = no", ""]))
     env = {**os.environ, "FLEET_ROOT": T, "TITOK_JOG_STATE": state, "PYTHONPATH": stub}
     seen = []
-    def run():
-        r = subprocess.run([sys.executable, "-B", WATCHER], capture_output=True, text=True, env=env)
+    def run(*args):
+        r = subprocess.run([sys.executable, "-B", WATCHER, *args], capture_output=True, text=True, env=env)
         seen.append(r.stdout + r.stderr)
         return r.returncode, r.stdout.strip()
 
     print("a real run on a scratch store")
-    check("the first run records the baseline silently", (0, ""), run())
+    rc, out = run()
+    check("no state and no --alap: exit 2, a HIBA line, no state written", (2, True, False),
+          (rc, out.startswith("HIBA: nincs alap"), os.path.exists(state)))
+    check("--alap records the baseline, and says so", (0, "ALAP rogzitve: 3 titok-fajl"),
+          (lambda r: (r[0], r[1].split(",")[0]))(run("--alap")))
     check("the state is 0600", "600", oct(os.stat(state).st_mode)[-3:])
     check("an unchanged matrix: silent, exit 0", (0, ""), run())
     os.chmod(os.path.join(store, ".a-token"), 0o644)
@@ -111,7 +116,14 @@ try:
     check("exit 2, a HIBA line, the state as it was", (2, True, "{nem json"),
           (rc, out.startswith("HIBA:"), open(state).read()))
     os.remove(state)
-    check("after it is removed the next run is a silent baseline again", (0, ""), run())
+    rc, out = run()
+    check("a deleted state is not a silent new baseline: exit 2", (2, True), (rc, out.startswith("HIBA: nincs alap")))
+    run("--alap")
+    os.chmod(os.path.join(store, ".e-token"), 0o644)
+    rc, out = run("--alap")
+    check("--alap over a state prints what it absorbs, exit 0", (0, "MOD .e-token: 600 helyett 644", True),
+          (rc, out.splitlines()[0], out.splitlines()[-1].startswith("ALAP felulirva")))
+    check("and after it the change does not alert", (0, ""), run())
 
     # the cases below use their own users, not the host's: a CI runner has no fleet users
     print("a new reader, with injected users")
@@ -135,7 +147,9 @@ try:
         return rc, buf.getvalue().strip()
     try:
         os.remove(state)
-        check("baseline with the injected users", (0, ""), main_quiet())
+        sys.argv = ["titok-jog-figyelo.py", "--alap"]
+        check("baseline with the injected users", 0, main_quiet()[0])
+        sys.argv = ["titok-jog-figyelo.py"]
         os.chmod(os.path.join(store, ".b-key"), 0o644)
         check("640 to 644: the outsider is a new reader", (1, "MOD .b-key: 640 helyett 644" + NL + "UJ OLVASO .b-key: kulso"),
               main_quiet())
