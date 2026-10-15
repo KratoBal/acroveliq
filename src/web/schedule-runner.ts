@@ -22,6 +22,7 @@ import {
   markPendingTaskRetryAlert,
   clearPendingTaskRetryAlert,
   markScheduledTaskKanbanWaiting,
+  createAgentMessage,
 } from '../db.js'
 import { toPendingRetryView, classifySendError, type PendingRetryView } from '../pending-retries.js'
 import {
@@ -552,9 +553,29 @@ export function resolveBoundChannel(agentName: string): BoundChannel {
 // Report the blind state when it starts and when it ends -- not every
 // 60-second tick, or the warning drowns in its own repetition.
 let lastQuotaInputProblem: string | null | undefined
+/** When the current blind episode began (ms), for the recovery note; null while the input is fresh. */
+let quotaBlindSince: number | null = null
+
+// The log line alone reached nobody: on 2026-10-15 the gate was blind from 07:50 for two hours
+// (the main session had come up without its statusLine) and only a manual check found it. Once
+// per blind EPISODE, the main agent gets a message, and one more when the input is fresh again
+// (task kvota-kapu-bemenet). A change of kind inside one episode (stale -> missing) is logged as
+// before, not messaged again. The sender is server-set, like the debate controller's.
+function notifyMainAgent(content: string): void {
+  try {
+    createAgentMessage('kvota-kapu', MAIN_AGENT_ID, content)
+  } catch (err) {
+    logger.warn({ err }, 'quota gate: the blind/recovered message to the main agent failed')
+  }
+}
+let quotaNotify: (content: string) => void = notifyMainAgent
+/** Test seam: replace the message sender (null restores the real one). */
+export function setQuotaNotifyForTest(fn: ((content: string) => void) | null): void {
+  quotaNotify = fn ?? notifyMainAgent
+}
 
 /** Exported for the wiring test. Returns what it logged, or null. */
-export function reportQuotaInput(problem: string | null): 'blind' | 'recovered' | null {
+export function reportQuotaInput(problem: string | null, nowMs: number = Date.now()): 'blind' | 'recovered' | null {
   // Compare the kind, not the text: 'stale-snapshot:21m' and ':22m' are one state.
   const kind = (p: string | null | undefined) => (p == null ? p : p.split(':')[0])
   if (kind(problem) === kind(lastQuotaInputProblem)) return null
@@ -565,10 +586,22 @@ export function reportQuotaInput(problem: string | null): 'blind' | 'recovered' 
       { reason: problem },
       'Quota gate is BLIND: no fresh quota input, background tasks run without a quota check',
     )
+    if (quotaBlindSince === null) {
+      quotaBlindSince = nowMs
+      quotaNotify(
+        `[kvota-kapu] A kvóta-kapu vak (${problem}): nincs friss kvóta-minta (store/quota-gate-sample.json), a háttér-feladatok kvóta-ellenőrzés nélkül futnak. ` +
+        'A minta egyetlen forrása a router-felhasználó statusline-ja (a fő munkamenet vagy a worker). Első lépés: store/channels-failures.log utolsó indítási sora (izolált CLAUDE_CONFIG_DIR, vagy WARN a közös ~/.claude-ra).',
+      )
+    }
     return 'blind'
   }
   if (was !== undefined) {
     logger.info({ was }, 'Quota gate has fresh quota input again')
+    if (quotaBlindSince !== null) {
+      const minutes = Math.round((nowMs - quotaBlindSince) / 60_000)
+      quotaBlindSince = null
+      quotaNotify(`[kvota-kapu] A kvóta-kapu bemenete újra friss (vak volt ${minutes} percig, utolsó ok: ${was}).`)
+    }
     return 'recovered'
   }
   return null

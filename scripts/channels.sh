@@ -159,6 +159,42 @@ resolve_main_model() {
   fi
 }
 
+# Ask the helper for the main agent's own config dir: "<mode>\t<path>", or nothing.
+#
+# AN EMPTY ANSWER IS RETRIED when this install has run isolated before (its
+# .channels-config dir exists). 2026-10-15 07:30:44 one boot got an empty answer
+# with no error, fell to the shared ~/.claude, and ran there: no statusLine (the
+# quota gate's only input, so the gate went blind for two hours) and the rotating
+# shared login; the same helper answered correctly minutes later (acrobot,
+# kvota-kapu-bemenet). A fresh install (no such dir) is answered once: empty is
+# its normal answer, and waiting would only slow every boot.
+# CHANNELS_CFG_RETRY_SLEEP shortens the wait for tests.
+resolve_main_config_line() {
+  local _node _line="" _try _sleep="${CHANNELS_CFG_RETRY_SLEEP:-5}"
+  _node="$(command -v node || true)"
+  [ -n "$_node" ] || return 0
+  for _try in 1 2 3; do
+    if [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
+      _line="$("$_node" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 2>>"$INSTALL_DIR/store/channels-failures.log" || true)"
+    fi
+    [ -n "$_line" ] && break
+    [ -d "$INSTALL_DIR/.channels-config" ] || break
+    if [ "$_try" -lt 3 ]; then
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent config resolution came back empty (try $_try of 3) although $INSTALL_DIR/.channels-config exists: retrying in ${_sleep}s" >> "$INSTALL_DIR/store/channels-failures.log"
+      sleep "$_sleep"
+    fi
+  done
+  printf '%s' "$_line"
+}
+
+# Test seam: print the resolved config line and exit before tmux or the network.
+if [ "${1:-}" = "--resolve-main-config" ]; then
+  mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
+  resolve_main_config_line
+  echo
+  exit 0
+fi
+
 # Test seam: print the resolved model and exit before any side effect.
 if [ "${1:-}" = "--resolve-main-model" ]; then
   resolve_main_model
@@ -471,7 +507,7 @@ CFG_ENV=""
 mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
 _node_bin="$(command -v node || true)"
 if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
-  _cfg_line="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 2>>"$INSTALL_DIR/store/channels-failures.log" || true)"
+  _cfg_line="$(resolve_main_config_line)"
   _cfg_mode="${_cfg_line%%	*}"
   _cfg_dir="${_cfg_line#*	}"
   if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then

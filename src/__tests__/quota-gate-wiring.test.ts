@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, sym
 import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { quotaWorkClass, reportQuotaInput } from '../web/schedule-runner.js'
+import { quotaWorkClass, reportQuotaInput, setQuotaNotifyForTest } from '../web/schedule-runner.js'
 import { parseGateSample, readQuotaSnapshot } from '../quota-snapshot.js'
 import { decideQuotaAction, quotaInputProblem } from '../quota-gate.js'
 
@@ -251,6 +251,30 @@ describe('reportQuotaInput -- blind state is reported once per change', () => {
     expect(reportQuotaInput('stale-snapshot:22m')).toBeNull() // same kind, minute ticked on
     expect(reportQuotaInput(null)).toBe('recovered')
     expect(reportQuotaInput(null)).toBeNull()
+  })
+
+  // task kvota-kapu-bemenet: 2026-10-15 the gate was blind for two hours and only the log said so
+  it('QUOTA-BLIND-NOTICE: the main agent gets one message per blind episode and one on recovery; a kind change inside an episode is not messaged', () => {
+    const sent: string[] = []
+    setQuotaNotifyForTest((c) => sent.push(c))
+    try {
+      const t0 = Date.parse('2026-10-15T05:50:00Z')
+      reportQuotaInput(null, t0) // a known, healthy state
+      sent.length = 0
+      const r = [
+        reportQuotaInput('stale-snapshot:21m', t0),
+        reportQuotaInput('stale-snapshot:22m', t0 + 60_000),
+        reportQuotaInput('no-snapshot', t0 + 120_000), // another kind, the same episode
+        reportQuotaInput(null, t0 + 90 * 60_000),
+        reportQuotaInput(null, t0 + 91 * 60_000),
+        reportQuotaInput('no-snapshot', t0 + 100 * 60_000), // a new episode
+      ]
+      expect([r, sent.length, /vak \(stale-snapshot:21m\)/.test(sent[0] ?? ''), /vak volt 90 percig, utolsó ok: no-snapshot/.test(sent[1] ?? ''), /vak \(no-snapshot\)/.test(sent[2] ?? '')],
+        'QUOTA-BLIND-NOTICE').toEqual([['blind', null, 'blind', 'recovered', null, 'blind'], 3, true, true, true])
+    } finally {
+      reportQuotaInput(null)
+      setQuotaNotifyForTest(null)
+    }
   })
 
   it('is wired to the per-tick snapshot read', () => {
