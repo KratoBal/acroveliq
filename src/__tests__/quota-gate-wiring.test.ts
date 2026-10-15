@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, sym
 import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { quotaWorkClass, reportQuotaInput } from '../web/schedule-runner.js'
+import { QUOTA_BLIND_ACTIVITY_MARGIN_MS, noticeQuotaBlind, quotaWorkClass, reportQuotaInput, setQuotaNotifyForTest } from '../web/schedule-runner.js'
 import { parseGateSample, readQuotaSnapshot } from '../quota-snapshot.js'
 import { decideQuotaAction, quotaInputProblem } from '../quota-gate.js'
 
@@ -253,7 +253,45 @@ describe('reportQuotaInput -- blind state is reported once per change', () => {
     expect(reportQuotaInput(null)).toBeNull()
   })
 
+  // task kvota-kapu-bemenet: 2026-10-15 the gate was blind for two hours and only the log said so.
+  // barracuda, #157: an idle night makes the sample stale too, and a message then would wake the
+  // main agent, draw a fresh sample, and loop all night. Only activity after the sample is blindness.
+  it('QUOTA-BLIND-NOTICE: one message when the main session worked after the sample, none for an idle stale sample; a recovery message only after a blind one', () => {
+    const sent: string[] = []
+    setQuotaNotifyForTest((c) => sent.push(c))
+    try {
+      const t0 = Date.parse('2026-10-15T05:30:00Z') // the last sample
+      const M = QUOTA_BLIND_ACTIVITY_MARGIN_MS
+      noticeQuotaBlind(null, t0, { sampleAtMs: t0, activityAtMs: t0 }) // a known state
+      sent.length = 0
+      const idle = [
+        // an idle night: stale, the last activity is the sample's own turn
+        noticeQuotaBlind('stale-snapshot:21m', t0 + 21 * 60_000, { sampleAtMs: t0, activityAtMs: t0 + 30_000 }),
+        noticeQuotaBlind('stale-snapshot:300m', t0 + 300 * 60_000, { sampleAtMs: t0, activityAtMs: t0 + M }), // exactly at the margin: still idle
+        noticeQuotaBlind('stale-snapshot:301m', t0 + 301 * 60_000, { sampleAtMs: t0, activityAtMs: null }), // nothing readable
+        noticeQuotaBlind(null, t0 + 302 * 60_000, { sampleAtMs: t0 + 302 * 60_000, activityAtMs: t0 + 302 * 60_000 }), // fresh again: no recovery without a blind
+      ]
+      const idleSent = sent.length
+      const blind = [
+        // 07:30-09:50: the main session works, no sample
+        noticeQuotaBlind('stale-snapshot:25m', t0 + 25 * 60_000, { sampleAtMs: t0, activityAtMs: t0 + 24 * 60_000 }),
+        noticeQuotaBlind('stale-snapshot:26m', t0 + 26 * 60_000, { sampleAtMs: t0, activityAtMs: t0 + 26 * 60_000 }),
+        noticeQuotaBlind('no-snapshot', t0 + 27 * 60_000, { sampleAtMs: null, activityAtMs: t0 + 27 * 60_000 }), // another kind, the same episode
+        noticeQuotaBlind(null, t0 + 145 * 60_000, { sampleAtMs: t0 + 145 * 60_000, activityAtMs: t0 + 145 * 60_000 }),
+        noticeQuotaBlind(null, t0 + 146 * 60_000, { sampleAtMs: t0 + 146 * 60_000, activityAtMs: t0 + 146 * 60_000 }),
+      ]
+      expect([idle, idleSent, blind, sent.length, /vak \(stale-snapshot:25m\): a fő munkamenet dolgozik/.test(sent[0] ?? ''), /újra friss \(az üzenet óta 120 perc\)/.test(sent[1] ?? '')],
+        'QUOTA-BLIND-NOTICE').toEqual([[null, null, null, null], 0, ['blind', null, null, 'recovered', null], 2, true, true])
+    } finally {
+      noticeQuotaBlind(null, Date.now(), { sampleAtMs: null, activityAtMs: null })
+      setQuotaNotifyForTest(null)
+    }
+  })
+
   it('is wired to the per-tick snapshot read', () => {
-    expect(RUNNER_SRC).toContain('reportQuotaInput(quotaRead.problem ?? quotaInputProblem(quotaSnapshot, now))')
+    expect(RUNNER_SRC).toContain('const quotaProblem = quotaRead.problem ?? quotaInputProblem(quotaSnapshot, now)')
+    expect(RUNNER_SRC).toContain('reportQuotaInput(quotaProblem)')
+    // the notice reads the gate sample's time and the MAIN session's transcript activity
+    expect(RUNNER_SRC).toMatch(/noticeQuotaBlind\(quotaProblem, now, \{\s*sampleAtMs: typeof quotaSnapshot\?\.generatedAtMs === 'number'[^}]*activityAtMs: readTranscriptMtimeFromProjectDir\(PROJECT_ROOT\),/)
   })
 })

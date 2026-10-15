@@ -22,6 +22,7 @@ import {
   markPendingTaskRetryAlert,
   clearPendingTaskRetryAlert,
   markScheduledTaskKanbanWaiting,
+  createAgentMessage,
 } from '../db.js'
 import { toPendingRetryView, classifySendError, type PendingRetryView } from '../pending-retries.js'
 import {
@@ -569,6 +570,63 @@ export function reportQuotaInput(problem: string | null): 'blind' | 'recovered' 
   }
   if (was !== undefined) {
     logger.info({ was }, 'Quota gate has fresh quota input again')
+    return 'recovered'
+  }
+  return null
+}
+
+// THE MESSAGE TO THE MAIN AGENT (task kvota-kapu-bemenet). The log line alone reached nobody: on
+// 2026-10-15 the gate was blind from 07:50 for two hours, because the main session had come up
+// without its statusLine, and only a manual check found it.
+//
+// BUT A STALE SAMPLE IS NOT YET BLINDNESS (barracuda, #157). The sample is written only when the
+// router user's statusline draws, so on an idle night it goes stale after 20 minutes because there
+// is nothing to measure. A message then would wake the main agent, its turn would draw a fresh
+// sample, the recovery message would follow, and the loop would run all night, two full-context
+// turns every 20 minutes, the message curing what it reports. So the message goes only when the
+// main session WORKED after the sample: activity without a sample is blindness, no activity means
+// no sample to expect. Once per episode, and a recovery message only after a blind one.
+export const QUOTA_BLIND_ACTIVITY_MARGIN_MS = 5 * 60_000
+let quotaBlindNotifiedAt: number | null = null
+
+function notifyMainAgent(content: string): void {
+  try {
+    createAgentMessage('kvota-kapu', MAIN_AGENT_ID, content)
+  } catch (err) {
+    logger.warn({ err }, 'quota gate: the blind/recovered message to the main agent failed')
+  }
+}
+let quotaNotify: (content: string) => void = notifyMainAgent
+/** Test seam: replace the message sender (null restores the real one). */
+export function setQuotaNotifyForTest(fn: ((content: string) => void) | null): void {
+  quotaNotify = fn ?? notifyMainAgent
+}
+
+/**
+ * Every tick. `sampleAtMs`: when the gate's sample was made (null: none); `activityAtMs`: the main
+ * session's newest transcript write (null: none readable). Returns what it sent, or null.
+ */
+export function noticeQuotaBlind(
+  problem: string | null,
+  nowMs: number,
+  evidence: { sampleAtMs: number | null; activityAtMs: number | null },
+): 'blind' | 'recovered' | null {
+  if (problem) {
+    if (quotaBlindNotifiedAt !== null) return null
+    const { sampleAtMs, activityAtMs } = evidence
+    const worked = activityAtMs !== null && (sampleAtMs === null || activityAtMs > sampleAtMs + QUOTA_BLIND_ACTIVITY_MARGIN_MS)
+    if (!worked) return null
+    quotaBlindNotifiedAt = nowMs
+    quotaNotify(
+      `[kvota-kapu] A kvóta-kapu vak (${problem}): a fő munkamenet dolgozik, de nincs friss kvóta-minta (store/quota-gate-sample.json), a háttér-feladatok kvóta-ellenőrzés nélkül futnak. ` +
+      'A minta egyetlen forrása a router-felhasználó statusline-ja. Első lépés: store/channels-failures.log utolsó indítási sora (izolált CLAUDE_CONFIG_DIR, vagy WARN a közös ~/.claude-ra).',
+    )
+    return 'blind'
+  }
+  if (quotaBlindNotifiedAt !== null) {
+    const minutes = Math.round((nowMs - quotaBlindNotifiedAt) / 60_000)
+    quotaBlindNotifiedAt = null
+    quotaNotify(`[kvota-kapu] A kvóta-kapu bemenete újra friss (az üzenet óta ${minutes} perc).`)
     return 'recovered'
   }
   return null
@@ -1532,7 +1590,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // same snapshot about all of them.
     const quotaRead = readQuotaSnapshot()
     const quotaSnapshot = quotaRead.snapshot
-    reportQuotaInput(quotaRead.problem ?? quotaInputProblem(quotaSnapshot, now))
+    const quotaProblem = quotaRead.problem ?? quotaInputProblem(quotaSnapshot, now)
+    reportQuotaInput(quotaProblem)
+    noticeQuotaBlind(quotaProblem, now, {
+      sampleAtMs: typeof quotaSnapshot?.generatedAtMs === 'number' ? quotaSnapshot.generatedAtMs : null,
+      activityAtMs: readTranscriptMtimeFromProjectDir(PROJECT_ROOT),
+    })
 
     for (const task of tasks) {
       if (!task.enabled) continue
