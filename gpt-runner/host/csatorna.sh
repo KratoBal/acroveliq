@@ -31,7 +31,12 @@ TOKEN_FILE="$FLEET_STORE/.gpt-futtato-token"
 ALLAPOT_DIR="${GPT_FUTTATO_ALLAPOT_DIR:-/run/gpt-futtato}"
 PORT=8790
 
-stop_szolga() { (cd "$DIR" && docker compose --profile szolga stop gpt-szolga >/dev/null 2>&1) || true; }
+# stops the service and SAYS its state after (acrobot 30907: from a silent stop one could not tell
+# whether the service was left running after a STOP)
+stop_szolga() {
+  (cd "$DIR" && docker compose --profile szolga stop gpt-szolga >/dev/null 2>&1) || true
+  echo "a gpt-szolga allapota a leallitas utan: $(docker inspect -f '{{.State.Status}}' gpt-szolga 2>/dev/null || echo 'nincs ilyen kontener')"
+}
 trap 'echo "STOP: a csatorna-meres a(z) $LINENO. sorban megallt ennel a parancsnal: $BASH_COMMAND" >&2; stop_szolga' ERR
 stop() { echo "STOP: $*"; stop_szolga; exit 1; }
 ipv4() {
@@ -129,6 +134,13 @@ tovabb=$(iptables -w 5 -S GPTF-TOVABB)
 printf '%s\n' "$tovabb"
 grep -qxF -- "-A GPTF-TOVABB -s $VEZ/32 -d $SZOLGA/32 -o gptki0 -p tcp -m tcp --dport $PORT -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT" <<< "$tovabb" || stop "a GPTF-TOVABB-ban nincs meg a csatorna oda-iranyu ACCEPT-je"
 grep -qxF -- "-A GPTF-TOVABB -s $SZOLGA/32 -d $VEZ/32 -i gptki0 -p tcp -m tcp --sport $PORT -m conntrack --ctstate ESTABLISHED -j ACCEPT" <<< "$tovabb" || stop "a GPTF-TOVABB-ban nincs meg a csatorna valasz-iranyu ACCEPT-je"
+# the channel flow is not masqueraded (the v3 host run: Docker's MASQUERADE made the source the
+# runner network's gateway); our chain must be FIRST in nat POSTROUTING, before Docker's
+natpost=$(iptables -w 5 -t nat -S POSTROUTING)
+natch=$(iptables -w 5 -t nat -S GPTF-NAT)
+printf '%s\n' "$natch"
+[ "$(grep -m1 '^-A ' <<< "$natpost" || true)" = "-A POSTROUTING -o gptki0 -j GPTF-NAT" ] || stop "a nat POSTROUTING elso szabalya nem a GPTF-NAT ugras"
+grep -qxF -- "-A GPTF-NAT -s $VEZ/32 -d $SZOLGA/32 -p tcp -m tcp --dport $PORT -j ACCEPT" <<< "$natch" || stop "a GPTF-NAT-ban nincs meg a csatorna (maszkolas nelkuli) szabalya"
 fails=$( { grep -E '^PROBA [^ ]+ FAIL' "$DIR/proba-teljes.log" || true; } | wc -l | tr -d ' ')
 grep -qE '^PROBA N1 OK' "$DIR/proba-teljes.log" || stop "a proba N1 sora nem OK (a futtatobol elerheto lehet a flotta vagy a gep)"
 [ "$fails" = 0 ] || stop "a probaban $fails FAIL sor van"
