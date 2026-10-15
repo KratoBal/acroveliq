@@ -160,13 +160,19 @@ export function redactBody(text: string, b: PackageOptions['boundary']): Promise
         return finish({ ok: false, why: 'a szemelyesadat-szuro valasza nem olvashato' })
       }
     })
-    child.stdin.end(JSON.stringify({ text }))
+    child.stdin.end(JSON.stringify({ text, keep: PARTICIPANT_NAMES }))
   })
 }
 
 // ---------------------------------------------------------------------------
 // The package
 // ---------------------------------------------------------------------------
+
+/**
+ * The debate's own participants, named in render() below: the boundary keeps these names
+ * (inflected too) and masks every other (acrobot 31072: GPT called the owner <PERSON_1>).
+ */
+export const PARTICIPANT_NAMES = ['Balázs', 'Acrobot', 'GPT'] as const
 
 function render(debate: Debate, pieces: PackagePiece[], dropped: number, ask: string): string {
   const lines = [
