@@ -129,9 +129,14 @@ describe('generated prod-tree post-checkout hook: honest alert delivery', () => 
 
 describe('channels.sh guard POSTs: source-pinned honest delivery (unsafe to execute)', () => {
   const src = readFileSync(join(ROOT, 'scripts', 'channels.sh'), 'utf-8')
-  it('both guard POSTs capture the HTTP code and log a delivery failure', () => {
-    const matches = src.match(/guard alert POST failed/g) ?? []
-    expect(matches.length).toBe(2)
+  // task channels-guard-riasztas (2026-10-15): the two POSTs never got through (the messages route
+  // refuses channels-sh-guard as an unknown agent, HTTP 403) and were replaced by ONE server-side
+  // sender, guard_alert (scripts/guard-alert.mjs; run for real in guard-alert.test.ts). The honest
+  // delivery stays: a failed alert, and a missing node, are written to the failures log.
+  it('the guard alert logs a delivery failure, in one place for both triggers', () => {
+    expect((src.match(/WARN guard alert failed \(/g) ?? []).length).toBe(1)
+    expect((src.match(/WARN guard alert not sent \(no node\)/g) ?? []).length).toBe(1)
+    expect((src.match(/^ {4}guard_alert "/gm) ?? []).length).toBe(2)
     expect(src).not.toMatch(/api\/messages[\s\S]{0,400}>\/dev\/null 2>&1 \|\| true/)
   })
   it('KNOWN-POSITIVE for the pin: the pre-fix shape fails it', () => {

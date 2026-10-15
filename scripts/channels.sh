@@ -197,6 +197,33 @@ resolve_main_config_line() {
   printf '%s' "$_line"
 }
 
+# The guard's alert to the main agent (the two WARN triggers below). It used to POST /api/messages
+# with the shared token and from=channels-sh-guard, and that route refuses a sender that is no
+# registered agent: the alert never arrived, "WARN guard alert POST failed (HTTP 403)" at 07:30:44
+# and 09:17:41 on 2026-10-15 (task channels-guard-riasztas). channels.sh runs as the router user,
+# so scripts/guard-alert.mjs writes the message server-side, as the dashboard's own senders do. A
+# failure is still said in the failures log, with the helper's own words.
+guard_alert() {
+  local _node _out
+  _node="$(command -v node || true)"
+  if [ -z "$_node" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN guard alert not sent (no node) -- a fenti WARN nem erte el a koordinatort" >> "$INSTALL_DIR/store/channels-failures.log"
+    return 0
+  fi
+  _out="$(printf '%s' "$1" | "$_node" "$INSTALL_DIR/scripts/guard-alert.mjs" "${MAIN_AGENT_ID:-marveen}" 2>&1 || true)"
+  case "$_out" in
+    "OK id="*) : ;;
+    *) echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN guard alert failed ($(printf '%s' "$_out" | tr '\n' ' ' | cut -c1-200)) -- a fenti WARN nem erte el a koordinatort" >> "$INSTALL_DIR/store/channels-failures.log" ;;
+  esac
+}
+
+# Test seam: send the guard alert read from stdin, and exit before tmux or the network.
+if [ "${1:-}" = "--guard-alert" ]; then
+  mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
+  guard_alert "$(cat)"
+  exit 0
+fi
+
 # Test seam: print the resolved config line and exit before tmux or the network.
 if [ "${1:-}" = "--resolve-main-config" ]; then
   mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
@@ -550,24 +577,7 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # about, and trigger 2 is structurally blind to it.
   if [ -z "$CFG_ENV" ] && [ ! -d "$INSTALL_DIR/.channels-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent starting on SHARED ~/.claude although a fleet setup-token exists (store/.claude-oauth-token) -- MAIN_AGENT_ISOLATED_CONFIG is unset, so the main bot authenticates from the rotating shared credential and can 401 into a silent channel." >> "$INSTALL_DIR/store/channels-failures.log"
-    if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
-      _guard_port="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
-      curl -s --max-time 5 -X POST "http://localhost:${_guard_port:-3420}/api/messages" \
-        -H "Content-Type: application/json" \
-        -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$INSTALL_DIR/store/.dashboard-token")") \
-        -d "{\"from\":\"channels-sh-guard\",\"to\":\"${MAIN_AGENT_ID:-marveen}\",\"content\":\"[GUARD] A fo agens a KOZOS ~/.claude alol indult, pedig van flotta setup-token (store/.claude-oauth-token). A MAIN_AGENT_ISOLATED_CONFIG nincs beallitva, ezert az auth a rotalodo megosztott credentialbol megy: ez lejarhat, 401-be all a TUI, es a csatorna NEMAN elerhetetlen lesz. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 beallitasa, majd channels session restart.\"}" \
-        -o /dev/null -w '%{http_code}' 2>>"$INSTALL_DIR/store/channels-failures.log" > "$INSTALL_DIR/store/.channels-guard-http.$$" || true
-      # Honest delivery (NOTIFYVAKSWEEP826 zaro kor): a fenti WARN csak a helyi
-      # logban el -- ha a koordinatornak szolo POST elbukik, az is a logba
-      # kerul, kulonben a riasztas-vesztes lathatatlan.
-      _guard_http="$(cat "$INSTALL_DIR/store/.channels-guard-http.$$" 2>/dev/null || echo 000)"
-      rm -f "$INSTALL_DIR/store/.channels-guard-http.$$"
-      case "$_guard_http" in
-        2*) : ;;
-        *) echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN guard alert POST failed (HTTP ${_guard_http:-000}) -- a fenti WARN nem erte el a koordinatort" >> "$INSTALL_DIR/store/channels-failures.log" ;;
-      esac
-      unset _guard_port _guard_http
-    fi
+    guard_alert "[GUARD] A fo agens a KOZOS ~/.claude alol indult, pedig van flotta setup-token (store/.claude-oauth-token). A MAIN_AGENT_ISOLATED_CONFIG nincs beallitva, ezert az auth a rotalodo megosztott credentialbol megy: ez lejarhat, 401-be all a TUI, es a csatorna NEMAN elerhetetlen lesz. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 beallitasa, majd channels session restart."
   fi
   # Trigger 2 (below): an install that HAS run isolated before. Its
   # .channels-config dir is still on disk, yet this boot resolved to the shared
@@ -576,24 +586,7 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # trigger blind on a fresh install, hence trigger 1.
   if [ -z "$CFG_ENV" ] && [ -d "$INSTALL_DIR/.channels-config" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent starting on SHARED ~/.claude although isolated dir $INSTALL_DIR/.channels-config exists -- MAIN_AGENT_ISOLATED_CONFIG resolution came back empty (overrides/.env key lost?). Auth rides the rotating shared session and can 401." >> "$INSTALL_DIR/store/channels-failures.log"
-    if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
-      _guard_port="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
-      curl -s --max-time 5 -X POST "http://localhost:${_guard_port:-3420}/api/messages" \
-        -H "Content-Type: application/json" \
-        -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$INSTALL_DIR/store/.dashboard-token")") \
-        -d "{\"from\":\"channels-sh-guard\",\"to\":\"${MAIN_AGENT_ID:-marveen}\",\"content\":\"[GUARD] A channels session most a KOZOS ~/.claude alol indult, pedig letezik izolalt config dir (.channels-config). A MAIN_AGENT_ISOLATED_CONFIG beallitas valoszinuleg elveszett (store/config-overrides.json torlodott es nincs .env kulcs). Az auth a rotalodo shared sessionbol megy, 401-veszely. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 visszaallitasa, majd channels session restart.\"}" \
-        -o /dev/null -w '%{http_code}' 2>>"$INSTALL_DIR/store/channels-failures.log" > "$INSTALL_DIR/store/.channels-guard-http.$$" || true
-      # Honest delivery (NOTIFYVAKSWEEP826 zaro kor): a fenti WARN csak a helyi
-      # logban el -- ha a koordinatornak szolo POST elbukik, az is a logba
-      # kerul, kulonben a riasztas-vesztes lathatatlan.
-      _guard_http="$(cat "$INSTALL_DIR/store/.channels-guard-http.$$" 2>/dev/null || echo 000)"
-      rm -f "$INSTALL_DIR/store/.channels-guard-http.$$"
-      case "$_guard_http" in
-        2*) : ;;
-        *) echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN guard alert POST failed (HTTP ${_guard_http:-000}) -- a fenti WARN nem erte el a koordinatort" >> "$INSTALL_DIR/store/channels-failures.log" ;;
-      esac
-      unset _guard_port _guard_http
-    fi
+    guard_alert "[GUARD] A channels session most a KOZOS ~/.claude alol indult, pedig letezik izolalt config dir (.channels-config). A MAIN_AGENT_ISOLATED_CONFIG beallitas valoszinuleg elveszett (store/config-overrides.json torlodott es nincs .env kulcs). Az auth a rotalodo shared sessionbol megy, 401-veszely. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 visszaallitasa, majd channels session restart."
   fi
   unset _cfg_line _cfg_mode _cfg_dir
 fi

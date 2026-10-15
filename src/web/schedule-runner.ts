@@ -587,7 +587,42 @@ export function reportQuotaInput(problem: string | null): 'blind' | 'recovered' 
 // main session WORKED after the sample: activity without a sample is blindness, no activity means
 // no sample to expect. Once per episode, and a recovery message only after a blind one.
 export const QUOTA_BLIND_ACTIVITY_MARGIN_MS = 5 * 60_000
-let quotaBlindNotifiedAt: number | null = null
+
+// THE EPISODE OUTLIVES A RESTART (acrobot, 2026-10-15: the blind message came twice, 09:37 and 09:43,
+// with a dashboard restart between). Held only in memory, every restart opened a new episode. The
+// time of the blind message is kept in store/ (the dashboard owns it), read once per process, and
+// cleared when the input is fresh again. Unreadable or absent: no episode.
+const QUOTA_NOTICE_STATE_DEFAULT = join(PROJECT_ROOT, 'store', 'quota-blind-notice.json')
+let quotaNoticeStatePath = QUOTA_NOTICE_STATE_DEFAULT
+/** undefined until read from the store file. */
+let quotaBlindNotifiedAt: number | null | undefined
+
+function blindNotifiedAt(): number | null {
+  if (quotaBlindNotifiedAt === undefined) {
+    try {
+      const v = (JSON.parse(readFileSync(quotaNoticeStatePath, 'utf-8')) as { notifiedAt?: unknown }).notifiedAt
+      quotaBlindNotifiedAt = typeof v === 'number' && Number.isFinite(v) ? v : null
+    } catch {
+      quotaBlindNotifiedAt = null
+    }
+  }
+  return quotaBlindNotifiedAt
+}
+
+function setBlindNotifiedAt(value: number | null): void {
+  quotaBlindNotifiedAt = value
+  try {
+    atomicWriteFileSync(quotaNoticeStatePath, JSON.stringify({ notifiedAt: value }) + '\n')
+  } catch (err) {
+    logger.warn({ err }, 'quota gate: the blind-episode state could not be saved; a restart may send the message again')
+  }
+}
+
+/** Test seam: the state file (null restores the default); forgets the in-memory copy, as a restart does. */
+export function setQuotaNoticeStateForTest(path: string | null): void {
+  quotaNoticeStatePath = path ?? QUOTA_NOTICE_STATE_DEFAULT
+  quotaBlindNotifiedAt = undefined
+}
 
 function notifyMainAgent(content: string): void {
   try {
@@ -612,20 +647,21 @@ export function noticeQuotaBlind(
   evidence: { sampleAtMs: number | null; activityAtMs: number | null },
 ): 'blind' | 'recovered' | null {
   if (problem) {
-    if (quotaBlindNotifiedAt !== null) return null
+    if (blindNotifiedAt() !== null) return null
     const { sampleAtMs, activityAtMs } = evidence
     const worked = activityAtMs !== null && (sampleAtMs === null || activityAtMs > sampleAtMs + QUOTA_BLIND_ACTIVITY_MARGIN_MS)
     if (!worked) return null
-    quotaBlindNotifiedAt = nowMs
+    setBlindNotifiedAt(nowMs)
     quotaNotify(
       `[kvota-kapu] A kvóta-kapu vak (${problem}): a fő munkamenet dolgozik, de nincs friss kvóta-minta (store/quota-gate-sample.json), a háttér-feladatok kvóta-ellenőrzés nélkül futnak. ` +
       'A minta egyetlen forrása a router-felhasználó statusline-ja. Első lépés: store/channels-failures.log utolsó indítási sora (izolált CLAUDE_CONFIG_DIR, vagy WARN a közös ~/.claude-ra).',
     )
     return 'blind'
   }
-  if (quotaBlindNotifiedAt !== null) {
-    const minutes = Math.round((nowMs - quotaBlindNotifiedAt) / 60_000)
-    quotaBlindNotifiedAt = null
+  const since = blindNotifiedAt()
+  if (since !== null) {
+    const minutes = Math.round((nowMs - since) / 60_000)
+    setBlindNotifiedAt(null)
     quotaNotify(`[kvota-kapu] A kvóta-kapu bemenete újra friss (az üzenet óta ${minutes} perc).`)
     return 'recovered'
   }
