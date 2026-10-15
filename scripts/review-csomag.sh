@@ -50,7 +50,7 @@ set -uo pipefail
 # fixed places, one line each: tests replace them in a copy
 GIT_AUTH=/home/marveen/marveen/scripts/git-auth.sh
 GH_API=https://api.github.com
-TOKEN_FILE=/home/marveen/marveen/store/.github-token
+. "$(dirname "${BASH_SOURCE[0]}")/lib/github-token.sh"   # github_token <owner/repo> <role> (FLEET_GITHUB_APP)
 USAGE="usage: [REVIEW_CSOMAG_REPO=<sajat klon>] review-csomag.sh <os|commerce|marveen|ai> <PR> <task_id> [cimke]
        review-csomag.sh docs <fajl> <task_id> [cimke]"
 ZONA="${REVIEW_CSOMAG_DIR:-/home/marveen/marveen/review-csomagok}"
@@ -179,13 +179,13 @@ H=$(git rev-parse "pr-$PR"); M=$(git rev-parse origin/main); B=$(git merge-base 
 # branch at once, so the two are compared, and a difference stops BEFORE anything is
 # written. The token is read inside python from its file and goes to curl on stdin: not on
 # any command line (P0-1).
-if [ ! -r "$TOKEN_FILE" ]; then
-  echo "FAIL: a PR fejet nem tudom ellenorizni: a token nem olvashato ($TOKEN_FILE)" >&2
+if ! GH_TOK="$(github_token "$SLUG" olvas)"; then
+  echo "FAIL: a PR fejet nem tudom ellenorizni: nincs olvaso token a(z) $SLUG repohoz" >&2
   rmdir "$D" 2>/dev/null; exit 1
 fi
-API_HEAD="$(TOKEN_FILE="$TOKEN_FILE" URL="$GH_API/repos/$SLUG/pulls/$PR" python3 -c '
+API_HEAD="$(GH_TOK="$GH_TOK" URL="$GH_API/repos/$SLUG/pulls/$PR" python3 -c '
 import json, os, subprocess, sys
-tok = open(os.environ["TOKEN_FILE"]).read().strip()
+tok = os.environ.pop("GH_TOK", "").strip()
 r = subprocess.run(["curl", "-s", "-H", "@-", "-H", "Accept: application/vnd.github+json", os.environ["URL"]],
                    input="Authorization: Bearer " + tok + chr(10), capture_output=True, text=True)
 try:

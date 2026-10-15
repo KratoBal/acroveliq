@@ -87,7 +87,10 @@ OLV_REPO_NEV="acropora-commerce"
 IRO_PATH="apps/api/src/integrations/medusa/medusa-relations.policy.ts"
 OLV_PATH="apps/storefront/src/modules/products/components/related-products/gondozott-kapcsolatok.ts"
 
-TOKEN_FILE="${GITHUB_TOKEN_FILE:-/home/marveen/marveen/store/.github-token}"
+# an explicit token file (--token-file or GITHUB_TOKEN_FILE: the tests) wins; otherwise one token per
+# repository from github_token (the owner token file with the switch off, the broker with it on)
+TOKEN_FILE="${GITHUB_TOKEN_FILE:-}"
+. "$(dirname "${BASH_SOURCE[0]}")/lib/github-token.sh"   # github_token <owner/repo> <role> (FLEET_GITHUB_APP)
 
 while [ $# -gt 0 ]; do
   case "${1:-}" in
@@ -97,7 +100,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ ! -r "${TOKEN_FILE}" ]; then
+tok() { if [ -n "${TOKEN_FILE}" ]; then cat "${TOKEN_FILE}"; else github_token "${OWNER}/$1" olvas; fi; }
+if [ -n "${TOKEN_FILE}" ] && [ ! -r "${TOKEN_FILE}" ]; then
   echo "NEM MERHETO -- a token-fajl nem olvashato: ${TOKEN_FILE}" >&2
   echo "               (a tartalmat a szkript nem irja ki, es nem is naplozza)" >&2
   exit 2
@@ -119,8 +123,10 @@ letolt() {
   utvonal="$2"
   ki="$3"
   API_BAJ=""
+  # the token first, on its own: inside the process substitution a failure would send an empty header
+  if ! _tok="$(tok "${repo}")"; then API_BAJ="NEM MERHETO -- nincs token a(z) ${OWNER}/${repo} repohoz"; return 1; fi
   kod="$(curl -s -o "${ki}" -w '%{http_code}' \
-    -H @<(printf 'Authorization: Bearer %s\n' "$(cat "${TOKEN_FILE}")") \
+    -H @<(printf 'Authorization: Bearer %s\n' "${_tok}") \
     -H "Accept: application/vnd.github.raw" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "https://api.github.com/repos/${OWNER}/${repo}/contents/${utvonal}?ref=main" 2>/dev/null)"
@@ -152,8 +158,9 @@ letolt() {
 # nem az osszehasonlitas resze.
 fo_ag_sha() {
   repo="$1"
+  if ! _tok="$(tok "${repo}")"; then echo "ismeretlen"; return 0; fi
   valasz="$(curl -s \
-    -H @<(printf 'Authorization: Bearer %s\n' "$(cat "${TOKEN_FILE}")") \
+    -H @<(printf 'Authorization: Bearer %s\n' "${_tok}") \
     -H "Accept: application/vnd.github.sha" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "https://api.github.com/repos/${OWNER}/${repo}/commits/main" 2>/dev/null)"
