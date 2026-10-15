@@ -13,13 +13,18 @@
 //                        the store or .env (point 7: structural, not a hook)
 //   --tools Read         the only tool
 //   --strict-mcp-config  without --mcp-config: no MCP server at all
+// The reader logs in like the main agent (scripts/channels.sh: CLAUDE_CODE_OAUTH_TOKEN or
+// ANTHROPIC_API_KEY from .env, else store/.claude-oauth-token; acrobot 31077: without it the reader
+// said "Not logged in"). The token goes ONLY into the reader's own environment, never to an output.
+// The reader cannot read its environment: it has no Bash, and its Read tool is confined to its
+// folder (/proc is outside); the live canary asks it to print the token.
 // The reader's answer is checked against the fleet's secrets (shapes and token values), cut to a
 // size, and wrapped as untrusted data IN CODE before the main session sees it.
 //
 // THE TOOL LIST IS A PERMISSION (acrobot 31021): changing READER_ARGS beyond `Read` is a
 // permission_change, Balázs's decision, not a review-only change. A test pins the list.
 import { spawn } from 'node:child_process'
-import { copyFileSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -32,6 +37,29 @@ export const READER_ARGS = Object.freeze(['-p', '--restricted', '--tools', 'Read
 /** The environment the reader gets: only what it needs to start and log in, no fleet secret. */
 export const READER_ENV_KEYS = Object.freeze(['HOME', 'PATH', 'LANG', 'USER', 'LOGNAME', 'CLAUDE_CONFIG_DIR'])
 
+/** The login keys the reader may get, and only from loadReaderAuth (never inherited wholesale). */
+export const READER_AUTH_KEYS = Object.freeze(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'])
+
+/** The main agent's login, found the way scripts/channels.sh finds it: the environment, then .env,
+ *  then (for the OAuth token) store/.claude-oauth-token. Empty when there is none. */
+export function loadReaderAuth(envFile: string | undefined, storeDir: string, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  let dotenv = ''
+  try { if (envFile) dotenv = readFileSync(envFile, 'utf8') } catch { /* no .env: the next source */ }
+  const fromDotenv = (k: string) => (new RegExp(`^${k}=(.*)$`, 'm').exec(dotenv)?.[1] ?? '').trim()
+  const out: Record<string, string> = {}
+  for (const k of READER_AUTH_KEYS) {
+    const v = (env[k] ?? '').trim() || fromDotenv(k)
+    if (v) out[k] = v
+  }
+  if (!out.CLAUDE_CODE_OAUTH_TOKEN) {
+    try {
+      const v = readFileSync(join(storeDir, '.claude-oauth-token'), 'utf8').trim()
+      if (v) out.CLAUDE_CODE_OAUTH_TOKEN = v
+    } catch { /* no setup token */ }
+  }
+  return out
+}
+
 export const MAX_INPUT_BYTES = 25 * 1024 * 1024
 export const MAX_OUTPUT_CHARS = 8000
 export const MAX_READER_STDOUT = 1024 * 1024
@@ -40,6 +68,8 @@ export interface KarantenOptions {
   file: string
   claude: string
   storeDir: string
+  /** The reader's login (loadReaderAuth); only these keys are added to its environment. */
+  auth?: Record<string, string>
   envFile?: string
   timeoutMs?: number
   maxOutputChars?: number
@@ -69,16 +99,28 @@ function readerEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return out
 }
 
-function runReader(claude: string, cwd: string, prompt: string, timeoutMs: number, env: NodeJS.ProcessEnv): Promise<{ code: number | null; out: string; timedOut: boolean }> {
+function runReader(claude: string, cwd: string, prompt: string, timeoutMs: number, env: NodeJS.ProcessEnv, auth: Record<string, string>): Promise<{ code: number | null; out: string; err: string; timedOut: boolean }> {
   return new Promise((resolve) => {
-    const child = spawn(claude, [...READER_ARGS, prompt], { cwd, env: readerEnv(env), stdio: ['ignore', 'pipe', 'ignore'], detached: true })
+    const login: Record<string, string> = {}
+    for (const k of READER_AUTH_KEYS) if (auth[k]) login[k] = auth[k]!
+    const child = spawn(claude, [...READER_ARGS, prompt], { cwd, env: { ...readerEnv(env), ...login }, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
     let out = ''
+    let err = ''
     let timedOut = false
     const timer = setTimeout(() => { timedOut = true; try { process.kill(-child.pid!, 'SIGKILL') } catch { /* gone */ } }, timeoutMs)
     child.stdout.on('data', (d) => { if (out.length < MAX_READER_STDOUT) out += d })
-    child.on('error', () => { clearTimeout(timer); resolve({ code: -1, out: '', timedOut }) })
-    child.on('close', (code) => { clearTimeout(timer); resolve({ code, out, timedOut }) })
+    // stderr is only CLASSIFIED (readerFailure), never passed on: it may echo the input
+    child.stderr.on('data', (d) => { if (err.length < 64 * 1024) err += d })
+    child.on('error', () => { clearTimeout(timer); resolve({ code: -1, out: '', err, timedOut }) })
+    child.on('close', (code) => { clearTimeout(timer); resolve({ code, out, err, timedOut }) })
   })
+}
+
+/** Why the reader failed, as a class; nothing of its own text. */
+export function readerFailure(code: number | null, out: string, err: string): string {
+  if (/not logged in|please run \/login|invalid api key|oauth token has expired|authentication_error/i.test(`${out}\n${err}`)) return 'az olvaso nincs belepve (a claude-hitelesites hianyzik vagy ervenytelen)'
+  if (code === -1) return 'az olvaso nem indult el'
+  return `az olvaso hibaval allt le (kilepes ${code})`
 }
 
 /** Reads one outside file through the quarantine reader; the answer comes wrapped, or not at all. */
@@ -92,12 +134,13 @@ export async function karantenOlvas(o: KarantenOptions, env: NodeJS.ProcessEnv =
   const dir = mkdtempSync(join(tmpdir(), 'karanten-'))
   try {
     copyFileSync(o.file, join(dir, name))
-    const r = await runReader(o.claude, dir, readerPrompt(name), o.timeoutMs ?? 180_000, env)
+    const r = await runReader(o.claude, dir, readerPrompt(name), o.timeoutMs ?? 180_000, env, o.auth ?? {})
     if (r.timedOut) return { code: 2, out: 'KARANTEN: az olvaso nem valaszolt idoben; a tartalom nem jott at.' }
-    if (r.code !== 0) return { code: 2, out: `KARANTEN: az olvaso hibaval allt le (kilepes ${r.code}); a tartalom nem jott at.` }
+    if (r.code !== 0) return { code: 2, out: `KARANTEN: ${readerFailure(r.code, r.out, r.err)}; a tartalom nem jott at.` }
     const text = r.out.trim()
     if (!text) return { code: 2, out: 'KARANTEN: az olvaso ures valaszt adott; a tartalom nem jott at.' }
-    const hit = secretIn(text, knownSecretValues(o.storeDir, o.envFile))
+    // the login the reader got is checked too, even when it came from the environment, not a file
+    const hit = secretIn(text, [...knownSecretValues(o.storeDir, o.envFile), ...Object.values(o.auth ?? {})])
     if (hit) return { code: 3, out: `KARANTEN: a kivonat titok-alakot tartalmaz (${hit}); nem jott at.` }
     const max = o.maxOutputChars ?? MAX_OUTPUT_CHARS
     const cut = text.length > max
@@ -121,7 +164,8 @@ async function main(): Promise<void> {
     return
   }
   const { PROJECT_ROOT, STORE_DIR } = await import('./config.js')
-  const r = await karantenOlvas({ file, claude: process.env.KARANTEN_CLAUDE || 'claude', storeDir: STORE_DIR, envFile: join(PROJECT_ROOT, '.env') })
+  const envFile = join(PROJECT_ROOT, '.env')
+  const r = await karantenOlvas({ file, claude: process.env.KARANTEN_CLAUDE || 'claude', storeDir: STORE_DIR, envFile, auth: loadReaderAuth(envFile, STORE_DIR) })
   process.stdout.write(`${r.out}\n`)
   process.exitCode = r.code
 }

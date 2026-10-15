@@ -5,26 +5,31 @@
 //   - it inherits a secret from the environment;
 //   - the answer reaches the caller unwrapped, with a forged closing or trusted tag inside, with a
 //     secret shape or a fleet token value, or past the size limit;
-//   - a failed, silent, slow or empty reader, or an unreadable or oversized file, lets content through.
+//   - a failed, silent, slow or empty reader, or an unreadable or oversized file, lets content through;
+//   - the reader gets no login (acrobot 31077: "Not logged in"), gets it from anywhere but the
+//     channels.sh sources, or the token or the reader's stderr reaches the caller.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, truncateSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { MAX_INPUT_BYTES, READER_ARGS, READER_ENV_KEYS, karantenOlvas, safeName } from '../karanten-olvas.js'
+import { MAX_INPUT_BYTES, READER_ARGS, READER_AUTH_KEYS, READER_ENV_KEYS, karantenOlvas, loadReaderAuth, readerFailure, safeName } from '../karanten-olvas.js'
 
 const ROOT = join(__dirname, '..', '..')
 const GH = ['gh', 'p_', 'B'.repeat(36)].join('')
 let dir: string
 
 /** A fake claude: records its arguments, folder and environment, then answers as told. */
-function fakeClaude(answer: string, opts: { exit?: number; sleep?: number } = {}): string {
+function fakeClaude(answer: string, opts: { exit?: number; sleep?: number; stderr?: string } = {}): string {
   const f = join(dir, 'claude')
   writeFileSync(join(dir, 'valasz'), answer)
+  writeFileSync(join(dir, 'hiba'), opts.stderr ?? '')
   writeFileSync(f, `#!/bin/bash
 printf '%s\\n' "$@" > "${join(dir, 'args')}"
 pwd > "${join(dir, 'cwd')}"
 ls -A > "${join(dir, 'lista')}"
 env | cut -d= -f1 | sort > "${join(dir, 'env')}"
+printf '%s' "\${CLAUDE_CODE_OAUTH_TOKEN-NINCS}" > "${join(dir, 'oauth')}"
+cat "${join(dir, 'hiba')}" >&2
 ${opts.sleep ? `sleep ${opts.sleep}` : ''}
 cat "${join(dir, 'valasz')}"
 exit ${opts.exit ?? 0}
@@ -106,9 +111,66 @@ describe('when it fails, nothing comes through', () => {
     results.push(await karantenOlvas(opts(fakeClaude('TARTALOM'), big)))
     expect(results.map((r) => [r.code, r.out.includes('TARTALOM'), r.out.startsWith('KARANTEN: ')])).toEqual(Array(7).fill([2, false, true]))
     // and each says WHY (a slow reader is not "it failed"): the reasons in order
-    expect(results.map((r) => /hibaval allt le|ures valaszt|nem valaszolt idoben|nem olvashato|nem kozonseges|hibaval allt le|nagyobb, mint/.exec(r.out)?.[0])).toEqual([
-      'hibaval allt le', 'ures valaszt', 'nem valaszolt idoben', 'nem olvashato', 'nem kozonseges', 'hibaval allt le', 'nagyobb, mint',
+    expect(results.map((r) => /hibaval allt le|ures valaszt|nem valaszolt idoben|nem olvashato|nem kozonseges|nem indult el|nagyobb, mint/.exec(r.out)?.[0])).toEqual([
+      'hibaval allt le', 'ures valaszt', 'nem valaszolt idoben', 'nem olvashato', 'nem kozonseges', 'nem indult el', 'nagyobb, mint',
     ])
+  })
+})
+
+describe('the reader\'s login (acrobot 31077)', () => {
+  const TOK = ['sk-ant-oat01-', 'Z'.repeat(40)].join('')
+
+  it('KAR-AUTH-SOURCE: the token comes from the environment, else .env, else store/.claude-oauth-token, as in channels.sh; nothing when there is none', () => {
+    const envFile = join(dir, '.env')
+    writeFileSync(join(dir, 'store', '.claude-oauth-token'), 'tarolt\n')
+    writeFileSync(envFile, 'MAS=1\nCLAUDE_CODE_OAUTH_TOKEN=envfajl\n')
+    const a = loadReaderAuth(envFile, join(dir, 'store'), { CLAUDE_CODE_OAUTH_TOKEN: 'kornyezet' })
+    const b = loadReaderAuth(envFile, join(dir, 'store'), {})
+    writeFileSync(envFile, 'MAS=1\n')
+    const c = loadReaderAuth(envFile, join(dir, 'store'), {})
+    rmSync(join(dir, 'store', '.claude-oauth-token'))
+    const d = loadReaderAuth(envFile, join(dir, 'store'), { DASHBOARD_TOKEN: 'x' })
+    expect([a, b, c, d, [...READER_AUTH_KEYS]]).toEqual([
+      { CLAUDE_CODE_OAUTH_TOKEN: 'kornyezet' }, { CLAUDE_CODE_OAUTH_TOKEN: 'envfajl' }, { CLAUDE_CODE_OAUTH_TOKEN: 'tarolt' }, {},
+      ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'],
+    ])
+  })
+
+  it('KAR-AUTH-ENV: the login reaches ONLY the reader\'s environment, not through the inherited one, and never the caller', async () => {
+    const r = await karantenOlvas(opts(fakeClaude('kivonat'), input(), { auth: { CLAUDE_CODE_OAUTH_TOKEN: TOK, DASHBOARD_TOKEN: 'titok' } }), { HOME: '/h', PATH: '/usr/bin:/bin' })
+    const keys = readFileSync(join(dir, 'env'), 'utf8').split('\n').filter(Boolean)
+    // inherited only: a login in the caller's environment does NOT pass by itself (only via auth)
+    await karantenOlvas(opts(fakeClaude('kivonat'), input()), { HOME: '/h', PATH: '/usr/bin:/bin', CLAUDE_CODE_OAUTH_TOKEN: TOK })
+    expect([r.code, readFileSync(join(dir, 'oauth'), 'utf8') === 'NINCS', keys.includes('CLAUDE_CODE_OAUTH_TOKEN'), keys.includes('DASHBOARD_TOKEN'), r.out.includes(TOK)]).toEqual([0, true, true, false, false])
+  })
+
+  it('KAR-AUTH-ECHO: a reader that prints its own login, even one from the environment only: nothing comes through (code 3)', async () => {
+    const plain = 'Q'.repeat(24) + 'w9'
+    const r = await karantenOlvas(opts(fakeClaude(`a token: ${plain}`), input(), { auth: { CLAUDE_CODE_OAUTH_TOKEN: plain } }))
+    expect([r.code, r.out.includes(plain)]).toEqual([3, false])
+  })
+
+  it('KAR-AUTH-VALUE: the reader gets the token value itself', async () => {
+    await karantenOlvas(opts(fakeClaude('kivonat'), input(), { auth: { CLAUDE_CODE_OAUTH_TOKEN: TOK } }), { HOME: '/h', PATH: '/usr/bin:/bin' })
+    expect(readFileSync(join(dir, 'oauth'), 'utf8') === TOK).toBe(true)
+  })
+
+  it('KAR-LOGIN: a reader that is not logged in says so as a class; its stderr text never comes back', async () => {
+    const r = await karantenOlvas(opts(fakeClaude('Not logged in · Please run /login', { exit: 1, stderr: 'TITKOS-SOR a bemenetbol' }), input()))
+    const s = await karantenOlvas(opts(fakeClaude('', { exit: 1, stderr: 'Error: Not logged in. TITKOS-SOR' }), input()))
+    const o = await karantenOlvas(opts(fakeClaude('', { exit: 1, stderr: 'valami mas TITKOS-SOR' }), input()))
+    expect([r, s, o].map((x) => [x.code, x.out.includes('TITKOS-SOR'), x.out.includes('Please run')])).toEqual(Array(3).fill([2, false, false]))
+    expect([r.out, s.out, o.out]).toEqual([
+      'KARANTEN: az olvaso nincs belepve (a claude-hitelesites hianyzik vagy ervenytelen); a tartalom nem jott at.',
+      'KARANTEN: az olvaso nincs belepve (a claude-hitelesites hianyzik vagy ervenytelen); a tartalom nem jott at.',
+      'KARANTEN: az olvaso hibaval allt le (kilepes 1); a tartalom nem jott at.',
+    ])
+    expect([readerFailure(-1, '', ''), readerFailure(1, '', 'Invalid API key')]).toEqual(['az olvaso nem indult el', 'az olvaso nincs belepve (a claude-hitelesites hianyzik vagy ervenytelen)'])
+  })
+
+  it('KAR-AUTH-CLI: the command passes loadReaderAuth from .env and the store to the reader', () => {
+    const src = readFileSync(join(ROOT, 'src', 'karanten-olvas.ts'), 'utf8')
+    expect(/auth: loadReaderAuth\(envFile, STORE_DIR\)/.test(src)).toBe(true)
   })
 })
 
