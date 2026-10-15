@@ -176,7 +176,9 @@ def dir_chain(path):
     return list(reversed(out))
 
 
-def matrix():
+def matrix_rows():
+    """(users, rows, mismatch): rows are {file, owner, group, mode, readers: {user: IGEN|nem|ACL|?}}.
+    The one computation behind --matrix and the permission-change watcher (titok-jog-figyelo.py)."""
     import pwd
     users = fleet_users()
     # every ancestor counts, not only store/ (barracuda, #190 review): /home or the project root
@@ -189,7 +191,7 @@ def matrix():
     me = os.getuid()
     my_gids = set(os.getgroups()) | {os.getgid()}
     mismatch = []
-    print("%-38s %-10s %-16s %-4s %s" % ("FAJL", "TULAJDONOS", "CSOPORT", "MOD", "  ".join(u[0].replace("agent-", "") for u in users)))
+    rows = []
     for fn in secret_names():
         p = os.path.join(STORE, fn)
         st = os.stat(p)
@@ -199,21 +201,35 @@ def matrix():
             owner = str(st.st_uid)
         acls = dir_acl + [has_acl(p)]
         acl = "ACL" if any(a is True for a in acls) else ("?" if any(a is None for a in acls) else None)
-        cells = []
+        readers = {}
         for name, uid, gids in users:
             if acl:
-                cells.append(acl)
+                readers[name] = acl
                 continue
             ok = dirs_ok(uid, gids) and can(st.st_mode, st.st_uid, st.st_gid, uid, gids, READ)
-            cells.append("IGEN" if ok else "nem")
+            readers[name] = "IGEN" if ok else "nem"
         # the runner's own answer, whether or not it is a fleet user (a CI runner is not): the same
         # computation against the real os.access, so the calibration holds everywhere
         if not acl:
             mine = dirs_ok(me, my_gids) and can(st.st_mode, st.st_uid, st.st_gid, me, my_gids, READ)
             if mine != os.access(p, os.R_OK):
                 mismatch.append(fn)
-        widths = [max(4, len(u[0].replace("agent-", ""))) for u in users]
-        print("%-38s %-10s %-16s %-4s %s" % (fn, owner, group_of(p), oct(st.st_mode)[-3:],
+        rows.append({"file": fn, "owner": owner, "group": group_of(p), "mode": oct(st.st_mode)[-3:], "readers": readers})
+    return [u[0] for u in users], rows, mismatch
+
+
+def matrix():
+    import pwd
+    names, rows, mismatch = matrix_rows()
+    me = os.getuid()
+    if "--json" in sys.argv:
+        print(json.dumps({"users": names, "rows": rows, "mismatch": mismatch}, ensure_ascii=False))
+        return 2 if mismatch else 0
+    print("%-38s %-10s %-16s %-4s %s" % ("FAJL", "TULAJDONOS", "CSOPORT", "MOD", "  ".join(n.replace("agent-", "") for n in names)))
+    widths = [max(4, len(n.replace("agent-", ""))) for n in names]
+    for r in rows:
+        cells = [r["readers"][n] for n in names]
+        print("%-38s %-10s %-16s %-4s %s" % (r["file"], r["owner"], r["group"], r["mode"],
                                             "  ".join(c.ljust(w) for c, w in zip(cells, widths))))
     print()
     print("A tartalmat egyik sem nyitja meg. Szamolva a tulajdonosbol, a csoportbol es a modbol.")
