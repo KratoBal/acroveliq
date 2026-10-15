@@ -29,7 +29,6 @@ import {
   writeAgentModel,
   readAgentDisplayName,
   writeAgentDisplayName,
-  readAgentSecurityProfile,
   writeAgentSecurityProfile,
   listAgentNames,
   isKnownAgent,
@@ -58,6 +57,7 @@ import {
   cleanupTeamReferences,
   reportsToCreatesCycle,
   type TeamConfig,
+  trustedAgentProfile,
 } from '../agent-team.js'
 import {
   readAgentTelegramConfig,
@@ -148,6 +148,7 @@ import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
 import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { acroveliqActivityView, acroveliqAgentsView } from '../acroveliq-host.js'
+import { removeTrustedProfile } from '../agent-profile-store.js'
 
 const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord', 'googlechat', 'teams'])
 
@@ -489,7 +490,7 @@ function getAgentSummary(name: string): AgentSummary {
     activeModel: running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, resolveAgentConfigDir(name).configDir ?? undefined) : null,
     runningSince,
     authMode: readAgentAuthMode(name),
-    securityProfile: readAgentSecurityProfile(name),
+    securityProfile: trustedAgentProfile(name).profile,
     claudePlan: readAgentClaudePlan(name),
     team: readAgentTeam(name),
     hasTelegram: tg.hasTelegram,
@@ -1300,7 +1301,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   if (secGetMatch && method === 'GET') {
     const name = decodeURIComponent(secGetMatch[1])
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
-    const profileId = readAgentSecurityProfile(name)
+    // what the launch uses: the trusted record, not the agent's own config (agent-profile-store.ts)
+    const profileId = trustedAgentProfile(name).profile
     const profile = loadProfileTemplate(profileId)
     const placeholders = { HOME: homedir(), AGENT_DIR: agentDir(name) }
     json(res, {
@@ -1433,7 +1435,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         reportsTo: team.reportsTo,
         delegatesTo: team.delegatesTo,
         running: isAgentRunning(agentName),
-        securityProfile: readAgentSecurityProfile(agentName),
+        securityProfile: trustedAgentProfile(agentName).profile,
       })
     }
     const knownIds = new Set(nodes.map(n => n.id))
@@ -2239,6 +2241,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // created under the same name must not inherit its ssh destination
     writeAgentRemoteConfig(name, '', '')
     cleanupTeamReferences(name)
+    // the trusted profile goes with the agent: a new agent under this name starts from its own create
+    removeTrustedProfile(name)
     json(res, { ok: true })
     return true
   }

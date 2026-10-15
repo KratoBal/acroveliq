@@ -18,6 +18,7 @@ import {
 } from '../web/agent-scaffold.js'
 import { writeAgentSecurityProfile } from '../web/agent-config.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
+import { removeTrustedProfile } from '../web/agent-profile-store.js'
 
 // Review feedback on PR #803, pinned as tests:
 //  1. every injector must write a QUOTED absolute interpreter path -- an
@@ -33,6 +34,8 @@ const testAgentDir = join(PROJECT_ROOT, 'agents', TEST_AGENT)
 
 afterEach(() => {
   rmSync(testAgentDir, { recursive: true, force: true })
+  // the trusted profile goes with the agent, as on a real delete (agent-profile-store.ts)
+  removeTrustedProfile(TEST_AGENT)
 })
 
 function ptuCommands(settings: Record<string, unknown>): string[] {

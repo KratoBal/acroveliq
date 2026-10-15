@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import { MAIN_AGENT_ID } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { agentDir, readFileOr, listAgentNames, readAgentSecurityProfile } from './agent-config.js'
+import { trustedProfileFor, writeTrustedProfile, type TrustedProfile } from './agent-profile-store.js'
 
 export interface TeamConfig {
   role: 'leader' | 'member'
@@ -75,9 +76,23 @@ export function resolveSecurityProfileId(
   return team.role === 'leader' ? 'applier' : 'default'
 }
 
-/** Read-and-resolve convenience over resolveSecurityProfileId for a live agent. */
+/** What the agent's own config says: only to seed a missing trusted record and to name a difference. */
+function configProfile(name: string): TrustedProfile {
+  return { profile: readAgentSecurityProfile(name), role: readAgentTeam(name).role }
+}
+
+/**
+ * The trusted profile and role (agent-profile-store.ts): the dashboard's record, not the agent's
+ * own config, which the agent can write (barracuda's finding, acrobot 31248).
+ */
+export function trustedAgentProfile(name: string): TrustedProfile {
+  return trustedProfileFor(name, configProfile(name))
+}
+
+/** Read-and-resolve for a live agent: from the trusted record, never from the agent's own config. */
 export function resolveAgentSecurityProfile(name: string): string {
-  return resolveSecurityProfileId(readAgentSecurityProfile(name), readAgentTeam(name))
+  const t = trustedAgentProfile(name)
+  return resolveSecurityProfileId(t.profile, { role: t.role })
 }
 
 export function writeAgentTeam(name: string, team: TeamConfig): void {
@@ -86,6 +101,8 @@ export function writeAgentTeam(name: string, team: TeamConfig): void {
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
   config.team = team
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+  // the role decides the applier pool: the trusted record follows the dashboard's write
+  writeTrustedProfile(name, { role: team.role }, configProfile(name))
 }
 
 // Scrub self-references and unknown agent names from a TeamConfig's name

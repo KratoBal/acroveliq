@@ -79,6 +79,17 @@ export function writeTrustedProfile(
 }
 
 /**
+ * Drops an agent's record when the agent is deleted. Without this a later agent created under the
+ * same name inherited the deleted one's profile, possibly a higher one.
+ */
+export function removeTrustedProfile(name: string, path = agentProfileStorePath()): void {
+  const store = readStore(path)
+  if (!(name in store.agents)) return
+  delete store.agents[name]
+  writeStore(path, store)
+}
+
+/**
  * The profile and role the launch uses. `fromConfig` is what the agent's own config says: used
  * only to seed a missing record (once, with a WARN) and to name a difference (a WARN), never to
  * override the record.
