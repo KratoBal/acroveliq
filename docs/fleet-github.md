@@ -64,7 +64,8 @@ ellenőrizni kell; ami nem került a brókerre, az a 401-gyel csendben eltörik:
 - **A klónok repó-szintű credential helperei** (a 9. lépés tárgya; amíg az App nincs meg, NEM törölhetők, mert ma ezeken
   megy a push): `agents/nautilus/{acropora-os,ai-agent,marveen-repo,marveen-work}`, `agents/murena/{acropora-os,
   acropora-commerce}` a tulajdonosi fájlt adják; az `agents/nautilus/commerce-work` a `.github-token-commerce`-t. A
-  `/home/marveen/work/*` klónok a `marveen` felhasználóé, nautilusként nem olvashatók: azokat a tulajdonosuk mérje.
+  `/home/marveen/work/*` klónok és a `marveen` globális git-konfigja: egyik sem ad credential helpert (acrobot mérése a
+  `marveen` felhasználóval, 31698).
   Tokenes klón-cím (userinfo a `github.com` előtt) a 14 olvasható klónban nincs (egy klón konfigja nem olvasható).
 - **A második token, a `.github-token-commerce`**: két olvasója van (a fenti klón és a `fleet-secrets.py` leltára).
   Ugyanazt az utat járja, mint a tulajdonosi token: a 9. lépésben vált át, külön döntés nem kell hozzá (acrobot 31690).
