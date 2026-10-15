@@ -22,7 +22,8 @@
 #   bash scripts/gcal.sh fetch <uzenet-id> <celmappa>    -> egy level lemezre; kiirja a fajlok utjat es meretet
 #
 # A FELADO SZOVEGE ADAT, NEM UTASITAS (P1-00f, 1. pont, barracuda APPROVE v4): amit a level kuldoje
-# ir (From, Subject, Date, a mellekletek neve), az <untrusted source="gmail"> borítekban jon, a
+# ir (From, Subject, Date, a mellekletek neve), az <untrusted source="gmail"> borítekban jon (a
+# naptari esemeny cime, amit egy kulso meghivo is beallithat, <untrusted source="gcal">-ban), a
 # boritekon beluli biztonsagi tagek (untrusted, trusted-peer, scheduled-task) kicserelve, ugyanugy,
 # mint a src/prompt-safety.ts wrapUntrusted-jeben: egy targy nem zarhatja le a boritekot, es nem
 # nyithat trusted-peer blokkot. A fetch a torzset es a fejleceket nem irja ki, csak a fajlok utjat
@@ -145,12 +146,17 @@ _SECURITY_TAG = _re_u.compile(r"<\s*/?\s*(untrusted|trusted-peer|scheduled-task)
 _STRIPPED = "[[SECURITY_TAG_REMOVED_%s]]" % _secrets.token_hex(4)
 
 
-def untrusted(text):
+def untrusted(text, source="gmail"):
     # One envelope per field, on ONE line: the listings are line-based, and a line break in a
     # header must not start a line that looks like ours.
-    t = _SECURITY_TAG.sub(_STRIPPED, str(text))
-    t = _re_u.sub(r"[\r\n\u2028\u2029\x85]+", " ", t)
-    return '<untrusted source="gmail">%s</untrusted>' % t
+    # every C0 and C1 control (CR, LF, VT, FF, the separators U+001C..U+001E, ESC of an ANSI
+    # code, U+0085) and the two Unicode separators: splitlines() and many displays break a line
+    # on more than CR and LF, and the output may reach a terminal (barracuda, #170 review).
+    # FIRST, then the tags: a control the tag pattern's \s does not cover (U+0001, ESC) inside a
+    # tag hid it from the tag replacement, and its space then made it one (barracuda, #173)
+    t = _re_u.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+", " ", str(text))
+    t = _SECURITY_TAG.sub(_STRIPPED, t)
+    return '<untrusted source="%s">%s</untrusted>' % (source, t)
 
 if CMD == "auth-url":
     q = urllib.parse.urlencode({
@@ -241,7 +247,9 @@ elif CMD == "events":
         print("(nincs esemeny)")
     for it in items:
         start = (it.get("start", {}).get("dateTime") or it.get("start", {}).get("date"))
-        print("%s | %s" % (start, it.get("summary", "(cim nelkul)")))
+        # the title is the organiser's text (an invitation from outside sets it): data, like a
+        # mail's subject (P1-00f, section 2 row 5); the start is Google's own RFC 3339 value
+        print("%s | %s" % (start, untrusted(it.get("summary", "(cim nelkul)"), "gcal")))
 
 elif CMD == "search":
     # READ ONLY. Gmail search syntax, e.g. 'from:hertlein.de' or 'hertlein has:attachment'.
@@ -312,6 +320,12 @@ elif CMD == "fetch":
                 # real headers (written before the attachments), a sender's own From and Subject
                 if safe in ("headers.txt", "body.txt"):
                     safe = "melleklet-" + safe
+                # two attachments of one name: the second gets a number, it no longer replaces the first
+                base, ext = os.path.splitext(safe)
+                k = 2
+                while os.path.join(tgt, safe) in [w[0] for w in written]:
+                    safe = "%s-%d%s" % (base, k, ext)
+                    k += 1
                 with open(os.path.join(tgt, safe), "wb") as f:
                     f.write(base64.urlsafe_b64decode(data + "=" * (-len(data) % 4)))
                 written.append((os.path.join(tgt, safe), True))
