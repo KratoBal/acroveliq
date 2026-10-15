@@ -466,6 +466,9 @@ async function afterAcrobot(db: Database.Database, deps: DebateDeps, cfg: Debate
   return 'acrobot'
 }
 
+/** The controller's one answer to an owner message while the debate waits (handleOwnerMessage). */
+export const RECORDED_WHILE_WAITING = 'Rögzítettem, a következő kör megkapja. A folytatást a „folytasd” indítja.'
+
 /** One owner message from an allowed thread (the poller checked the author). */
 export async function handleOwnerMessage(
   db: Database.Database,
@@ -536,6 +539,15 @@ export async function handleOwnerMessage(
       // the named commands move the debate. A plain reply in a waiting debate started a phase,
       // and with it a GPT run, twice in one minute (acrobot 31095, 31100: an "1" to a question
       // and "megvarjuk a felmerest"). The next round reads every message since the last answer.
+      if (active.status === 'var_balazsra' || active.status === 'megakadt') {
+        // While it waits, the first message is answered once, so the owner does not read silence
+        // as a message lost (barracuda, #178 review; acrobot 31121: yes). Once per waiting spell:
+        // the first plain message recorded since the debate stopped (its updated_at moved then);
+        // a command in between (`gpt be`, the `folytasd` that started the phase) does not count.
+        const since = db.prepare('SELECT text FROM debate_owner_messages WHERE debate_id = ? AND at >= ?')
+          .all(active.id, active.updated_at) as { text: string }[]
+        if (since.filter((m) => parseOwnerCommand(m.text).kind === 'message').length === 1) await reply(RECORDED_WHILE_WAITING)
+      }
       return 'noted'
   }
   return 'noted'
