@@ -14,6 +14,7 @@ biztonsagos naploba iranyitani vagy csatornara masolni.
 
   python3 scripts/fleet-secrets.py            # a teljes lista
   python3 scripts/fleet-secrets.py --warn     # csak ami 30 napon belul lejar vagy ismeretlen
+  python3 scripts/fleet-secrets.py --matrix   # ki olvashatja: a marveen es az agens-felhasznalok x titok
 
 EXIT 1, ha barmi 30 napon belul lejar. Igy utemezett feladatbol is hasznalhato.
 
@@ -22,6 +23,15 @@ A LEJARAT HAROM FELE LEHET, es a kulonbseg szamit:
   JELOLT    kezzel felirtuk a store/secrets-lejarat.json fajlba. Ez elavulhat.
   ISMERETLEN nem tudjuk. Ez NEM azt jelenti, hogy nem jar le -- csak azt, hogy vakon
              allunk. Egy ismeretlen lejarat ugyanolyan lelet, mint egy kozeli.
+
+A --matrix MOD (Security Baseline F0-2, az M-3 jogosultsag-figyelo elofeltetele; acrobot 31236): a
+marveen es minden agent-* felhasznalo minden titok-fajlra IGEN vagy NEM valaszt kap, jog nelkul
+kiszamolva a tulajdonosbol, a csoportbol, a modbol es a csoporttagsagbol (pwd, grp), ugyanugy, ahogy
+a kernel dont: elobb a tulajdonos, aztan a csoport, aztan mindenki, es a store/ mappa x bitje is
+kell. A store/ alatt 2026-10-15-en egyetlen fajlon sem volt ACL; ha megis lesz, az a sor "ACL"
+jelet kap, nem szamolt valaszt (az ACL a xattr-listabol jog nelkul latszik). A futtato sajat sorat
+a valodi os.access-szel is osszeveti, es elteresnel 2-vel lep ki. Kimenet: ut, tulajdonos, csoport,
+mod es a felhasznalonkenti IGEN/NEM. A fajl TARTALMAT nem nyitja meg, es halozatot sem hiv.
 """
 
 import json
@@ -92,12 +102,9 @@ def days_until(datestr):
         return None
 
 
-def main():
-    warn_only = "--warn" in sys.argv
-    ann = annotations()
-    gh = github_expiry()
-
-    rows = []
+def secret_names():
+    """The store's secret files, by the one filter both modes use (the comment below)."""
+    out = []
     for fn in sorted(os.listdir(STORE)):
         p = os.path.join(STORE, fn)
         if not os.path.isfile(p) or not fn.startswith("."):
@@ -112,6 +119,94 @@ def main():
         if not any(k in fn for k in ("token", "key", "env", "secret", "cred",
                                      "password", "passwd", "passphrase", "auth")):
             continue
+        out.append(fn)
+    return out
+
+
+def can(mode, file_uid, file_gid, uid, gids, bits):
+    """The kernel's order: the owner class alone if the uid owns it, else the group class if one
+    of its groups owns it, else the others. `bits` is (owner, group, other) for read or execute."""
+    if uid == 0:
+        return True
+    if uid == file_uid:
+        return bool(mode & bits[0])
+    if file_gid in gids:
+        return bool(mode & bits[1])
+    return bool(mode & bits[2])
+
+
+READ = (0o400, 0o040, 0o004)
+EXEC = (0o100, 0o010, 0o001)
+
+
+def fleet_users():
+    """(name, uid, gids) for marveen and every agent-* user: the primary group and every group
+    that lists the user."""
+    import grp
+    import pwd
+    users = []
+    for pw in sorted(pwd.getpwall(), key=lambda p: (p.pw_name != "marveen", p.pw_name)):
+        if pw.pw_name != "marveen" and not pw.pw_name.startswith("agent-"):
+            continue
+        gids = {pw.pw_gid} | {g.gr_gid for g in grp.getgrall() if pw.pw_name in g.gr_mem}
+        users.append((pw.pw_name, pw.pw_uid, gids))
+    return users
+
+
+def has_acl(path):
+    try:
+        return any(a.startswith("system.posix_acl") for a in os.listxattr(path))
+    except OSError:
+        return False
+
+
+def matrix():
+    import pwd
+    users = fleet_users()
+    dst = os.stat(STORE)
+    dir_acl = has_acl(STORE)
+    me = os.getuid()
+    mismatch = []
+    print("%-38s %-10s %-16s %-4s %s" % ("FAJL", "TULAJDONOS", "CSOPORT", "MOD", "  ".join(u[0].replace("agent-", "") for u in users)))
+    for fn in secret_names():
+        p = os.path.join(STORE, fn)
+        st = os.stat(p)
+        try:
+            owner = pwd.getpwuid(st.st_uid).pw_name
+        except KeyError:
+            owner = str(st.st_uid)
+        acl = dir_acl or has_acl(p)
+        cells = []
+        for name, uid, gids in users:
+            if acl:
+                cells.append("ACL")
+                continue
+            ok = can(dst.st_mode, dst.st_uid, dst.st_gid, uid, gids, EXEC) and can(st.st_mode, st.st_uid, st.st_gid, uid, gids, READ)
+            cells.append("IGEN" if ok else "nem")
+            if uid == me and ok != os.access(p, os.R_OK):
+                mismatch.append(fn)
+        widths = [max(4, len(u[0].replace("agent-", ""))) for u in users]
+        print("%-38s %-10s %-16s %-4s %s" % (fn, owner, group_of(p), oct(st.st_mode)[-3:],
+                                            "  ".join(c.ljust(w) for c, w in zip(cells, widths))))
+    print()
+    print("A tartalmat egyik sem nyitja meg. Szamolva a tulajdonosbol, a csoportbol es a modbol.")
+    if mismatch:
+        print("ELTERES a futtato sajat soran (szamolt kontra os.access): %s" % ", ".join(mismatch))
+        return 2
+    print("A futtato sajat sora egyezik az os.access-szel (%s)." % pwd.getpwuid(me).pw_name)
+    return 0
+
+
+def main():
+    if "--matrix" in sys.argv:
+        return matrix()
+    warn_only = "--warn" in sys.argv
+    ann = annotations()
+    gh = github_expiry()
+
+    rows = []
+    for fn in secret_names():
+        p = os.path.join(STORE, fn)
         st = os.stat(p)
         exp, src = None, "ISMERETLEN"
         if fn == ".github-token" and gh:
