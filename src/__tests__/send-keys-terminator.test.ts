@@ -50,6 +50,16 @@ describe('the option terminator', () => {
     expect([sendKeysLiteralArgs('-x', true), sendKeysLiteralArgs('x', false)]).toEqual([['-l', '--', '-x'], ['-l', 'x']])
   })
 
+  it('TERM-CODEPOINT: an emoji on a chunk boundary is never cut in half (a lone surrogate reaches tmux as U+FFFD), either split', () => {
+    const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+    const msg = 'a'.repeat(79) + '😀🐠' + 'b'.repeat(78) + '-🦈' + 'c'.repeat(10)
+    const results = [true, false].map((t) => {
+      const chunks = splitForSendKeys(msg, 80, t)
+      return [chunks.some((c) => lone.test(c)), chunks.every((c) => Array.from(c).length <= 81), typedFromChunks(chunks).replace(/ (?=-)/g, '')]
+    })
+    expect(results).toEqual([[false, true, msg], [false, true, msg]])
+  })
+
   it('TERM-REMOTE: without the terminator (a remote agent) no chunk starts with "-": the old rule, unchanged', () => {
     const chunks = splitForSendKeys(MSG)
     expect([chunks.some((c) => c.startsWith('-')), chunks.join('').replace(/\\;/g, ';').replace(/ (?=-)/g, '').length >= MSG.length - 2]).toEqual([false, true])
