@@ -13,6 +13,12 @@
 //                        the store or .env (point 7: structural, not a hook)
 //   --tools Read         the only tool
 //   --strict-mcp-config  without --mcp-config: no MCP server at all
+//   --no-session-persistence  no transcript on disk: the session would otherwise keep the outside
+//                        file's whole text under CLAUDE_CONFIG_DIR after the folder is gone
+//                        (barracuda, #172; the flag measured in the same help)
+// URL mode (`--url`, P1-00f point 3): the COMMAND downloads the page (src/karanten-letolt.ts: the
+// egress gate's quarantine decision, pinned addresses, no internal range, size and time limits)
+// and the reader gets it as a file; the reader itself never gets WebFetch.
 // The reader logs in like the main agent (scripts/channels.sh: CLAUDE_CODE_OAUTH_TOKEN or
 // ANTHROPIC_API_KEY from .env, else store/.claude-oauth-token; acrobot 31077: without it the reader
 // said "Not logged in"). The token goes ONLY into the reader's own environment, never to an output.
@@ -24,17 +30,21 @@
 // THE TOOL LIST IS A PERMISSION (acrobot 31021): changing READER_ARGS beyond `Read` is a
 // permission_change, Balázs's decision, not a review-only change. A test pins the list.
 import { spawn } from 'node:child_process'
-import { copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { knownSecretValues, secretIn } from './gpt-package.js'
+import { DEFAULT_DEPS, letolt, type DownloadDeps } from './karanten-letolt.js'
 import { wrapUntrusted } from './prompt-safety.js'
 
 /** The reader's fixed flags. See the header: a change here is a permission change. */
-export const READER_ARGS = Object.freeze(['-p', '--restricted', '--tools', 'Read', '--strict-mcp-config', '--output-format', 'text'])
+export const READER_ARGS = Object.freeze(['-p', '--restricted', '--tools', 'Read', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'text'])
 
 /** The environment the reader gets: only what it needs to start and log in, no fleet secret. */
+// The login is deliberately NOT here: this list is INHERITED (any value the caller's environment
+// holds passes), while the login comes only from loadReaderAuth's known sources, and that same value
+// is what the secret check watches for (barracuda, #174). Do not add the auth keys to this list.
 export const READER_ENV_KEYS = Object.freeze(['HOME', 'PATH', 'LANG', 'USER', 'LOGNAME', 'CLAUDE_CONFIG_DIR'])
 
 /** The login keys the reader may get, and only from loadReaderAuth (never inherited wholesale). */
@@ -130,10 +140,24 @@ export async function karantenOlvas(o: KarantenOptions, env: NodeJS.ProcessEnv =
   if (!st.isFile()) return { code: 2, out: 'KARANTEN: nem kozonseges fajl; a tartalom nem jott at.' }
   if (st.size > MAX_INPUT_BYTES) return { code: 2, out: `KARANTEN: a fajl nagyobb, mint ${MAX_INPUT_BYTES} bajt; a tartalom nem jott at.` }
   const name = safeName(o.file)
-  // a fresh folder (0700) holding ONLY the copy: the reader's file tools are confined to it
+  return inFreshFolder((dir) => copyFileSync(o.file, join(dir, name)), name, 'karanten-fajl', o, env)
+}
+
+export interface KarantenUrlOptions extends Omit<KarantenOptions, 'file'> { url: string; deps?: DownloadDeps }
+
+/** Reads one web page through the quarantine reader: the command downloads it, the reader reads a file. */
+export async function karantenOlvasUrl(o: KarantenUrlOptions, env: NodeJS.ProcessEnv = process.env): Promise<KarantenResult> {
+  const d = await letolt(o.url, o.deps ?? DEFAULT_DEPS)
+  if (!d.ok) return { code: 2, out: `KARANTEN: az oldal nem toltodott le (${d.why}); a tartalom nem jott at.` }
+  const name = /pdf/i.test(d.contentType) ? 'bemenet-oldal.pdf' : /html/i.test(d.contentType) ? 'bemenet-oldal.html' : 'bemenet-oldal.txt'
+  return inFreshFolder((dir) => writeFileSync(join(dir, name), d.body, { mode: 0o600 }), name, 'karanten-url', o, env)
+}
+
+/** A fresh folder (0700) holding ONLY the one input: the reader's file tools are confined to it. */
+async function inFreshFolder(put: (dir: string) => void, name: string, source: string, o: Omit<KarantenOptions, 'file'>, env: NodeJS.ProcessEnv): Promise<KarantenResult> {
   const dir = mkdtempSync(join(tmpdir(), 'karanten-'))
   try {
-    copyFileSync(o.file, join(dir, name))
+    put(dir)
     const r = await runReader(o.claude, dir, readerPrompt(name), o.timeoutMs ?? 180_000, env, o.auth ?? {})
     if (r.timedOut) return { code: 2, out: 'KARANTEN: az olvaso nem valaszolt idoben; a tartalom nem jott at.' }
     if (r.code !== 0) return { code: 2, out: `KARANTEN: ${readerFailure(r.code, r.out, r.err)}; a tartalom nem jott at.` }
@@ -144,11 +168,17 @@ export async function karantenOlvas(o: KarantenOptions, env: NodeJS.ProcessEnv =
     if (hit) return { code: 3, out: `KARANTEN: a kivonat titok-alakot tartalmaz (${hit}); nem jott at.` }
     const max = o.maxOutputChars ?? MAX_OUTPUT_CHARS
     const cut = text.length > max
-    const wrapped = wrapUntrusted(`karanten-fajl:${name}`, cut ? text.slice(0, max) : text)
+    const wrapped = wrapUntrusted(`${source}:${name}`, cut ? text.slice(0, max) : text)
     return { code: 0, out: cut ? `${wrapped}\n(KARANTEN: a kivonat ${max} karakternel levagva)` : wrapped }
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+}
+
+/** The reader binary, and the line that says so when it is not the default (barracuda, #172). */
+export function readerBinary(env: NodeJS.ProcessEnv): { claude: string; notice: string | null } {
+  const set = env.KARANTEN_CLAUDE
+  return set ? { claude: set, notice: `KARANTEN: nem az alapertelmezett olvaso fut: ${set}` } : { claude: 'claude', notice: null }
 }
 
 /** For the tests: the folder the reader saw must hold the copy and nothing else. */
@@ -157,15 +187,21 @@ export function folderListing(dir: string): string[] {
 }
 
 async function main(): Promise<void> {
-  const file = process.argv[2]
-  if (!file || process.argv.length > 3) {
-    process.stdout.write('hasznalat: karanten-olvas.sh <fajl>\n')
+  const a = process.argv.slice(2)
+  const url = a[0] === '--url' ? a[1] : undefined
+  const file = a[0] === '--url' ? undefined : a[0]
+  if ((a[0] === '--url' && (a.length !== 2 || !url)) || (a[0] !== '--url' && a.length !== 1)) {
+    process.stdout.write('hasznalat: karanten-olvas.sh <fajl> | karanten-olvas.sh --url <url>\n')
     process.exitCode = 2
     return
   }
+  // another binary as the reader is for tests; if it is set, it is said (barracuda, #172)
+  const { claude, notice } = readerBinary(process.env)
+  if (notice) process.stdout.write(`${notice}\n`)
   const { PROJECT_ROOT, STORE_DIR } = await import('./config.js')
   const envFile = join(PROJECT_ROOT, '.env')
-  const r = await karantenOlvas({ file, claude: process.env.KARANTEN_CLAUDE || 'claude', storeDir: STORE_DIR, envFile, auth: loadReaderAuth(envFile, STORE_DIR) })
+  const base = { claude, storeDir: STORE_DIR, envFile, auth: loadReaderAuth(envFile, STORE_DIR) }
+  const r = url ? await karantenOlvasUrl({ ...base, url }) : await karantenOlvas({ ...base, file: file! })
   process.stdout.write(`${r.out}\n`)
   process.exitCode = r.code
 }

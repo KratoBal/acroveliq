@@ -526,12 +526,16 @@ export async function handleOwnerMessage(
       return 'gpt_direct'
     }
     case 'continue':
-    case 'message':
       if (active.status === 'var_balazsra' || active.status === 'megakadt') {
         await newPhase(db, deps, active)
         return 'new_phase'
       }
-      // during a running phase: kept for the next speaker, the counter does not move
+      return 'noted'
+    case 'message':
+      // Kept (above) for the next speaker, and nothing more, in every state: only `folytasd` and
+      // the named commands move the debate. A plain reply in a waiting debate started a phase,
+      // and with it a GPT run, twice in one minute (acrobot 31095, 31100: an "1" to a question
+      // and "megvarjuk a felmerest"). The next round reads every message since the last answer.
       return 'noted'
   }
   return 'noted'

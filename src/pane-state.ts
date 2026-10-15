@@ -910,6 +910,21 @@ function inputBoxIsFree(box: string): boolean {
 }
 
 /**
+ * Pure: is the live input box empty? Only the prompt glyph and the queued-messages hint count
+ * as empty in the plain view; dim ghost text (the "Try ..." hint) as well when the dim-stripped
+ * view (captureParkedInputView) shows the box free. False with no live box: nothing proves it
+ * empty. The check after a clear, before a copy is typed again (acrobot 31076).
+ */
+export function liveBoxIsFree(plain: string | null, dimStripped: string | null = null): boolean {
+  if (!plain) return false
+  const rows = liveInputBoxRows(plain)
+  if (rows == null) return false
+  if (inputBoxIsFree(rows.join('\n'))) return true
+  const ghost = dimStripped != null ? liveInputBoxRows(dimStripped) : null
+  return ghost != null && inputBoxIsFree(ghost.join('\n'))
+}
+
+/**
  * Pure: does the pane show only the live input box, with nothing on top of it that a
  * keystroke would answer? No permission question, no menu hint, no feedback-draft or
  * model-consent dialog, a known footer and a live box under it. The look taken before

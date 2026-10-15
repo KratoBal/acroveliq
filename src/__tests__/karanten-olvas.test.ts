@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, truncateSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { MAX_INPUT_BYTES, READER_ARGS, READER_AUTH_KEYS, READER_ENV_KEYS, karantenOlvas, loadReaderAuth, readerFailure, safeName } from '../karanten-olvas.js'
+import { MAX_INPUT_BYTES, READER_ARGS, READER_AUTH_KEYS, READER_ENV_KEYS, karantenOlvas, loadReaderAuth, readerBinary, readerFailure, safeName } from '../karanten-olvas.js'
 
 const ROOT = join(__dirname, '..', '..')
 const GH = ['gh', 'p_', 'B'.repeat(36)].join('')
@@ -48,7 +48,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('what the reader is', () => {
   it('KAR-ARGS: exactly -p --restricted --tools Read --strict-mcp-config (frozen), then the fixed request naming the copy; widening it is a permission change', async () => {
-    expect([[...READER_ARGS], Object.isFrozen(READER_ARGS)]).toEqual([['-p', '--restricted', '--tools', 'Read', '--strict-mcp-config', '--output-format', 'text'], true])
+    expect([[...READER_ARGS], Object.isFrozen(READER_ARGS)]).toEqual([['-p', '--restricted', '--tools', 'Read', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'text'], true])
     const r = await karantenOlvas(opts(fakeClaude('kivonat'), input()))
     const args = readFileSync(join(dir, 'args'), 'utf8').split('\n').filter(Boolean)
     expect([r.code, args.slice(0, READER_ARGS.length), args[READER_ARGS.length]!.startsWith('Olvasd el a ./bemenet-level.txt fájlt')]).toEqual([0, [...READER_ARGS], true])
@@ -67,6 +67,10 @@ describe('what the reader is', () => {
     await karantenOlvas(opts(fakeClaude('kivonat'), input()), { HOME: '/home/x', PATH: '/usr/bin:/bin', DASHBOARD_TOKEN: 'titok', DISCORD_BOT_TOKEN: 'titok', CLAUDE_CONFIG_DIR: '/c' })
     const keys = readFileSync(join(dir, 'env'), 'utf8').split('\n').filter(Boolean).filter((k) => !['PWD', 'SHLVL', '_', 'OLDPWD'].includes(k))
     expect([keys.every((k) => (READER_ENV_KEYS as readonly string[]).includes(k)), keys.includes('DASHBOARD_TOKEN'), keys.includes('CLAUDE_CONFIG_DIR')]).toEqual([true, false, true])
+  })
+
+  it('KAR-BINARY: another binary as the reader (KARANTEN_CLAUDE) is said in the output; the default is claude, silently', () => {
+    expect([readerBinary({}), readerBinary({ KARANTEN_CLAUDE: '/tmp/x' })]).toEqual([{ claude: 'claude', notice: null }, { claude: '/tmp/x', notice: 'KARANTEN: nem az alapertelmezett olvaso fut: /tmp/x' }])
   })
 
   it('KAR-NAME: the copy\'s name has no path, no flag start, no odd characters', () => {
