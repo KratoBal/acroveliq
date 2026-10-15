@@ -19,6 +19,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { STORE_DIR, DB_FILENAME, MAIN_AGENT_ID } from '../config.js'
+import { cleanMessageText } from '../prompt-safety.js'
 
 export const COORDINATOR_AGENT_ID = 'telegram-coordinator'
 
@@ -161,7 +162,9 @@ export function createHandoffMessage(content: string): number {
   const now = Math.floor(Date.now() / 1000)
   const info = requireDb().prepare(
     'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(COORDINATOR_AGENT_ID, MAIN_AGENT_ID, content, 'pending', now)
+  // the user's own text from Discord or Telegram, the fleet's largest outside source: stored
+  // cleaned like every other message (prompt-safety.ts cleanMessageText; barracuda, #177 review)
+  ).run(COORDINATOR_AGENT_ID, MAIN_AGENT_ID, cleanMessageText(content), 'pending', now)
   return Number(info.lastInsertRowid)
 }
 

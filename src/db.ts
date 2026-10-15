@@ -10,6 +10,7 @@ import { ensureTaskUsageSchema } from './task-usage.js'
 import { ensureDebatesSchema } from './debates.js'
 import { ensurePrincipalSchema } from './web/auth-principals.js'
 import { ensureAccessDecisionSchema } from './web/access-enforcement.js'
+import { cleanMessageText } from './prompt-safety.js'
 
 let db: Database.Database
 // The path the CURRENT handle was opened on (null for ':memory:'). Kept so
@@ -2285,6 +2286,10 @@ export function createAgentMessage(
   taskId?: string | null,
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
+  // the route, the federation inbox and the server's notices store the cleaned text here; the two
+  // writers that insert directly (channel-coordinator/ingest.ts createHandoffMessage,
+  // scripts/guard-alert.mjs) clean it themselves, and message-writers.test.ts holds that list
+  content = cleanMessageText(content)
   const info = db.prepare(
     'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, taskId ?? null)
@@ -2369,7 +2374,7 @@ export function closeMessagesWithoutDelivery(ids: number[], reason: string): num
 // records the peer-assigned id on delivered rows ("fed:<peer>:<remote id>")
 // so a cross-system message can be traced without a schema migration.
 export function setMessageResult(id: number, result: string): boolean {
-  return db.prepare('UPDATE agent_messages SET result = ? WHERE id = ?').run(result, id).changes > 0
+  return db.prepare('UPDATE agent_messages SET result = ? WHERE id = ?').run(cleanMessageText(result), id).changes > 0
 }
 
 // Bulk-fail PENDING federated (slash-qualified to_agent) messages -- the
@@ -2423,8 +2428,11 @@ export function claimPendingForAgent(toAgent: string, limit: number): AgentMessa
   return rows.sort((a, b) => (a.created_at - b.created_at) || (a.id - b.id))
 }
 
+// The result an agent writes back (PUT /api/messages/:id) reaches the sender in its name: stored
+// cleaned like a message (barracuda, #177 review).
 export function markMessageDone(id: number, result?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
+  if (result != null) result = cleanMessageText(result)
   // COALESCE: some done-transitions skip the delivered step entirely (e.g. a
   // still-pending row marked done directly via PUT), so backfill delivered_at
   // only when it was never set -- don't clobber a real earlier delivery time.
@@ -2433,6 +2441,7 @@ export function markMessageDone(id: number, result?: string): boolean {
 
 export function markMessageFailed(id: number, error?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
+  if (error != null) error = cleanMessageText(error)
   return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ?").run(error ?? null, now, id).changes > 0
 }
 
