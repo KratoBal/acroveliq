@@ -7,7 +7,11 @@
 //     and the file key is the one in the document's "Figma file" line;
 //   - a route `acroveliq/<view>` names a `data-aq-view="<view>"` that exists in web/index.html;
 //   - a component names a function that exists in web/app.js (`function x(` or `async function x(`);
-//   - a row with a route or component carries "Utoljára egyeztetve" as `YYYY-MM-DD · <commit>`.
+//   - a row with a route or component carries "Utoljára egyeztetve" as `YYYY-MM-DD · <commit>`;
+//   - a node appears on one row only (a copied row that kept its node would map one frame twice);
+//   - EVERY table whose first header cell starts with "Figma" has exactly the seven columns: a
+//     misspelt header would otherwise make the whole table silently not a mapping table, and the
+//     minimum below only catches that while the map is small (barracuda, #206 review).
 // What it does NOT check: that the function is the RIGHT one for that design, or that the screen
 // still matches the design. That is the review's job, and the "Utoljára egyeztetve" date says when.
 //
@@ -42,6 +46,7 @@ const refs = (value) => value.split('<br>').map((r) => r.trim().replace(/^`|`$/g
 let rows = 0
 let componentRefs = 0
 let header = null
+const seenNodes = new Map()
 for (const [index, line] of markdown.split(/\r?\n/).entries()) {
   const where = `docs/FIGMA-MAP.md:${index + 1}`
   if (!line.trim().startsWith('|')) {
@@ -52,7 +57,7 @@ for (const [index, line] of markdown.split(/\r?\n/).entries()) {
   if (row.every((c) => /^:?-+:?$/.test(c))) continue
   if (header === null) {
     header = row
-    if (row[0] === 'Figma Page / Section' && row.join('|') !== HEADER.join('|')) {
+    if (/^figma/i.test(row[0]) && row.join('|') !== HEADER.join('|')) {
       errors.push(`${where}: the header is not the seven columns: ${row.join(' | ')}`)
     }
     continue
@@ -66,6 +71,9 @@ for (const [index, line] of markdown.split(/\r?\n/).entries()) {
   else {
     const [, a, b, key, la, lb] = nodeMatch
     if (a !== la || b !== lb) errors.push(`${where}: node ${a}:${b} links to ${la}-${lb}`)
+    const id = `${a}:${b}`
+    if (seenNodes.has(id)) errors.push(`${where}: node ${id} is already mapped on line ${seenNodes.get(id)}`)
+    else seenNodes.set(id, index + 1)
     if (fileKey && key !== fileKey) errors.push(`${where}: node links to file ${key}, the document names ${fileKey}`)
   }
 
