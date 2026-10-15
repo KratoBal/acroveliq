@@ -4,6 +4,9 @@
 # fresh temporary folder, and only its wrapped, secret-filtered summary comes back here.
 #
 #   bash /home/marveen/marveen/scripts/karanten-olvas.sh <fajl>
+#   bash /home/marveen/marveen/scripts/karanten-olvas.sh --url <url>   (the COMMAND downloads the page
+#     through the egress gate's quarantine decision, pinned to checked public addresses; the reader
+#     reads it as a file and never gets WebFetch)
 #   exit 0: the summary, wrapped as untrusted data; 2: nothing came through (why, no content);
 #   3: the summary held a secret shape, nothing came through
 #
