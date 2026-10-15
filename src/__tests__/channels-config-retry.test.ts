@@ -14,8 +14,12 @@ import { join } from 'node:path'
 
 const CHANNELS = join(process.cwd(), 'scripts', 'channels.sh')
 
-/** A throwaway install whose helper answers empty `emptyFirst` times, then with the isolated dir. */
-function install(emptyFirst: number, isolatedBefore: boolean) {
+/**
+ * A throwaway install whose helper answers empty `emptyFirst` times, then with the isolated dir.
+ * `logLine`: a pino-shaped line the helper prints on stdout on every call (the dashboard logger
+ * writes to stdout); `logOnlyWhenEmpty`: it prints the line INSTEAD of the answer while empty.
+ */
+function install(emptyFirst: number, isolatedBefore: boolean, logLine = '', logOnlyWhenEmpty = false) {
   const root = mkdtempSync(join(tmpdir(), 'channels-cfg-'))
   mkdirSync(join(root, 'scripts'), { recursive: true })
   mkdirSync(join(root, 'dist', 'web'), { recursive: true })
@@ -28,6 +32,8 @@ const f = ${JSON.stringify(join(root, 'calls'))}
 let n = 0
 try { n = Number(readFileSync(f, 'utf-8')) } catch {}
 writeFileSync(f, String(n + 1))
+const log = ${JSON.stringify(logLine)}
+if (log && (!${logOnlyWhenEmpty} || n < ${emptyFirst})) process.stdout.write(log + '\\n')
 if (n >= ${emptyFirst}) process.stdout.write('isolated\\t${join(root, '.channels-config')}\\n')
 `)
   const r = spawnSync('bash', [join(root, 'scripts', 'channels.sh'), '--resolve-main-config'], {
@@ -38,6 +44,7 @@ if (n >= ${emptyFirst}) process.stdout.write('isolated\\t${join(root, '.channels
     out: r.stdout.trim(),
     calls: existsSync(join(root, 'calls')) ? Number(readFileSync(join(root, 'calls'), 'utf-8')) : 0,
     retries: existsSync(log) ? readFileSync(log, 'utf-8').split('\n').filter((l) => l.includes('came back empty (try')).length : 0,
+    logged: existsSync(log) ? readFileSync(log, 'utf-8').split('\n').filter((l) => l.includes('helper stdout: ')).length : 0,
     isolated: `isolated\t${join(root, '.channels-config')}`,
   }
 }
@@ -56,6 +63,19 @@ describe('channels.sh main-agent config resolution', () => {
   it('CFG-FRESH: a fresh install (no .channels-config) is asked once: empty is its normal answer', () => {
     const r = install(99, false)
     expect([r.out, r.calls, r.retries], 'CFG-FRESH').toEqual(['', 1, 0])
+  })
+
+  // acrobot, 2026-10-15 09:40: the helper's dashboard logger writes to stdout. A log line before the
+  // answer made the mode unreadable ("explicit" never matched); a log line INSTEAD of the answer (a
+  // provisioning warning) was taken as "not empty": no retry, no directory, the shared ~/.claude.
+  it('CFG-LOGLINE: a log line before the answer: the answer is the result line only, the log line goes to the failures log', () => {
+    const r = install(0, true, '{"level":30,"msg":"isolated-config: kept target-only settings keys","keys":["statusLine"]}')
+    expect([r.out, r.calls, r.logged], 'CFG-LOGLINE').toEqual([r.isolated, 1, 1])
+  })
+
+  it('CFG-LOGLINE-ONLY: a log line instead of the answer is still empty: asked again, and each log line is kept', () => {
+    const r = install(2, true, '{"level":40,"msg":"isolated-config: provisioning failed"}', true)
+    expect([r.out, r.calls, r.retries, r.logged], 'CFG-LOGLINE-ONLY').toEqual([r.isolated, 3, 2, 2])
   })
 
   it('CFG-FIRST: an answer at once is used at once', () => {
