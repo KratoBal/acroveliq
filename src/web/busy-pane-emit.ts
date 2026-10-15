@@ -53,19 +53,29 @@ export function typedFromChunks(chunks: readonly string[]): string {
 
 /**
  * The send-keys chunks of one line, used by BOTH the idle path (sendPromptToSession) and the
- * busy path. A chunk starting with '-' would parse as a flag ("unknown flag -s" on Hungarian
- * suffixes like -szal): the boundary slides past up to MAX_SLIDE dashes, and a chunk that still
- * starts with one gets a leading space. No chunk ends in ';' (tmux would drop it, see
- * SEND_KEYS_SEMICOLON): trailing semicolons go as their own escaped pieces.
+ * busy path. No chunk ends in ';' (tmux would drop it, see SEND_KEYS_SEMICOLON): trailing
+ * semicolons go as their own escaped pieces.
+ *
+ * A chunk starting with '-' would parse as a flag ("unknown flag -s" on Hungarian suffixes like
+ * -szal). `terminated`: the chunks go after `--` (sendKeysLiteralArgs), measured to work on the
+ * local tmux 3.3a (2026-10-15), so they are plain slices and the text is typed exactly. Without
+ * it (a remote agent, whose tmux is not measured) the old rule: the boundary slides past up to
+ * MAX_SLIDE dashes, and a chunk that still starts with one gets a leading space.
  */
-export function splitForSendKeys(oneLine: string, chunkSize = SEND_KEYS_CHUNK): string[] {
+export function splitForSendKeys(oneLine: string, chunkSize = SEND_KEYS_CHUNK, terminated = false): string[] {
   const out: string[] = []
-  for (const chunk of splitAtDashes(oneLine, chunkSize)) {
+  const pieces = terminated ? (oneLine.match(new RegExp(`[\\s\\S]{1,${chunkSize}}`, 'g')) ?? []) : splitAtDashes(oneLine, chunkSize)
+  for (const chunk of pieces) {
     const body = chunk.replace(/;+$/, '')
     if (body) out.push(body)
     for (let k = body.length; k < chunk.length; k++) out.push(SEND_KEYS_SEMICOLON)
   }
   return out
+}
+
+/** The `send-keys` arguments after the target that type one chunk: `-l --` with `terminated`. */
+export function sendKeysLiteralArgs(chunk: string, terminated: boolean): string[] {
+  return terminated ? ['-l', '--', chunk] : ['-l', chunk]
 }
 
 function splitAtDashes(oneLine: string, chunkSize: number): string[] {
@@ -119,6 +129,8 @@ export interface BusyPaneEmitConfig {
   chunkGapMs: number
   pollMs: number
   maxRetries: number
+  /** The chunks are typed after `--` (splitForSendKeys); the caller's typeChunk must send them so. */
+  terminated?: boolean
 }
 
 /** The head of our text, the part sure to stand on the box's first row (the box wraps). */
@@ -149,7 +161,7 @@ function followupRefusal(pane: string | null): string {
  * whenever a look before a key did not allow it, or the text did not leave the box.
  */
 export async function emitIntoBusyPane(oneLine: string, io: BusyPaneIo, cfg: BusyPaneEmitConfig): Promise<'sent' | 'not-landed'> {
-  const chunks = splitForSendKeys(oneLine)
+  const chunks = splitForSendKeys(oneLine, SEND_KEYS_CHUNK, cfg.terminated === true)
   let typed = ''
   let retries = 0
   const notLanded = (stage: BusyPaneReport['stage'], reason: string, chunk?: number): 'not-landed' => {

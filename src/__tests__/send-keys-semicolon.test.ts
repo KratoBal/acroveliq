@@ -27,7 +27,8 @@ vi.mock('node:child_process', async (importOriginal) => {
     execFileSync: vi.fn((_file: string, args: readonly string[]) => {
       const a = [...args]
       const i = a.indexOf('-l')
-      if (a.includes('send-keys') && i >= 0) typedByTmux.push(tmuxTypes(a[i + 1]!))
+      // `-l -- <chunk>` on a local pane (send-keys-terminator.test.ts), `-l <chunk>` on a remote one
+      if (a.includes('send-keys') && i >= 0) typedByTmux.push(tmuxTypes(a[a[i + 1] === '--' ? i + 2 : i + 1]!))
       if (a.includes('capture-pane')) return idle
       return ''
     }),
