@@ -49,8 +49,9 @@ UT="${2:-/api/health}"
 AUTH_FILE="/home/marveen/marveen/store/.stage-basic-auth"
 lekeres() {
   # Exact host match, https only: a substring test would hand the password to
-  # https://staging.anything.example or https://anything.example/staging.
-  if [[ "$ALAP" =~ ^https://(staging|partner-staging|shop-staging)\.acropora\.hu(/|:|$) && -r "$AUTH_FILE" ]]; then
+  # https://staging.anything.example, https://anything.example/staging, or (with a
+  # colon allowed after the host) the userinfo form https://staging.acropora.hu:x@evil/.
+  if [[ "$ALAP" =~ ^https://(staging|partner-staging|shop-staging)\.acropora\.hu(/|$) && -r "$AUTH_FILE" ]]; then
     curl -s -m 20 -K <(printf 'user = "%s:%s"\n' "$(sed -n 1p "$AUTH_FILE")" "$(sed -n 2p "$AUTH_FILE")") "$1"
   else
     curl -s -m 20 "$1"
