@@ -61,8 +61,8 @@ A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker 
    különben a jóváhagyása nem számít). A tokenje: mivel közreműködőként más személyes repójára fine-grained token nem adható
    ki [K, a lap 6. pontja; mérendő], klasszikus token `repo` hatókörrel, és ezért fontos, hogy a fiók csak ezen a négy repón
    legyen közreműködő. Átadás: `/etc/fleet-github/approver-token`, root 0600 (mint a 3. lépés, a fájlnévvel).
-5. **A vezérlőpult olvasó tokenje a jóváhagyónak** (a feladat idővonalát olvassa): `/etc/fleet-github/dashboard-token`, root
-   0600. Melyik token legyen, acrobot adja meg.
+5. **(Nincs teendő.)** A jóváhagyó a verdikteket a vezérlőpult saját adatbázisából olvassa, csak olvasó módban, token
+   nélkül (acrobot 31454): nincs titok, amit át kellene adni vagy forgatni. A fájl tulajdonosaként olvas, nem rootként.
 6. **A konfiguráció:** a `scripts/root/fleet-github-app.example.json` alapján `/etc/fleet-github/app.json`, a két
    azonosítóval, root 0644.
 7. **A két root szkript telepítése** a fő ágról, és összevetés a fő ággal:
@@ -114,10 +114,9 @@ A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker 
   „using the shared token” sort ír a stderr-re); ha nem, a verdiktjei 403-at kapnának.
 - **A verdikt a teljes, 40 karakteres fejet hordozza** (ez a PR: `review-ellenoriz.sh` nem rövidít), és a jóváhagyó csak
   ilyet fogad el; a régi, 7 karakteres verdiktekre nem hagy jóvá.
-- **A csomag és a fej kötése: NYITOTT, acrobot döntése.** A jóváhagyó azt a fejet hagyja jóvá, amit a csomag README-je
+- **A csomag és a fej kötése: ELDÖNTVE (acrobot, 31441): (b), a review-csomag diffjét a reviewer eszköze állítja elő a teljes fejből; amíg ez nincs bent, a 7. lépés vár.** A jóváhagyó azt a fejet hagyja jóvá, amit a csomag README-je
   megnevez, a README-t viszont a fejlesztő írja, barracuda pedig a `diff.patch`-et olvassa. Egy fej, amiben több áll, mint a
-  diffben, ma átmenne. Két alak: (a) a verdikt a `diff.patch` sha256-ját is viszi, és a jóváhagyó a GitHub diffjével veti
-  össze a fejen; (b) a review-csomag diffjét a reviewer eszköze állítja elő a fejből. Amíg egyik sincs bent, a 7. lépés vár.
+  diffben, ma átmenne. A választott alak a (b): a reviewer nem a fejlesztő állítását olvassa, hanem a fejből előállított diffet.
 
 ## Visszaállítás
 

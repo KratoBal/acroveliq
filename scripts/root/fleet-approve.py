@@ -17,7 +17,7 @@ One verb:
 It approves ONLY if all of these hold, each measured here, none taken from the caller:
   1. the caller (SUDO_UID) is on the root config's `approvers` list;
   2. the repository is a fleet repository (the config's `owner` and `repos`);
-  3. the task's timeline (the dashboard API) has a `verdict` event by the CALLER for exactly this
+  3. the task's events (the dashboard's database, read-only) have a `verdict` by the CALLER for exactly this
      owner/repo#N, and the LATEST such verdict BY THE SERVER'S EVENT ID is APPROVE (review-ellenoriz.sh
      writes it: "APPROVE owner/repo#N pr-<packet> fej <full 40-character sha>");
   4. the PR is open, its base is main, and its head IS that verdict's sha, all 40 characters.
@@ -50,8 +50,12 @@ import urllib.request
 
 CONFIG_FILE = '/etc/fleet-github/app.json'
 APPROVER_TOKEN_FILE = '/etc/fleet-github/approver-token'
-DASHBOARD_TOKEN_FILE = '/etc/fleet-github/dashboard-token'
-DASHBOARD = 'http://localhost:3420'
+# the verdicts are read from the dashboard's own database, read-only, with no token at all (acrobot 31454,
+# option 1): no secret to hold or rotate, and nothing here can write. What gets into task_events is decided
+# by the events route (a verdict only with the task reviewer's own token, src/web/routes/task-usage.ts).
+DB_FILE = '/home/marveen/marveen/store/claudeclaw.db'
+VERDICT_SQL = ("SELECT id, kind, actor, ref, at FROM task_events "
+               "WHERE task_id = ? AND kind = 'verdict' ORDER BY id")
 LOG_FILE = '/var/log/fleet-approve.log'
 API = 'https://api.github.com'
 
@@ -120,6 +124,53 @@ def latest_verdict(items, actor, owner, repo, pr):
         return None
     _, verdict, sha = max(found, key=lambda f: f[0])
     return verdict, sha
+
+
+def read_verdicts(task, db_file, drop=True):
+    """The task's verdict events, read-only, as timeline items.
+
+    As root it reads in a child that has first become the database file's owner: in WAL mode even a
+    read-only connection may create the -shm side file, and a root-owned -shm would lock the dashboard
+    out of its own database. The connection is mode=ro, and the WAL is read (not immutable=1, which would
+    miss the verdicts not yet checkpointed)."""
+    import sqlite3
+
+    def query():
+        con = sqlite3.connect(f'file:{db_file}?mode=ro', uri=True, timeout=5)
+        try:
+            rows = con.execute(VERDICT_SQL, (task,)).fetchall()
+        finally:
+            con.close()
+        return [{'source': 'event', 'id': r[0], 'kind': r[1], 'actor': r[2], 'ref': r[3], 'at': r[4]} for r in rows]
+
+    if not drop or os.geteuid() != 0:
+        return query()
+    st = os.stat(db_file)
+    if st.st_uid == 0:
+        raise Failed('the database is owned by root: refusing to read it as root')
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(r)
+        code, out = 0, b''
+        try:
+            os.setgroups([])
+            os.setgid(st.st_gid)
+            os.setuid(st.st_uid)
+            out = json.dumps(query()).encode()
+        except Exception as e:  # the parent says it; the child only reports
+            code, out = 1, json.dumps({'error': f'{e.__class__.__name__}'}).encode()
+        with os.fdopen(w, 'wb') as f:
+            f.write(out)
+        os._exit(code)
+    os.close(w)
+    with os.fdopen(r, 'rb') as f:
+        data = f.read()
+    _, status = os.waitpid(pid, 0)
+    parsed = json.loads(data.decode() or '{}')
+    if status != 0 or not isinstance(parsed, list):
+        raise Failed(f'reading the verdicts failed: {parsed.get("error") if isinstance(parsed, dict) else "?"}')
+    return parsed
 
 
 def http(method, url, token, body=None, auth='Bearer'):
@@ -196,10 +247,7 @@ def run(argv, env):
 
 def real_env():
     def timeline(task):
-        code, d = http('GET', f'{DASHBOARD}/api/tasks/{task}/timeline', read_secret(DASHBOARD_TOKEN_FILE))
-        if code != 200 or not isinstance(d.get('items'), list):
-            raise Failed(f'dashboard timeline HTTP {code}')
-        return d['items']
+        return read_verdicts(task, DB_FILE)
 
     def get_pr(owner, repo, pr):
         code, d = http('GET', f'{API}/repos/{owner}/{repo}/pulls/{pr}', read_secret(APPROVER_TOKEN_FILE))
