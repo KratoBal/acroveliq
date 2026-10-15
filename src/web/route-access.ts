@@ -259,6 +259,15 @@ const GROUPS: Group[] = [
  * called once after it too, but it is a session read and stays L `no` (its
  * group already says so).
  *
+ * POST /api/messages was on the list for the channels.sh guard's alert, and
+ * came off (barracuda, #164 review, 31012; acrobot 31015): the shared token is
+ * readable by every sub-agent, and with this route open the sender check (a
+ * registered name) lets any of them send in another registered agent's name,
+ * the main agent's included. The guard's calls got 403 from that check anyway,
+ * and since #162 it writes server-side; no successful caller depended on it.
+ * Who else still posts with the shared token, legacy_callers (auth-
+ * principals.ts) shows by its hints.
+ *
  * In `naplo` (the setting today) this denies nothing: it only changes what
  * the log records as would-deny. Before `legacy-szukitett`, the preflight
  * (`npx tsx scripts/access-preflight.ts --mode legacy-szukitett --napok N`)
@@ -267,8 +276,6 @@ const GROUPS: Group[] = [
  */
 export const LEGACY_KEPT: ReadonlySet<string> = new Set([
   'GET /api/messages',
-  // the channels.sh guard's alert, until the server-side write (#162) runs on the live tree
-  'POST /api/messages',
   'GET /api/daily-log',
   'GET /api/kanban',
   'GET /api/schedules',
@@ -358,8 +365,10 @@ const BEFORE_ENFORCING = [
   '   `npx tsx scripts/access-preflight.ts` listája üres (kilépési kód 0): ez a naplóból sorolja fel, mit',
   '   tiltott volna. Ez eljárás, nem zár: a beállítást a kód nem tagadja meg. Az L oszlop 2026-10-15 óta a',
   '   minimum: csak az az útvonal ✓, amit a régi token az ágensek saját tokenre váltása után még hívott (lásd',
-  '   lent, „A régi token minimuma”). Egy ritkábban futó hívót a 24 órás mérés nem lát: a preflight több napra',
-  '   (`--napok N`) mutatja meg.',
+  '   lent, „A régi token minimuma”), és az üzenetküldés sem ezek között van: a közös tokennel bármely al-ágens',
+  '   egy másik regisztrált ágens nevében küldhetne. Egy ritkábban futó hívót a 24 órás mérés nem lát: a preflight',
+  '   `--napok` értéke a legritkább ütemezett feladat periódusa fölött legyen. Hogy ki hív még közös tokennel, azt',
+  '   az `npx tsx scripts/legacy-callers.ts --napok N` mutatja (user-agent, önbevallott név, cím: nyom, nem azonosság).',
   '4. **Az önbevallott szereplők.** Az üzenet feladóját, a jóváhagyás kérőjét és eldöntőjét, az átadó rekord',
   '   `agent` mezőjét, a tokenmérési esemény `actor` mezőjét és az ütemezett feladat szerzőjét a szerver a',
   '   tokenből tölti ki (`src/web/actor-claims.ts`). A régi közös token senkit nem nevez meg: `naplo` állásban',

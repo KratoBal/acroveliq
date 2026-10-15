@@ -15,6 +15,7 @@ import { getDb, initDatabase } from '../db.js'
 import { resolveAuth } from '../web/auth-gate.js'
 import {
   actorOf,
+  callerHint,
   createPrincipalToken,
   ACTOR_LOG_DAYS,
   ensurePrincipalSchema,
@@ -130,6 +131,48 @@ describe('the caller and the actor log', () => {
     ])
   })
 
+  // P0-1 deployment steps, point 4: the residual shared-token calls by name (acrobot 30997)
+  it('LEGACY-CALLER-LOG: a shared-token call is counted once more with its hints; an agent token or a device is not', () => {
+    const db = new Database(':memory:')
+    ensurePrincipalSchema(db)
+    const hint = callerHint({ userAgent: 'curl/8.5.0', fleetCaller: 'channels-sh-guard', remoteAddress: '::ffff:127.0.0.1' })
+    recordRequestActor(db, { kind: 'token' }, 'GET', '/api/kanban/0a1b2c3d/comments', NOW, hint)
+    recordRequestActor(db, { kind: 'token' }, 'GET', '/api/kanban/9f8e7d6c/comments', NOW + 7, hint)
+    recordRequestActor(db, { kind: 'token' }, 'GET', '/api/kanban/9f8e7d6c/comments', NOW + 9, callerHint({ userAgent: 'node' }))
+    recordRequestActor(db, { kind: 'token', principal: { id: 1, project: 'acropora', actor: 'murena' } }, 'GET', '/api/agents', NOW, hint)
+    recordRequestActor(db, { kind: 'device', device: 'iphone' }, 'GET', '/api/agents', NOW, hint)
+    recordRequestActor(db, { kind: 'token' }, 'GET', '/api/agents', NOW) // no hint: request_actors only
+    const rows = db.prepare('SELECT * FROM legacy_callers ORDER BY ua').all()
+    const actors = (db.prepare('SELECT COUNT(*) AS n FROM request_actors').get() as { n: number }).n
+    expect([rows, actors], 'LEGACY-CALLER-LOG').toEqual([
+      [
+        { day: localDay(NOW), method: 'GET', path: '/api/kanban/:id/comments', ua: 'curl/8.5.0', claimed: 'channels-sh-guard', remote: '127.0.0.1', count: 2, first_seen: NOW, last_seen: NOW + 7 },
+        { day: localDay(NOW), method: 'GET', path: '/api/kanban/:id/comments', ua: 'node', claimed: '-', remote: '-', count: 1, first_seen: NOW + 9, last_seen: NOW + 9 },
+      ],
+      4,
+    ])
+  })
+
+  it('LEGACY-CALLER-HINT: only a value that fits its pattern is kept; anything else is `?`, a missing one `-`', () => {
+    expect(
+      [
+        callerHint({ userAgent: 'python-requests/2.31.0 CPython/3.11', queryAgent: 'murena', remoteAddress: '172.18.0.5' }),
+        callerHint({ userAgent: 'Mozilla/5.0 (X11; Linux x86_64)', fleetCaller: ['acrobot', 'murena'], queryAgent: 'nautilus' }),
+        // a header that is not a name, a token in the query, an e-mail, a path: none of them reaches the log
+        callerHint({ userAgent: '"; DROP TABLE', fleetCaller: 'balazs@example.com', remoteAddress: 'unix:/tmp/x.sock' }),
+        callerHint({ queryAgent: 'mvp_' + 'a'.repeat(40) }),
+        callerHint({ userAgent: '', fleetCaller: '   ', queryAgent: null, remoteAddress: undefined }),
+      ],
+      'LEGACY-CALLER-HINT',
+    ).toEqual([
+      { ua: 'python-requests/2.31.0', claimed: 'murena', remote: '172.18.0.5' },
+      { ua: 'Mozilla/5.0', claimed: 'acrobot', remote: '-' },
+      { ua: '?', claimed: '?', remote: '?' },
+      { ua: '-', claimed: '?', remote: '-' },
+      { ua: '-', claimed: '-', remote: '-' },
+    ])
+  })
+
   // barracuda, #20: the log keeps the route's pattern, never a value from a path
   it('PRINCIPAL-ROUTEKEY: a token, an e-mail-like name or an id never reaches the log, only the route pattern', () => {
     expect(
@@ -159,8 +202,14 @@ describe('the caller and the actor log', () => {
     const insert = db.prepare("INSERT INTO request_actors VALUES (?, 'acropora', 'murena', 'GET', '/api/agents', 1, 0, 0)")
     insert.run(localDay(later - (ACTOR_LOG_DAYS + 5) * 86400))
     insert.run(localDay(later - 10 * 86400))
+    const insertLegacy = db.prepare("INSERT INTO legacy_callers VALUES (?, 'GET', '/api/agents', 'curl', '-', '-', 1, 0, 0)")
+    insertLegacy.run(localDay(later - (ACTOR_LOG_DAYS + 5) * 86400))
+    insertLegacy.run(localDay(later - 10 * 86400))
     recordRequestActor(db, { kind: 'token' }, 'GET', '/api/agents', later)
-    const days = (db.prepare('SELECT day FROM request_actors ORDER BY day').all() as { day: string }[]).map((r) => r.day)
-    expect(days, 'PRINCIPAL-RETENTION').toEqual([localDay(later - 10 * 86400), localDay(later)])
+    const days = (table: string) => (db.prepare(`SELECT day FROM ${table} ORDER BY day`).all() as { day: string }[]).map((r) => r.day)
+    expect([days('request_actors'), days('legacy_callers')], 'PRINCIPAL-RETENTION').toEqual([
+      [localDay(later - 10 * 86400), localDay(later)],
+      [localDay(later - 10 * 86400)],
+    ])
   })
 })

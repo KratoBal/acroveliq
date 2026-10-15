@@ -9,7 +9,7 @@ import { acroveliqAllows, acroveliqBindAddress, isAcroveliqRequest, parseAcrovel
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
 import { discordTransportFromEnv, startApprovalDiscordPoller } from './web/approval-discord.js'
-import { actorOf, recordRequestActor } from './web/auth-principals.js'
+import { actorOf, callerHint, recordRequestActor } from './web/auth-principals.js'
 import { accessGate, parseAccessMode, scheduleAgentFrom } from './web/access-enforcement.js'
 import { SCHEDULED_TASKS_DIR } from './web/scheduled-tasks-io.js'
 import { getDb, pruneToolCallLog } from './db.js'
@@ -198,7 +198,12 @@ export function startWebServer(port = 3420): http.Server {
     const fedPeerForCtx: string | null = auth.kind === 'federation' ? auth.peer : null
     // the caller, recorded per request (acrovelIQ P0-1, step 1): measured, never enforced here
     const caller = actorOf(auth)
-    recordRequestActor(getDb(), auth, method, path, Math.floor(Date.now() / 1000))
+    recordRequestActor(getDb(), auth, method, path, Math.floor(Date.now() / 1000), callerHint({
+      userAgent: req.headers['user-agent'],
+      fleetCaller: req.headers['x-fleet-caller'],
+      queryAgent: url.searchParams.get('agent'),
+      remoteAddress: req.socket.remoteAddress,
+    }))
     const ctxAuth =
       auth.kind === 'token' ? { kind: 'token' as const, ...caller }
       : auth.kind === 'device' ? { kind: 'device' as const, device: auth.device, deviceId: auth.deviceId, ...caller }

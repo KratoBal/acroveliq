@@ -14,6 +14,15 @@
 //                      from a path, a token or an e-mail, reaches the log), so a day's traffic shows
 //                      which agent already uses its own token and which call
 //                      still comes with the shared one ('legacy').
+//   legacy_callers     the shared token's calls once more, with three hints at
+//                      WHO made them (P0-1 deployment steps, point 4: the
+//                      residual legacy calls by name): the User-Agent's first
+//                      product token, a self-declared name (an X-Fleet-Caller
+//                      header or the `agent` query) and the remote address.
+//                      A hint, not an identity: the shared token proves no name,
+//                      so this only says where to look. Each value is checked
+//                      against a narrow pattern; anything else is stored as `?`,
+//                      a missing one as `-`, so no free text reaches the log.
 //
 // THIS STEP FORBIDS NOTHING. A principal token resolves to the same auth kind as
 // the shared token ({ kind: 'token' }), with the principal attached, so every
@@ -68,6 +77,20 @@ export function ensurePrincipalSchema(db: Database.Database): void {
       first_seen INTEGER NOT NULL,
       last_seen INTEGER NOT NULL,
       PRIMARY KEY (day, project, actor, method, path)
+    )
+  `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS legacy_callers (
+      day TEXT NOT NULL,
+      method TEXT NOT NULL,
+      path TEXT NOT NULL,
+      ua TEXT NOT NULL,
+      claimed TEXT NOT NULL,
+      remote TEXT NOT NULL,
+      count INTEGER NOT NULL,
+      first_seen INTEGER NOT NULL,
+      last_seen INTEGER NOT NULL,
+      PRIMARY KEY (day, method, path, ua, claimed, remote)
     )
   `)
 }
@@ -154,6 +177,42 @@ export function localDay(now: number): string {
   return new Date(now * 1000).toLocaleDateString('en-CA', { timeZone: APP_TZ })
 }
 
+/** Who made a shared-token call, as far as the request tells (legacy_callers). */
+export interface CallerHint {
+  ua: string
+  claimed: string
+  remote: string
+}
+
+const first = (value: string | string[] | null | undefined): string | undefined =>
+  Array.isArray(value) ? value[0] : value ?? undefined
+const UA_PRODUCT = /^([A-Za-z][A-Za-z0-9._-]{0,31})(?:\/([0-9][0-9A-Za-z._-]{0,15}))?/
+const CLAIMED_NAME = /^[a-z][a-z0-9_-]{0,31}$/
+const IP_ADDRESS = /^[0-9a-fA-F:.]{2,45}$/
+
+/**
+ * The three hints, from the raw request values. Only a value that fits its
+ * pattern is kept: the User-Agent's first product token (`curl/8.5.0`,
+ * `python-requests/2.31.0`, `node`), a self-declared name shaped like an
+ * agent's, an IP address. A value that does not fit is `?`, a missing one `-`.
+ */
+export function callerHint(raw: {
+  userAgent?: string | string[] | null
+  fleetCaller?: string | string[] | null
+  queryAgent?: string | null
+  remoteAddress?: string | null
+}): CallerHint {
+  const userAgent = first(raw.userAgent)?.trim()
+  const product = userAgent ? UA_PRODUCT.exec(userAgent) : null
+  const claimedRaw = (first(raw.fleetCaller) ?? raw.queryAgent ?? undefined)?.trim()
+  const remoteRaw = raw.remoteAddress?.replace(/^::ffff:/, '')
+  return {
+    ua: !userAgent ? '-' : product ? (product[2] ? `${product[1]}/${product[2]}` : product[1]!) : '?',
+    claimed: !claimedRaw ? '-' : CLAIMED_NAME.test(claimedRaw) ? claimedRaw : '?',
+    remote: !remoteRaw ? '-' : IP_ADDRESS.test(remoteRaw) ? remoteRaw : '?',
+  }
+}
+
 /** How long the actor log keeps a day. */
 export const ACTOR_LOG_DAYS = 90
 let lastPrunedDay = ''
@@ -163,7 +222,14 @@ let lastPrunedDay = ''
  * are counted (not static files). Must never throw: a logging failure cannot
  * fail the request it describes.
  */
-export function recordRequestActor(db: Database.Database, auth: ActorSource, method: string, path: string, now: number): void {
+export function recordRequestActor(
+  db: Database.Database,
+  auth: ActorSource,
+  method: string,
+  path: string,
+  now: number,
+  hint?: CallerHint,
+): void {
   if (!path.startsWith('/api/') && path !== '/.well-known/fleetq') return
   try {
     const { project, actor } = actorOf(auth)
@@ -171,13 +237,24 @@ export function recordRequestActor(db: Database.Database, auth: ActorSource, met
     // once per day: drop the days past the retention
     if (day !== lastPrunedDay) {
       lastPrunedDay = day
-      db.prepare('DELETE FROM request_actors WHERE day < ?').run(localDay(now - ACTOR_LOG_DAYS * 86400))
+      const cutoff = localDay(now - ACTOR_LOG_DAYS * 86400)
+      db.prepare('DELETE FROM request_actors WHERE day < ?').run(cutoff)
+      db.prepare('DELETE FROM legacy_callers WHERE day < ?').run(cutoff)
     }
+    const route = routeKey(method, path)
     db.prepare(
       `INSERT INTO request_actors (day, project, actor, method, path, count, first_seen, last_seen)
        VALUES (?, ?, ?, ?, ?, 1, ?, ?)
        ON CONFLICT (day, project, actor, method, path) DO UPDATE SET count = count + 1, last_seen = excluded.last_seen`,
-    ).run(day, project, actor, method, routeKey(method, path), now, now)
+    ).run(day, project, actor, method, route, now, now)
+    // only the shared token: an agent's own token already names its caller
+    if (actor === 'legacy' && hint) {
+      db.prepare(
+        `INSERT INTO legacy_callers (day, method, path, ua, claimed, remote, count, first_seen, last_seen)
+         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+         ON CONFLICT (day, method, path, ua, claimed, remote) DO UPDATE SET count = count + 1, last_seen = excluded.last_seen`,
+      ).run(day, method, route, hint.ua, hint.claimed, hint.remote, now, now)
+    }
   } catch {
     // the log is a measurement, not a gate
   }
