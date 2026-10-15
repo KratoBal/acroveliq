@@ -37,6 +37,12 @@
 # The write goes through fleet-api.sh task-event (its own retry and idempotency key), and
 # is then READ BACK from the timeline: the verdict lines with this ref must be one more
 # than before. A 200 alone is not the proof (the queue accepting is not the record).
+# The timeline prints an event's data after its ref (` {"would_reject": true, ...}`), so the
+# comparison drops that tail first: with it, a recorded verdict counted 0 before and 0 after
+# and the script reported a failure while the line stood there, twice (acrobot 31015,
+# t-20261015-p1-00f-karanten, 10:18:16 and 10:18:19). A ref never holds `{"`: every part of
+# it is checked above. A would_reject mark on the new line is printed as a warning: the
+# verdict is recorded, but the Task Core would refuse it in kenyszerit mode.
 #
 # Exit: 0 recorded and read back; 1 refused or not confirmed; 2 bad argument.
 set -uo pipefail
@@ -161,7 +167,8 @@ if [ "$DOCS" = 1 ]; then
 else
   REF="$V $PRREF pr-$C${HEAD7:+ fej $HEAD7}"
 fi
-count_ref() { grep -c -F -x -e "$1" < <(grep '  esemeny  verdict ' "$2" | sed -E 's/^.*  esemeny  verdict +[^ ]+ +//') || true; }
+verdict_refs() { grep '  esemeny  verdict ' "$1" | sed -E -e 's/^.*  esemeny  verdict +[^ ]+ +//' -e 's/ \{".*$//'; }
+count_ref() { grep -c -F -x -e "$1" < <(verdict_refs "$2") || true; }
 mine() { grep '  esemeny  verdict ' "$1" | grep -c -F " $ACTOR " || true; }
 n0="$(count_ref "$REF" "$T/before")"; a0="$(mine "$T/before")"
 
@@ -176,3 +183,9 @@ if [ "$n1" -ne $((n0 + 1)) ] || [ "$a1" -ne $((a0 + 1)) ]; then
   echo "FAIL: a valasz sikeres volt, de az idovonalon nem latszik az uj sor (elotte $n0, utana $n1: '$REF')" >&2; exit 1
 fi
 echo "OK verdict rogzitve: $TASK, $ACTOR, '$REF' (visszaolvasva az idovonalrol)"
+LAST="$(grep '  esemeny  verdict ' "$T/after" | grep -F " $REF {" | tail -n1 || true)"
+case "$LAST" in
+  *'"would_reject": true'*)
+    WR="$(printf '%s' "$LAST" | sed -E -n 's/^.*"would_reject_reason": "([^"]*)".*$/\1/p')"
+    echo "FIGYELEM: a szerver would_reject jelet tett az esemenyre (kenyszerit modban 409 lenne): ${WR:-ok nelkul}" >&2 ;;
+esac

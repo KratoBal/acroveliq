@@ -31,7 +31,12 @@ case "\$1" in
     [ -f "$T/fail-event" ] && { echo "FAIL http=500"; exit 1; }
     printf '%s\n' "\$*" >> "$EV"
     [ -f "$T/swallow" ] && { echo '{"ok":true}'; exit 0; }
-    printf '2026-10-13 20:00:00+0200  esemeny  %-16s %-10s %s\n' "\$3" "\$4" "\$6" >> "$T/tl-\$2"
+    # with-data: the server stored data on the event, and fleet-api.sh prints it after the ref
+    if [ -f "$T/with-data" ]; then
+      printf '2026-10-13 20:00:00+0200  esemeny  %-16s %-10s %s %s\n' "\$3" "\$4" "\$6" '{"would_reject": true, "would_reject_reason": "a verdict ref mezojebol hianyzik a repo#PR"}' >> "$T/tl-\$2"
+    else
+      printf '2026-10-13 20:00:00+0200  esemeny  %-16s %-10s %s\n' "\$3" "\$4" "\$6" >> "$T/tl-\$2"
+    fi
     echo '{"ok":true}' ;;
   *) echo "stub: unexpected \$1"; exit 1 ;;
 esac
@@ -190,6 +195,15 @@ check 'a later round -> 0' 0 "$(ell doc-tsk-d tsk-d CHANGES)"
 check '... the ref names THAT round file and hash' \
   "task-event tsk-d verdict $ACTOR  CHANGES exchange/acroveliq/terv2.md doc-tsk-d sha256 ${H2:0:12}" "$(tail -n1 "$EV")"
 check 'olvas lists both rounds' 2 "$(olv doc-tsk-d >/dev/null; grep -c '^   olvasd: ' "$T/out")"
+# acrobot 31015: a verdict whose event carries data (a would_reject mark) was recorded, and
+# the read-back still failed, because the timeline prints the data after the ref
+touch "$T/with-data"
+check 'a recorded verdict with data on its event -> 0' 0 "$(ell doc-tsk-d tsk-d CHANGES)"
+check '... a second identical one too (the count before already holds the first)' 0 "$(ell doc-tsk-d tsk-d CHANGES)"
+check '... and the would_reject mark is named as a warning' 1 "$(grep -c '^FIGYELEM: a szerver would_reject jelet tett az esemenyre (kenyszerit modban 409 lenne): a verdict ref mezojebol hianyzik a repo#PR$' "$T/out")"
+rm "$T/with-data"
+check 'without data, no warning' 0 "$(ell doc-tsk-d tsk-d APPROVE)"
+check '... none printed' 0 "$(grep -c '^FIGYELEM' "$T/out")"
 n="$(events)"
 for x in e f g h i j; do printf '2026-10-13 19:00:00+0200  esemeny  review_requested nautilus   x/a.md\n' > "$T/tl-tsk-$x"; done
 mkdir "$Z/doc-tsk-e"; printf 'eredeti\n' > "$Z/doc-tsk-e/v1-a.md"
