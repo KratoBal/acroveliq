@@ -535,11 +535,36 @@ def load_values(path, require_root):
     return v
 
 
-def read_config(path):
-    """The agent's config, read as root from a tree `marveen` writes: no symlink, no FIFO, 64 KiB at
-    most. Errors name the reason only, never the content."""
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def open_workdir(workdir):
+    """The agent's dir as a directory fd, opened from / one element at a time, each with O_NOFOLLOW:
+    a symlink anywhere on the way refuses. The reads below go relative to this fd, so swapping a
+    parent (agents/ and agents/<name> are marveen's) for a symlink later moves nothing: root reads
+    the dir it checked (barracuda, #191 review 31282)."""
+    if not clean_path(workdir):
+        raise Refused(10, 'no-workdir')
+    fd = os.open('/', DIR_FLAGS)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        for part in workdir.split('/')[1:]:
+            try:
+                nxt = os.open(part, DIR_FLAGS, dir_fd=fd)
+            except OSError:
+                raise Refused(10, 'workdir-unsafe')
+            os.close(fd)
+            fd = nxt
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def read_config(wfd, name):
+    """The agent's config, read as root from a tree `marveen` writes: relative to the checked
+    workdir fd, no symlink, no FIFO, 64 KiB at most. Errors name the reason only, never the content."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=wfd)
     except OSError:
         raise Refused(10, 'config-unreadable')
     try:
@@ -558,35 +583,63 @@ def read_config(path):
     return c
 
 
-def channel_env_present(workdir):
-    """A channel token file with content (stat only: root never reads a secret)."""
+def channel_env_present(wfd):
+    """A channel token file with content (stat only: root never reads a secret). Walked from the
+    workdir fd without following a link: a `.claude`, `channels` or provider dir that is a symlink
+    or not a dir counts as present, so the agent is refused rather than its token path guessed."""
     for p in CHANNELS:
+        fds = []
         try:
-            st = os.lstat(os.path.join(workdir, '.claude', 'channels', p, '.env'))
-        except OSError:
-            continue
-        if not stat.S_ISREG(st.st_mode) or st.st_size > 0:
-            return True
+            cur = wfd
+            for part in ('.claude', 'channels', p):
+                try:
+                    cur = os.open(part, DIR_FLAGS, dir_fd=cur)
+                except FileNotFoundError:
+                    cur = None
+                    break
+                except OSError:
+                    return True
+                fds.append(cur)
+            if cur is None:
+                continue
+            try:
+                st = os.stat('.env', dir_fd=cur, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(st.st_mode) or st.st_size > 0:
+                return True
+        finally:
+            for fd in fds:
+                os.close(fd)
     return False
 
 
-def router_clones(workdir, router_uid):
-    """The router-owned read clones directly in the agent's dir (src/web/agent-process.ts agentGitEnv)."""
+def router_clones(wfd, workdir, router_uid):
+    """The router-owned read clones directly in the agent's dir (src/web/agent-process.ts
+    agentGitEnv), listed and stat-ed relative to the checked workdir fd; `workdir` only names them."""
     try:
-        names = sorted(os.listdir(workdir))
+        names = sorted(os.listdir(wfd))
     except OSError:
         return []
     out = []
     for n in names:
         if not CLONE_RX.match(n):
             continue
-        p = os.path.join(workdir, n)
         try:
-            d, g = os.lstat(p), os.lstat(os.path.join(p, '.git'))
+            d = os.stat(n, dir_fd=wfd, follow_symlinks=False)
+            if not stat.S_ISDIR(d.st_mode):
+                continue
+            cfd = os.open(n, DIR_FLAGS, dir_fd=wfd)
         except OSError:
             continue
-        if stat.S_ISDIR(d.st_mode) and stat.S_ISDIR(g.st_mode) and d.st_uid == router_uid and g.st_uid == router_uid:
-            out.append(p)
+        try:
+            g = os.stat('.git', dir_fd=cfd, follow_symlinks=False)
+        except OSError:
+            continue
+        finally:
+            os.close(cfd)
+        if stat.S_ISDIR(g.st_mode) and d.st_uid == router_uid and g.st_uid == router_uid:
+            out.append(os.path.join(workdir, n))
     return out
 
 
@@ -640,7 +693,15 @@ def generate(cfg, agent):
     profile = a['profile']
     if profile is None or profile not in v['profiles']:
         raise Refused(10, 'profile-not-allowed')
-    raw = read_config(a['workdir'] + '/agent-config.json')
+    wfd = open_workdir(a['workdir'])
+    try:
+        return generate_in(cfg, agent, a, v, trusted, profile, wfd)
+    finally:
+        os.close(wfd)
+
+
+def generate_in(cfg, agent, a, v, trusted, profile, wfd):
+    raw = read_config(wfd, 'agent-config.json')
     model, auth = raw.get('model'), raw.get('authMode')
     if not isinstance(model, str) or model not in v['models']:
         raise Refused(10, 'model-not-allowed')
@@ -653,13 +714,13 @@ def generate(cfg, agent):
     for field in ('claudePlan', 'claudeConfigDir'):
         if raw.get(field):
             raise Refused(10, field + '-not-supported')
-    if raw.get('channel') or raw.get('channelProvider') or channel_env_present(a['workdir']):
+    if raw.get('channel') or raw.get('channelProvider') or channel_env_present(wfd):
         raise Refused(10, 'channel-not-supported')
     name = raw.get('displayName')
     name = name if isinstance(name, str) and DISPLAY_RX.match(name) else agent
     router_uid = cfg['getpw'](v['routerUser']).pw_uid
     text = start_script(agent, a, v, {'model': model, 'profile': profile, 'name': name},
-                        router_clones(a['workdir'], router_uid))
+                        router_clones(wfd, a['workdir'], router_uid))
     target = os.path.join(cfg['start_dir'], agent)
     why = check_root_dirs(target, trusted)
     if why:
