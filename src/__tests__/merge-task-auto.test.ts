@@ -169,7 +169,8 @@ describe('pr-beolvaszt.sh takes the task only when exactly one names the PR', ()
   // the finder next to it: the block that decides, not a copy of it
   const src = readFileSync(join(REPO_ROOT, 'scripts', 'pr-beolvaszt.sh'), 'utf8')
   const from = src.indexOf('TASK_KOTELEZO_ETTOL=2026-10-27')
-  const to = src.indexOf('TOK="$(cat /home/marveen/marveen/store/.github-token)"')
+  // the block ends where the token is taken: since D4 step 2 that is the FLEET_GITHUB_APP switch
+  const to = src.indexOf('# D4 2. LEPCSO')
   const block = join(root, 'scripts', 'blokk.sh')
 
   const decide = (pr: string, task = '') => {

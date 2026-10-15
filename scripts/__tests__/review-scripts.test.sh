@@ -90,13 +90,13 @@ echo 'review-ellenoriz: the one write it may do'
 check 'the packet task, APPROVE -> 0' 0 "$(ell marveen70 tsk-a APPROVE)"
 check '... one event' 1 "$(events)"
 check '... kind verdict, actor the caller, ref from the packet' \
-  "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/acroveliq#70 pr-marveen70 fej 1234567" "$(tail -n1 "$EV")"
+  "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/acroveliq#70 pr-marveen70 fej 1234567890abcdef1234567890abcdef12345678" "$(tail -n1 "$EV")"
 check '... and it says it read it back' 1 "$(grep -c '^OK verdict rogzitve' "$T/out")"
 check 'the same verdict again (a second round) -> 0, read back as a NEW line' 0 "$(ell marveen70 tsk-a APPROVE)"
 check 'hand-made README with task: -> 0' 0 "$(ell 1700 tsk-b CHANGES)"
 check '... the PR named from the packet name (pr-N: acropora-os)' "task-event tsk-b verdict $ACTOR  CHANGES KratoBal/acropora-os#1700 pr-1700 fej abcdef1" "$(tail -n1 "$EV")"
 check 'hand-made README with task in the title -> 0' 0 "$(ell c80 tsk-c CHANGES)"
-check '... ref with the head from "head <sha>"' "task-event tsk-c verdict $ACTOR  CHANGES KratoBal/acropora-commerce#80 pr-c80 fej 7654321" "$(tail -n1 "$EV")"
+check '... ref with the head from "head <sha>"' "task-event tsk-c verdict $ACTOR  CHANGES KratoBal/acropora-commerce#80 pr-c80 fej 7654321fedcba" "$(tail -n1 "$EV")"
 n="$(events)"
 
 echo 'review-ellenoriz: what it refuses, and that nothing was written'
@@ -133,13 +133,13 @@ check 'a packet number with a leading zero -> 2' 2 "$(ell marveen070 tsk-a APPRO
 check 'no refusal wrote an event' "$n" "$(events)"
 mkdir "$Z/pr-1709"; printf 'os PR 1709 \ntask_id: tsk-a\nfej: 1111111aaaa\nv2: task_id tsk-b, fej 2222222bbbb, merge-base x, origin/main y \n' > "$Z/pr-1709/README.md"
 check 'a later round line (vN: task_id X,) binds that task -> 0' 0 "$(ell 1709 tsk-b CHANGES)"
-check '... and the ref names THAT round head, not the first' "task-event tsk-b verdict $ACTOR  CHANGES KratoBal/acropora-os#1709 pr-1709 fej 2222222" "$(tail -n1 "$EV")"
+check '... and the ref names THAT round head, not the first' "task-event tsk-b verdict $ACTOR  CHANGES KratoBal/acropora-os#1709 pr-1709 fej 2222222bbbb" "$(tail -n1 "$EV")"
 mkdir "$Z/pr-marveen73"; printf 'marveen PR 73 \npr: KratoBal/marveen#73\ntask_id: tsk-a\nfej: 3333333cccc\n' > "$Z/pr-marveen73/README.md"
 check 'a README pr: line with the fleet repo old name (a packet from before the rename) -> 0' 0 "$(ell marveen73 tsk-a APPROVE)"
-check '... and the verdict keeps the name the README gave' "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/marveen#73 pr-marveen73 fej 3333333" "$(tail -n1 "$EV")"
+check '... and the verdict keeps the name the README gave' "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/marveen#73 pr-marveen73 fej 3333333cccc" "$(tail -n1 "$EV")"
 mkdir "$Z/pr-marveen74"; printf 'marveen PR 74 \npr: KratoBal/acroveliq#74\ntask_id: tsk-a\nfej: 4444444dddd\n' > "$Z/pr-marveen74/README.md"
 check 'a README pr: line that agrees (review-csomag.sh shape, the new name) -> 0' 0 "$(ell marveen74 tsk-a APPROVE)"
-check '... ref KratoBal/acroveliq#74' "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/acroveliq#74 pr-marveen74 fej 4444444" "$(tail -n1 "$EV")"
+check '... ref KratoBal/acroveliq#74' "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/acroveliq#74 pr-marveen74 fej 4444444dddd" "$(tail -n1 "$EV")"
 n="$(events)"
 
 echo 'the profile: the Task Core writers are denied for the reviewer only'
@@ -170,7 +170,7 @@ cp "$Z/pr-marveen70/diff.patch" "$Z/pr-ai37/diff.patch"
 check 'olvas: an ai packet -> 0' 0 "$(olv ai37)"
 check 'ellenoriz: an ai packet -> 0' 0 "$(ell ai37 tsk-a APPROVE)"
 check '... the ref names the AI repo and the latest round head' \
-  "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/acropora-ai-agent#37 pr-ai37 fej 2a4c62f" "$(tail -n1 "$EV")"
+  "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/acropora-ai-agent#37 pr-ai37 fej 2a4c62f661f628ad557170e9ed80aadecabec6fd" "$(tail -n1 "$EV")"
 mkdir "$Z/pr-ai38"; printf 'ai PR 38 \npr: KratoBal/acropora-os#38\ntask_id: tsk-a\nfej: 1234567\n' > "$Z/pr-ai38/README.md"
 check 'an ai packet whose README pr: names another repo -> 1' 1 "$(ell ai38 tsk-a APPROVE)"
 check 'an unknown prefix -> 2' 2 "$(ell xy37 tsk-a APPROVE)"

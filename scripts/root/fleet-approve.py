@@ -18,14 +18,23 @@ It approves ONLY if all of these hold, each measured here, none taken from the c
   1. the caller (SUDO_UID) is on the root config's `approvers` list;
   2. the repository is a fleet repository (the config's `owner` and `repos`);
   3. the task's timeline (the dashboard API) has a `verdict` event by the CALLER for exactly this
-     owner/repo#N, and the LATEST such verdict is APPROVE (review-ellenoriz.sh writes it:
-     "APPROVE owner/repo#N pr-<packet> fej <sha>");
-  4. the PR is open, its base is main, and its head starts with that verdict's sha.
+     owner/repo#N, and the LATEST such verdict BY THE SERVER'S EVENT ID is APPROVE (review-ellenoriz.sh
+     writes it: "APPROVE owner/repo#N pr-<packet> fej <full 40-character sha>");
+  4. the PR is open, its base is main, and its head IS that verdict's sha, all 40 characters.
 Then it posts an APPROVE review pinned to that head (`commit_id`), so a push after the review is not
 covered: with "require approval of the most recent push" on, GitHub asks again.
 
-WHAT THIS DOES NOT DO: it does not judge the code. A wrong APPROVE verdict is approved; what this
-removes is the way around the verdict (a token in a shell, an approval of a head nobody reviewed).
+WHAT THIS DOES NOT DO, and what must hold before the required approval is switched on (the D4 sheet's
+step 7; barracuda, #200 review):
+  - it does not judge the code: a wrong APPROVE verdict is approved;
+  - it trusts that the verdict event is barracuda's. The events route accepts a verdict only with the
+    task reviewer's own agent token (src/web/routes/task-usage.ts, this PR); before that is deployed,
+    anyone with the shared token can write one in barracuda's name;
+  - it binds the approval to the head the PACKET names, and the packet is the developer's: its README
+    head line is a claim, and diff.patch is what barracuda read. A head with more in it than the diff
+    would pass every check here. Closing this is a separate decision (acrobot): the verdict carrying the
+    diff's hash and this script comparing it with GitHub's diff of the head, or the review packet's diff
+    produced by the reviewer's tool from the head itself. Until one of them is in, step 7 waits.
 
 Exit codes: 0 approved; 2 usage; 10 refused (nothing posted); 13 the dashboard or GitHub failed.
 """
@@ -91,15 +100,22 @@ def parse(argv):
 
 
 def latest_verdict(items, actor, owner, repo, pr):
-    """(verdict, sha) of the actor's latest verdict on exactly owner/repo#pr, or None."""
-    rx = re.compile(rf'^(APPROVE|CHANGES) {re.escape(owner)}/{re.escape(repo)}#{pr} pr-\S+ fej ([0-9a-f]{{7,40}})$')
+    """(verdict, sha) of the actor's latest verdict on exactly owner/repo#pr, or None.
+
+    LATEST BY THE SERVER'S EVENT ID, not by `at` (barracuda, #200): `at` comes from the request
+    body, so a future-dated forged APPROVE would outrank a real, later CHANGES. The id is the
+    row's insertion order. And the head must be the FULL 40-character sha: a 7-character prefix
+    is 28 bits, and a commit with the same prefix and other content is minutes of work."""
+    rx = re.compile(rf'^(APPROVE|CHANGES) {re.escape(owner)}/{re.escape(repo)}#{pr} pr-\S+ fej ([0-9a-f]{{40}})$')
     found = []
     for i in items:
         if i.get('source') != 'event' or i.get('kind') != 'verdict' or i.get('actor') != actor:
             continue
+        if not isinstance(i.get('id'), int):
+            continue
         m = rx.match((i.get('ref') or '').strip())
         if m:
-            found.append((i.get('at') or 0, m.group(1), m.group(2)))
+            found.append((i['id'], m.group(1), m.group(2)))
     if not found:
         return None
     _, verdict, sha = max(found, key=lambda f: f[0])
@@ -138,7 +154,7 @@ def decide(cfg, caller, owner, repo, pr, task, get_timeline, get_pr, post_review
     head = ((p.get('head') or {}).get('sha') or '')
     if p.get('state') != 'open' or (p.get('base') or {}).get('ref') != 'main':
         raise Refused(f'the PR is {p.get("state")}, base {(p.get("base") or {}).get("ref")}')
-    if not head.startswith(sha):
+    if head != sha:
         raise Refused(f'the reviewed head {sha} is not the PR head {head[:12]}: a push came after the review')
     post_review(owner, repo, pr, {'commit_id': head, 'event': 'APPROVE',
                                   'body': f'fleet-approve: {actor} APPROVE on {sha}, task {task}'})

@@ -307,6 +307,8 @@ describe('pause and resume: never over running work; while paused no new work st
     taskCoreSettings.mode = 'naplo'
     // a running review finishes: recorded, and the task is still paused, its assignee not busy
     expect((await agentEvent('t1', 'review_requested')).status).toBe(201)
+    // a verdict is written with the task reviewer's own token only (#200)
+    getDb().prepare("UPDATE tasks SET reviewer = 'barracuda' WHERE id = 't1'").run()
     expect((await agentEvent('t1', 'verdict', 'barracuda', { kind: 'token', actor: 'barracuda', project: 'acropora' })).status).toBe(201)
     expect([isTaskPaused(getDb(), 't1'), allTasks(getDb()).find((t) => t.id === 't1')?.paused]).toEqual([true, true])
     const r = await act('t1', { action: 'resume' })

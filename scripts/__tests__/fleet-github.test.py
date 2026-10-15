@@ -130,16 +130,23 @@ try:
     check("the log names an issued token by a short digest", True, '"token_sha256_8"' in logged)
 
     print("the approver")
+    H = "021c2a7af0a92c30c3c13327b0ea5b4623da5078"
     items = [
-        {"source": "event", "kind": "verdict", "actor": "barracuda", "ref": "CHANGES KratoBal/acroveliq#198 pr-marveen198 fej d075898", "at": 10},
-        {"source": "event", "kind": "verdict", "actor": "barracuda", "ref": "APPROVE KratoBal/acroveliq#198 pr-marveen198 fej 021c2a7", "at": 20},
-        {"source": "event", "kind": "verdict", "actor": "barracuda", "ref": "APPROVE KratoBal/acroveliq#1980 pr-marveen1980 fej aaaaaaa", "at": 30},
-        {"source": "event", "kind": "verdict", "actor": "nautilus", "ref": "APPROVE KratoBal/acroveliq#198 pr-marveen198 fej bbbbbbb", "at": 40},
+        {"source": "event", "kind": "verdict", "actor": "barracuda", "ref": "CHANGES KratoBal/acroveliq#198 pr-marveen198 fej " + "d" * 40, "at": 10, "id": 1},
+        {"source": "event", "kind": "verdict", "actor": "barracuda", "ref": "APPROVE KratoBal/acroveliq#198 pr-marveen198 fej " + H, "at": 20, "id": 2},
+        {"source": "event", "kind": "verdict", "actor": "barracuda", "ref": "APPROVE KratoBal/acroveliq#1980 pr-marveen1980 fej " + "a" * 40, "at": 30, "id": 3},
+        {"source": "event", "kind": "verdict", "actor": "nautilus", "ref": "APPROVE KratoBal/acroveliq#198 pr-marveen198 fej " + "b" * 40, "at": 40, "id": 4},
     ]
     check("the latest verdict, by the actor, on exactly #198 (not #1980, not another actor)",
-          ("APPROVE", "021c2a7"), ap.latest_verdict(items, "barracuda", "KratoBal", "acroveliq", 198))
+          ("APPROVE", H), ap.latest_verdict(items, "barracuda", "KratoBal", "acroveliq", 198))
+    forged = [{**items[1], "at": 9_999_999_999, "id": 2}, {**items[0], "at": 30, "id": 5}]
+    check("latest by the server's id: a future-dated APPROVE does not outrank a later CHANGES",
+          ("CHANGES", "d" * 40), ap.latest_verdict(forged, "barracuda", "KratoBal", "acroveliq", 198))
+    short = [{**items[1], "ref": "APPROVE KratoBal/acroveliq#198 pr-marveen198 fej 021c2a7"}]
+    check("a verdict with a 7-character head is not a verdict here", None,
+          ap.latest_verdict(short, "barracuda", "KratoBal", "acroveliq", 198))
     acfg = {"owner": "KratoBal", "repos": ["acroveliq"], "approvers": ["agent-barracuda"]}
-    pr_open = {"state": "open", "base": {"ref": "main"}, "head": {"sha": "021c2a7af0a92c30c3c13327b0ea5b4623da5078"}}
+    pr_open = {"state": "open", "base": {"ref": "main"}, "head": {"sha": H}}
     posted = []
     def decide(caller="agent-barracuda", its=items, pr=pr_open, repo="acroveliq", num=198):
         try:
@@ -155,6 +162,8 @@ try:
     check("the latest verdict is CHANGES", True, decide(its=items[:1]).startswith("refused"))
     check("no verdict on this PR", True, decide(num=199).startswith("refused"))
     check("a push after the review", True, decide(pr={**pr_open, "head": {"sha": "f" * 40}}).startswith("refused"))
+    check("a head that only shares the reviewed prefix", True,
+          decide(pr={**pr_open, "head": {"sha": H[:7] + "0" * 33}}).startswith("refused"))
     check("a closed PR", True, decide(pr={**pr_open, "state": "closed"}).startswith("refused"))
     check("a base other than main", True, decide(pr={**pr_open, "base": {"ref": "develop"}}).startswith("refused"))
     check("not a fleet repository", True, decide(repo="other").startswith("refused"))

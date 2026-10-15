@@ -140,6 +140,8 @@ describe('the repo rule', () => {
       .toEqual([201, true, undefined, undefined, undefined, undefined])
     expect(JSON.parse(events('os1', 'review_requested')[0].data).would_reject_reason).toContain('nem a(z) os projekté')
     taskCoreSettings.projectMode = 'kenyszerit'
+    // a verdict is written with the task reviewer's own token only (#200): the reviewer here is the token's agent
+    getDb().prepare("UPDATE tasks SET reviewer = 'murena' WHERE id = 'os1'").run()
     expect((await event('os1', 'verdict', 'APPROVE KratoBal/marveen#5 fej abc')).status).toBe(409)
   })
 })

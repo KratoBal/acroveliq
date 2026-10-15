@@ -81,18 +81,43 @@ A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker 
    agent-murena ALL=(root) NOPASSWD: /usr/local/sbin/fleet-github token *
    agent-barracuda ALL=(root) NOPASSWD: /usr/local/sbin/fleet-approve approve *
    ```
-9. **Az ügynökök gitje** (ügynökönként, a saját felhasználójával):
+9. **Az ügynökök gitje** (ügynökönként, a saját felhasználójával). A git a következő helperre lép, ha egy nem ad
+   jelszót, tehát egy megmaradt régi helper (rendszer-, globális vagy repó-szinten; a mai klónokban repó-szinten áll, és a
+   tulajdonosi tokent adja) csendben a régi tokennel pusholna, és a 10. lépés mérése zöld maradna (barracuda, #200).
+   Ezért: előbb egy üres sor, ami a listát nullázza, utána a mi helperünk, és minden klónban a repó-szintű régi helper
+   törlése:
 
    ```bash
    cd /opt/marveen-docker
-   docker compose exec -u agent-nautilus marveen git config --global credential.helper /home/marveen/marveen/scripts/git-credential-fleet-github
+   docker compose exec -u agent-nautilus marveen git config --global --unset-all credential.helper
+   docker compose exec -u agent-nautilus marveen git config --global --add credential.helper ''
+   docker compose exec -u agent-nautilus marveen git config --global --add credential.helper /home/marveen/marveen/scripts/git-credential-fleet-github
    docker compose exec -u agent-nautilus marveen git config --global credential.useHttpPath true
+   # minden klónban, amit az ügynök használ (példa egy klónra):
+   docker compose exec -u agent-nautilus marveen git -C /home/marveen/marveen/agents/nautilus/marveen-repo config --local --unset-all credential.helper
+   # az ellenőrzés: pontosan két sor, az üres és a mienk, más forrásból semmi
+   docker compose exec -u agent-nautilus marveen git -C /home/marveen/marveen/agents/nautilus/marveen-repo config --show-origin --get-all credential.helper
    ```
 10. **A mért új út** egy próba-PR-on, mindegyik külön (a lap 5. lépése): push; PR nyitása; beolvasztás jóváhagyással;
     elutasított beolvasztás jóváhagyás nélkül; egy App-jóváhagyás kísérlete (nem számíthat); a workflow-PR útja; a
-    visszaállító kapcsoló.
+    visszaállító kapcsoló. **A bizonyíték minden lépésnél a bróker naplósora** (`/var/log/fleet-github.log`: `result ok`,
+    a token lenyomata, időben a művelethez illesztve), és a jóváhagyásnál a `/var/log/fleet-approve.log` sora, nem a
+    művelet sikere: egy régi tokennel lefutott push ugyanúgy sikeres.
 11. Utána a lap 6. lépése (a tulajdonosi token kivezetése a fenti előfeltétellel, a 401 méréssel) és 7. lépése (a rulesetek:
     jóváhagyás 1, a legutóbbi push jóváhagyása, a régi jóváhagyások elvetése).
+
+## A 7. lépés (a kötelező jóváhagyás) előfeltételei, a jóváhagyó oldaláról (barracuda, #200)
+
+- **A verdikt csak a reviewer saját tokenjével írható** (ez a PR: `src/web/routes/task-usage.ts`). A telepítése ELŐTT
+  bárki, akinél a közös token van, írhatna verdiktet barracuda nevében. Telepítés előtt mérendő, hogy barracuda
+  `review-ellenoriz.sh`-ja a saját ügynök-tokenjével ír (a `scripts/lib/dashboard-token.sh` közös tokenre esésnél egy
+  „using the shared token” sort ír a stderr-re); ha nem, a verdiktjei 403-at kapnának.
+- **A verdikt a teljes, 40 karakteres fejet hordozza** (ez a PR: `review-ellenoriz.sh` nem rövidít), és a jóváhagyó csak
+  ilyet fogad el; a régi, 7 karakteres verdiktekre nem hagy jóvá.
+- **A csomag és a fej kötése: NYITOTT, acrobot döntése.** A jóváhagyó azt a fejet hagyja jóvá, amit a csomag README-je
+  megnevez, a README-t viszont a fejlesztő írja, barracuda pedig a `diff.patch`-et olvassa. Egy fej, amiben több áll, mint a
+  diffben, ma átmenne. Két alak: (a) a verdikt a `diff.patch` sha256-ját is viszi, és a jóváhagyó a GitHub diffjével veti
+  össze a fejen; (b) a review-csomag diffjét a reviewer eszköze állítja elő a fejből. Amíg egyik sincs bent, a 7. lépés vár.
 
 ## Visszaállítás
 

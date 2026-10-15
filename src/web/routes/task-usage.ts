@@ -37,7 +37,7 @@ import { decisionOwner } from '../../decisions.js'
 import { DEFAULT_PROJECT_ID, listProjects, projectRepos, projectResolver, repoFits } from '../../projects.js'
 import { callerOfContext } from '../field-gate.js'
 import { json, readBody } from '../http-helpers.js'
-import { claimActor } from '../actor-claims.js'
+import { claimActor, tokenAgent } from '../actor-claims.js'
 import type { RouteContext } from './types.js'
 
 // Per-task token measurement (acrovelIQ token brief, item 1). See
@@ -370,6 +370,19 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
     if (kind === 'paused' || kind === 'resumed' || kind === 'owner_action') {
       json(res, { error: `a ${kind} event is written by POST /api/task-actions only` }, 403)
       return true
+    }
+    // A VERDICT BECOMES A GITHUB APPROVAL (scripts/root/fleet-approve.py, D4 step 2): it is written only
+    // with the task reviewer's OWN agent token. The shared token stores the body's actor in `naplo`
+    // mode, so without this anyone holding it could put an APPROVE on a timeline in the reviewer's
+    // name (barracuda, #200 review). The other modes do not make it safe either: the check is the
+    // token's agent against the task's reviewer, here, in every mode.
+    if (kind === 'verdict') {
+      const agent = tokenAgent(ctx.auth)
+      const row = getDb().prepare('SELECT reviewer FROM tasks WHERE id = ?').get(taskId) as { reviewer: string | null } | undefined
+      if (!agent || !row?.reviewer || agent !== row.reviewer) {
+        json(res, { error: "a verdict is written with the task reviewer's own agent token only" }, 403)
+        return true
+      }
     }
     const db = getDb()
     // a repeat is answered before the guard: the first one was already judged

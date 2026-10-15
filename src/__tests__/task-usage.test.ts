@@ -652,10 +652,12 @@ describe('the review ref guard', () => {
       const id = `ref-${Math.random().toString(36).slice(2)}`
       const post = async (path: string, body: unknown) => {
         const { ctx, out } = fakeCtx(path, 'POST', body)
+        // a verdict is written with the task reviewer's own token only (#200): murena's token, murena the reviewer
+        ;(ctx as { auth: unknown }).auth = { kind: 'token', actor: 'murena', project: 'acropora' }
         await tryHandleTaskUsage(ctx)
         return out
       }
-      await post('/api/tasks', { id, verification_profile: 'code_fleet' })
+      await post('/api/tasks', { id, verification_profile: 'code_fleet', reviewer: 'murena' })
       const out = await post(`/api/tasks/${id}/events`, { kind, actor: 'murena', ...(ref ? { ref } : {}) })
       const row = getDb().prepare('SELECT data FROM task_events WHERE task_id = ? AND kind = ?').get(id, kind) as { data: string | null } | undefined
       return [out.status, out.body?.would_reject === true, row ? JSON.parse(row.data ?? 'null')?.would_reject ?? null : 'nincs sor']
