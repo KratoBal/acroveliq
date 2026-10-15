@@ -30,7 +30,7 @@
 // THE TOOL LIST IS A PERMISSION (acrobot 31021): changing READER_ARGS beyond `Read` is a
 // permission_change, Balázs's decision, not a review-only change. A test pins the list.
 import { spawn } from 'node:child_process'
-import { copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { accessSync, constants, copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -175,10 +175,39 @@ async function inFreshFolder(put: (dir: string) => void, name: string, source: s
   }
 }
 
-/** The reader binary, and the line that says so when it is not the default (barracuda, #172). */
-export function readerBinary(env: NodeJS.ProcessEnv): { claude: string; notice: string | null } {
+/**
+ * WHERE THE READER BINARY IS LOOKED FOR: a fixed list, never the caller's PATH (murena 31737,
+ * 2026-10-15). An agent running under its own OS user has no claude on its PATH (it lives only under
+ * /home/marveen/.local/bin), so a bare `claude` never started there, and the P1-00f point 8 rule
+ * ("outside text only through the quarantine reader") could not be kept. The list is short and
+ * fixed on purpose: a PATH lookup would also let any folder on a caller's PATH supply "claude".
+ */
+export const READER_CANDIDATES = Object.freeze(['/home/marveen/.local/bin/claude', '/usr/local/bin/claude'])
+
+function isExecutable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The reader binary, and the line that says so when it is not the default (barracuda, #172). With
+ * no KARANTEN_CLAUDE (that override is for tests), the first executable entry of READER_CANDIDATES;
+ * none is a loud stop with the list named, not a silent fallback to the PATH.
+ */
+export function readerBinary(
+  env: NodeJS.ProcessEnv,
+  executable: (path: string) => boolean = isExecutable,
+): { claude: string; notice: string | null } | { error: string } {
   const set = env.KARANTEN_CLAUDE
-  return set ? { claude: set, notice: `KARANTEN: nem az alapertelmezett olvaso fut: ${set}` } : { claude: 'claude', notice: null }
+  if (set) return { claude: set, notice: `KARANTEN: nem az alapertelmezett olvaso fut: ${set}` }
+  const found = READER_CANDIDATES.find((path) => executable(path))
+  return found
+    ? { claude: found, notice: null }
+    : { error: `KARANTEN: az olvaso (claude) nem talalhato, a keresett helyek: ${READER_CANDIDATES.join(', ')}` }
 }
 
 /** For the tests: the folder the reader saw must hold the copy and nothing else. */
@@ -196,7 +225,13 @@ async function main(): Promise<void> {
     return
   }
   // another binary as the reader is for tests; if it is set, it is said (barracuda, #172)
-  const { claude, notice } = readerBinary(process.env)
+  const reader = readerBinary(process.env)
+  if ('error' in reader) {
+    process.stdout.write(`${reader.error}\n`)
+    process.exitCode = 2
+    return
+  }
+  const { claude, notice } = reader
   if (notice) process.stdout.write(`${notice}\n`)
   const { PROJECT_ROOT, STORE_DIR } = await import('./config.js')
   const envFile = join(PROJECT_ROOT, '.env')
