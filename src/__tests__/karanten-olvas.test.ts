@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, truncateSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { MAX_INPUT_BYTES, READER_ARGS, READER_AUTH_KEYS, READER_ENV_KEYS, karantenOlvas, loadReaderAuth, readerBinary, readerFailure, safeName } from '../karanten-olvas.js'
+import { MAX_INPUT_BYTES, READER_ARGS, READER_AUTH_KEYS, READER_CANDIDATES, READER_ENV_KEYS, karantenOlvas, loadReaderAuth, readerBinary, readerFailure, safeName } from '../karanten-olvas.js'
 
 const ROOT = join(__dirname, '..', '..')
 const GH = ['gh', 'p_', 'B'.repeat(36)].join('')
@@ -69,8 +69,33 @@ describe('what the reader is', () => {
     expect([keys.every((k) => (READER_ENV_KEYS as readonly string[]).includes(k)), keys.includes('DASHBOARD_TOKEN'), keys.includes('CLAUDE_CONFIG_DIR')]).toEqual([true, false, true])
   })
 
-  it('KAR-BINARY: another binary as the reader (KARANTEN_CLAUDE) is said in the output; the default is claude, silently', () => {
-    expect([readerBinary({}), readerBinary({ KARANTEN_CLAUDE: '/tmp/x' })]).toEqual([{ claude: 'claude', notice: null }, { claude: '/tmp/x', notice: 'KARANTEN: nem az alapertelmezett olvaso fut: /tmp/x' }])
+  it('KAR-BINARY: another binary as the reader (KARANTEN_CLAUDE) is said in the output; the default comes from the fixed list, silently', () => {
+    const only = (path: string) => (p: string) => p === path
+    expect([
+      readerBinary({}, only(READER_CANDIDATES[0]!)),
+      readerBinary({ KARANTEN_CLAUDE: '/tmp/x' }, () => false),
+    ]).toEqual([
+      { claude: READER_CANDIDATES[0], notice: null },
+      { claude: '/tmp/x', notice: 'KARANTEN: nem az alapertelmezett olvaso fut: /tmp/x' },
+    ])
+  })
+
+  // murena 31737: an agent under its own OS user has no claude on its PATH. The binary comes from a
+  // fixed list, never from PATH, and a missing one is a loud stop. What turns this red: a bare
+  // 'claude' again (a PATH lookup), a PATH folder winning over the list, or a silent fallback.
+  it('KAR-BINARY-PATH: the reader binary is the first executable entry of the fixed list; the PATH is not consulted; none found is an error naming the list', () => {
+    const fakeOnPath = join(dir, 'claude')
+    writeFileSync(fakeOnPath, '#!/bin/bash\nexit 0\n', { mode: 0o755 })
+    const pathEnv = { PATH: `${dir}:/usr/bin:/bin` }
+    expect([
+      readerBinary(pathEnv, (p) => p === READER_CANDIDATES[1]),
+      readerBinary(pathEnv, (p) => p === fakeOnPath),
+      READER_CANDIDATES.every((p) => p.startsWith('/')),
+    ]).toEqual([
+      { claude: READER_CANDIDATES[1], notice: null },
+      { error: `KARANTEN: az olvaso (claude) nem talalhato, a keresett helyek: ${READER_CANDIDATES.join(', ')}` },
+      true,
+    ])
   })
 
   it('KAR-NAME: the copy\'s name has no path, no flag start, no odd characters', () => {
