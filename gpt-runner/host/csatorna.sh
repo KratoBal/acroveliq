@@ -11,8 +11,8 @@
 # difference STOPS:
 #   - the source address the service SEES is the fleet container's (DNAT + routed path), not a
 #     gateway (a docker-proxy in the way would make the source filter filter the wrong thing);
-#   - another container on the same fleet network, and the host itself, do NOT reach the port,
-#     while the same container and the host DO reach the fleet's own port (the control);
+#   - another container on the same fleet network does NOT reach the port,
+#     while the same container DOES reach the fleet's own port (the control);
 #   - the probe (N1) still finds no fleet or host address open from the runner.
 # The fleet container's address may change when it is re-created, and the old one may later go to
 # another container (barracuda, #148): so tuzfal.sh CLOSES the channel (GPTF-BE closed, the two
@@ -47,7 +47,6 @@ ipv4() {
 set_env() { sed -i "/^$1=/d" "$ENVF"; printf '%s=%s\n' "$1" "$2" >> "$ENVF"; }
 # a TCP connect from a given place: prints NYITOTT or ZART (with the reason)
 CONNECT_JS='const net=require("net");const [h,p]=process.argv.slice(1);const s=net.connect({host:h,port:+p});s.setTimeout(5000);s.on("connect",()=>{console.log("NYITOTT");s.destroy()});s.on("timeout",()=>{console.log("ZART (idotullepes)");s.destroy()});s.on("error",(e)=>console.log("ZART ("+e.code+")"))'
-host_connect() { if timeout 6 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; then echo NYITOTT; else echo "ZART"; fi; }
 
 [ -d "$SRC" ] || stop "nincs $SRC: elobb a forras kell a jovahagyott commiton"
 [ -r "$ENVF" ] || stop "nincs $ENVF"
@@ -199,13 +198,9 @@ echo "a kozzetett port ($KOZZ:$PORT): $n1"
 echo "a szolgaltatas cime ($SZOLGA:$PORT): $n2 (ezt a Docker sajat raw-orzoje is zarja: NEM a mi GPTF-BE-nket bizonyitja, azt a kozzetett port sora meri)"
 [ "$k1" = NYITOTT ] || stop "a kontroll sem ert el semmit a masik kontenerbol: a negativ eredmeny igy nem bizonyit"
 [[ "$n1" == ZART* && "$n2" == ZART* ]] || stop "egy masik kontener a flotta-halon eleri a futtato szolgaltatasat"
-echo "== negativ kontroll: maga a gep"
-k2=$(host_connect "$VEZ" 3420); n3=$(host_connect "$KOZZ" "$PORT"); n4=$(host_connect "$SZOLGA" "$PORT")
-echo "kontroll: a flotta sajat portja ($VEZ:3420): $k2"
-echo "a kozzetett port ($KOZZ:$PORT): $n3"
-echo "a szolgaltatas cime ($SZOLGA:$PORT): $n4"
-[ "$k2" = NYITOTT ] || stop "a kontroll sem ert el semmit a geprol: a negativ eredmeny igy nem bizonyit"
-[[ "$n3" == ZART* && "$n4" == ZART* ]] || stop "a gep maga eleri a futtato szolgaltatasat"
+# No negative control from the host itself (acrobot 30972/31023, the v6 host run): the host's root
+# is not the threat, and from the host even the fleet's own port did not answer (192.168.250.2:3420
+# closed), so its "closed" proved nothing. GPTF-GEPROL (OUTPUT) stays; it is just not measured here.
 
 # 10. the timer's view of the fleet address
 allapot=$(cat "$ALLAPOT_DIR/cim-allapot" 2>/dev/null || echo "nincs allapot")
@@ -215,7 +210,7 @@ echo "== az idozito allapota: $allapot"
 # 11. the service stops: activation is Balázs's separate decision
 stop_szolga
 echo "== kesz: a csatorna mert, a szolgaltatas leallitva"
-echo "a forrascim $VEZ (egyezik); masik kontener es a gep: zart; a proba N1: OK"
+echo "a forrascim $VEZ (egyezik); egy masik kontener a flotta-halon: zart (a sajat portja nyitott); a proba N1: OK"
 echo "A GPT-oldal KIKAPCSOLVA marad. A bekapcsolas (kulon jovahagyas, es a 2. PR szuroi nelkul hatastalan):"
 echo "  a szolgaltatas: cd $DIR && docker compose --profile szolga up -d gpt-szolga"
 echo "  a dashboard: DEBATE_GPT_RUNNER_URL=http://$KOZZ:$PORT es DEBATE_GPT_RUNNER_ENABLED=on"

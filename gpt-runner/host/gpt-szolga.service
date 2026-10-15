@@ -1,0 +1,35 @@
+# The debate channel's runner service (gpt-szolga), kept running by systemd, AFTER the host
+# firewall. Installed by host/aktivalas.sh, only on Balázs's approval (acrobot 31023).
+#
+# Why NOT a Docker restart policy (restart: unless-stopped / always): Docker starts such a container
+# by itself when the daemon starts (boot, docker restart), BEFORE gpt-futtato-tuzfal.service has put
+# our rules in place (that unit is After=docker.service). For that window the runner would be up
+# with neither GPTF-GEP nor GPTF-PRIVAT: the open direction. So the container keeps restart: "no"
+# (compose.yaml), and only systemd starts it, after the firewall:
+#   Requires= and After= gpt-futtato-tuzfal.service, and ExecStartPre runs tuzfal.sh once more
+#     (it orders our rules first, under its own lock);
+#   Restart=on-failure, RestartSec=15, at most 5 starts in 5 minutes: a crash is restarted without a
+#     hand (Balázs's standing order: no routine manual work), every start through ExecStartPre; past
+#     the limit it stays down, the safe direction (the debate thread then says the runner failed);
+#   PartOf=docker.service: a docker restart stops it and starts it again, after the firewall again.
+# `docker compose up` runs in the foreground: a container that exits makes the unit exit with its
+# code (--exit-code-from), and a stop (ExecStop) is a clean exit, not restarted.
+[Unit]
+Description=GPT-futtato: a vita-csatorna szolgaltatasa (gpt-szolga), a host-tuzfal utan
+After=docker.service gpt-futtato-tuzfal.service
+Requires=gpt-futtato-tuzfal.service
+PartOf=docker.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/gpt-futtato
+ExecStartPre=/opt/gpt-futtato/tuzfal.sh
+ExecStart=/usr/bin/docker compose --profile szolga up --no-log-prefix --exit-code-from gpt-szolga gpt-szolga
+ExecStop=/usr/bin/docker compose --profile szolga stop gpt-szolga
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target docker.service
