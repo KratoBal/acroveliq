@@ -25,6 +25,7 @@ import {
   detectsFeedbackDraftModal,
   detectsFeedbackOptOutPrompt,
   type FirstRunGateKind,
+  liveBoxIsFree,
 } from '../pane-state.js'
 import { AGENTS_BASE_DIR, agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, agentConfigHasIgnoredRemoteHost, readAgentRunAsUser, readAgentConfiguredRunAsUser, readAgentRunIdentity, readAgentMemoryIsolation, resolveRunAsUser, readAgentConfigGroupGid, agentConfigGroupName } from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
@@ -32,7 +33,7 @@ import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import { atomicWriteFileSync, atomicWriteInTree, atomicWriteGroupPrivate, agentTreeRootOf } from './atomic-write.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
-import { emitIntoBusyPane, type BusyPaneReport } from './busy-pane-emit.js'
+import { emitIntoBusyPane, typedLine, type BusyPaneReport } from './busy-pane-emit.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -2261,7 +2262,11 @@ export async function waitForPaneIdle(
 // instead of replacing it, which is how a box accumulates tick after tick until
 // nothing can be submitted at all. Keys are sent by name (no `-l` literal flag)
 // so tmux interprets them as control sequences.
-export async function clearInputBuffer(session: string, host: string | null = null): Promise<void> {
+//
+// Returns whether the box is EMPTY afterwards (liveBoxIsFree, dim ghost text counted as empty).
+// A caller about to type a message again must not do it on false: a copy typed on top of text
+// that did not clear is how one message stood in a box about fourteen times (acrobot 31076).
+export async function clearInputBuffer(session: string, host: string | null = null): Promise<boolean> {
   try {
     const pane = capturePane(session, host)
     for (const key of parkedClearSequence(pane != null ? parkedInputRowCount(pane) : 0)) {
@@ -2273,6 +2278,9 @@ export async function clearInputBuffer(session: string, host: string | null = nu
   } catch (err) {
     logger.warn({ err, session }, 'Failed to clear pane input buffer before send')
   }
+  const cleared = liveBoxIsFree(capturePane(session, host), captureParkedInputView(session, host))
+  if (!cleared) logger.warn({ session }, 'clearInputBuffer: the input box is not empty after the clear')
+  return cleared
 }
 
 // How many Ctrl-C presses the placeholder-discard will attempt before giving
@@ -2417,7 +2425,7 @@ export async function sendPromptToSession(
   // recovery must not submit a second copy from a record.
   if (opts.busyTarget) {
     const outcome = await emitIntoBusyPane(
-      text.replace(/\r?\n/g, ' '),
+      typedLine(text),
       {
         capture: () => capturePane(session, host),
         typeChunk: (chunk) => runTmux(host, ['send-keys', '-t', session, '-l', chunk], { timeout: 5000 }),
@@ -2442,13 +2450,18 @@ export async function sendPromptToSession(
     const preCapture = captureTmux(host, ['capture-pane', '-t', session, '-p'])
     if (shouldClearTruncatedPreamble(preCapture)) {
       logger.info({ session }, 'Cleared stale preamble from input buffer before sending prompt')
-      await clearInputBuffer(session, host)
+      // typing onto a stale preamble that did not clear appends the message to it: send nothing,
+      // the caller keeps it (the router leaves it pending) and tries again
+      if (!(await clearInputBuffer(session, host))) {
+        logger.warn({ session }, 'sendPromptToSession: stale preamble did not clear; not typing on top of it')
+        return 'not-landed'
+      }
     }
   } catch (err) {
     logger.warn({ err, session }, 'Pre-send capture-pane failed; skipping truncated-preamble check')
   }
 
-  const oneLine = text.replace(/\r?\n/g, ' ')
+  const oneLine = typedLine(text)
   // STUCKINPUT827: remember the EXACT byte stream we are about to type. If the
   // submitting Enter does not land, the stuck-input watcher re-injects THIS
   // instead of guessing from a lossy screen scrape. Recorded before the send so
@@ -2520,7 +2533,9 @@ export async function sendPromptToSession(
       // recovering (or give up at the budget) if the resend itself parks.
       logger.info({ session, attempt }, 'sendPromptToSession: paste placeholder detected; clearing and re-sending')
       if (!(await discardPlaceholderBuffer(session, host))) {
-        logger.warn({ session, attempt }, 'sendPromptToSession: failed to clear paste placeholder before resend')
+        // a resend onto a box that did not clear types a second copy after the first
+        logger.warn({ session, attempt }, 'sendPromptToSession: failed to clear paste placeholder; not re-sending on top of it')
+        break
       }
       try {
         await sendChunks()

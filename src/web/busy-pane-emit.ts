@@ -23,6 +23,18 @@
 // that turns into a permission dialog mid-typing.
 import { decideSubmitFollowup, detectsPastePlaceholder, liveBoxHoldsOnly, liveInputRefusal } from '../pane-state.js'
 
+/**
+ * The one line a message is typed as: a line break, every C0 and C1 control and the Unicode
+ * separators U+2028/U+2029 become a space. typed with `send-keys -l`, a raw ESC reaches the
+ * TUI as the Escape key, a Tab as completion, and a U+2028/U+2029 broke the line in the box:
+ * barracuda's message 31054 (one of each) arrived about fourteen times over, each copy cut at
+ * the separator, because every replay typed a new copy on top of the last (acrobot 31075).
+ * A CRLF is one space, as the old `\r?\n` replacement made it.
+ */
+export function typedLine(text: string): string {
+  return text.replace(/\r\n|[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, ' ')
+}
+
 /** Characters per send-keys write, as on the idle path. */
 export const SEND_KEYS_CHUNK = 80
 const MAX_SLIDE = 8

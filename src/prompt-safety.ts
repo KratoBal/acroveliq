@@ -37,8 +37,12 @@ const SECURITY_TAG_NAMES = ['untrusted', 'trusted-peer', 'scheduled-task'] as co
 
 // The \s* after '<' tolerates "< untrusted>" variants that some LLMs still
 // parse as a tag even though real HTML parsers reject them.
+// A control character counts as whitespace inside a tag (`<` U+0001 `/untrusted>`): the typing
+// turns every control into a space (busy-pane-emit.ts typedLine), so a tag hidden by one from a
+// plain \s here would arrive in the receiver's pane as a spaced tag (barracuda, #173 review).
+const TAG_GAP = '[\\s\\x00-\\x1f\\x7f-\\x9f]*'
 const SECURITY_TAG_RX = new RegExp(
-  `<\\s*\\/?\\s*(${SECURITY_TAG_NAMES.join('|')})\\b[^>]*>`,
+  `<${TAG_GAP}\\/?${TAG_GAP}(${SECURITY_TAG_NAMES.join('|')})\\b[^>]*>`,
   'gi',
 )
 
