@@ -117,9 +117,16 @@ if ufw_aktiv; then
   ls -l /opt/gpt-futtato/ip*tables-elotte.rules
   echo "visszaallitas, ha kell: iptables-restore < /opt/gpt-futtato/iptables-elotte.rules (es ip6tables-restore ugyanigy)"
   ufw_before=$(ufw status verbose)
-  # an empty result is a result, not a failure (pipefail would stop the installer on it)
-  other_rules() { iptables-save | grep -v '^#' | grep -vE 'ufw-|GPTF-|gptf-ufw-proba' | grep -vE '^:' || true; }
-  rules_before=$(other_rules)
+  # the rules outside ufw's and ours. The save is read FIRST: a failed or empty iptables-save is a
+  # failure (return 1), never an empty result, or the before/after comparison would be empty against
+  # empty and green blind (barracuda, #159). Only the FILTERING may come out empty.
+  other_rules() {
+    local all
+    all=$(iptables-save) || return 1
+    [ -n "$all" ] || return 1
+    grep -v '^#' <<< "$all" | grep -vE 'ufw-|GPTF-|gptf-ufw-proba' | grep -vE '^:' || true
+  }
+  rules_before=$(other_rules) || { echo "STOP reload nelkul: az iptables-save nem futott le (vagy ures), az osszevetes vak lenne"; exit 1; }
   start=$(date +%s)
   ufw reload
   first_after_reload=$(iptables -w 5 -S INPUT | grep -m1 '^-A ' || true)
@@ -137,7 +144,8 @@ if ufw_aktiv; then
     journalctl -u gpt-futtato-tuzfal-ellenor.service --since "@$start" --no-pager | grep VISSZATETTE || echo "FIGYELEM: a journalban nincs VISSZATETTE sor"
   fi
   [ "$ufw_before" = "$(ufw status verbose)" ] && echo "ufw status: a reload elott es utan azonos" || { echo "FIGYELEM: a ufw status a reload utan mas:"; diff <(echo "$ufw_before") <(ufw status verbose) || true; }
-  rules_diff=$(diff <(echo "$rules_before") <(other_rules) || true)
+  rules_after=$(other_rules) || { echo "STOP: a reload utan az iptables-save nem futott le (vagy ures), az osszevetes vak lenne"; exit 1; }
+  rules_diff=$(diff <(echo "$rules_before") <(echo "$rules_after") || true)
   [ -z "$rules_diff" ] && echo "a ufw-n es a mi lancainkon kivuli szabalyok a reload utan azonosak" || { echo "FIGYELEM: a reload a ufw-n kivul is valtoztatott:"; echo "$rules_diff"; }
 else
   echo "== a ufw tuzfala nem aktiv: a ufw reload ezen a gepen nem nyul az iptableshez, igy a valodi reload-meres nem ertelmezheto; a timer bizonyiteka a 2b kor"

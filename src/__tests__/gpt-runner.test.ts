@@ -592,6 +592,26 @@ esac
     expect([b, /^CSATORNA: rendben$/m.test(c)]).toEqual(['', true])
   }))
 
+  it('FW-OTHER-RULES: the ufw comparison\'s save is read first; a failed or empty iptables-save is a failure, not an empty (blind green) result', () => {
+    // the installer's own function, run against a fake iptables-save (barracuda, #159)
+    const inst = R('host/telepit-tuzfal.sh')
+    const fn = /\n {2}other_rules\(\) \{\n[\s\S]*?\n {2}\}\n/.exec(inst)![0]
+    const dir = mkdtempSync(join(tmpdir(), 'gpt-other-'))
+    try {
+      const run = (save: string) => {
+        writeFileSync(join(dir, 'iptables-save'), `#!/bin/bash\n${save}\n`, { mode: 0o755 })
+        return spawnSync('bash', ['-c', `set -euo pipefail\n${fn}\nout=$(other_rules) || { printf FAIL; exit 0; }\nprintf 'OK[%s]' "$out"`], { env: { PATH: `${dir}:/usr/bin:/bin` }, encoding: 'utf8' }).stdout
+      }
+      expect([
+        run('exit 1'),
+        run('exit 0'),
+        run("printf '# komment\\n:INPUT ACCEPT\\n-A ufw-x -j DROP\\n-A GPTF-BE -j DROP\\n'"),
+        run("printf '# komment\\n-A DOCKER -j RETURN\\n-A ufw-x -j DROP\\n'"),
+      ]).toEqual(['FAIL', 'FAIL', 'OK[]', 'OK[-A DOCKER -j RETURN]'])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+    expect(inst).toMatch(/rules_after=\$\(other_rules\) \|\| \{ echo "STOP/)
+  })
+
   it('FW-UNIT: the unit runs the script at boot and after every docker (re)start', () => {
     const unit = R('host/gpt-futtato-tuzfal.service')
     expect([/^After=docker\.service$/m.test(unit), /^PartOf=docker\.service$/m.test(unit), /^WantedBy=.*docker\.service.*multi-user\.target/m.test(unit), /^ExecStart=\/opt\/gpt-futtato\/tuzfal\.sh$/m.test(unit), /^RemainAfterExit=yes$/m.test(unit)]).toEqual([true, true, true, true, true])
@@ -621,7 +641,7 @@ esac
     expect(/systemctl (restart|stop) docker/.test(inst)).toBe(false)
     // a REAL ufw reload, with what it may change outside ufw printed, and the timer measured after it
     expect(inst).toMatch(/ufw_before=\$\(ufw status verbose\)[\s\S]*rules_before=\$\(other_rules\)[\s\S]*\nufw reload\n|\n {2}ufw reload\n/)
-    expect(inst).toMatch(/ {2}ufw reload\n[\s\S]*"-A INPUT -i \$BRIDGE -j GPTF-GEP"[\s\S]*STOP: a ufw reload utan[\s\S]*rules_diff=\$\(diff <\(echo "\$rules_before"\) <\(other_rules\)/)
+    expect(inst).toMatch(/ {2}ufw reload\n[\s\S]*"-A INPUT -i \$BRIDGE -j GPTF-GEP"[\s\S]*STOP: a ufw reload utan[\s\S]*rules_after=\$\(other_rules\) \|\| \{[\s\S]*rules_diff=\$\(diff <\(echo "\$rules_before"\) <\(echo "\$rules_after"\)/)
     expect(inst).toMatch(/\^PROBA N1 NEM_MERHETO[\s\S]*STOP/)
     expect(inst).toMatch(/^trap '.*STOP.*\$LINENO.*' ERR$/m)
     expect(inst).toMatch(/iptables -V/)
