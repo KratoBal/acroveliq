@@ -33,7 +33,7 @@ import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import { atomicWriteFileSync, atomicWriteInTree, atomicWriteGroupPrivate, agentTreeRootOf } from './atomic-write.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
-import { emitIntoBusyPane, splitForSendKeys, typedLine, type BusyPaneReport } from './busy-pane-emit.js'
+import { emitIntoBusyPane, sendKeysLiteralArgs, SEND_KEYS_CHUNK, splitForSendKeys, typedLine, type BusyPaneReport } from './busy-pane-emit.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -2473,18 +2473,21 @@ export async function sendPromptToSession(
   // (busy-pane-emit.ts; barracuda, #117 review). No injected-prompt record here: a message
   // that did not land stays pending and the router sends it again, so the stuck-input
   // recovery must not submit a second copy from a record.
+  // A local pane takes `-l --` (measured on the container's tmux 3.3a), so the text is typed
+  // exactly; a remote agent's tmux is not measured, so it keeps the dash slide and the space.
+  const terminated = host == null
   if (opts.busyTarget) {
     const outcome = await emitIntoBusyPane(
       typedLine(text),
       {
         capture: () => capturePane(session, host),
-        typeChunk: (chunk) => runTmux(host, ['send-keys', '-t', session, '-l', chunk], { timeout: 5000 }),
+        typeChunk: (chunk) => runTmux(host, ['send-keys', '-t', session, ...sendKeysLiteralArgs(chunk, terminated)], { timeout: 5000 }),
         enter: () => runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 }),
         delay,
         abandon: (typed) => recordAbandonedPrompt(session, typed),
         report: opts.onBusyReport,
       },
-      { chunkGapMs: 30, pollMs: SUBMIT_RETRY_POLL_MS, maxRetries: SUBMIT_RETRY_MAX_ATTEMPTS },
+      { chunkGapMs: 30, pollMs: SUBMIT_RETRY_POLL_MS, maxRetries: SUBMIT_RETRY_MAX_ATTEMPTS, terminated },
     )
     // a landed message in this pane supersedes an earlier abandoned half, the same
     // way a recorded typing does (barracuda, #118): the old record must not later
@@ -2522,14 +2525,13 @@ export async function sendPromptToSession(
   // path below can replay the EXACT same byte stream after a Ctrl-C.
   //
   // The chunks come from splitForSendKeys (busy-pane-emit.ts), the ONE copy of
-  // the rules both paths need: a chunk starting with '-' would parse as a flag
-  // (the dash slide and the leading space), and a chunk ENDING in ';' would lose
-  // that ';' (tmux reads it as a command separator; measured 2026-10-15, before
-  // that a message with a chunk boundary on a ';' was delivered without it).
+  // the rules both paths need: a chunk ENDING in ';' would lose that ';' (tmux
+  // reads it as a command separator; measured 2026-10-15), and a chunk starting
+  // with '-' would parse as a flag (`terminated`: see above).
   const sendChunks = async (): Promise<void> => {
-    const chunks = splitForSendKeys(oneLine)
+    const chunks = splitForSendKeys(oneLine, SEND_KEYS_CHUNK, terminated)
     for (let i = 0; i < chunks.length; i++) {
-      runTmux(host, ['send-keys', '-t', session, '-l', chunks[i]!], { timeout: 5000 })
+      runTmux(host, ['send-keys', '-t', session, ...sendKeysLiteralArgs(chunks[i]!, terminated)], { timeout: 5000 })
       if (i < chunks.length - 1) await delay(30)
     }
     runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
