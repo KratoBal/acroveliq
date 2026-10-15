@@ -41,7 +41,18 @@ UT="${2:-/api/health}"
 # A `|| true` NEM kenyelmi: nelkule a grep nulla talalata (exit 1) a `set -e` miatt
 # megoli a szkriptet MIELOTT a lenti magyarazat kiirodna. Merve 2026-09-10: a hatteren
 # futtatva nema `exit 1` jott, es epp az a mondat veszett el, amiert a szkript letezik.
-ERTEK="$(curl -s -m 20 "${ALAP}${UT}" \
+# The test storefront sits behind HTTP basic auth since 2026-10-15 (Balazs, stage P1-00b).
+# The credentials go to curl through a config file on a process-substitution fd, never on
+# argv; without them a stage host answers 401 and the fingerprint would read as missing.
+AUTH_FILE="/home/marveen/marveen/store/.stage-basic-auth"
+lekeres() {
+  if [[ "$ALAP" == *staging* && -r "$AUTH_FILE" ]]; then
+    curl -s -m 20 -K <(printf 'user = "%s:%s"\n' "$(sed -n 1p "$AUTH_FILE")" "$(sed -n 2p "$AUTH_FILE")") "$1"
+  else
+    curl -s -m 20 "$1"
+  fi
+}
+ERTEK="$(lekeres "${ALAP}${UT}" \
   | grep -o '<!--[A-Za-z0-9_-]\{15,\}-->' \
   | head -1 \
   | sed -e 's/^<!--//' -e 's/-->$//' || true)"
