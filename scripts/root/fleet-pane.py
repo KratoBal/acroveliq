@@ -22,7 +22,11 @@ Verbs (argv[1]); the agent must be listed in the root-owned /etc/fleet-pane/agen
   interrupt <agent>                   Escape, only while a turn runs and no dialog is up
   clear <agent>                       empty a parked input box (no dialog, not busy)
   submit <agent>                      Enter on a parked input box (no dialog, not busy)
-`start` is the second PR (generated root-owned start scripts; the session-id with nautilus).
+  generate <agent>                    rewrite /etc/fleet-pane/start/<agent> from the root files and
+                                      ONLY the allowed, value-set-checked fields of the agent's config
+  start <agent> [--continue | --session-id UUID]
+                                      new-session running that script and nothing else; the caller
+                                      gives only one item of the closed launch list (nautilus 31151)
 
 WHAT THIS DOES NOT DO, said aloud:
   - no verb answers a permission question: every key is preceded by a fresh look at the pane,
@@ -34,18 +38,24 @@ WHAT THIS DOES NOT DO, said aloud:
   - the pane rules here are a conservative copy of src/pane-state.ts: when unsure, it refuses.
     A refusal is "not now": the router keeps the message and tries again.
 
-Exit codes: 0 done; 1 not running (status); 2 usage; 10 refused before any key (nothing typed);
-11 typed but not landed; 12 nothing to do (the dialog or state was not there); 13 tmux failed.
+Exit codes: 0 done; 1 not running (status); 2 usage; 10 refused before any key (nothing typed,
+nothing written, nothing started); 11 typed but not landed; 12 nothing to do (the dialog or state
+was not there; start: already running); 13 tmux failed.
 """
 import hashlib
 import json
 import os
+import pwd
 import re
+import shlex
+import stat
 import subprocess
 import sys
 import time
 
 AGENTS_FILE = '/etc/fleet-pane/agents.json'
+VALUES_FILE = '/etc/fleet-pane/start-values.json'
+START_DIR = '/etc/fleet-pane/start'
 LOG_FILE = '/var/log/fleet-pane.log'
 RUNUSER = '/usr/sbin/runuser'
 TMUX = '/usr/bin/tmux'
@@ -55,6 +65,7 @@ CHILD_ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8'}
 NAME_RX = re.compile(r'^[a-z][a-z0-9-]{1,30}$')
 # an agent user only: a mistyped install must not name root or a service account (barracuda, #182)
 USER_RX = re.compile(r'^agent-[a-z][a-z0-9-]{1,30}$')
+PATH_RX = re.compile(r'^(?:/[A-Za-z0-9._-]+)+$')
 MAX_TEXT = 32000
 MAX_LINES = 2000
 CHUNK = 80
@@ -444,8 +455,257 @@ class Broker:
         raise Refused(11, 'parked')
 
 
+# --- start: the generated root-owned start scripts (plan 4.2; the second PR) ------------------
+# The router used to build the launch as a shell string and hand it to `tmux new-session`: whoever
+# runs as `marveen` could start ANY command as the agent. Now `generate` writes a script from the
+# root files and a few value-set-checked fields of the agent's config, and `start` runs that script
+# with one item of a closed launch list. Plan doc: review-csomagok/doc-t-20261015-b48-fleet-pane.
+SESSION_ID_RX = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+MODEL_RX = re.compile(r'^[a-z0-9][a-z0-9.-]{0,63}$')
+PROFILE_RX = re.compile(r'^[a-z][a-z0-9-]{0,40}$')
+TZ_RX = re.compile(r'^[A-Za-z_]+(?:/[A-Za-z0-9_+-]+){0,2}$')
+LOGIN_RX = re.compile(r'^[a-z_][a-z0-9_-]{0,31}$')
+# a letter first, then letters, digits, space, dot, underscore, dash; 40 at most (`--name`, one argv)
+DISPLAY_RX = re.compile(r'^[^\W\d_][\w .-]{0,39}$')
+CLONE_RX = re.compile(r'^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$')
+CHANNELS = ('telegram', 'slack', 'discord', 'googlechat', 'teams')
+AUTH_MODES = (None, 'shared', 'oauth')
+MAX_CONFIG = 64 * 1024
+# the pane is started this wide (src/web/agent-process.ts AGENT_PANE_SIZE: the idle footer is cut at 80)
+PANE_SIZE = ['-x', '200', '-y', '24']
+ENV_BIN = '/usr/bin/env'
+BASH = '/usr/bin/bash'
+
+
+def clean_path(p):
+    return isinstance(p, str) and bool(PATH_RX.match(p)) and not any(c in ('.', '..') for c in p.split('/'))
+
+
+def trusted_file(path, trusted_uid):
+    """None when `path` and every directory above it are the trusted owner's (root in production) and
+    nobody else can write any of them; else the reason. No symlink anywhere: the installer copies real
+    files. No exception for a sticky world-writable directory either: others could still create a
+    name in it (barracuda, plan review 31252)."""
+    if not clean_path(path):
+        return 'bad-path'
+    parts = path.split('/')[1:]
+    cur = ''
+    for i, part in enumerate(parts):
+        cur += '/' + part
+        try:
+            st = os.lstat(cur)
+        except OSError:
+            return 'missing'
+        if stat.S_ISLNK(st.st_mode):
+            return 'symlink'
+        if st.st_uid not in (0, trusted_uid):
+            return 'not-root-owned'
+        if i == len(parts) - 1 and not stat.S_ISREG(st.st_mode):
+            return 'not-a-file'
+        if st.st_mode & 0o022:
+            return 'writable-by-others'
+    return None
+
+
+def check_root_dirs(path, trusted_uid):
+    """The same rule for the directories above `path` only (the file itself may not exist yet)."""
+    head = os.path.dirname(path)
+    if head == '/':
+        return None
+    st = os.lstat(head)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode) or st.st_uid not in (0, trusted_uid) or st.st_mode & 0o022:
+        return 'start-dir-not-root-owned'
+    return check_root_dirs(head, trusted_uid) if os.path.dirname(head) != head else None
+
+
+def load_values(path, require_root):
+    """The root-owned value sets: every field checked here, a bad file refuses every generate."""
+    st = os.stat(path)
+    if require_root and (st.st_uid != 0 or st.st_mode & 0o022):
+        raise Refused(10, 'values-file-not-root-owned')
+    with open(path, encoding='utf-8') as f:
+        v = json.load(f)
+    ok = (isinstance(v, dict) and all(clean_path(v.get(k)) for k in ('claudeBin', 'oauthTokenFile', 'gitCeiling'))
+          and isinstance(v.get('tz'), str) and TZ_RX.match(v['tz']) and isinstance(v.get('routerUser'), str)
+          and LOGIN_RX.match(v['routerUser']) and isinstance(v.get('models'), list)
+          and all(isinstance(m, str) and MODEL_RX.match(m) for m in v['models']) and isinstance(v.get('profiles'), dict)
+          and all(PROFILE_RX.match(k) and m in ('strict', 'permissive') for k, m in v['profiles'].items()))
+    if not ok:
+        raise Refused(10, 'values-file-invalid')
+    return v
+
+
+def read_config(path):
+    """The agent's config, read as root from a tree `marveen` writes: no symlink, no FIFO, 64 KiB at
+    most. Errors name the reason only, never the content."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        raise Refused(10, 'config-unreadable')
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_CONFIG:
+            raise Refused(10, 'config-unreadable')
+        data = os.read(fd, MAX_CONFIG + 1)
+    finally:
+        os.close(fd)
+    try:
+        c = json.loads(data.decode('utf-8'))
+    except ValueError:
+        raise Refused(10, 'config-unreadable')
+    if not isinstance(c, dict):
+        raise Refused(10, 'config-unreadable')
+    return c
+
+
+def channel_env_present(workdir):
+    """A channel token file with content (stat only: root never reads a secret)."""
+    for p in CHANNELS:
+        try:
+            st = os.lstat(os.path.join(workdir, '.claude', 'channels', p, '.env'))
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode) or st.st_size > 0:
+            return True
+    return False
+
+
+def router_clones(workdir, router_uid):
+    """The router-owned read clones directly in the agent's dir (src/web/agent-process.ts agentGitEnv)."""
+    try:
+        names = sorted(os.listdir(workdir))
+    except OSError:
+        return []
+    out = []
+    for n in names:
+        if not CLONE_RX.match(n):
+            continue
+        p = os.path.join(workdir, n)
+        try:
+            d, g = os.lstat(p), os.lstat(os.path.join(p, '.git'))
+        except OSError:
+            continue
+        if stat.S_ISDIR(d.st_mode) and stat.S_ISDIR(g.st_mode) and d.st_uid == router_uid and g.st_uid == router_uid:
+            out.append(p)
+    return out
+
+
+def start_script(agent, a, v, c, clones):
+    """The script text. Every value here is from a root file or matched a value set above."""
+    q = shlex.quote
+    skip = '--dangerously-skip-permissions ' if v['profiles'][c['profile']] == 'permissive' else ''
+    git = 'export GIT_CEILING_DIRECTORIES=%s\n' % q(v['gitCeiling'])
+    if clones:
+        git += 'export GIT_CONFIG_COUNT=%d' % len(clones)
+        for i, p in enumerate(clones):
+            git += ' GIT_CONFIG_KEY_%d=safe.directory GIT_CONFIG_VALUE_%d=%s' % (i, i, q(p))
+        git += '\n'
+    return ''.join([
+        '#!/usr/bin/bash\n',
+        '# fleet-pane generate %s: GENERATED, do not edit (B48 (2)); run by `fleet-pane start` only\n' % agent,
+        'set -u\n',
+        'umask 022\n',
+        git,
+        # the agent's own bun last: hooks and git pick from PATH (barracuda, plan review 31245)
+        'export PATH="/usr/local/bin:/usr/bin:/bin:$HOME/.bun/bin"\n',
+        'export DISABLE_AUTOUPDATER=1 CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false\n',
+        'export CLAUDE_CONFIG_DIR=%s\n' % q(a['workdir'] + '/.claude-config'),
+        'launch=()\n',
+        'case "$#:${1:-}" in\n',
+        '  0:) ;;\n',
+        '  1:--continue) launch=(--continue) ;;\n',
+        '  2:--session-id)\n',
+        '    [[ ${2:-} =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || { echo "fleet-pane start: bad session id" >&2; exit 64; }\n',
+        '    launch=(--session-id "$2") ;;\n',
+        '  *) echo "fleet-pane start: bad arguments" >&2; exit 64 ;;\n',
+        'esac\n',
+        '# path A (acrobot 31154): the token is read HERE, as the agent; root never reads it\n',
+        'CLAUDE_CODE_OAUTH_TOKEN="$(cat %s)" || exit 65\n' % q(v['oauthTokenFile']),
+        'export CLAUDE_CODE_OAUTH_TOKEN\n',
+        'cd %s || exit 66\n' % q(a['workdir']),
+        'exec %s "${launch[@]}" %s--model %s --name %s\n' % (q(v['claudeBin']), skip, q(c['model']), q(c['name'])),
+    ])
+
+
+def generate(cfg, agent):
+    a = cfg['agents'][agent]
+    v = load_values(cfg['values_file'], cfg.get('require_root', True))
+    trusted = cfg.get('trusted_uid', 0)
+    why = trusted_file(v['claudeBin'], trusted)
+    if why:
+        # acrobot 31242: the binary the script execs must be root's, or there is no start at all
+        raise Refused(10, 'claude-bin-' + why)
+    if not a['workdir']:
+        raise Refused(10, 'no-workdir')
+    profile = a['profile']
+    if profile is None or profile not in v['profiles']:
+        raise Refused(10, 'profile-not-allowed')
+    raw = read_config(a['workdir'] + '/agent-config.json')
+    model, auth = raw.get('model'), raw.get('authMode')
+    if not isinstance(model, str) or model not in v['models']:
+        raise Refused(10, 'model-not-allowed')
+    # the config's profile is only compared: the router writes settings.json from it, so a config
+    # that differs from root's choice would launch one profile's mode with another's lists
+    if raw.get('securityProfile') != profile:
+        raise Refused(10, 'profile-mismatch')
+    if auth not in AUTH_MODES:
+        raise Refused(10, 'auth-mode-not-supported')
+    for field in ('claudePlan', 'claudeConfigDir'):
+        if raw.get(field):
+            raise Refused(10, field + '-not-supported')
+    if raw.get('channel') or raw.get('channelProvider') or channel_env_present(a['workdir']):
+        raise Refused(10, 'channel-not-supported')
+    name = raw.get('displayName')
+    name = name if isinstance(name, str) and DISPLAY_RX.match(name) else agent
+    router_uid = cfg['getpw'](v['routerUser']).pw_uid
+    text = start_script(agent, a, v, {'model': model, 'profile': profile, 'name': name},
+                        router_clones(a['workdir'], router_uid))
+    target = os.path.join(cfg['start_dir'], agent)
+    why = check_root_dirs(target, trusted)
+    if why:
+        raise Refused(10, why)
+    tmp = os.path.join(cfg['start_dir'], '.%s.tmp.%d' % (agent, os.getpid()))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        os.write(fd, text.encode('utf-8'))
+        # the broker runs with umask 077; the agent reads the script, so its mode is set here
+        os.fchmod(fd, 0o755)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, target)
+    digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
+    cfg['log_extra'] = {'script_sha256': digest, 'model': model, 'profile': profile}
+    return 0, 'generated ' + digest
+
+
+def start(cfg, b, launch):
+    """new-session running the generated script, through a clean env, with no shell in between
+    (tmux 3.3a runs a multi-argument command directly; measured 2026-10-15)."""
+    a = cfg['agents'][b.agent]
+    rc, _ = b.tmux('has-session', '-t', b.session, check=False)
+    if rc == 0:
+        raise Refused(12, 'running')
+    script = os.path.join(cfg['start_dir'], b.agent)
+    why = trusted_file(script, cfg.get('trusted_uid', 0))
+    if why:
+        raise Refused(10, 'script-' + why)
+    if not os.lstat(script).st_mode & 0o004:
+        raise Refused(10, 'script-not-readable')
+    v = load_values(cfg['values_file'], cfg.get('require_root', True))
+    home = cfg['getpw'](a['user']).pw_dir
+    if not clean_path(home):
+        raise Refused(10, 'bad-home')
+    env = ['HOME=' + home, 'USER=' + a['user'], 'LOGNAME=' + a['user'], 'SHELL=/bin/bash', 'LANG=C.UTF-8',
+           'LC_ALL=C.UTF-8', 'TZ=' + v['tz'], 'TERM=tmux-256color']
+    b.tmux('new-session', '-d', '-s', b.session, *PANE_SIZE, ENV_BIN, '-i', *env, BASH, '--noprofile', '--norc', script, *launch)
+    cfg['log_extra'] = {'launch': launch[0] if launch else 'fresh'}
+    return 0, 'started'
+
+
 # --- entry ----------------------------------------------------------------------------------
-USAGE = 'usage: fleet-pane status|capture|stop|deliver|dismiss|interrupt|clear|submit <agent> [...]'
+VERBS = ('status', 'capture', 'stop', 'deliver', 'dismiss', 'interrupt', 'clear', 'submit', 'generate', 'start')
+USAGE = 'usage: fleet-pane %s <agent> [...]' % '|'.join(VERBS)
 DISMISS_KINDS = ('survey', 'resume-summary', 'feedback-draft', 'model-consent', 'trust', 'bypass', 'theme', 'welcome')
 
 
@@ -458,12 +718,16 @@ def load_agents(path, require_root):
     agents = {}
     for name, a in (data.get('agents') or {}).items():
         if NAME_RX.match(name) and isinstance(a, dict) and USER_RX.match(str(a.get('user', ''))):
-            agents[name] = {'user': a['user']}
+            agents[name] = {'user': a['user'],
+                            'workdir': a['workdir'] if clean_path(a.get('workdir')) else None,
+                            # the agent's permission profile is decided HERE, by root, not in the
+                            # config the agent and `marveen` can write (barracuda, plan review 31245)
+                            'profile': a['profile'] if isinstance(a.get('profile'), str) and PROFILE_RX.match(a['profile']) else None}
     return agents
 
 
 def parse(argv):
-    if len(argv) < 2 or argv[0] not in ('status', 'capture', 'stop', 'deliver', 'dismiss', 'interrupt', 'clear', 'submit'):
+    if len(argv) < 2 or argv[0] not in VERBS:
         raise Refused(2, 'unknown-verb')
     verb, agent, rest = argv[0], argv[1], argv[2:]
     if not NAME_RX.match(agent):
@@ -475,6 +739,13 @@ def parse(argv):
         if len(rest) != 1 or rest[0] not in DISMISS_KINDS:
             raise Refused(2, 'bad-kind')
         return verb, agent, {'kind': rest[0]}
+    if verb == 'start':
+        # the closed launch list (nautilus 31151): nothing | --continue | --session-id <lowercase uuid>
+        if rest == [] or rest == ['--continue']:
+            return verb, agent, {'launch': rest}
+        if len(rest) == 2 and rest[0] == '--session-id' and SESSION_ID_RX.match(rest[1]):
+            return verb, agent, {'launch': rest}
+        raise Refused(2, 'bad-option')
     while i < len(rest):
         a = rest[i]
         if a not in allowed:
@@ -515,6 +786,10 @@ def run(argv, cfg, stdin_bytes=b''):
             code, out = b.clear()
         elif verb == 'submit':
             code, out = b.submit()
+        elif verb == 'generate':
+            code, out = generate(b.cfg, agent)
+        elif verb == 'start':
+            code, out = start(b.cfg, b, opts['launch'])
         else:
             if len(stdin_bytes) > MAX_TEXT * 4:
                 raise Refused(10, 'too-long')
@@ -553,6 +828,7 @@ if __name__ == '__main__':
     verb = sys.argv[1] if len(sys.argv) > 1 else ''
     data = sys.stdin.buffer.read(MAX_TEXT * 4 + 1) if verb == 'deliver' else b''
     code, out = run(sys.argv[1:], {'agents_file': AGENTS_FILE, 'log_file': LOG_FILE, 'run': real_run,
+                                   'values_file': VALUES_FILE, 'start_dir': START_DIR, 'getpw': pwd.getpwnam,
                                    'caller_uid': int(uid) if uid and uid.isdigit() else os.getuid()}, data)
     if out:
         sys.stdout.write(out if out.endswith('\n') or verb == 'capture' else out + '\n')
