@@ -291,6 +291,8 @@ describe('gpt-runner host firewall (host/tuzfal.sh) against a stateful fake ipta
   // chain is never flushed)
   const FAKE = `#!/bin/bash
 S="$FAKE_STATE"; touch "$S"
+# each call is atomic, like iptables -w (the xtables lock): a race can only be BETWEEN calls
+exec 8>"$S.xlock"; flock 8
 w=""; if [ "$1" = "-w" ]; then w="W "; shift 2; fi
 echo "$w$*" >> "$S.calls"
 # -t nat: its chains are stored as nat:<chain>; -S prints the plain name, like iptables
@@ -319,7 +321,7 @@ esac
   const fw = (dir: string) => spawnSync('bash', [join(__dirname, '..', '..', 'gpt-runner', 'host', 'tuzfal.sh')], {
     env: {
       PATH: `${dir}:/usr/bin:/bin`, FAKE_STATE: join(dir, 'state'), IPTABLES: join(dir, 'iptables'),
-      GPT_FUTTATO_ENV: join(dir, 'env'), GPT_FUTTATO_ALLAPOT_DIR: join(dir, 'allapot'),
+      GPT_FUTTATO_ENV: join(dir, 'env'), GPT_FUTTATO_ALLAPOT_DIR: join(dir, 'allapot'), GPT_FUTTATO_ZAR: join(dir, 'tuzfal.lock'),
     },
     encoding: 'utf8', timeout: 20_000,
   })
@@ -388,6 +390,30 @@ esac
       expect(c.findIndex((x) => /^W -I INPUT 1 -i gptki0 -j GPTF-GEP$/.test(x)) < c.findIndex((x) => /^W -D INPUT /.test(x))).toBe(true)
       expect(chain(dir, 'INPUT')).toEqual(['-i gptki0 -j GPTF-GEP', '-j ufw-before-input'])
     }))
+
+  it('FW-ONE-AT-A-TIME: two runs at the same moment (the timer and csatorna.sh after a Docker re-order) leave exactly one jump first and full chains (barracuda, #161)', async () => {
+    const { spawn } = await import('node:child_process')
+    const runAsync = (dir: string) => new Promise<number>((res) => {
+      const ch = spawn('bash', [join(__dirname, '..', '..', 'gpt-runner', 'host', 'tuzfal.sh')], {
+        env: { PATH: `${dir}:/usr/bin:/bin`, FAKE_STATE: join(dir, 'state'), IPTABLES: join(dir, 'iptables'), GPT_FUTTATO_ENV: join(dir, 'env'), GPT_FUTTATO_ALLAPOT_DIR: join(dir, 'allapot'), GPT_FUTTATO_ZAR: join(dir, 'tuzfal.lock') },
+        stdio: 'ignore',
+      })
+      ch.on('close', (code) => res(code ?? -1))
+    })
+    // a Docker re-order: Docker's rules ABOVE our jumps, the private chain in its old form
+    const start = `R|INPUT|-j ufw-before-input\nR|INPUT|-i gptki0 -j GPTF-GEP\nR|DOCKER-USER|-j DOCKER-X\nR|DOCKER-USER|-j GPTF-TOVABB\nN|GPTF-PRIVAT\n${['10.0.0.0/8', '172.16.0.0/12'].map((r) => `R|GPTF-PRIVAT|-d ${r} -j DROP`).join('\n')}\n`
+    const bad: string[] = []
+    for (let round = 0; round < 8; round++) {
+      const dir = setup(start)
+      try {
+        const codes = await Promise.all([runAsync(dir), runAsync(dir)])
+        const got = JSON.stringify([codes, chain(dir, 'INPUT'), chain(dir, 'DOCKER-USER'), chain(dir, 'GPTF-PRIVAT')])
+        const want = JSON.stringify([[0, 0], ['-i gptki0 -j GPTF-GEP', '-j ufw-before-input'], ['-j GPTF-TOVABB', '-j DOCKER-X'], PRIVATE])
+        if (got !== want) bad.push(got)
+      } finally { rmSync(dir, { recursive: true, force: true }) }
+    }
+    expect(bad).toEqual([])
+  }, 120_000)
 
   it('FW-LOCK-WAIT: every iptables call of the script waits for the xtables lock (-w)', () => run('', (dir) => {
     fw(dir)
@@ -592,6 +618,26 @@ esac
     expect([b, /^CSATORNA: rendben$/m.test(c)]).toEqual(['', true])
   }))
 
+  it('FW-OTHER-RULES: the ufw comparison\'s save is read first; a failed or empty iptables-save is a failure, not an empty (blind green) result', () => {
+    // the installer's own function, run against a fake iptables-save (barracuda, #159)
+    const inst = R('host/telepit-tuzfal.sh')
+    const fn = /\n {2}other_rules\(\) \{\n[\s\S]*?\n {2}\}\n/.exec(inst)![0]
+    const dir = mkdtempSync(join(tmpdir(), 'gpt-other-'))
+    try {
+      const run = (save: string) => {
+        writeFileSync(join(dir, 'iptables-save'), `#!/bin/bash\n${save}\n`, { mode: 0o755 })
+        return spawnSync('bash', ['-c', `set -euo pipefail\n${fn}\nout=$(other_rules) || { printf FAIL; exit 0; }\nprintf 'OK[%s]' "$out"`], { env: { PATH: `${dir}:/usr/bin:/bin` }, encoding: 'utf8' }).stdout
+      }
+      expect([
+        run('exit 1'),
+        run('exit 0'),
+        run("printf '# komment\\n:INPUT ACCEPT\\n-A ufw-x -j DROP\\n-A GPTF-BE -j DROP\\n'"),
+        run("printf '# komment\\n-A DOCKER -j RETURN\\n-A ufw-x -j DROP\\n'"),
+      ]).toEqual(['FAIL', 'FAIL', 'OK[]', 'OK[-A DOCKER -j RETURN]'])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+    expect(inst).toMatch(/rules_after=\$\(other_rules\) \|\| \{ echo "STOP/)
+  })
+
   it('FW-UNIT: the unit runs the script at boot and after every docker (re)start', () => {
     const unit = R('host/gpt-futtato-tuzfal.service')
     expect([/^After=docker\.service$/m.test(unit), /^PartOf=docker\.service$/m.test(unit), /^WantedBy=.*docker\.service.*multi-user\.target/m.test(unit), /^ExecStart=\/opt\/gpt-futtato\/tuzfal\.sh$/m.test(unit), /^RemainAfterExit=yes$/m.test(unit)]).toEqual([true, true, true, true, true])
@@ -621,7 +667,7 @@ esac
     expect(/systemctl (restart|stop) docker/.test(inst)).toBe(false)
     // a REAL ufw reload, with what it may change outside ufw printed, and the timer measured after it
     expect(inst).toMatch(/ufw_before=\$\(ufw status verbose\)[\s\S]*rules_before=\$\(other_rules\)[\s\S]*\nufw reload\n|\n {2}ufw reload\n/)
-    expect(inst).toMatch(/ {2}ufw reload\n[\s\S]*"-A INPUT -i \$BRIDGE -j GPTF-GEP"[\s\S]*STOP: a ufw reload utan[\s\S]*rules_diff=\$\(diff <\(echo "\$rules_before"\) <\(other_rules\)/)
+    expect(inst).toMatch(/ {2}ufw reload\n[\s\S]*"-A INPUT -i \$BRIDGE -j GPTF-GEP"[\s\S]*STOP: a ufw reload utan[\s\S]*rules_after=\$\(other_rules\) \|\| \{[\s\S]*rules_diff=\$\(diff <\(echo "\$rules_before"\) <\(echo "\$rules_after"\)/)
     expect(inst).toMatch(/\^PROBA N1 NEM_MERHETO[\s\S]*STOP/)
     expect(inst).toMatch(/^trap '.*STOP.*\$LINENO.*' ERR$/m)
     expect(inst).toMatch(/iptables -V/)
@@ -880,7 +926,10 @@ describe('gpt-runner controller channel on the host (host/csatorna.sh) against f
     writeFileSync(join(dir, 'forras'), o.forras ?? '10.0.2.4')
     writeFileSync(join(dir, 'nyitott'), (o.nyitott ?? ['10.0.2.4:3420']).join('\n') + '\n')
     writeFileSync(join(dir, 'allapot', 'cim-allapot'), `${o.allapot ?? 'rendben'}\n`)
-    writeFileSync(join(dir, 'opt', 'src', 'gpt-runner', 'host', 'telepit-tuzfal.sh'), `echo telepit >> "${dir}/calls"\nprintf 'PROBA N1 OK x\\nOSSZESITES ok=16 fail=0\\n' > "${dir}/opt/proba-teljes.log"\n`)
+    // the installer re-creates the runner network (the probe's down/up): Docker puts its MASQUERADE
+    // ABOVE our nat jump; tuzfal.sh (the timer's script) puts ours first again unless told not to
+    writeFileSync(join(dir, 'opt', 'src', 'gpt-runner', 'host', 'telepit-tuzfal.sh'), `echo telepit >> "${dir}/calls"\ntouch "${dir}/nat-masodik"\nprintf 'PROBA N1 OK x\\nOSSZESITES ok=16 fail=0\\n' > "${dir}/opt/proba-teljes.log"\n`)
+    writeFileSync(join(dir, 'opt', 'tuzfal.sh'), `echo tuzfal >> "${dir}/calls"\n[ -f "${dir}/tuzfal-hiba" ] && exit 3\n[ -f "${dir}/nem-javit-nat" ] || rm -f "${dir}/nat-masodik"\n[ -f "${dir}/nem-javit-raw" ] || rm -f "${dir}/raw-masodik"\n`)
     const log = `echo "$(basename "$0") $*" >> "${dir}/calls"`
     writeFileSync(join(bin, 'docker'), `#!/bin/bash
 ${log}
@@ -892,6 +941,7 @@ case "$1 $2" in
   "exec marveen") cat "${dir}/forras"; echo ;;
   "run --rm") h="\${@: -2:1}"; p="\${@: -1}"; if grep -qxF "$h:$p" "${dir}/nyitott"; then echo NYITOTT; else echo "ZART (idotullepes)"; fi ;;
   "compose run") [ -f "${dir}/plugin-hiba" ] && exit 1; echo "elotte: 35 fajl" ;;
+  "compose --profile") case "$*" in *"up -d gpt-szolga"*) touch "${dir}/raw-masodik" ;; esac ;;
 esac
 exit 0
 `, { mode: 0o755 })
@@ -950,10 +1000,31 @@ grep -qxF "$hp" "${dir}/nyitott"
     expect([c[c.length - 2], c[c.length - 1], /^a gpt-szolga allapota a leallitas utan: exited$/m.test(r.stdout)]).toEqual(['docker compose --profile szolga stop gpt-szolga', expect.stringMatching(/^docker inspect -f .* gpt-szolga$/), true])
   }))
 
-  it('CSAT-RAW: our raw chain not first (Docker\'s guard above it), or its rule missing: STOP before the service starts', () => {
+  it('CSAT-REORDER: Docker puts its rules above ours (the probe\'s down/up, the service\'s start): the script ORDERS (tuzfal.sh) and only then checks; no STOP, and the measurement runs after the order', () => run({}, (dir, r) => {
+    const c = calls(dir)
+    const i = (s: string, from = 0) => c.findIndex((x, k) => k >= from && x === s)
+    const tel = i('telepit')
+    const order1 = i('tuzfal', tel)
+    const up = c.findIndex((x) => x.includes('up -d gpt-szolga'))
+    const order2 = i('tuzfal', up)
+    const measure = c.findIndex((x) => x.startsWith('docker exec marveen'))
+    expect([r.status, tel < order1, order1 < up, up < order2, order2 < measure, (r.stdout.match(/^== a tuzfal rendezese \(/gm) ?? []).length]).toEqual([0, true, true, true, true, 2])
+  }))
+
+  it('CSAT-ORDER-FAILS: the ordering tuzfal.sh itself fails: STOP, never a check on an unordered firewall', () => {
+    const dir = setup({})
+    writeFileSync(join(dir, 'tuzfal-hiba'), '')
+    try {
+      const r = go(dir)
+      expect([r.status, r.stdout.includes('STOP: a tuzfal.sh rendezo futasa elbukott (a proba down/up utan)'), calls(dir).some((c) => c.includes('up -d gpt-szolga'))]).toEqual([1, true, false])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('CSAT-RAW: our raw chain not first (Docker\'s guard above it) even after the order, or its rule missing: STOP before the service starts', () => {
     for (const [file, msg] of [['raw-masodik', 'STOP: a raw PREROUTING elso szabalya nem a GPTF-RAW ugras'], ['raw-nincs', 'STOP: a GPTF-RAW-ban nincs meg a csatorna valaszanak szabalya']] as const) {
       const dir = setup({})
       writeFileSync(join(dir, file), '')
+      if (file.endsWith('-masodik')) writeFileSync(join(dir, `nem-javit-${file.slice(0, 3)}`), '')
       try {
         const r = go(dir)
         expect([file, r.status, r.stdout.includes(msg), calls(dir).some((c) => c.includes('up -d gpt-szolga'))]).toEqual([file, 1, true, false])
@@ -970,10 +1041,11 @@ grep -qxF "$hp" "${dir}/nyitott"
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
-  it('CSAT-NAT: our no-masquerade chain is not first in nat POSTROUTING, or its rule is missing: STOP before the service starts', () => {
+  it('CSAT-NAT: our no-masquerade chain is not first in nat POSTROUTING even after the order, or its rule is missing: STOP before the service starts', () => {
     for (const [file, msg] of [['nat-masodik', 'STOP: a nat POSTROUTING elso szabalya nem a GPTF-NAT ugras'], ['nat-nincs', 'STOP: a GPTF-NAT-ban nincs meg a csatorna (maszkolas nelkuli) szabalya']] as const) {
       const dir = setup({})
       writeFileSync(join(dir, file), '')
+      if (file.endsWith('-masodik')) writeFileSync(join(dir, `nem-javit-${file.slice(0, 3)}`), '')
       try {
         const r = go(dir)
         expect([file, r.status, r.stdout.includes(msg), calls(dir).some((c) => c.includes('up -d gpt-szolga'))]).toEqual([file, 1, true, false])

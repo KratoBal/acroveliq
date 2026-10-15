@@ -123,31 +123,43 @@ echo "== a Codex plugin-gyorsitotara es beepitett skilljei a futtato koteten"
 (cd "$DIR" && docker compose run --rm --no-deps --entrypoint sh gpt-futtato -c 'for p in /home/gpt/.codex/plugins /home/gpt/.codex/skills/.system; do echo "$p elotte: $(find "$p" -type f 2>/dev/null | wc -l) fajl"; rm -rf -- "$p"; if [ -e "$p" ]; then echo "MEGMARADT: $p"; exit 1; fi; echo "$p utana: a mappa nincs"; done; if [ -f /home/gpt/.codex/auth.json ]; then echo "az auth.json a helyen"; else echo "FIGYELEM: az auth.json nincs a koteten (a torles nem erintette)"; fi') || stop "a plugin-gyorsitotar vagy a beepitett skillek nem torolhetok"
 echo "== a tuzfal, a tartossag, az idozito es a proba (telepit-tuzfal.sh)"
 bash "$SRC/host/telepit-tuzfal.sh"
-# the chain is read ONCE into a variable, then searched: `iptables -S | grep -q` under pipefail
-# fails when grep stops early and iptables gets SIGPIPE (a false STOP; measured in the tests)
-be=$(iptables -w 5 -S GPTF-BE)
-printf '%s\n' "$be"
-grep -qxF -- "-A GPTF-BE ! -s $VEZ/32 -m conntrack --ctstate NEW -j DROP" <<< "$be" || stop "a GPTF-BE lanc nem a $VEZ forrasra szukit"
-grep -qxF -- "-A GPTF-BE ! -d $SZOLGA/32 -m conntrack --ctstate NEW -j DROP" <<< "$be" || stop "a GPTF-BE lanc nem a $SZOLGA celra szukit"
-# the one flow past Docker's isolation (barracuda, #148), both ways, exactly as tuzfal.sh writes it
-tovabb=$(iptables -w 5 -S GPTF-TOVABB)
-printf '%s\n' "$tovabb"
-grep -qxF -- "-A GPTF-TOVABB -s $VEZ/32 -d $SZOLGA/32 -o gptki0 -p tcp -m tcp --dport $PORT -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT" <<< "$tovabb" || stop "a GPTF-TOVABB-ban nincs meg a csatorna oda-iranyu ACCEPT-je"
-grep -qxF -- "-A GPTF-TOVABB -s $SZOLGA/32 -d $VEZ/32 -i gptki0 -p tcp -m tcp --sport $PORT -m conntrack --ctstate ESTABLISHED -j ACCEPT" <<< "$tovabb" || stop "a GPTF-TOVABB-ban nincs meg a csatorna valasz-iranyu ACCEPT-je"
-# the channel flow is not masqueraded (the v3 host run: Docker's MASQUERADE made the source the
-# runner network's gateway); our chain must be FIRST in nat POSTROUTING, before Docker's
-natpost=$(iptables -w 5 -t nat -S POSTROUTING)
-natch=$(iptables -w 5 -t nat -S GPTF-NAT)
-printf '%s\n' "$natch"
-[ "$(grep -m1 '^-A ' <<< "$natpost" || true)" = "-A POSTROUTING -o gptki0 -j GPTF-NAT" ] || stop "a nat POSTROUTING elso szabalya nem a GPTF-NAT ugras"
-grep -qxF -- "-A GPTF-NAT -s $VEZ/32 -d $SZOLGA/32 -p tcp -m tcp --dport $PORT -j ACCEPT" <<< "$natch" || stop "a GPTF-NAT-ban nincs meg a csatorna (maszkolas nelkuli) szabalya"
-# the reply past Docker's raw direct-access guard (the v4 host run: the SYN-ACK to the fleet
-# container's address came in on gptki0 and was dropped there); our chain FIRST in raw PREROUTING
-rawpre=$(iptables -w 5 -t raw -S PREROUTING)
-rawch=$(iptables -w 5 -t raw -S GPTF-RAW)
-printf '%s\n' "$rawch"
-[ "$(grep -m1 '^-A ' <<< "$rawpre" || true)" = "-A PREROUTING -i gptki0 -j GPTF-RAW" ] || stop "a raw PREROUTING elso szabalya nem a GPTF-RAW ugras"
-grep -qxF -- "-A GPTF-RAW -s $SZOLGA/32 -d $VEZ/32 -p tcp -m tcp --sport $PORT -j ACCEPT" <<< "$rawch" || stop "a GPTF-RAW-ban nincs meg a csatorna valaszanak szabalya"
+# ORDER FIRST, THEN MEASURE (acrobot 30972). Docker re-orders our chains when it creates a network or
+# a container: the probe's down/up re-creates gpt-futtato-ki and Docker puts its MASQUERADE at the
+# head of nat POSTROUTING; starting gpt-szolga puts its direct-access DROP at the head of raw
+# PREROUTING. The per-minute timer fixes that within a minute, but this script must not race it
+# (the v5 host run: a 3.7 s cached build, and the check came before the timer). So after every such
+# Docker step, the SAME idempotent tuzfal.sh the timer runs puts our rules first, and only then
+# are they checked. A check that still fails after it is a real STOP.
+rend_es_ellenoriz() {
+  echo "== a tuzfal rendezese ($1): ugyanaz a tuzfal.sh, amit a percenkenti idozito futtat"
+  bash "$DIR/tuzfal.sh" || stop "a tuzfal.sh rendezo futasa elbukott ($1)"
+  # the chain is read ONCE into a variable, then searched: `iptables -S | grep -q` under pipefail
+  # fails when grep stops early and iptables gets SIGPIPE (a false STOP; measured in the tests)
+  be=$(iptables -w 5 -S GPTF-BE)
+  printf '%s\n' "$be"
+  grep -qxF -- "-A GPTF-BE ! -s $VEZ/32 -m conntrack --ctstate NEW -j DROP" <<< "$be" || stop "a GPTF-BE lanc nem a $VEZ forrasra szukit"
+  grep -qxF -- "-A GPTF-BE ! -d $SZOLGA/32 -m conntrack --ctstate NEW -j DROP" <<< "$be" || stop "a GPTF-BE lanc nem a $SZOLGA celra szukit"
+  # the one flow past Docker's isolation (barracuda, #148), both ways, exactly as tuzfal.sh writes it
+  tovabb=$(iptables -w 5 -S GPTF-TOVABB)
+  printf '%s\n' "$tovabb"
+  grep -qxF -- "-A GPTF-TOVABB -s $VEZ/32 -d $SZOLGA/32 -o gptki0 -p tcp -m tcp --dport $PORT -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT" <<< "$tovabb" || stop "a GPTF-TOVABB-ban nincs meg a csatorna oda-iranyu ACCEPT-je"
+  grep -qxF -- "-A GPTF-TOVABB -s $SZOLGA/32 -d $VEZ/32 -i gptki0 -p tcp -m tcp --sport $PORT -m conntrack --ctstate ESTABLISHED -j ACCEPT" <<< "$tovabb" || stop "a GPTF-TOVABB-ban nincs meg a csatorna valasz-iranyu ACCEPT-je"
+  # the channel flow is not masqueraded (the v3 host run: Docker's MASQUERADE made the source the
+  # runner network's gateway); our chain must be FIRST in nat POSTROUTING, before Docker's
+  natpost=$(iptables -w 5 -t nat -S POSTROUTING)
+  natch=$(iptables -w 5 -t nat -S GPTF-NAT)
+  printf '%s\n' "$natch"
+  [ "$(grep -m1 '^-A ' <<< "$natpost" || true)" = "-A POSTROUTING -o gptki0 -j GPTF-NAT" ] || stop "a nat POSTROUTING elso szabalya nem a GPTF-NAT ugras"
+  grep -qxF -- "-A GPTF-NAT -s $VEZ/32 -d $SZOLGA/32 -p tcp -m tcp --dport $PORT -j ACCEPT" <<< "$natch" || stop "a GPTF-NAT-ban nincs meg a csatorna (maszkolas nelkuli) szabalya"
+  # the reply past Docker's raw direct-access guard (the v4 host run: the SYN-ACK to the fleet
+  # container's address came in on gptki0 and was dropped there); our chain FIRST in raw PREROUTING
+  rawpre=$(iptables -w 5 -t raw -S PREROUTING)
+  rawch=$(iptables -w 5 -t raw -S GPTF-RAW)
+  printf '%s\n' "$rawch"
+  [ "$(grep -m1 '^-A ' <<< "$rawpre" || true)" = "-A PREROUTING -i gptki0 -j GPTF-RAW" ] || stop "a raw PREROUTING elso szabalya nem a GPTF-RAW ugras"
+  grep -qxF -- "-A GPTF-RAW -s $SZOLGA/32 -d $VEZ/32 -p tcp -m tcp --sport $PORT -j ACCEPT" <<< "$rawch" || stop "a GPTF-RAW-ban nincs meg a csatorna valaszanak szabalya"
+}
+rend_es_ellenoriz "a proba down/up utan"
 fails=$( { grep -E '^PROBA [^ ]+ FAIL' "$DIR/proba-teljes.log" || true; } | wc -l | tr -d ' ')
 grep -qE '^PROBA N1 OK' "$DIR/proba-teljes.log" || stop "a proba N1 sora nem OK (a futtatobol elerheto lehet a flotta vagy a gep)"
 [ "$fails" = 0 ] || stop "a probaban $fails FAIL sor van"
@@ -164,6 +176,9 @@ for _ in $(seq 1 30); do
 done
 [ -n "$ok" ] || { { docker logs gpt-szolga 2>&1 || true; } | tail -20; stop "a szolgaltatas nem indult el a $SZOLGA:$PORT cimen"; }
 echo "a szolgaltatas figyel: $SZOLGA:$PORT"
+# starting the container re-ordered raw PREROUTING (Docker's DROP for its address at the head):
+# order again, check again, and only then measure
+rend_es_ellenoriz "a gpt-szolga inditasa utan"
 
 # 8. THE measurement the design stands on: the source address the service sees
 echo "== a forrascim, amit a szolgaltatas lat (a flotta kontenerebol hivva)"
@@ -181,7 +196,7 @@ masik() { docker run --rm --network "$NET" --user 10002:10002 --cap-drop ALL --r
 k1=$(masik "$VEZ" 3420); n1=$(masik "$KOZZ" "$PORT"); n2=$(masik "$SZOLGA" "$PORT")
 echo "kontroll: a flotta sajat portja ($VEZ:3420): $k1"
 echo "a kozzetett port ($KOZZ:$PORT): $n1"
-echo "a szolgaltatas cime ($SZOLGA:$PORT): $n2"
+echo "a szolgaltatas cime ($SZOLGA:$PORT): $n2 (ezt a Docker sajat raw-orzoje is zarja: NEM a mi GPTF-BE-nket bizonyitja, azt a kozzetett port sora meri)"
 [ "$k1" = NYITOTT ] || stop "a kontroll sem ert el semmit a masik kontenerbol: a negativ eredmeny igy nem bizonyit"
 [[ "$n1" == ZART* && "$n2" == ZART* ]] || stop "egy masik kontener a flotta-halon eleri a futtato szolgaltatasat"
 echo "== negativ kontroll: maga a gep"

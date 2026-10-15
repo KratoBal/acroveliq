@@ -51,6 +51,14 @@
 set -euo pipefail
 BRIDGE="${GPT_FUTTATO_BRIDGE:-gptki0}"
 IPT="${IPTABLES:-iptables}"
+# ONE run at a time (barracuda, #161). The timer, the docker-bound unit, the installer and
+# csatorna.sh may run this together, and `-w` serializes single iptables calls only, not the
+# insert-count-delete sequences below: two runs could each delete "the other copy" and leave NONE
+# of our jumps (INPUT, DOCKER-USER: an open-direction fault). The lock covers the whole run; no
+# lock in time: STOP, and this run has touched nothing.
+ZAR="${GPT_FUTTATO_ZAR:-/run/gpt-futtato-tuzfal.lock}"
+exec 9>"$ZAR"
+flock -w 60 9 || { echo "STOP: a tuzfal.sh zarja 60 mp alatt nem jott meg ($ZAR); ez a futas semmihez nem nyult" >&2; exit 1; }
 PRIVATE_RANGES="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16"
 # the controller channel's addresses, from the compose project's .env (root-owned). Read with a
 # strict pattern, never sourced. Missing or malformed: the channel stays closed, nothing else moves
