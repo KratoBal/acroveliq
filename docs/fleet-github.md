@@ -38,6 +38,16 @@ Ezek átállása **külön PR-ok**, ebben a sorrendben: (1) egy közös `token <
 olvasóknak `olvas` szereppel; (2) a vezérlőpult három helye; (3) az ügynökök saját szkriptjei, gazdánként. Amíg ez nincs kész,
 a 6. lépés nem indulhat; a lap visszaállítása addig a régi út.
 
+**Az (1) állapota:** a flotta-szkriptek a `scripts/lib/github-token.sh` (és a Pythonban a `scripts/lib/github_token.py`)
+`github_token <owner/repo> <szerep>` hívásán át olvasnak: a kapcsolóval a bróker egyórás, egy repóra szóló tokenje, nélküle
+a régi fájl. Ahol egy szkript több repót kérdez (`mar-megvan.sh`, `hasonlo-kulcs-orzo.sh`), repónként kér. A
+`git-auth.sh` a kapcsolóval sima `git`-et futtat, a tokent a credential helper adja. A `scripts/__tests__/github-token.test.py`
+egy őrrel méri, hogy ezen kívül egyetlen szkript sem olvassa közvetlenül a tulajdonosi tokent. Két szándékos kivétel:
+- a `ci-el-or.sh` a tulajdonosi token lejáratát figyeli: a tokennel együtt nyugdíjba megy (a 6. lépés után a bróker naplója
+  és az App kulcsa a figyelendő);
+- a `github-pr-monitor.sh` kapcsoló nélkül egy **vault-másolatot** is olvas (`github-github_token`): ez is a 6. lépés
+  keresési listájára tartozik, a fájl, a git hitelesítő tárolók és a klónok címei mellé.
+
 ## Balázs lépései, sorrendben
 
 A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker compose exec`).
