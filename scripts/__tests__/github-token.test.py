@@ -7,7 +7,7 @@
 #   - a malformed repository or an unknown role reaching the broker;
 #   - a fleet script reading store/.github-token directly, outside the known list below (a new reader would
 #     break at the owner token's revocation without anyone knowing).
-import importlib.util, os, shutil, subprocess, sys, tempfile
+import importlib.util, os, re, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.join(HERE, "..")
@@ -99,7 +99,13 @@ try:
         "pr-beolvaszt.sh",                               # its own switch (D4 step 2), the off branch
         "git-auth.sh",                                   # the off branch; on, plain git and the credential helper
         "github-pr-monitor.sh",                          # the off branch's fallback
+        "fleet-secrets.py",                              # reads it for the expiry header; retires with it
     }
+    # THE FILE NAME, NOT THE LITERAL PATH (2026-10-15): matching "store/.github-token" let
+    # fleet-secrets.py through, which opens os.path.join(STORE, ".github-token"). The name with a
+    # word boundary after it catches a joined path too, and leaves .github-token-commerce out (a
+    # different token, outside this guard).
+    owner_name = re.compile(r"\.github-token(?![-\w])")
     found = set()
     for root, dirs, files in os.walk(SCRIPTS):
         dirs[:] = [d for d in dirs if d not in ("__tests__", "__pycache__", "root")]
@@ -108,7 +114,7 @@ try:
                 continue
             path = os.path.join(root, f)
             code = [l for l in open(path, encoding="utf-8", errors="replace").read().splitlines() if not l.lstrip().startswith("#")]
-            if any("store/.github-token" in l for l in code):
+            if any(owner_name.search(l) for l in code):
                 found.add(os.path.relpath(path, SCRIPTS))
     check("no reader outside the known list (a new direct reader is red)", [], sorted(found - known))
     check("and every known entry still reads it (a stale list hides nothing)", [], sorted(known - found))
