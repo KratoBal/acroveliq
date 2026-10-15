@@ -44,8 +44,12 @@ const SEED: readonly Project[] = [
   { id: 'reefclub', name: 'ReefClub', repos: ['KratoBal/acropora-commerce'], aliases: [], legacyMixed: false },
 ]
 
-/** The repos the wide project covers besides the ones the others name. */
-const FLEET_REPOS = ['KratoBal/marveen', 'KratoBal/acropora-ai-agent', 'KratoBal/Acrobot']
+/**
+ * The repos the wide project covers besides the ones the others name. The fleet repo was renamed
+ * KratoBal/marveen -> KratoBal/acroveliq on 2026-10-15 (Balázs, so Actions run): both stay, because
+ * task records and review refs written before the rename name the old one.
+ */
+const FLEET_REPOS = ['KratoBal/acroveliq', 'KratoBal/marveen', 'KratoBal/acropora-ai-agent', 'KratoBal/Acrobot']
 
 export function ensureProjectsSchema(db: Database.Database): void {
   db.exec(`

@@ -14,7 +14,7 @@
 # dontjuk el, mint a szerver orzoje (src/task-usage.ts, reviewRefGuard es REF_PR), kulonben
 # a ketto ugyanarrol az esemenyrol mast mondana (barracuda, #98): a ref ELSO `owner/repo#N`
 # alakja, ugyanazzal a mintaval; ha a ref nem nevez meg PR-t, a data.repo + data.pr par.
-# Egy ref, ami mellekesen egy masik PR-t is emlit ("KratoBal/marveen#99 fej x, a #97
+# Egy ref, ami mellekesen egy masik PR-t is emlit ("KratoBal/acroveliq#99 fej x, a #97
 # javitasa"), igy csak az elsot nevezi meg, es a merged nem kerul rossz feladatra. Az
 # osszevetes: a repo kis- es nagybetu nelkul, a szam egyezzen. Szerveroldali szuro nincs,
 # es nem is kell: merve 2026-10-14, 95 feladat idovonala 0,2 s alatt jon le, a dashboard
@@ -42,6 +42,14 @@ from dashboard_token import read_token  # noqa: E402
 
 REPO_RE = re.compile(r'^(?!.*\.\.)[\w.-]+/[\w.-]+$', re.ASCII)
 KINDS = ('review_requested', 'verdict')
+# A renamed repo is the same repo: the fleet repo is KratoBal/acroveliq since 2026-10-15, and the
+# events written before name KratoBal/marveen. Lower case, like the comparison.
+REPO_ALIASES = {'kratobal/marveen': 'kratobal/acroveliq'}
+
+
+def canonical(repo):
+    r = repo.lower()
+    return REPO_ALIASES.get(r, r)
 # the server's REF_PR, letter for letter; re.ASCII because a JS \w is ASCII
 REF_PR = re.compile(r'(?<![\w./-])((?!\S*\.\.)[\w.-]+/[\w.-]+)#(\d+)(?!\w)', re.ASCII)
 # seconds for the whole search; FELADAT_PR_HATARIDO may only shorten it (the tests do)
@@ -89,7 +97,7 @@ def named(ref, data):
 def names(item, repo, pr):
     """Does this event name repo#pr?"""
     got = named(item.get('ref'), item.get('data'))
-    return bool(got) and got[0].lower() == repo.lower() and got[1] == int(pr)
+    return bool(got) and canonical(got[0]) == canonical(repo) and got[1] == int(pr)
 
 
 def main(argv):

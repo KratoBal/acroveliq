@@ -515,6 +515,14 @@ describe('fleet-api.sh deployed (TC-03 minimum)', () => {
       `DEPLOYED-ANCESTOR ${r.out}`).toEqual([0, 1, 'deployed', 'ancestor', MAIN, MERGE, `deployed:t9:marveen-live:${MAIN}`, true])
   })
 
+  // the fleet repo renamed KratoBal/marveen -> KratoBal/acroveliq (2026-10-15): a merge after it names the new one
+  it('DEPLOYED-RENAMED: a merged event naming KratoBal/acroveliq is the fleet repo too: one event', async () => {
+    fakeTimeline([merged({ repo: 'KratoBal/acroveliq' })])
+    const r = await run(['deployed', 'marveen', 't9'], undefined, live('main'))
+    expect([r.code, posts().length, (posts()[0]?.body as { ref?: string } | undefined)?.ref?.startsWith('KratoBal/acroveliq#7')], `DEPLOYED-RENAMED ${r.out}`)
+      .toEqual([0, 1, true])
+  })
+
   it('DEPLOYED-CHERRY-PICK: on a release branch only a --commit whose patch-id is the merge\'s passes', async () => {
     const isAncestor = (a: string, b: string) => { try { g('merge-base', '--is-ancestor', a, b); return true } catch { return false } }
     // the fixture is a real cherry-pick: another commit, and the merge NOT in the release branch

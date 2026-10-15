@@ -934,7 +934,7 @@ export function reviewRefGuard(
   const files = !!profile && FILE_REF_PROFILES.has(profile)
   if (files && REF_PATH.test(ref ?? '')) return null
   return (
-    `a ${kind} ref mezőjéből hiányzik a repo#PR (pl. "KratoBal/marveen#76 fej <sha>"), és a data sem nevezi meg (repo + pr)` +
+    `a ${kind} ref mezőjéből hiányzik a repo#PR (pl. "KratoBal/acroveliq#76 fej <sha>"), és a data sem nevezi meg (repo + pr)` +
     (files ? `; ${profile} profilnál a vizsgált fájl útja is jó (pl. "exchange/terv.md")` : '')
   )
 }

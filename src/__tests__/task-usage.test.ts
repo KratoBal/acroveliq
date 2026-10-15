@@ -638,7 +638,7 @@ describe('the review ref guard', () => {
       reviewRefGuard('review_requested', 'exchange/terv.md', null, null),
       reviewRefGuard('review_requested', 'terv.md', null, 'docs'),
     ]
-    expect([pass, refused.map((r) => typeof r === 'string' && r.includes('KratoBal/marveen#76'))], 'REVIEW-REF-SHAPES').toEqual([
+    expect([pass, refused.map((r) => typeof r === 'string' && r.includes('KratoBal/acroveliq#76'))], 'REVIEW-REF-SHAPES').toEqual([
       pass.map(() => null), refused.map(() => true),
     ])
     // the file hint is given only where a file would pass

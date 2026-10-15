@@ -48,7 +48,7 @@ again.
   compose.yaml                   copy of deploy-executor/compose.yaml, root 644
   .env                           root 644, one line: VEGREHAJTO_NODE_IMAGE=node:22-bookworm-slim@sha256:<digest>
   config.json                    from config.example.json, root 644 (no secret in it)
-  src/                           git clone of KratoBal/marveen at the reviewed commit, root-owned
+  src/                           git clone of KratoBal/acroveliq at the reviewed commit, root-owned
   titkok/                        root:root 700
     coolify-prod-deploy          10001:10001 400   deploy ability (and read), prod Coolify
     coolify-ai-deploy            10001:10001 400   the same, AI machine's Coolify

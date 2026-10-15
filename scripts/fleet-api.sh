@@ -458,11 +458,11 @@ else: print("FIGYELEM (projekt): a %s NEM a(z) %s projekte (%s)" % (repo,pid,", 
     # Az ido masodperc vagy ISO (2026-10-12T07:03:00Z); hianyaban MOST. A besorolas
     # ezekbol vezetodik le, a hivasokra semmi nem irodik.
     # Zaro fajtak a done mellett: blocked|cancelled|failed|partial.
-    # review_requested es verdict: a hivatkozasban a repo#PR ALLJON ("KratoBal/marveen#76 fej <sha>"),
-    # vagy a --data nevezze meg ({"repo":"KratoBal/marveen","pr":76}); docs/ops profilnal a fajl utja is jo.
+    # review_requested es verdict: a hivatkozasban a repo#PR ALLJON ("KratoBal/acroveliq#76 fej <sha>"),
+    # vagy a --data nevezze meg ({"repo":"KratoBal/acroveliq","pr":76}); docs/ops profilnal a fajl utja is jo.
     # Nelkule a szerver naplo modban would_reject jelet tesz ra, kenyszerit modban 409.
     # `--data -` a VEGEN: egy JSON objektum STDIN-rol (fajlbol, atiranyitassal), pl. a merged
-    # esemeny {"repo":"KratoBal/marveen","pr":41,"merge_sha":"<40 jegy>"} adata.
+    # esemeny {"repo":"KratoBal/acroveliq","pr":41,"merge_sha":"<40 jegy>"} adata.
     # IDEMPOTENCIA: a futas EGY kulcsot general, es halozati hibanal vagy 5xx-nel UGYANAZZAL
     # probalja ujra, tehat egy elveszett valasz utan sem lesz ket sor. Ket kulon FUTAS ket
     # kulon kulcs: a masodik javitasi kor fix_started-je nem nyelodik el (barracuda, review 1).
@@ -917,7 +917,11 @@ print(json.dumps({"kind":"deployed","actor":"acrobot","ref":ref,"data":data}))')
       echo "FAIL: http=${code:-?} kulcs=$key $(printf '%s' "$json" | head -c 200)"; return 1
     }
     if [ "$CEL" = "marveen" ]; then
-      [ "$M_REPO" = "KratoBal/marveen" ] || { echo "FAIL 4: a merged repo $M_REPO, nem KratoBal/marveen"; exit 4; }
+      # a flotta repoja 2026-10-15 ota KratoBal/acroveliq; a regi merged esemenyek a regi nevvel allnak
+      case "$M_REPO" in
+        KratoBal/acroveliq|KratoBal/marveen) ;;
+        *) echo "FAIL 4: a merged repo $M_REPO, nem a flotta repoja (KratoBal/acroveliq, korabban KratoBal/marveen)"; exit 4 ;;
+      esac
       LIVE="${DEPLOYED_LIVE_TREE:-$BASE}"
       git -C "$LIVE" cat-file -e "${M_SHA}^{commit}" 2>/dev/null \
         || { echo "FAIL 3: a merge commit (${M_SHA:0:12}) nincs az elo faban ($LIVE): elobb git -C $LIVE fetch origin main"; exit 3; }
