@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { writeTrustedProfile } from './agent-profile-store.js'
+import { LOCKED_RECORD, writeTrustedRecord } from './agent-profile-store.js'
 import { safeJoin } from './sanitize.js'
 import { isValidModelId, InvalidModelIdError } from '../model-id.js'
 import {
@@ -636,9 +636,9 @@ export function writeAgentSecurityProfile(name: string, profileId: string): void
   config.securityProfile = profileId
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
   // the launch reads the profile from the trusted record, which only the dashboard writes
-  // (agent-profile-store.ts); the config field stays for display and comparison
-  const role = config.team && typeof config.team === 'object' && (config.team as { role?: unknown }).role === 'leader' ? 'leader' : 'member'
-  writeTrustedProfile(name, { profile: profileId }, { profile: profileId, role })
+  // (agent-profile-store.ts); the config field stays for display and comparison. A new record's
+  // role and trust graph are never taken from the config: member, no relations (LOCKED_RECORD's).
+  writeTrustedRecord(name, { profile: profileId }, { ...LOCKED_RECORD, profile: profileId })
 }
 
 // Optional per-agent named Claude subscription plan. Stores a registry id

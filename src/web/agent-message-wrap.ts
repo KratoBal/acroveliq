@@ -16,6 +16,7 @@ import {
 } from '../prompt-safety.js'
 import { isTrustedPeer } from '../team-trust.js'
 import { MAIN_AGENT_ID } from '../config.js'
+import { logger } from '../logger.js'
 import { isKnownAgent } from './agent-config.js'
 import { readAgentTeam } from './agent-team.js'
 import { COORDINATOR_AGENT_ID } from '../channel-coordinator/ingest.js'
@@ -51,10 +52,16 @@ export function classifyAgentMessage(
   const safeFrom = sanitizeAgentIdent(fromAgent)
   if (!safeFrom) return null
   if (CHANNEL_COORDINATOR_AGENTS.has(safeFrom)) return { category: 'channel-inbound', safeFrom }
-  if (isTrustedPeer(fromAgent, toAgent, { mainAgentId: MAIN_AGENT_ID, isKnownAgent, readAgentTeam })) {
-    return { category: 'trusted-peer', safeFrom }
+  // The trust graph comes from the trusted record (agent-team.ts readAgentTeam), not the agent's
+  // own config. A lookup that fails is CLOSED: the message goes out <untrusted>, never trusted, and
+  // the delivery does not stop on it.
+  let trusted = false
+  try {
+    trusted = isTrustedPeer(fromAgent, toAgent, { mainAgentId: MAIN_AGENT_ID, isKnownAgent, readAgentTeam })
+  } catch (err) {
+    logger.error({ err, fromAgent, toAgent }, 'trust lookup failed: the message is delivered as untrusted')
   }
-  return { category: 'untrusted', safeFrom }
+  return { category: trusted ? 'trusted-peer' : 'untrusted', safeFrom }
 }
 
 // Build the exact { prefix, wrapped } pair injected for a message of `category`.

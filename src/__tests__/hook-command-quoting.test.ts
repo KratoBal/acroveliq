@@ -18,7 +18,7 @@ import {
 } from '../web/agent-scaffold.js'
 import { writeAgentSecurityProfile } from '../web/agent-config.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
-import { removeTrustedProfile } from '../web/agent-profile-store.js'
+import { removeTrustedRecord } from '../web/agent-profile-store.js'
 
 // Review feedback on PR #803, pinned as tests:
 //  1. every injector must write a QUOTED absolute interpreter path -- an
@@ -35,7 +35,7 @@ const testAgentDir = join(PROJECT_ROOT, 'agents', TEST_AGENT)
 afterEach(() => {
   rmSync(testAgentDir, { recursive: true, force: true })
   // the trusted profile goes with the agent, as on a real delete (agent-profile-store.ts)
-  removeTrustedProfile(TEST_AGENT)
+  removeTrustedRecord(TEST_AGENT)
 })
 
 function ptuCommands(settings: Record<string, unknown>): string[] {
@@ -247,7 +247,9 @@ describe('ensureReadonlyCommandGate', () => {
 
   it('does NOT wire the gate for a permissive-profile agent', () => {
     mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
-    // no writeAgentSecurityProfile call: resolves to the default (permissive) profile.
+    // a permissive profile set through the dashboard (a seed never gives one: an agent with no
+    // record is seeded 'locked', which is strict, agent-profile-store.ts)
+    writeAgentSecurityProfile(TEST_AGENT, 'default')
     expect(ensureReadonlyCommandGate(TEST_AGENT)).toBe(false)
     const settingsPath = join(testAgentDir, '.claude', 'settings.json')
     if (existsSync(settingsPath)) {
