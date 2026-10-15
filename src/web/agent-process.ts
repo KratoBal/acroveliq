@@ -58,7 +58,7 @@ import { resolveAgentSecurityProfile } from './agent-team.js'
 import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureSkillsPathTrapSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { clearAbandonedPrompt, recordAbandonedPrompt, recordInjectedPrompt } from './injected-prompt-registry.js'
-import { agentOfSession, brokerArgsForTmux, brokerInvocation, callBroker, callBrokerSync, deliverOutcome, fleetPaneBrokerOn, LEGACY } from './fleet-pane.js'
+import { agentOfSession, brokerArgsForTmux, brokerInvocation, callBroker, callBrokerSync, deliverOutcome, deliverTimeoutMs, fleetPaneBrokerOn, LEGACY } from './fleet-pane.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
@@ -2660,13 +2660,16 @@ async function sendPromptViaBroker(
     return 'aborted-busy'
   }
   const line = typedLine(text)
+  // the broker looks and types per 80-character piece: its time grows with the text, and a run cut
+  // by a fixed limit would leave half a message in the box (barracuda, #182)
+  const timeoutMs = deliverTimeoutMs(line.length)
   const emit = async (): Promise<'sent' | 'not-landed' | 'aborted-busy'> => {
     if (!opts.busyTarget) recordInjectedPrompt(session, line)
-    let r = await callBroker(['deliver', agent, ...(opts.busyTarget ? ['--queued'] : [])], line)
+    let r = await callBroker(['deliver', agent, ...(opts.busyTarget ? ['--queued'] : [])], line, timeoutMs)
     // a caller that does not wait for idle (forceSend, the wake-ups) relied on Claude Code
     // queueing into a running turn: the broker's queued path, with its own looks
     if (!opts.busyTarget && opts.waitForIdle === false && r.code === 10 && /^busy/.test(r.out)) {
-      r = await callBroker(['deliver', agent, '--queued'], line)
+      r = await callBroker(['deliver', agent, '--queued'], line, timeoutMs)
     }
     const outcome = deliverOutcome(r)
     if (opts.busyTarget) {

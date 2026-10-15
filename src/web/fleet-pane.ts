@@ -124,6 +124,20 @@ export function callBrokerSync(verbArgs: readonly string[]): BrokerResult {
   }
 }
 
+/** The broker's deliver limit (scripts/root/fleet-pane.py MAX_TEXT), and its piece size. */
+export const DELIVER_MAX_CHARS = 32_000
+const DELIVER_PIECE = 80
+
+/**
+ * How long a deliver of `chars` characters may take: 30 s for the looks and the Enter retries,
+ * plus 250 ms per piece (a look, a send and a 30 ms pause, each through runuser). For the
+ * broker's longest text (400 pieces) that is 130 s; a fixed 60 s could cut a long message
+ * half-typed (barracuda, #182).
+ */
+export function deliverTimeoutMs(chars: number): number {
+  return 30_000 + 250 * Math.ceil(Math.min(Math.max(chars, 0), DELIVER_MAX_CHARS) / DELIVER_PIECE)
+}
+
 /** The router's sendPromptToSession outcome for a broker deliver result. */
 export function deliverOutcome(r: BrokerResult): 'sent' | 'not-landed' | 'aborted-busy' {
   if (r.code === 0) return 'sent'

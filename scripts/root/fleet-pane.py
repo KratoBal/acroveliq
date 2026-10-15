@@ -53,11 +53,11 @@ TMUX = '/usr/bin/tmux'
 CHILD_ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8'}
 
 NAME_RX = re.compile(r'^[a-z][a-z0-9-]{1,30}$')
-USER_RX = re.compile(r'^[a-z_][a-z0-9_-]{0,31}$')
+# an agent user only: a mistyped install must not name root or a service account (barracuda, #182)
+USER_RX = re.compile(r'^agent-[a-z][a-z0-9-]{1,30}$')
 MAX_TEXT = 32000
 MAX_LINES = 2000
 CHUNK = 80
-MAX_SLIDE = 8
 SUBMIT_RETRIES = 3
 
 # --- the pane rules (a conservative copy of src/pane-state.ts) -----------------------------
@@ -255,17 +255,30 @@ def clean_text(text):
     return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', text)
 
 
+SEMICOLON = '\\;'
+
+
 def chunks(line):
-    """CHUNK-sized literal pieces; a piece never starts with '-' (tmux would read a flag)."""
-    out, i = [], 0
-    while i < len(line):
-        end, slide = min(i + CHUNK, len(line)), 0
-        while end < len(line) and line[end] == '-' and slide < MAX_SLIDE:
-            end, slide = end + 1, slide + 1
-        c = line[i:end]
-        out.append(' ' + c if c.startswith('-') else c)
-        i = end
+    """CHUNK-sized literal pieces, each sent after `--` (so a leading '-' is text, not a flag).
+
+    Measured on tmux 3.3a, 2026-10-15 (barracuda's #182 note): an argument that ENDS in ';' is a
+    command separator. Without a backslash the last ';' is dropped (`E;` types `E`); with
+    backslashes right before it, they are dropped and the ';' stays (`A\\;` and `B\\\\;` type `A;`
+    and `B;`); a lone `\\;` types `;`; a ';' or a backslash inside an argument is typed as is. So
+    no piece ends in ';': trailing semicolons go as their own `\\;` pieces."""
+    out = []
+    for i in range(0, len(line), CHUNK):
+        c = line[i:i + CHUNK]
+        body = c.rstrip(';')
+        if body:
+            out.append(body)
+        out.extend([SEMICOLON] * (len(c) - len(body)))
     return out
+
+
+def typed(pieces):
+    """What tmux types for these pieces (the inverse of chunks)."""
+    return ''.join(';' if p == SEMICOLON else p for p in pieces)
 
 
 # --- the broker -----------------------------------------------------------------------------
@@ -374,8 +387,8 @@ class Broker:
                     break
         else:
             rows = len([r for r in box_rows(look['plain']) if r.strip().lstrip('❯').strip()])
-            for k in ['C-a'] + ['C-k', 'Delete'] * min(240, max(12, rows * 4)):
-                self.key(k)
+            # fixed key names, so ONE tmux call (up to 481 keys), not a process per key (barracuda, #182)
+            self.tmux('send-keys', '-t', self.session, 'C-a', *(['C-k', 'Delete'] * min(240, max(12, rows * 4))))
             self.sleep(0.1)
         return (0, 'ok') if box_free(self.look()) else (11, 'not-empty')
 
@@ -407,7 +420,7 @@ class Broker:
             d = dialog(self.look()['plain'])
             if d:
                 raise Refused(11, 'dialog-while-typing:' + d)
-            self.tmux('send-keys', '-t', self.session, '-l', c)
+            self.tmux('send-keys', '-t', self.session, '-l', '--', c)
             self.sleep(0.03)
         before = self.look()
         d = dialog(before['plain'])

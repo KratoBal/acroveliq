@@ -1,0 +1,107 @@
+{
+ "_": "Pane samples shared by src/pane-state.ts (src/__tests__/pane-samples-shared.test.ts) and the broker scripts/root/fleet-pane.py (scripts/__tests__/fleet-pane.test.py). idle: a message may be typed into an idle pane; queued: into a running turn. Both sides must agree with every row (barracuda, #182: a drift is red here, not live).",
+ "samples": [
+  {
+   "name": "idle",
+   "pane": "● Kesz a meres.\n  ⎿  … tool output …\n\n────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────\n  Opus 5 · ctx 40%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+   "idle": true,
+   "queued": false
+  },
+  {
+   "name": "idle-ghost",
+   "pane": "● Kesz.\n\n────────────────────────────────────────────────────────────────────────────────\n❯ \u001b[2mTry \"refactor the parser\"\u001b[0m\n────────────────────────────────────────────────────────────────────────────────\n  Opus 5 · ctx 40%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+   "idle": true,
+   "queued": false
+  },
+  {
+   "name": "idle-truncated-footer",
+   "pane": "● Kesz a meres.\n  ⎿  … tool output …\n\n────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────\n  Opus 5 · ctx 40%\n  ⏵⏵ bypass permissions on · install gh for PR status · 2 shells · ← for agen…",
+   "idle": true,
+   "queued": false
+  },
+  {
+   "name": "busy-spinner",
+   "pane": "● Kesz a meres.\n  ⎿  … tool output …\n\n✳ Forming… (3m 7s · ↓ 6.1k tokens)\n\n────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────\n  Opus 5 · ctx 40%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents",
+   "idle": false,
+   "queued": true
+  },
+  {
+   "name": "busy-long-turn",
+   "pane": "● Kesz a meres.\n  ⎿  … tool output …\n\n✶ Cogitating… (15m 26s · ↓ 3.1k tokens · thinking)\n\n────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────\n  Opus 5 · ctx 40%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents",
+   "idle": false,
+   "queued": true
+  },
+  {
+   "name": "busy-queued-hint",
+   "pane": "● Kesz a meres.\n  ⎿  … tool output …\n\n✳ Forming… (3m 7s · ↓ 6.1k tokens)\n\n────────────────────────────────────────────────────────────────────────────────\n❯ Press up to edit queued messages\n────────────────────────────────────────────────────────────────────────────────\n  Opus 5 · ctx 40%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents",
+   "idle": false,
+   "queued": true
+  },
+  {
+   "name": "busy-not-bypass",
+   "pane": "● Kesz a meres.\n  ⎿  … tool output …\n\n✳ Forming… (3m 7s · ↓ 6.1k tokens)\n\n────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────\n  Opus 5 · ctx 40%\n  ⏵⏵ accept edits on (shift+tab to cycle) · esc to interrupt · ← for agents",
+   "idle": false,
+   "queued": false
+  },
+  {
+   "name": "busy-parked-text",
+   "pane": "● Kesz a meres.\n  ⎿  … tool output …\n\n✳ Forming… (3m 7s · ↓ 6.1k tokens)\n\n────────────────────────────────────────────────────────────────────────────────\n❯ valaki gepel itt valamit\n────────────────────────────────────────────────────────────────────────────────\n  Opus 5 · ctx 40%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents",
+   "idle": false,
+   "queued": false
+  },
+  {
+   "name": "permission",
+   "pane": "  ⎿  … tool output …\n Bash command\n   touch /tmp/jelolo\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and don't ask again\n   3. No (esc)\n\n ↑/↓ to navigate · Esc to cancel",
+   "idle": false,
+   "queued": false
+  },
+  {
+   "name": "permission-in-turn",
+   "pane": "  ⎿  … tool output …\n Bash command\n   touch /tmp/jelolo\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and don't ask again\n   3. No (esc)\n\n ↑/↓ to navigate · Esc to cancel\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents",
+   "idle": false,
+   "queued": false
+  },
+  {
+   "name": "menu-mcp",
+   "pane": " Manage MCP servers\n ❯ 1. github · ✔ connected\n   2. slack · ✘ failed\n\n ↑/↓ to navigate · Enter to select · Esc to go back",
+   "idle": false,
+   "queued": false
+  },
+  {
+   "name": "placeholder",
+   "pane": "● Kesz a meres.\n  ⎿  … tool output …\n\n────────────────────────────────────────────────────────────────────────────────\n❯ [Pasted text #1 +900 chars]\n────────────────────────────────────────────────────────────────────────────────\n  Opus 5 · ctx 40%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+   "idle": false,
+   "queued": false
+  },
+  {
+   "name": "parked-text",
+   "pane": "● Kesz a meres.\n  ⎿  … tool output …\n\n────────────────────────────────────────────────────────────────────────────────\n❯ ott maradt egy felkesz sor\n────────────────────────────────────────────────────────────────────────────────\n  Opus 5 · ctx 40%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+   "idle": false,
+   "queued": false
+  },
+  {
+   "name": "feedback-draft",
+   "pane": "● kesz\n ╭──────────╮\n │ Bug report drafted: x │\n │ 1 to review · 2 to send · 0 to dismiss │\n ╰──────────╯\n────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+   "idle": false,
+   "queued": false
+  },
+  {
+   "name": "model-consent",
+   "pane": " Fable 5 now uses usage credits\n ❯ 1. Continue with Fable 5\n   2. Switch to Sonnet\n\n Enter to confirm",
+   "idle": false,
+   "queued": false
+  },
+  {
+   "name": "first-run-trust",
+   "pane": " Do you trust the files in this folder?\n ❯ 1. Yes, proceed\n   2. No, exit\n\n Enter to confirm · Esc to exit",
+   "idle": false,
+   "queued": false
+  },
+  {
+   "name": "shell-no-footer",
+   "pane": "agent-proba@marveen:~$ ",
+   "idle": false,
+   "queued": false
+  }
+ ]
+}
