@@ -149,11 +149,13 @@ _STRIPPED = "[[SECURITY_TAG_REMOVED_%s]]" % _secrets.token_hex(4)
 def untrusted(text, source="gmail"):
     # One envelope per field, on ONE line: the listings are line-based, and a line break in a
     # header must not start a line that looks like ours.
-    t = _SECURITY_TAG.sub(_STRIPPED, str(text))
     # every C0 and C1 control (CR, LF, VT, FF, the separators U+001C..U+001E, ESC of an ANSI
     # code, U+0085) and the two Unicode separators: splitlines() and many displays break a line
-    # on more than CR and LF, and the output may reach a terminal (barracuda, #170 review)
-    t = _re_u.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+", " ", t)
+    # on more than CR and LF, and the output may reach a terminal (barracuda, #170 review).
+    # FIRST, then the tags: a control the tag pattern's \s does not cover (U+0001, ESC) inside a
+    # tag hid it from the tag replacement, and its space then made it one (barracuda, #173)
+    t = _re_u.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+", " ", str(text))
+    t = _SECURITY_TAG.sub(_STRIPPED, t)
     return '<untrusted source="%s">%s</untrusted>' % (source, t)
 
 if CMD == "auth-url":
