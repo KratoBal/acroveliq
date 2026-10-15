@@ -64,7 +64,10 @@ export function typedFromChunks(chunks: readonly string[]): string {
  */
 export function splitForSendKeys(oneLine: string, chunkSize = SEND_KEYS_CHUNK, terminated = false): string[] {
   const out: string[] = []
-  const pieces = terminated ? (oneLine.match(new RegExp(`[\\s\\S]{1,${chunkSize}}`, 'g')) ?? []) : splitAtDashes(oneLine, chunkSize)
+  // code points, not UTF-16 units: a cut inside a surrogate pair (an emoji) hands tmux a lone half,
+  // which arrives as U+FFFD (barracuda, #187); chunkSize counts characters
+  const chars = Array.from(oneLine)
+  const pieces = terminated ? sliceEvery(chars, chunkSize) : splitAtDashes(chars, chunkSize)
   for (const chunk of pieces) {
     const body = chunk.replace(/;+$/, '')
     if (body) out.push(body)
@@ -78,17 +81,23 @@ export function sendKeysLiteralArgs(chunk: string, terminated: boolean): string[
   return terminated ? ['-l', '--', chunk] : ['-l', chunk]
 }
 
-function splitAtDashes(oneLine: string, chunkSize: number): string[] {
+function sliceEvery(chars: string[], chunkSize: number): string[] {
+  const out: string[] = []
+  for (let i = 0; i < chars.length; i += chunkSize) out.push(chars.slice(i, i + chunkSize).join(''))
+  return out
+}
+
+function splitAtDashes(chars: string[], chunkSize: number): string[] {
   const out: string[] = []
   let i = 0
-  while (i < oneLine.length) {
-    let end = Math.min(i + chunkSize, oneLine.length)
+  while (i < chars.length) {
+    let end = Math.min(i + chunkSize, chars.length)
     let slide = 0
-    while (end < oneLine.length && oneLine[end] === '-' && slide < MAX_SLIDE) {
+    while (end < chars.length && chars[end] === '-' && slide < MAX_SLIDE) {
       end++
       slide++
     }
-    let chunk = oneLine.slice(i, end)
+    let chunk = chars.slice(i, end).join('')
     if (chunk.startsWith('-')) chunk = ' ' + chunk
     out.push(chunk)
     i = end
