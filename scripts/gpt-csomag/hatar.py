@@ -19,7 +19,8 @@ a refusal): every inflected form of such a name ("Balázsnak", "Balázzsal", the
 "Balazs" too) is swapped for a random token the redactor is told to preserve
 (redact.preserving), and swapped back after the runtime guard. Every other name masks as
 before. A kept name standing next to another capitalised word that is not itself kept
-("Kovács Balázs", "Balázs Kovács": another person who shares the first name) is left alone, so
+("Kovács Balázs", "Kovács, Balázs", the two on adjacent lines: another person who shares the
+first name) is left alone, so
 the redactor masks the pair whole, as before; measured without this, "Kovács Balázs" went out as
 "<PERSON_1> Balázs". The cost is the safe one: at the start of a sentence ("Ma Balázs ...") the
 owner is masked once. Not the redactor's code: the leak gate's code hash does not change.
@@ -57,6 +58,10 @@ def gate_green():
 
 
 MAX_KEEP = 5
+# The debate's participants, the list src/gpt-package.ts sends (PARTICIPANT_NAMES; a test keeps the
+# two equal). The leak gate runs its suite through redact_keeping() with these too, so the keeping
+# path is measured, not only the full one (barracuda, #181 review; acrobot 31140).
+PARTICIPANTS = ("Balázs", "Acrobot", "GPT")
 _KEEP_WORD = re.compile(r"^[A-ZÁÉÍÓÖŐÚÜŰ][A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű]{1,30}$")
 # a Hungarian final consonant written with more letters doubles its first one before an
 # inflection ("Balázs" + "val" -> "Balázzsal"); longest first
@@ -82,8 +87,9 @@ def protect(text, keep):
     tokens = {}
 
     def neighbour_is_other_name(m):
-        before = re.search(r"([^\W\d_][\w-]*)[ \t]+$", text[:m.start()])
-        after = re.match(r"[ \t]+([^\W\d_][\w-]*)", text[m.end():])
+        # a space, a tab, a comma ("Kovács, Balázs" in a list) or one line break between them
+        before = re.search(r"([^\W\d_][\w-]*)[ \t,]*\n?[ \t]*$", text[:m.start()])
+        after = re.match(r"[ \t,]*\n?[ \t]*([^\W\d_][\w-]*)", text[m.end():])
         for n in ([before.group(1)] if before else []) + ([after.group(1)] if after else []):
             if n[0].isupper() and not rx.fullmatch(n):
                 return True
@@ -99,6 +105,22 @@ def protect(text, keep):
     return rx.sub(swap, text), {t: o for o, t in tokens.items()}
 
 
+def redact_keeping(text, keep):
+    """redact() with the kept names swapped out and preserved: (the result, {token: original}).
+    Raises redact.RedactionError like redact(). The leak gate calls this too."""
+    restore = {}
+    if keep:
+        text, restore = protect(text, keep)
+    with redact.preserving(restore.keys()):
+        return redact.redact(text), restore
+
+
+def restore_names(text, restore):
+    for token, original in restore.items():
+        text = text.replace(token, original)
+    return text
+
+
 def decide(text, keep=()):
     if not isinstance(text, str) or not text.strip():
         return {"ok": False, "why": "ures vagy nem szoveg"}
@@ -107,21 +129,14 @@ def decide(text, keep=()):
         return {"ok": False, "why": "a megtartando nevek listaja nem megengedett alaku"}
     if not gate_green():
         return {"ok": False, "why": "a szivargas-kapu nem zold erre a kitakaro-kodra"}
-    restore = {}
-    if keep:
-        text, restore = protect(text, keep)
     try:
-        with redact.preserving(restore.keys()):
-            r = redact.redact(text)
+        r, restore = redact_keeping(text, keep)
     except redact.RedactionError as e:
         return {"ok": False, "why": f"a kitakaras nem futott le: {e}"}
     problems = redact.runtime_guard(r)
     if problems:
         return {"ok": False, "why": f"a kitakaras utan is maradt: {','.join(problems)}"}
-    out = r["text"]
-    for token, original in restore.items():
-        out = out.replace(token, original)
-    return {"ok": True, "text": out, "counts": r["counts"], "version": r["version"]}
+    return {"ok": True, "text": restore_names(r["text"], restore), "counts": r["counts"], "version": r["version"]}
 
 
 def main():

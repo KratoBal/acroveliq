@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { getDb, initDatabase } from '../db.js'
 import { getDebate, type Debate } from '../debates.js'
-import { GptBlocked, buildPackage, debatePieces, envSecretValues, maskInternalIpv4, outputAllowed, secretIn, type PackageOptions } from '../gpt-package.js'
+import { GptBlocked, PARTICIPANT_NAMES, buildPackage, debatePieces, envSecretValues, maskInternalIpv4, outputAllowed, secretIn, type PackageOptions } from '../gpt-package.js'
 
 const ROOT = join(__dirname, '..', '..')
 const SCRIPT = join(ROOT, 'scripts', 'gpt-csomag', 'hatar.py')
@@ -175,17 +175,69 @@ describe('filter 2: personal data (the JEV boundary, full mode)', () => {
   it('PKG-PARTICIPANTS: the participants keep their names, inflected and unaccented too; every other person masks, a namesake whole', async () => {
     const d = debate()
     owner('v1', 'm1', 'Balázsnak írtam, Balazs is látta, Acrobottal egyeztettem, a GPT-nek is. Kovács Péter is ott volt, és Kovács Balázs, meg Balázs Nagy.', 110)
+    // a namesake in a list (comma) and across a line break (barracuda, #181 review)
+    owner('v1', 'm2', 'Névsor: Szabó, Balázs; Tóth\nBalázs.', 115)
     turn('v1', 'acrobot', 'answered', 'Balázzsal megbeszéltem.', 120)
     const pkg = await buildPackage(getDb(), d, 'Mit javasolsz?', opts())
     const kept = ['[gazda] Balázs, a döntéshozó', '[acrobot] Acrobot', 'Balázsnak írtam', 'Balazs is látta', 'Acrobottal', 'GPT-nek', 'Balázzsal megbeszéltem']
-    const gone = ['Kovács', 'Péter', 'Nagy']
+    const gone = ['Kovács', 'Péter', 'Nagy', 'Szabó', 'Tóth']
     expect([
       kept.filter((k) => !pkg.prompt.includes(k)),
       gone.filter((g) => pkg.prompt.includes(g)),
       // the namesake (Kovács Balázs, Balázs Nagy) is not half-shown
-      /<PERSON_\d+> Balázs|Balázs <PERSON_\d+>/.test(pkg.prompt),
+      /<PERSON_\d+>[ \t,]*\n?[ \t]*Balázs|Balázs[ \t,]*\n?[ \t]*<PERSON_\d+>/.test(pkg.prompt),
       /Kivetel[a-z]{12}/.test(pkg.prompt),
     ], 'PKG-PARTICIPANTS').toEqual([[], [], false, false])
+  })
+
+  // barracuda, #181 review; acrobot 31140: hatar.py now shapes what the redactor sees
+  it('PKG-GATE-KEEPING: the leak gate hashes hatar.py and runs its suite through the keeping path with the same names', () => {
+    const jev = JSON.stringify(join(ROOT, 'scripts', 'jev'))
+    const code = `import sys, json, os, shutil, tempfile; sys.path.insert(0, ${jev})
+import leak_gate, hatar
+names = list(hatar.PARTICIPANTS)
+listed = '../gpt-csomag/hatar.py' in leak_gate.CODE_FILES
+before = leak_gate.code_hash()
+# a hatar.py with one byte more must give another hash (a copy, the real file untouched)
+tmp = tempfile.mkdtemp()
+jevcopy = os.path.join(tmp, 'jev'); gptcopy = os.path.join(tmp, 'gpt-csomag')
+shutil.copytree(leak_gate._HERE, jevcopy); shutil.copytree(os.path.dirname(hatar.__file__), gptcopy)
+open(os.path.join(gptcopy, 'hatar.py'), 'a').write('\\n')
+leak_gate._HERE = jevcopy
+after = leak_gate.code_hash()
+leak_gate._HERE = os.path.dirname(os.path.abspath(leak_gate.__file__))
+# the keeping path is what the third run measures. Without the common-words list (this test's
+# environment) full mode itself leaks two sentence-initial surnames; the keeping path must leak
+# exactly what full mode leaks, and one that keeps the raw text leaks more
+_, full_leaks, _, _, _ = leak_gate.run()
+_, ok_leaks, _, _, _ = leak_gate.run(keep_names=hatar.PARTICIPANTS)
+hatar.redact_keeping = lambda t, k: ({"text": t}, {})
+_, bad_leaks, _, _, _ = leak_gate.run(keep_names=hatar.PARTICIPANTS)
+same = sorted((c, x) for c, x, _ in ok_leaks) == sorted((c, x) for c, x, _ in full_leaks)
+print(json.dumps([names, listed, before != after, same, len(bad_leaks) > len(full_leaks)]))`
+    const r = spawnSync('python3', ['-I', '-B', '-c', code], { env: { PATH: '/usr/bin:/bin', ...jevEnv }, encoding: 'utf8' })
+    expect(JSON.parse(r.stdout || 'null'), r.stderr).toEqual([[...PARTICIPANT_NAMES], true, true, true, true])
+  })
+
+  it('PKG-GATE-MAIN: the gate is red when only the keeping path leaks, and a green status names the participants run', () => {
+    const status = join(dir, 'gate-main.json')
+    const code = `import sys, json, os; sys.path.insert(0, ${JSON.stringify(join(ROOT, 'scripts', 'jev'))})
+import leak_gate
+real = leak_gate.run
+def fake(verbose=False, path=leak_gate.SUITE, keep_kinds=(), keep_names=()):
+    suite = leak_gate.load_suite(path)
+    leaks = [("x", "y", "z")] if (keep_names and LEAK) else []
+    return suite, leaks, [], 1, 1
+leak_gate.run = fake
+LEAK = True
+red = leak_gate.main()
+red_file = os.path.exists(os.environ["JEV_LEAK_GATE_STATUS"])
+LEAK = False
+green = leak_gate.main()
+st = json.load(open(os.environ["JEV_LEAK_GATE_STATUS"]))
+print(json.dumps([red, red_file, green, st.get("participants", {}).get("names"), st.get("participants", {}).get("leaks")]))`
+    const r = spawnSync('python3', ['-I', '-B', '-c', code], { env: { PATH: '/usr/bin:/bin', ...jevEnv, JEV_LEAK_GATE_STATUS: status }, encoding: 'utf8' })
+    expect(JSON.parse(r.stdout.trim().split('\n').pop() || 'null'), r.stderr).toEqual([1, false, 0, [...PARTICIPANT_NAMES], 0])
   })
 
   it('PKG-KEEP-SHAPE: the boundary refuses a keep list that is not a few single capitalised words', () => {
