@@ -10,6 +10,7 @@ import { ensureTaskUsageSchema } from './task-usage.js'
 import { ensureDebatesSchema } from './debates.js'
 import { ensurePrincipalSchema } from './web/auth-principals.js'
 import { ensureAccessDecisionSchema } from './web/access-enforcement.js'
+import { cleanMessageText } from './prompt-safety.js'
 
 let db: Database.Database
 // The path the CURRENT handle was opened on (null for ':memory:'). Kept so
@@ -2285,6 +2286,8 @@ export function createAgentMessage(
   taskId?: string | null,
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
+  // every writer stores the cleaned text: the route, the federation inbox, the server's notices
+  content = cleanMessageText(content)
   const info = db.prepare(
     'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, taskId ?? null)

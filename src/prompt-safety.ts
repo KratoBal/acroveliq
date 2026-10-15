@@ -110,6 +110,17 @@ export function sanitizeAgentSource(raw: string): string {
   return cleaned || 'unknown'
 }
 
+/**
+ * A message's text as it is stored (createAgentMessage, every writer): the Unicode line
+ * separators U+2028, U+2029, U+0085 and a CR (alone or before an LF) become one LF; every other
+ * C0 control but the tab and the LF, DEL and C1 become a space. The lines stay; what a display
+ * or a terminal could read as a line break or a command does not. barracuda's message 31054
+ * carried a raw U+2028 and U+2029 and was delivered about fourteen times over (acrobot 31076).
+ */
+export function cleanMessageText(text: string): string {
+  return text.replace(/\r\n?|[\u2028\u2029\x85]/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f-\x84\x86-\x9f]/g, ' ')
+}
+
 export function wrapUntrusted(source: string, content: string | null | undefined): string {
   if (content == null) return ''
   const text = String(content)
