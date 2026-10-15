@@ -358,9 +358,12 @@ async function gptTurn(db: Database.Database, deps: DebateDeps, cfg: DebateConfi
     }
     // the output filter stopped the answer: the runner WAS called (an attempt), and the thread is
     // told what happened, not "the runner failed" (barracuda, #149)
-    const out = err instanceof GptOutputBlocked
-    settle('failed', out ? 'a kimeneti titok-szűrőn fennakadt' : 'a futtató hibát adott')
-    if (running(db, debate.id)) await say(db, deps, debate, '[vezérlő]', out ? err.publicMessage : 'GPT most nem szólhat: a futtató hibát adott (a naplóban).')
+    // an error that carries its own safe text (the output filter; the runner not reachable) says it;
+    // anything else is the generic line
+    const raw = err instanceof Error ? (err as unknown as { publicMessage?: unknown }).publicMessage : undefined
+    const pub = typeof raw === 'string' ? raw : null
+    settle('failed', err instanceof GptOutputBlocked ? 'a kimeneti titok-szűrőn fennakadt' : pub ? 'a futtató nem érhető el' : 'a futtató hibát adott')
+    if (running(db, debate.id)) await say(db, deps, debate, '[vezérlő]', pub ?? 'GPT most nem szólhat: a futtató hibát adott (a naplóban).')
     return null
   }
   // stopped (or timed out) while GPT was thinking: its answer does not go out (barracuda #137)

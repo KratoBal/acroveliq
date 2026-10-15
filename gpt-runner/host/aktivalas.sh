@@ -88,7 +88,11 @@ echo "a szolgaltatas ezt latta: $forras"
 # 4. the state and the fleet side
 echo "== allapot"
 echo "gpt-szolga.service: $(systemctl is-enabled gpt-szolga.service), $(systemctl is-active gpt-szolga.service)"
-echo "a kontener ujrainditasi szabalya: $(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' gpt-szolga) (csak a systemd inditja, a tuzfal utan)"
+# the whole safety argument stands on this being "no" (only systemd starts it, after the firewall):
+# a compose.yaml change must not open the boot window silently (barracuda, #166)
+rp=$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' gpt-szolga)
+[ "$rp" = no ] || stop "a kontener ujrainditasi szabalya nem 'no', hanem '$rp': a Docker a tuzfal elott inditana"
+echo "a kontener ujrainditasi szabalya: $rp (csak a systemd inditja, a tuzfal utan)"
 cat <<EOF
 == a flotta oldalan (acrobot vagy Balazs allitja be; ez a szkript NEM)
   DEBATE_GPT_RUNNER_ENABLED=on

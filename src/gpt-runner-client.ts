@@ -13,6 +13,16 @@ import { readFileSync } from 'node:fs'
 import type { Debate, DebateDeps, GptAnswer } from './debates.js'
 import { FINAL_MARK, GptOutputBlocked, type GptPackage } from './gpt-package.js'
 
+/** The runner could not be reached at all (refused, reset, timed out): most likely the service is
+ *  not running (the systemd unit past its restart limit). Safe to post; it names the host command. */
+export class GptRunnerUnavailable extends Error {
+  readonly publicMessage = 'GPT most nem szólhat: a futtató nem érhető el, valószínűleg a szolgáltatás nem fut (a hoston: systemctl status gpt-szolga.service).'
+  constructor(readonly reason: string) {
+    super(reason)
+    this.name = 'GptRunnerUnavailable'
+  }
+}
+
 /** The package sent out, and the check of what comes back (src/gpt-package.ts gives both). */
 export interface GptFilters {
   /** The filtered package for this turn; throws GptBlocked when it must not go out. */
@@ -76,13 +86,18 @@ export function makeRunGpt(o: RunnerClientOptions): DebateDeps['runGpt'] {
     const pkg = await filters.buildPrompt(debate, ask)
     const token = readRunnerToken(o.tokenFile)
     if (!token) throw new Error('nincs olvashato futtato-token')
-    const res = await doFetch(endpoint, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ prompt: pkg.prompt }),
-      signal: AbortSignal.timeout(o.timeoutMs),
-      redirect: 'error',
-    })
+    let res: Response
+    try {
+      res = await doFetch(endpoint, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt: pkg.prompt }),
+        signal: AbortSignal.timeout(o.timeoutMs),
+        redirect: 'error',
+      })
+    } catch (err) {
+      throw new GptRunnerUnavailable(err instanceof Error ? err.message : String(err))
+    }
     if (!res.ok) throw new Error(`a futtato ${res.status} valaszt adott`)
     const body = (await res.json()) as unknown
     const text = body && typeof body === 'object' && typeof (body as { text?: unknown }).text === 'string' ? (body as { text: string }).text : null
