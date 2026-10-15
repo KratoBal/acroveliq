@@ -25,6 +25,7 @@ beforeAll(async () => {
     if (req.url === '/nagy') { res.writeHead(200, { 'content-type': 'text/plain' }); for (let i = 0; i < 20; i++) res.write('y'.repeat(1000)); res.end(); return }
     if (req.url === '/hazug') { res.writeHead(200, { 'content-type': 'text/plain', 'content-length': '10' }); res.write('z'.repeat(5000)); res.end(); return }
     if (req.url === '/lassu') { res.writeHead(200); res.write('a'); return }
+    if (req.url === '/csepeg') { res.writeHead(200); const t = setInterval(() => { if (res.destroyed) clearInterval(t); else res.write('c') }, 100); req.on('close', () => clearInterval(t)); return }
     if (req.url === '/belsore') { res.writeHead(302, { location: `http://belso.test:${port}/ok` }); res.end(); return }
     if (req.url === '/kapura') { res.writeHead(302, { location: '/tiltott' }); res.end(); return }
     if (req.url === '/hurok') { res.writeHead(302, { location: '/hurok' }); res.end(); return }
@@ -58,10 +59,10 @@ function deps(o: { allowed?: (u: string) => boolean; table?: Record<string, stri
 const url = (path: string, host = 'pelda.test') => `http://${host}:${port}${path}`
 
 describe('the addresses that are not the public internet', () => {
-  it('LET-RANGES: IPv4 private, CGNAT/tailnet, loopback, link-local, 0.0.0.0/8; IPv6 loopback, link-local, ULA, and mapped / NAT64 by the IPv4 inside', () => {
+  it('LET-RANGES: IPv4 private, CGNAT/tailnet, loopback, link-local, 0.0.0.0/8; IPv6 loopback, link-local, site-local, ULA, Teredo, and mapped / NAT64 / 6to4 by the IPv4 inside', () => {
     const blocked = ['0.0.0.0', '0.1.2.3', '10.1.2.3', '100.64.0.1', '100.117.177.56', '127.0.0.1', '169.254.169.254', '172.16.0.1', '192.168.250.2', '224.0.0.1', '255.255.255.255',
-      '::', '::1', 'fe80::1', 'fd00::1', 'fc00::1', 'ff02::1', '::ffff:127.0.0.1', '::ffff:7f00:1', '::ffff:10.0.0.5', '::127.0.0.1', '64:ff9b::a00:5', '64:ff9b::127.0.0.1', 'nem-cim']
-    const public_ = ['93.184.216.34', '162.55.216.28', '2606:4700::1111', '::ffff:93.184.216.34', '64:ff9b::5db8:d822']
+      '::', '::1', 'fe80::1', 'fd00::1', 'fc00::1', 'ff02::1', '::ffff:127.0.0.1', '::ffff:7f00:1', '::ffff:10.0.0.5', '::127.0.0.1', '64:ff9b::a00:5', '64:ff9b::127.0.0.1', 'fec0::1', '2002:a00:5::1', '2002:7f00:1::', '2001:0:4136:e378::1', 'nem-cim']
+    const public_ = ['93.184.216.34', '162.55.216.28', '2606:4700::1111', '::ffff:93.184.216.34', '64:ff9b::5db8:d822', '2002:5db8:d822::1']
     expect([blocked.filter((a) => !blockedAddress(a)), public_.filter((a) => blockedAddress(a))]).toEqual([[], []])
   })
 })
@@ -118,6 +119,12 @@ describe('the download', () => {
     const big = await letolt(url('/nagy'), deps({ internal: [] }), { maxBytes: 5000, timeoutMs: 5000 })
     const lie = await letolt(url('/hazug'), deps({ internal: [] }), { maxBytes: 1000, timeoutMs: 5000 })
     expect([big.ok, !big.ok && big.why, lie.ok]).toEqual([false, 'nagyobb, mint 5000 bajt', false])
+  })
+
+  it('LET-TRICKLE: a page trickling a byte every 100 ms (under the idle limit) still stops at the WHOLE time limit (barracuda, #175)', async () => {
+    const t0 = Date.now()
+    const r = await letolt(url('/csepeg'), deps({ internal: [] }), { maxBytes: 5000, timeoutMs: 400 })
+    expect([r.ok, !r.ok && r.why, Date.now() - t0 < 1000]).toEqual([false, 'idotullepes', true])
   })
 
   it('LET-TIME: a page that never ends stops at the time limit', async () => {

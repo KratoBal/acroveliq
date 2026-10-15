@@ -9,12 +9,14 @@
 //      quarantine-reader (the gate runs as a child, exactly as the hook runs; only an explicit
 //      allow counts, anything else is a refusal);
 //   2. the host resolved ONCE per hop, and every address checked against the internal ranges, IPv4
-//      and IPv6 (mapped ::ffff:a.b.c.d and NAT64 64:ff9b::/96 by their embedded IPv4 too);
+//      and IPv6 (mapped ::ffff:a.b.c.d, NAT64 64:ff9b::/96 and 6to4 2002::/16 by their embedded
+//      IPv4 too; Teredo and site-local blocked whole);
 //   3. the connection PINNED to the checked address (a lookup that returns only it): a DNS answer
 //      that changes between the check and the connect (rebinding) never reaches a socket;
 //   4. a redirect is a new hop: the gate, the resolve and the check again, at most 5;
 //   5. the size counted on the bytes as they arrive (a Content-Length can lie), and a time limit
-//      over the whole download.
+//      over the whole download, enforced as an absolute timer in each request too (the socket's
+//      `timeout` is only idle time: a trickling server would stay under it).
 import { spawnSync } from 'node:child_process'
 import { lookup as dnsLookup } from 'node:dns/promises'
 import http from 'node:http'
@@ -45,7 +47,7 @@ const V4 = new net.BlockList()
 for (const [a, p] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['224.0.0.0', 4], ['240.0.0.0', 4]] as const) V4.addSubnet(a, p, 'ipv4')
 // IPv6: unspecified, loopback, link-local, unique-local, multicast, documentation, discard
 const V6 = new net.BlockList()
-for (const [a, p] of [['::', 128], ['::1', 128], ['fe80::', 10], ['fc00::', 7], ['ff00::', 8], ['2001:db8::', 32], ['100::', 64]] as const) V6.addSubnet(a, p, 'ipv6')
+for (const [a, p] of [['::', 128], ['::1', 128], ['fe80::', 10], ['fec0::', 10], ['fc00::', 7], ['2001::', 32], ['ff00::', 8], ['2001:db8::', 32], ['100::', 64]] as const) V6.addSubnet(a, p, 'ipv6')
 
 /** The 8 hextets of an IPv6 address (with an embedded dotted IPv4 tail), or null. */
 function hextets(ip: string): number[] | null {
@@ -76,6 +78,9 @@ export function blockedAddress(ip: string): boolean {
   // ::ffff:a.b.c.d (mapped), ::a.b.c.d (compatible), 64:ff9b::a.b.c.d (NAT64): judged by the IPv4 inside
   if (h.slice(0, 5).every((x) => x === 0) && (h[5] === 0xffff || h[5] === 0)) return h[5] === 0 && h[6] === 0 ? V6.check(ip, 'ipv6') : V4.check(embedded, 'ipv4')
   if (h[0] === 0x64 && h[1] === 0xff9b && h.slice(2, 6).every((x) => x === 0)) return V4.check(embedded, 'ipv4')
+  // 2002:aabb:ccdd::/48 (6to4) carries a.b.c.d in hextets 2 and 3; a host 6to4 route could reach it
+  // (barracuda, #175). Teredo (2001::/32) hides its IPv4 XOR-ed: blocked whole, in V6 above.
+  if (h[0] === 0x2002) return V4.check(`${h[1]! >> 8}.${h[1]! & 0xff}.${h[2]! >> 8}.${h[2]! & 0xff}`, 'ipv4')
   return V6.check(ip, 'ipv6')
 }
 
@@ -107,6 +112,7 @@ export function pinnedGet(url: URL, pinned: string, timeoutMs: number, maxBytes:
       // the ONLY address this socket may use (TLS still checks the certificate against the name)
       lookup: ((_host: string, opts: { all?: boolean }, cb: (...a: unknown[]) => void) =>
         opts?.all ? cb(null, [{ address: pinned, family }]) : cb(null, pinned, family)) as never,
+      // the socket's IDLE time only: a server trickling a byte at a time stays under it for ever
       timeout: timeoutMs,
     }, (res) => {
       const chunks: Buffer[] = []
@@ -116,16 +122,20 @@ export function pinnedGet(url: URL, pinned: string, timeoutMs: number, maxBytes:
         if (size > maxBytes) { req.destroy(new Error('tul nagy')); return }
         chunks.push(c)
       })
-      res.on('end', () => resolve({
+      res.on('end', () => done(() => resolve({
         status: res.statusCode ?? 0,
         location: typeof res.headers.location === 'string' ? res.headers.location : undefined,
         contentType: typeof res.headers['content-type'] === 'string' ? res.headers['content-type'] : undefined,
         body: Buffer.concat(chunks),
-      }))
-      res.on('error', reject)
+      })))
+      res.on('error', (e) => done(() => reject(e)))
     })
+    // the WHOLE request's limit, from the first byte to the last (barracuda, #175): the caller's
+    // timeoutMs is the time left of the download, not a per-read allowance
+    const whole = setTimeout(() => req.destroy(new Error('idotullepes')), timeoutMs)
+    const done = (f: () => void) => { clearTimeout(whole); f() }
     req.on('timeout', () => req.destroy(new Error('idotullepes')))
-    req.on('error', reject)
+    req.on('error', (e) => done(() => reject(e)))
     req.end()
   })
 }
