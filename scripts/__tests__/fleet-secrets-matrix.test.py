@@ -66,6 +66,12 @@ try:
     else:
         print("  [SKIP] the runner is not a fleet user; the calibration line above still holds")
 
+    # the in-process cases below use their own users, not the host's: a CI runner has no marveen or
+    # agent-* user, and the matrix would have no column to check (the #190 CI run)
+    import pwd as _pwd
+    me_name = _pwd.getpwuid(os.getuid()).pw_name
+    fs.fleet_users = lambda: [(me_name, os.getuid(), set(os.getgroups()) | {os.getgid()}), ("kulso", 2 ** 31 - 7, {2 ** 31 - 7})]
+    col = 0
     print("the store directory's x bit counts")
     os.chmod(store, 0o700)
     try:
@@ -77,8 +83,8 @@ try:
     finally:
         os.chmod(store, 0o755)
     c_line = [l for l in buf.getvalue().splitlines() if l.startswith(".c-secret")][0].split()[4:]
-    others = [c for i, c in enumerate(c_line) if col is None or i != col]
-    check("a 644 file in a 700 store: every other user nem", True, bool(others) and all(c == "nem" for c in others))
+    others = [c for i, c in enumerate(c_line) if i != col]
+    check("a 644 file in a 700 store: the outsider nem, the owner IGEN", (["nem"], "IGEN"), (others, c_line[col]))
 
     print("an ACL is not computed")
     orig = os.listxattr
@@ -94,6 +100,37 @@ try:
     acl_line = [l for l in buf.getvalue().splitlines() if l.startswith(".b-key")][0]
     check("the file with an ACL shows ACL for every user, not IGEN or nem", True,
           "ACL" in acl_line and "IGEN" not in acl_line and " nem" not in acl_line)
+
+    print("an unreadable xattr list is ?, not a computed answer")
+    orig = os.listxattr
+    def raising(p):
+        if p.endswith(".a-token"):
+            raise PermissionError("no")
+        return []
+    os.listxattr = raising
+    try:
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try:
+            fs.matrix()
+        finally:
+            sys.stdout = old
+    finally:
+        os.listxattr = orig
+    q_line = [l for l in buf.getvalue().splitlines() if l.startswith(".a-token")][0].split()[4:]
+    check("the file whose xattr list cannot be read shows ? for every user", True, bool(q_line) and all(c == "?" for c in q_line))
+
+    print("every ancestor directory counts, not only store/")
+    os.chmod(T, 0o700)
+    try:
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try:
+            fs.matrix()
+        finally:
+            sys.stdout = old
+    finally:
+        os.chmod(T, 0o755)
+    c_line = [l for l in buf.getvalue().splitlines() if l.startswith(".c-secret")][0].split()[4:]
+    check("a 644 file in a 755 store under a 700 parent: the outsider nem", "nem", c_line[1])
 
     print("a mismatch with os.access is exit 2")
     orig_access = os.access

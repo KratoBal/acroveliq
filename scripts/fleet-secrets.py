@@ -29,7 +29,8 @@ marveen es minden agent-* felhasznalo minden titok-fajlra IGEN vagy NEM valaszt 
 kiszamolva a tulajdonosbol, a csoportbol, a modbol es a csoporttagsagbol (pwd, grp), ugyanugy, ahogy
 a kernel dont: elobb a tulajdonos, aztan a csoport, aztan mindenki, es a store/ mappa x bitje is
 kell. A store/ alatt 2026-10-15-en egyetlen fajlon sem volt ACL; ha megis lesz, az a sor "ACL"
-jelet kap, nem szamolt valaszt (az ACL a xattr-listabol jog nelkul latszik). A futtato sajat sorat
+jelet kap, nem szamolt valaszt (az ACL a xattr-listabol jog nelkul latszik); ha a lista nem olvashato,
+"?" jelet. Minden os-konyvtar x bitje szamit, nem csak a store/-e. A futtato sajat sorat
 a valodi os.access-szel is osszeveti, es elteresnel 2-vel lep ki. Kimenet: ut, tulajdonos, csoport,
 mod es a felhasznalonkenti IGEN/NEM. A fajl TARTALMAT nem nyitja meg, es halozatot sem hiv.
 """
@@ -154,18 +155,39 @@ def fleet_users():
 
 
 def has_acl(path):
+    """True with an ACL, False without, None when the xattr list cannot be read: an ACL can ADD a
+    right, so an unreadable list is not "no ACL" (barracuda, #190 review)."""
     try:
         return any(a.startswith("system.posix_acl") for a in os.listxattr(path))
     except OSError:
-        return False
+        return None
+
+
+def dir_chain(path):
+    """Every directory from / down to `path`: a read needs the x bit on each of them."""
+    out = []
+    p = os.path.abspath(path)
+    while True:
+        out.append(p)
+        parent = os.path.dirname(p)
+        if parent == p:
+            break
+        p = parent
+    return list(reversed(out))
 
 
 def matrix():
     import pwd
     users = fleet_users()
-    dst = os.stat(STORE)
-    dir_acl = has_acl(STORE)
+    # every ancestor counts, not only store/ (barracuda, #190 review): /home or the project root
+    # closed to a user closes every file under it
+    chain = [(os.stat(d), has_acl(d)) for d in dir_chain(STORE)]
+    dir_acl = [a for _, a in chain]
+
+    def dirs_ok(uid, gids):
+        return all(can(st.st_mode, st.st_uid, st.st_gid, uid, gids, EXEC) for st, _ in chain)
     me = os.getuid()
+    my_gids = set(os.getgroups()) | {os.getgid()}
     mismatch = []
     print("%-38s %-10s %-16s %-4s %s" % ("FAJL", "TULAJDONOS", "CSOPORT", "MOD", "  ".join(u[0].replace("agent-", "") for u in users)))
     for fn in secret_names():
@@ -175,15 +197,20 @@ def matrix():
             owner = pwd.getpwuid(st.st_uid).pw_name
         except KeyError:
             owner = str(st.st_uid)
-        acl = dir_acl or has_acl(p)
+        acls = dir_acl + [has_acl(p)]
+        acl = "ACL" if any(a is True for a in acls) else ("?" if any(a is None for a in acls) else None)
         cells = []
         for name, uid, gids in users:
             if acl:
-                cells.append("ACL")
+                cells.append(acl)
                 continue
-            ok = can(dst.st_mode, dst.st_uid, dst.st_gid, uid, gids, EXEC) and can(st.st_mode, st.st_uid, st.st_gid, uid, gids, READ)
+            ok = dirs_ok(uid, gids) and can(st.st_mode, st.st_uid, st.st_gid, uid, gids, READ)
             cells.append("IGEN" if ok else "nem")
-            if uid == me and ok != os.access(p, os.R_OK):
+        # the runner's own answer, whether or not it is a fleet user (a CI runner is not): the same
+        # computation against the real os.access, so the calibration holds everywhere
+        if not acl:
+            mine = dirs_ok(me, my_gids) and can(st.st_mode, st.st_uid, st.st_gid, me, my_gids, READ)
+            if mine != os.access(p, os.R_OK):
                 mismatch.append(fn)
         widths = [max(4, len(u[0].replace("agent-", ""))) for u in users]
         print("%-38s %-10s %-16s %-4s %s" % (fn, owner, group_of(p), oct(st.st_mode)[-3:],
@@ -193,7 +220,7 @@ def matrix():
     if mismatch:
         print("ELTERES a futtato sajat soran (szamolt kontra os.access): %s" % ", ".join(mismatch))
         return 2
-    print("A futtato sajat sora egyezik az os.access-szel (%s)." % pwd.getpwuid(me).pw_name)
+    print("A futtato (%s) szamolt valasza minden fajlon egyezik az os.access-szel." % pwd.getpwuid(me).pw_name)
     return 0
 
 
