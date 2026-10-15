@@ -76,4 +76,15 @@ describe('AcrovelIQ UI wiring', () => {
     expect(SECTION).not.toContain('Ehhez még nincs adatforrás')
     expect(SECTION).not.toMatch(/MINTAADAT|DEMO ADAT|PÉLDA/i)
   })
+
+  // The page's own label says what it may do: since the two B decisions (2026-10-14 08:52:26 UTC and
+  // 10:12:09 UTC) it decides and creates and manages tasks, so "read only" on it was a false claim.
+  it('the badge and the footer name the writes the page has, and what it still cannot do', () => {
+    const shell = HTML.slice(HTML.indexOf('id="acroveliqPage"'), HTML.indexOf('<!-- === Kanban Page === -->'))
+    expect(shell.length).toBeGreaterThan(500)
+    expect(shell).not.toMatch(/CSAK OLVASÁS|Csak olvasó/i)
+    expect(shell).toContain('<span class="aq-badge aq-badge-live">ÉLŐ ADAT · DÖNTÉS ÉS FELADATKEZELÉS</span>')
+    expect(shell).toContain('Innen dönteni, valamint feladatot létrehozni és kezelni csak Balázs bejelentkezett munkamenetével lehet.')
+    expect(shell).toContain('Ágenst indítani vagy újraindítani, terminált nyitni és beállítást módosítani innen nem lehet.')
+  })
 })
