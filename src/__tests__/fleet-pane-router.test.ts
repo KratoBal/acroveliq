@@ -13,7 +13,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 
-type Call = { file: string; args: string[]; input?: string }
+type Call = { file: string; args: string[]; input?: string; timeout?: number }
 const calls: Call[] = []
 let pane = ''
 let brokerAnswer: (args: string[]) => { code: number; out: string } = () => ({ code: 0, out: 'landed' })
@@ -33,7 +33,7 @@ vi.mock('node:child_process', async (importOriginal) => {
     return ''
   })
   const asyncFake = vi.fn((file: string, args: readonly string[], _opts: unknown, cb: (e: unknown, out: string, err: string) => void) => {
-    const call: Call = { file, args: [...args] }
+    const call: Call = { file, args: [...args], timeout: (_opts as { timeout?: number }).timeout }
     calls.push(call)
     const child = new EventEmitter() as EventEmitter & { stdin: { end: (s?: string) => void } }
     child.stdin = {
@@ -53,7 +53,9 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
   return { ...orig, listAgentNames: () => ['proba'], readAgentRunAsUser: (n: string) => (n === 'proba' ? 'agent-proba' : null) }
 })
 
-import { brokerArgsForTmux, LEGACY, _setFleetPaneBrokerForTest, FLEET_PANE_BIN, deliverOutcome } from '../web/fleet-pane.js'
+import { brokerArgsForTmux, LEGACY, _setFleetPaneBrokerForTest, FLEET_PANE_BIN, deliverOutcome, deliverTimeoutMs, DELIVER_MAX_CHARS } from '../web/fleet-pane.js'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { FLEET_PANE_BROKER } from '../config.js'
 import { tmuxInvocationFor, sendPromptToSession, sendEnterToSession, clearInputBuffer, dismissResumeSummaryModalIfPresent } from '../web/agent-process.js'
 import { getAbandonedPrompt, _resetInjectedPromptsForTest } from '../web/injected-prompt-registry.js'
@@ -118,6 +120,12 @@ describe('with the switch ON', () => {
     expect(() => tmuxInvocationFor(['send-keys', '-t', S, 'Enter'])).toThrow(/fleet-pane: no broker verb for tmux send-keys/)
     expect(() => tmuxInvocationFor(['run-shell', '-t', S, 'id'])).toThrow(/no broker verb/)
     expect(tmuxInvocationFor(['new-session', '-d', '-s', S, 'claude']).args.slice(0, 3)).toEqual(['-n', '-u', 'agent-proba'])
+  })
+
+  it('FP-TIMEOUT: the deliver limit grows with the text (250 ms a piece over 30 s), and the max matches the broker', async () => {
+    await sendPromptToSession(S, 'A' + 'x'.repeat(7999), null)
+    const py = readFileSync(join(__dirname, '..', '..', 'scripts', 'root', 'fleet-pane.py'), 'utf8')
+    expect([calls.find((c) => c.args[2] === 'deliver')!.timeout, deliverTimeoutMs(DELIVER_MAX_CHARS), Number(/^MAX_TEXT = (\d+)$/m.exec(py)?.[1])]).toEqual([55_000, 130_000, DELIVER_MAX_CHARS])
   })
 
   it('FP-DELIVER: the message goes to `deliver proba` on STDIN, nowhere in argv; no raw key, no sudo -u', async () => {

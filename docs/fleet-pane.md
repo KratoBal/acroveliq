@@ -43,6 +43,23 @@ only on a parked box with no dialog and no running turn).
 - The race between the look before the Enter and the Enter is not closed (plan 4.3); a dialog seen
   right after the Enter is logged as `suspect-accept`.
 
+## Two tmux facts the typing depends on (measured on tmux 3.3a, 2026-10-15)
+
+- An argument that ENDS in `;` is a command separator: `E;` types `E`, `A\;` types `A;`, a lone
+  `\;` types `;`. So no piece the broker sends ends in `;`: trailing semicolons go as their own
+  `\;` pieces. A `;` or a backslash inside a piece is typed as is.
+- `send-keys -l -- <piece>` takes `--` as the end of options, so a piece starting with `-` is text.
+
+Re-measure both when tmux is upgraded; `scripts/__tests__/fleet-pane.test.py` simulates the first.
+
+## The pane rules exist twice
+
+The broker carries a Python copy of `src/pane-state.ts` (its gate must not be code `marveen` can
+write). `scripts/__tests__/fixtures/pane-samples.json` holds panes with the expected answer (may a
+message be typed into it idle, or queued into a running turn), and BOTH sides are tested against
+every row: `src/__tests__/pane-samples-shared.test.ts` and `scripts/__tests__/fleet-pane.test.py`.
+A pane-state change that moves an answer turns red there; the Python copy follows in the same PR.
+
 ## Installing (Balázs's steps, on the stage fleet first, each separately approved)
 
 ```

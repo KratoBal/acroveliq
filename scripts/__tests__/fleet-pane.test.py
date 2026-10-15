@@ -19,6 +19,7 @@ Run: python3 -B <thisfile>   Exit 0 = all pass.
 """
 import importlib.util
 import json
+import re
 import os
 import subprocess
 import sys
@@ -103,25 +104,28 @@ class Pane:
         shown = self.render()
         into_dialog = fp.dialog(fp.strip_ansi(shown)) is not None
         if a[3] == '-l':
-            assert len(a) == 5, a
-            self.keys.append(('INTO-DIALOG:' if into_dialog else '') + 'TEXT:' + a[4])
+            assert len(a) == 6 and a[4] == '--', a
+            # tmux 3.3a, measured 2026-10-15: an argument ending in ';' is a command separator
+            m = re.match(r'^(.*?)(\\*);$', a[5], re.S)
+            text = a[5] if not m else m.group(1) + (';' if m.group(2) else '')
+            self.keys.append(('INTO-DIALOG:' if into_dialog else '') + 'TEXT:' + text)
             self.n_chunks += 1
             if not into_dialog:
-                self.box += a[4]
+                self.box += text
             return 0, ''
-        assert len(a) == 4, a
-        k = a[3]
-        self.keys.append(('INTO-DIALOG:' if into_dialog else '') + k)
-        if k == 'Enter' and not self.screen:
-            self.n_enters += 1
-            if self.box and self.n_enters > self.park_enters:
-                self.box, self.busy = '', True
-        if k == 'C-c' and self.placeholder:
-            self.box = ''
-        if k == 'Delete' and not self.placeholder:
-            self.box = ''
-        if self.screen and k in ('0', 'Enter', 'Escape'):
-            self.screen = None
+        for k in a[3:]:
+            self.keys.append(('INTO-DIALOG:' if into_dialog else '') + k)
+            if k == 'Enter' and not self.screen:
+                self.n_enters += 1
+                if self.box and self.n_enters > self.park_enters:
+                    self.box, self.busy = '', True
+            if k == 'C-c' and self.placeholder:
+                self.box = ''
+            if k == 'Delete' and not self.placeholder:
+                self.box = ''
+            if self.screen and k in ('0', 'Enter', 'Escape'):
+                self.screen = None
+        self.key_calls = getattr(self, 'key_calls', 0) + 1
         return 0, ''
 
 
@@ -131,7 +135,8 @@ class Env:
         self.agents = os.path.join(self.dir, 'agents.json')
         self.log = os.path.join(self.dir, 'fleet-pane.log')
         with open(self.agents, 'w') as f:
-            json.dump({'agents': {'proba': {'user': 'agent-proba', 'workdir': '/x'}, 'Rossz Nev': {'user': 'x'}}}, f)
+            json.dump({'agents': {'proba': {'user': 'agent-proba', 'workdir': '/x'}, 'Rossz Nev': {'user': 'x'},
+                                  'rootos': {'user': 'root'}, 'szolga': {'user': 'www-data'}}}, f)
 
     def run(self, pane, argv, stdin=b'', require_root=False):
         return fp.run(argv, {'agents_file': self.agents, 'log_file': self.log, 'run': pane, 'sleep': lambda s: None,
@@ -183,7 +188,7 @@ for verb in ('clear', 'submit'):
 
 # --- N4: argument probes never reach tmux ---------------------------------------------------
 for argv in [['deliver', '../proba'], ['deliver', 'proba;id'], ['capture', 'agent-proba:0.1'], ['send-keys', 'proba'],
-             ['run-shell', 'proba'], ['capture', 'masik'], ['capture', 'Rossz Nev'], ['capture', 'proba', '-t', 'x'],
+             ['run-shell', 'proba'], ['capture', 'masik'], ['capture', 'Rossz Nev'], ['capture', 'rootos'], ['capture', 'szolga'], ['capture', 'proba', '-t', 'x'],
              ['capture', 'proba', '--lines', '99999'], ['capture', 'proba', '--lines', '-5'], ['dismiss', 'proba', 'login'],
              ['dismiss', 'proba', 'Enter'], ['status', 'proba', '--queued'], ['deliver'], []]:
     p = Pane()
@@ -218,21 +223,30 @@ os.environ['PYTHONPATH'] = '/tmp/py'
 rc, out = fp.real_run(['/usr/bin/env'])
 check('N9 the child environment is exactly PATH and LANG', sorted(l.split('=')[0] for l in out.split('\n') if l), ['LANG', 'PATH'])
 
-# --- the chunks: caller text never starts a tmux argument with '-' -------------------------
-check('a chunk boundary on a dash slides past it; a leading dash gets a space',
-      (fp.chunks('a' * 80 + '-szal es tobb'), fp.chunks('-x'), fp.chunks('a' * 80 + '-' * 9 + 'b')[1][0]),
-      (['a' * 80 + '-', 'szal es tobb'], [' -x'], ' '))
-check('the text typed is the text given (no space slipped in at a dash boundary)', ''.join(fp.chunks(TEXT)), TEXT)
+# --- the chunks: no piece ends in ';' (tmux would cut it), every piece after `--` -----------
+SEMI = 'a' * 79 + ';;b ' + 'c' * 76 + ';' + 'd' * 79 + '\\;' + 'z' * 5 + ';'
+check('no piece ends in ";" except the lone escaped one; a leading dash stays as it is',
+      (all(not p.endswith(';') or p == fp.SEMICOLON for p in fp.chunks(SEMI)), fp.chunks('-x'), fp.chunks('E;'), fp.chunks(';;')),
+      (True, ['-x'], ['E', '\\;'], ['\\;', '\\;']))
+check('the pieces type back to the text given (semicolons, backslashes, dashes)',
+      [fp.typed(fp.chunks(t)) == t for t in (TEXT, SEMI, '-' * 30 + 'x', 'F\\;', 'q;' * 90)], [True] * 5)
 
 # --- positive: delivery ---------------------------------------------------------------------
 open(e.log, 'w').close()
 p = Pane()
 code, out = e.run(p, ['deliver', 'proba'], TEXT.encode())
 check('P deliver into an idle pane: every chunk, one Enter, landed', (code, out, text_keys(p) == TEXT, p.keys.count('Enter')), (0, 'landed', True, 1))
-check('P every text key goes with -l, and no chunk starts with -',
-      all(c[3] == '-l' and not c[4].startswith('-') for c in p.calls if c[0] == 'send-keys' and len(c) == 5), True)
+check('P every text key goes with -l --',
+      [c[3:5] for c in p.calls if c[0] == 'send-keys' and c[3] == '-l'] == [['-l', '--']] * len(fp.chunks(TEXT)), True)
 entry = e.log_lines()[-1]
 check('P the log has the hash and length, not the text', (entry['decision'], entry['len'], 'TEXT' in json.dumps(entry), 'kalibracio' in json.dumps(entry)), ('ok', len(TEXT), False, False))
+p = Pane()
+code, out = e.run(p, ['deliver', 'proba'], SEMI.encode())
+check('P a text with semicolons at piece ends and a backslash before one is typed EXACTLY (the tmux rule simulated)',
+      (code, out, text_keys(p) == SEMI), (0, 'landed', True))
+DASHES = 'Kotojelek: ' + '-' * 120 + ' vege'
+p = Pane()
+check('P a run of more than 8 dashes is typed exactly', (e.run(p, ['deliver', 'proba'], DASHES.encode())[0], text_keys(p) == DASHES), (0, True))
 p = Pane(ghost=True)
 check('P an empty box with a dim ghost suggestion takes a message', e.run(p, ['deliver', 'proba'], TEXT.encode())[0], 0)
 p = Pane(busy=True)
@@ -280,7 +294,8 @@ p = Pane()
 check('P clear an EMPTY box: no Ctrl-C (it would quit Claude Code)', (e.run(p, ['clear', 'proba'])[0], p.keys), (12, []))
 p = Pane(box='ott maradt szoveg')
 code, _ = e.run(p, ['clear', 'proba'])
-check('P clear parked text: C-a then C-k/Delete rounds, no Ctrl-C', (code, p.keys[0], 'C-c' in p.keys), (0, 'C-a', False))
+check('P clear parked text: C-a then C-k/Delete rounds in ONE tmux call, no Ctrl-C',
+      (code, p.keys[0], 'C-c' in p.keys, p.key_calls), (0, 'C-a', False, 1))
 p = Pane(busy=True, box='sorban')
 check('P clear on a busy pane: nothing', (e.run(p, ['clear', 'proba'])[0], p.keys), (12, []))
 p = Pane(box='ott maradt szoveg')
@@ -309,6 +324,15 @@ def broken(cmd):
 
 code, out = e.run(broken, ['deliver', 'proba'], TEXT.encode())
 check('P a broker bug is an error exit, never 0', (code, out), (13, 'error:RuntimeError'))
+
+# --- the shared pane samples (src/__tests__/pane-samples-shared.test.ts reads the same file) --
+with open(os.path.join(HERE, 'fixtures', 'pane-samples.json'), encoding='utf-8') as f:
+    SAMPLES = json.load(f)['samples']
+got = []
+for s in SAMPLES:
+    look = {'plain': fp.strip_ansi(s['pane']), 'dimless': fp.strip_dim(s['pane'])}
+    got.append((s['name'], fp.ready_refusal(look, False) is None, fp.ready_refusal(look, True) is None))
+check('the broker agrees with every shared pane sample (idle, queued)', got, [(s['name'], s['idle'], s['queued']) for s in SAMPLES])
 
 # --- the installed form -----------------------------------------------------------------------
 src = open(os.path.join(SCRIPTS, 'root', 'fleet-pane.py'), encoding='utf-8').read()
