@@ -29,7 +29,7 @@ import os
 import re
 import unicodedata
 
-REDACTION_VERSION = "r14"
+REDACTION_VERSION = "r15"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 KNOWN_ENTITIES_PATH = os.environ.get(
@@ -202,7 +202,11 @@ _add("ID", r"(?<![\w-])[a-z]{2,12}_[0-9A-Za-z]{16,}(?![\w-])")
 _add("ID", r"\b(?=[a-z0-9]*\d)(?=[a-z0-9]*[a-z][a-z0-9]*[a-z])[a-z0-9]{20,}\b")   # coolify-style ids
 _add("ID", r"\b(?=[A-Z0-9-]*\d)[A-Z][A-Z0-9]{1,5}(?:-[A-Z0-9]{1,6}){1,4}\b")
 _add("ID", r"\b[A-Z0-9]{2,4}/[A-Z0-9]{2,4}(?:/[A-Z0-9]{2,4})?\b")
-_add("ID", r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?::\d{2,5})?(?![\d.])")
+# r15 (nautilus, 2026-10-15; murena's finding, 30893): an IPv4 address at the end of a sentence
+# ("a 10.0.2.4. címen") went out readable: the closing (?![\d.]) refused the full stop, so the
+# address did not match at all, and a sentence-final "10.0.2.4:8080." lost its port. A dot may
+# follow now, only not a dot and a digit (a fifth group, "1.2.3.4.5", is still no address).
+_add("ID", r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?::\d{2,5})?(?!\d|\.\d)")
 _add("ID", r"(?i)(?<![\w:])(?=[0-9a-f:]*(?:::|[a-f]))[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}(?![\w:])")
 _add("ID", r"(?<![\w-])(?=[\w-]*\d[\w-]*\d[\w-]*\d)(?=[\w-]*[A-Za-z])[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![\w-])")
 _add("ID", r"(?<![\w-])(?=\w*\d\w*\d\w*\d)(?=\w*[A-Za-z]\w*[A-Za-z])[A-Za-z0-9]{6,}(?![\w-])")
