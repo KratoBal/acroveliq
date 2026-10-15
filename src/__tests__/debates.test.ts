@@ -17,6 +17,7 @@ import {
   handleOwnerMessage,
   outboundPieces,
   parseOwnerCommand,
+  RECORDED_WHILE_WAITING,
   submitAcrobotTurn,
   sweepDebates,
   type DebateConfig,
@@ -310,6 +311,36 @@ describe('steering and the clocks', () => {
     expect([during, waitingState, after.phase, after.status, told[told.length - 1]!.includes('Megvárjuk a felmérést.')], 'DEB-OWNER-MESSAGE').toEqual([
       [1, 1], ['noted', 'noted', 1, 'var_balazsra', true, 1], 2, 'fut', true,
     ])
+  })
+
+  // barracuda, #178 review; acrobot 31121: the owner should not read silence as a lost message
+  it('DEB-RECORDED-LINE: while it waits, the first owner message gets one controller line; the second none; the next wait again', async () => {
+    const id = await start()
+    await submitAcrobotTurn(db(), deps(false), cfg, id, tokenOf(told[0]!), 'válasz', false)
+    const lines = () => posts.filter((p) => p.text.includes(RECORDED_WHILE_WAITING)).length
+    now += 5
+    // a command recorded while it waits does not use up the line
+    await handleOwnerMessage(db(), deps(false), cfg, THREAD, { id: 'w0', content: 'gpt: mit gondolsz?' }, OWNER)
+    await handleOwnerMessage(db(), deps(false), cfg, THREAD, { id: 'w1', content: 'Mi a helyzet?' }, OWNER)
+    const afterFirst = lines()
+    now += 5
+    await handleOwnerMessage(db(), deps(false), cfg, THREAD, { id: 'w2', content: 'És még ez.' }, OWNER)
+    const afterSecond = lines()
+    now += 5
+    await handleOwnerMessage(db(), deps(false), cfg, THREAD, { id: 'w3', content: 'folytasd' }, OWNER)
+    const toldNow = told.length
+    now += 60 // a phase runs for minutes; the clock moves like one
+    await submitAcrobotTurn(db(), deps(false), cfg, id, tokenOf(told[toldNow - 1]!), 'második válasz', false)
+    now += 5
+    await handleOwnerMessage(db(), deps(false), cfg, THREAD, { id: 'w4', content: 'Köszönöm.' }, OWNER)
+    expect([afterFirst, afterSecond, lines(), getDebate(db(), id)!.status], 'DEB-RECORDED-LINE').toEqual([1, 1, 2, 'var_balazsra'])
+  })
+
+  it('DEB-RECORDED-LINE-RUNNING: during a running phase a message gets no line', async () => {
+    await start()
+    const before = posts.length
+    await handleOwnerMessage(db(), deps(false), cfg, THREAD, { id: 'r-m', content: 'Figyelj a határidőre.' }, OWNER)
+    expect(posts.slice(before).some((p) => p.text.includes(RECORDED_WHILE_WAITING)), 'DEB-RECORDED-LINE-RUNNING').toBe(false)
   })
 
   it('DEB-OWNER-MESSAGE-STALLED: a message in a stalled debate does not restart it either', async () => {
