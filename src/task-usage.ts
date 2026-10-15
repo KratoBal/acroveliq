@@ -43,6 +43,7 @@
 // have done other work in the window). Two tasks' coord windows at once: unassigned.
 
 import type Database from 'better-sqlite3'
+import type { TokenSource } from './github-token.js'
 
 import { ensureProjectsSchema } from './projects.js'
 
@@ -974,13 +975,15 @@ export async function verifyMerge(claim: MergeClaim, probe: MergeProbe): Promise
   return { ok: true }
 }
 
-/** The real probe: GitHub's REST API with the fleet's token, as task-handoff.ts's githubProbe. */
-export function githubMergeProbe(token: string | null, fetchImpl: typeof fetch = fetch): MergeProbe {
-  const call = async (path: string): Promise<any | null | undefined> => {
-    if (!token) return undefined
+/** The real probe: GitHub's REST API with the fleet's token, as task-handoff.ts's githubProbe
+ *  (a fixed token or a source asked per repository). */
+export function githubMergeProbe(token: string | null | TokenSource, fetchImpl: typeof fetch = fetch): MergeProbe {
+  const call = async (repo: string, rest: string): Promise<any | null | undefined> => {
+    const tok = typeof token === 'function' ? await token(repo) : token
+    if (!tok) return undefined
     try {
-      const response = await fetchImpl(`https://api.github.com${path}`, {
-        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+      const response = await fetchImpl(`https://api.github.com/repos/${repo}${rest}`, {
+        headers: { Authorization: `Bearer ${tok}`, Accept: 'application/vnd.github+json' },
         signal: AbortSignal.timeout(10_000),
       })
       if (response.status === 404) return null
@@ -992,13 +995,13 @@ export function githubMergeProbe(token: string | null, fetchImpl: typeof fetch =
   }
   return {
     async pullRequest(repo, pr) {
-      const body = await call(`/repos/${repo}/pulls/${pr}`)
+      const body = await call(repo, `/pulls/${pr}`)
       return body === undefined || body === null
         ? body
         : { merged: body.merged === true, mergeCommitSha: typeof body.merge_commit_sha === 'string' ? body.merge_commit_sha : null }
     },
     async onMain(repo, sha) {
-      const body = await call(`/repos/${repo}/compare/main...${sha}`)
+      const body = await call(repo, `/compare/main...${sha}`)
       if (body === undefined) return undefined
       // a sha GitHub does not know is not on main
       if (body === null) return false

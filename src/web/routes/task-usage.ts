@@ -1,7 +1,6 @@
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 
-import { PROJECT_CHECK_MODE_SETTING, STORE_DIR, TASK_CORE_MODE_SETTING } from '../../config.js'
+import { PROJECT_CHECK_MODE_SETTING, TASK_CORE_MODE_SETTING } from '../../config.js'
+import { readTokenSource } from '../../github-token.js'
 import { getDb } from '../../db.js'
 import { logger } from '../../logger.js'
 import { lastTokenCollection } from '../token-usage.js'
@@ -80,14 +79,6 @@ const TASK_PATH = /^\/api\/tasks\/([^/]+)\/(events|sessions|usage|timeline|proje
 const IDEM_KEY = /^[\x21-\x7e]{8,200}$/
 const MAX_DATA = 16 * 1024
 
-function readGithubToken(): string | null {
-  try {
-    return readFileSync(join(STORE_DIR, '.github-token'), 'utf-8').trim() || null
-  } catch {
-    return null // the guard then reports "not measurable", never agreement
-  }
-}
-
 const startMode = parseTaskCoreMode(TASK_CORE_MODE_SETTING)
 if (startMode.problem) logger.error(startMode.problem)
 
@@ -98,7 +89,8 @@ if (startProjectMode.problem) logger.error(startProjectMode.problem.replace('TAS
 export const taskCoreSettings: { mode: TaskCoreMode; projectMode: TaskCoreMode; probe: () => MergeProbe } = {
   mode: startMode.mode,
   projectMode: startProjectMode.mode,
-  probe: () => githubMergeProbe(readGithubToken()),
+  // no token answers "not measurable", never agreement (src/github-token.ts, FLEET_GITHUB_APP)
+  probe: () => githubMergeProbe(readTokenSource),
 }
 
 const text = (value: unknown): string | null =>

@@ -48,6 +48,17 @@ egy őrrel méri, hogy ezen kívül egyetlen szkript sem olvassa közvetlenül a
 - a `github-pr-monitor.sh` kapcsoló nélkül egy **vault-másolatot** is olvas (`github-github_token`): ez is a 6. lépés
   keresési listájára tartozik, a fájl, a git hitelesítő tárolók és a klónok címei mellé.
 
+**A (2) állapota:** a vezérlőpult két GitHub-olvasása (az átadó rekord kód-állapot ellenőrzése, `task-handoff.ts`, és a
+`done` őr beolvadás-ellenőrzése, `task-usage.ts`) a `src/github-token.ts` `githubToken(repo, szerep)` hívásán át olvas,
+`olvas` szereppel, repónként; a bróker tokenjét 45 percig tartja (a token egy óráig él). Token nélkül mindkét ellenőrzés
+„nem mérhető", soha nem egyezés. A kapcsoló ugyanaz a `FLEET_GITHUB_APP`, a folyamat környezetéből vagy a `.env`-ből, és
+a vezérlőpult **induláskor** olvassa: a bekapcsolás után `supervisorctl restart dashboard` kell. A brókert a vezérlőpult
+felhasználója hívja `sudo -n`-nel, tehát a 8. lépés sudo sorai közül annak a felhasználónak a sora kell; a 10. lépés
+mérése erre is kiterjed (egy átadó rekord `?verify=1` olvasása után a bróker naplójában `olvas` sor). A harmadik hely, a
+`gpt-package.ts`, nem olvasó: a tulajdonosi token ÉRTÉKÉT tartja távol a GPT-csomagoktól, és ha a fájl nincs meg, nincs mit
+összevetni; a bróker tokenjeit a `ghs_` alakra illeszkedő titok-minta fogja meg. A `src/__tests__/github-token.test.ts`
+őre méri, hogy a vezérlőpult forrásában ezen a kettőn kívül senki nem nevezi meg a fájlt.
+
 ## Balázs lépései, sorrendben
 
 A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker compose exec`).

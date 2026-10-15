@@ -1,7 +1,5 @@
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 
-import { STORE_DIR } from '../../config.js'
+import { readTokenSource } from '../../github-token.js'
 import { getDb } from '../../db.js'
 import {
   githubProbe,
@@ -31,13 +29,8 @@ import type { RouteContext } from './types.js'
 const PATH = /^\/api\/tasks\/([^/]+)\/handoffs(\/latest)?$/
 
 function fleetProbe(): CodeStateProbe {
-  let token: string | null = null
-  try {
-    token = readFileSync(join(STORE_DIR, '.github-token'), 'utf-8').trim() || null
-  } catch {
-    token = null // the check then reports "not measurable", never agreement
-  }
-  return githubProbe(token)
+  // no token answers "not measurable", never agreement (src/github-token.ts, FLEET_GITHUB_APP)
+  return githubProbe(readTokenSource)
 }
 
 /** Replaceable in tests; the route never talks to GitHub in a unit test. */
