@@ -46,12 +46,18 @@ UT="${2:-/api/health}"
 # argv; without them a stage host answers 401 and the fingerprint would read as missing.
 # The password is generated alphanumeric-safe (token_urlsafe): a quote or backslash in it
 # would break curl's config parsing.
+# UT is the second argument and is glued onto ALAP: "@evil.example/x" would turn the
+# stage host into a userinfo part. A path must start with "/".
+if [[ "$UT" != /* ]]; then
+  echo "HIBA: az ut (2. argumentum) /-rel kezdodjon: $UT" >&2
+  exit 2
+fi
 AUTH_FILE="/home/marveen/marveen/store/.stage-basic-auth"
 lekeres() {
-  # Exact host match, https only: a substring test would hand the password to
+  # Tested on the URL curl actually gets ($1 = ALAP+UT), not on ALAP alone. Exact host match, https only: a substring test would hand the password to
   # https://staging.anything.example, https://anything.example/staging, or (with a
   # colon allowed after the host) the userinfo form https://staging.acropora.hu:x@evil/.
-  if [[ "$ALAP" =~ ^https://(staging|partner-staging|shop-staging)\.acropora\.hu(/|$) && -r "$AUTH_FILE" ]]; then
+  if [[ "$1" =~ ^https://(staging|partner-staging|shop-staging)\.acropora\.hu(/|$) && -r "$AUTH_FILE" ]]; then
     curl -s -m 20 -K <(printf 'user = "%s:%s"\n' "$(sed -n 1p "$AUTH_FILE")" "$(sed -n 2p "$AUTH_FILE")") "$1"
   else
     curl -s -m 20 "$1"
