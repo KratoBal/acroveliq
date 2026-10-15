@@ -900,7 +900,10 @@ describe('gpt-runner controller channel on the host (host/csatorna.sh) against f
     writeFileSync(join(dir, 'forras'), o.forras ?? '10.0.2.4')
     writeFileSync(join(dir, 'nyitott'), (o.nyitott ?? ['10.0.2.4:3420']).join('\n') + '\n')
     writeFileSync(join(dir, 'allapot', 'cim-allapot'), `${o.allapot ?? 'rendben'}\n`)
-    writeFileSync(join(dir, 'opt', 'src', 'gpt-runner', 'host', 'telepit-tuzfal.sh'), `echo telepit >> "${dir}/calls"\nprintf 'PROBA N1 OK x\\nOSSZESITES ok=16 fail=0\\n' > "${dir}/opt/proba-teljes.log"\n`)
+    // the installer re-creates the runner network (the probe's down/up): Docker puts its MASQUERADE
+    // ABOVE our nat jump; tuzfal.sh (the timer's script) puts ours first again unless told not to
+    writeFileSync(join(dir, 'opt', 'src', 'gpt-runner', 'host', 'telepit-tuzfal.sh'), `echo telepit >> "${dir}/calls"\ntouch "${dir}/nat-masodik"\nprintf 'PROBA N1 OK x\\nOSSZESITES ok=16 fail=0\\n' > "${dir}/opt/proba-teljes.log"\n`)
+    writeFileSync(join(dir, 'opt', 'tuzfal.sh'), `echo tuzfal >> "${dir}/calls"\n[ -f "${dir}/tuzfal-hiba" ] && exit 3\n[ -f "${dir}/nem-javit-nat" ] || rm -f "${dir}/nat-masodik"\n[ -f "${dir}/nem-javit-raw" ] || rm -f "${dir}/raw-masodik"\n`)
     const log = `echo "$(basename "$0") $*" >> "${dir}/calls"`
     writeFileSync(join(bin, 'docker'), `#!/bin/bash
 ${log}
@@ -912,6 +915,7 @@ case "$1 $2" in
   "exec marveen") cat "${dir}/forras"; echo ;;
   "run --rm") h="\${@: -2:1}"; p="\${@: -1}"; if grep -qxF "$h:$p" "${dir}/nyitott"; then echo NYITOTT; else echo "ZART (idotullepes)"; fi ;;
   "compose run") [ -f "${dir}/plugin-hiba" ] && exit 1; echo "elotte: 35 fajl" ;;
+  "compose --profile") case "$*" in *"up -d gpt-szolga"*) touch "${dir}/raw-masodik" ;; esac ;;
 esac
 exit 0
 `, { mode: 0o755 })
@@ -970,10 +974,31 @@ grep -qxF "$hp" "${dir}/nyitott"
     expect([c[c.length - 2], c[c.length - 1], /^a gpt-szolga allapota a leallitas utan: exited$/m.test(r.stdout)]).toEqual(['docker compose --profile szolga stop gpt-szolga', expect.stringMatching(/^docker inspect -f .* gpt-szolga$/), true])
   }))
 
-  it('CSAT-RAW: our raw chain not first (Docker\'s guard above it), or its rule missing: STOP before the service starts', () => {
+  it('CSAT-REORDER: Docker puts its rules above ours (the probe\'s down/up, the service\'s start): the script ORDERS (tuzfal.sh) and only then checks; no STOP, and the measurement runs after the order', () => run({}, (dir, r) => {
+    const c = calls(dir)
+    const i = (s: string, from = 0) => c.findIndex((x, k) => k >= from && x === s)
+    const tel = i('telepit')
+    const order1 = i('tuzfal', tel)
+    const up = c.findIndex((x) => x.includes('up -d gpt-szolga'))
+    const order2 = i('tuzfal', up)
+    const measure = c.findIndex((x) => x.startsWith('docker exec marveen'))
+    expect([r.status, tel < order1, order1 < up, up < order2, order2 < measure, (r.stdout.match(/^== a tuzfal rendezese \(/gm) ?? []).length]).toEqual([0, true, true, true, true, 2])
+  }))
+
+  it('CSAT-ORDER-FAILS: the ordering tuzfal.sh itself fails: STOP, never a check on an unordered firewall', () => {
+    const dir = setup({})
+    writeFileSync(join(dir, 'tuzfal-hiba'), '')
+    try {
+      const r = go(dir)
+      expect([r.status, r.stdout.includes('STOP: a tuzfal.sh rendezo futasa elbukott (a proba down/up utan)'), calls(dir).some((c) => c.includes('up -d gpt-szolga'))]).toEqual([1, true, false])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('CSAT-RAW: our raw chain not first (Docker\'s guard above it) even after the order, or its rule missing: STOP before the service starts', () => {
     for (const [file, msg] of [['raw-masodik', 'STOP: a raw PREROUTING elso szabalya nem a GPTF-RAW ugras'], ['raw-nincs', 'STOP: a GPTF-RAW-ban nincs meg a csatorna valaszanak szabalya']] as const) {
       const dir = setup({})
       writeFileSync(join(dir, file), '')
+      if (file.endsWith('-masodik')) writeFileSync(join(dir, `nem-javit-${file.slice(0, 3)}`), '')
       try {
         const r = go(dir)
         expect([file, r.status, r.stdout.includes(msg), calls(dir).some((c) => c.includes('up -d gpt-szolga'))]).toEqual([file, 1, true, false])
@@ -990,10 +1015,11 @@ grep -qxF "$hp" "${dir}/nyitott"
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
-  it('CSAT-NAT: our no-masquerade chain is not first in nat POSTROUTING, or its rule is missing: STOP before the service starts', () => {
+  it('CSAT-NAT: our no-masquerade chain is not first in nat POSTROUTING even after the order, or its rule is missing: STOP before the service starts', () => {
     for (const [file, msg] of [['nat-masodik', 'STOP: a nat POSTROUTING elso szabalya nem a GPTF-NAT ugras'], ['nat-nincs', 'STOP: a GPTF-NAT-ban nincs meg a csatorna (maszkolas nelkuli) szabalya']] as const) {
       const dir = setup({})
       writeFileSync(join(dir, file), '')
+      if (file.endsWith('-masodik')) writeFileSync(join(dir, `nem-javit-${file.slice(0, 3)}`), '')
       try {
         const r = go(dir)
         expect([file, r.status, r.stdout.includes(msg), calls(dir).some((c) => c.includes('up -d gpt-szolga'))]).toEqual([file, 1, true, false])
