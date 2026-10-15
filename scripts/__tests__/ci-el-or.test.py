@@ -28,6 +28,9 @@ def urlopen(req, timeout=None):
     url = req.full_url
     if FX.get("fail"):
         raise urllib.error.URLError("down")
+    if FX.get("http"):
+        code, body = FX["http"]
+        raise urllib.error.HTTPError(url, code, "x", {}, io.BytesIO(json.dumps({"message": body}).encode()))
     hdr = H({"github-authentication-token-expiration": FX["expiry"]} if FX.get("expiry") else {})
     if url.endswith("/commits/main"):
         return Resp({"sha": "abcdef1234567890", "commit": {"committer": {"date": FX["head"]}}}, hdr)
@@ -83,6 +86,12 @@ try:
     check("no expiry header: a HIBA token line, not an alarm", (0, True), (rc, any(l.startswith("HIBA token: a valaszokon nincs lejarat-fejlec") for l in out)))
     rc, out = run({**healthy, "expiry": "holnap"})
     check("an unreadable header: HIBA token line", True, any(l.startswith("HIBA token: a lejarat-fejlec nem olvashato") for l in out))
+    rc, out = run({**healthy, "http": [401, "Bad credentials"]})
+    check("an expired or revoked token (401): RIASZT token line, exit 1", (1, True), (rc, any(l.startswith("RIASZT token: a GitHub elutasitja") for l in out)))
+    rc, out = run({**healthy, "http": [403, "Bad credentials"]})
+    check("403 Bad credentials: the same", (1, True), (rc, any(l.startswith("RIASZT token: a GitHub elutasitja") for l in out)))
+    rc, out = run({**healthy, "http": [403, "Resource not accessible by personal access token"]})
+    check("another 403 (a missing permission) is no token alarm", (0, False), (rc, any(l.startswith("RIASZT token") for l in out)))
     rc, out = run({**healthy, "fail": True})
     check("no call answered: no token line at all (the repo HIBA says enough)", [], [l for l in out if " token" in l.split(":")[0]])
 finally:

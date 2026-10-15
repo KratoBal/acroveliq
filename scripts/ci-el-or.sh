@@ -10,7 +10,9 @@
 # (2027-01-11 10:04 UTC). Lejarat utan a beolvasztas, ez az or es minden GitHub-hivas leall. A GitHub
 # minden valaszon kuldi a `github-authentication-token-expiration` fejlecet; ez az or azt olvassa, es
 # LEJARAT_ELOTT_NAP nappal elotte RIASZT sort ad. Ha a fejlec hianyzik (egy lejarat nelkuli vagy
-# klasszikus token), HIBA sort ad: az nem surgos, de lathato legyen.
+# klasszikus token), HIBA sort ad: az nem surgos, de lathato legyen. Ha a GitHub magat a tokent
+# utasitja el (401, vagy 403 "Bad credentials": lejart vagy visszavontak), az RIASZT: kulonben a lejarat
+# UTAN hallgatna el az or, pont amikor a beolvasztas mar all (barracuda, #188 review).
 #
 # Hasznalat: ci-el-or.sh [tulajdonos/repo ...]   (alapertelmezes: KratoBal/acroveliq)
 # Kimenet soronkent: OK | RIASZT | HIBA. Kilepesi kod 1, ha barmelyik RIASZT.
@@ -20,12 +22,13 @@ TOKEN_FILE="$ROOT/store/.github-token"
 [ -r "$TOKEN_FILE" ] || { echo "HIBA: nincs github token: $TOKEN_FILE"; exit 2; }
 [ "$#" -gt 0 ] || set -- KratoBal/acroveliq
 TOKEN="$(cat "$TOKEN_FILE")" python3 - "$@" <<'PY'
-import json, os, sys, urllib.request
+import json, os, sys, urllib.error, urllib.request
 from datetime import datetime, timedelta, timezone
 t = os.environ["TOKEN"]
 LEJARAT_ELOTT_NAP = 14
 expiry = []  # the expiration header of the first answer that carried one
 answered = []  # at least one call came back: only then is a missing header a fact
+rejected = []  # 401, or 403 "Bad credentials": the token itself is expired or revoked
 def g(p):
     r = urllib.request.Request("https://api.github.com/repos/" + p,
         headers={"Authorization": "Bearer " + t, "Accept": "application/vnd.github+json"})
@@ -43,6 +46,17 @@ for repo in sys.argv[1:]:
         head = g(repo + "/commits/main")
         htime = ts(head["commit"]["committer"]["date"])
         runs = g(repo + "/actions/runs?per_page=1")["workflow_runs"]
+    except urllib.error.HTTPError as e:
+        # after the expiry every call is a 401: without this the watcher would go quiet exactly when
+        # merging has stopped (barracuda, #188 review)
+        body = ""
+        try:
+            body = e.read().decode("utf-8", "replace")
+        except Exception:
+            pass
+        if e.code == 401 or (e.code == 403 and "Bad credentials" in body):
+            rejected.append(e.code)
+        print(f"HIBA {repo}: HTTP {e.code}"); continue
     except Exception as e:
         print(f"HIBA {repo}: {e}"); continue
     last = ts(runs[0]["created_at"]) if runs else None
@@ -54,7 +68,11 @@ for repo in sys.argv[1:]:
     else:
         print(f"OK {repo}: fej {head['sha'][:8]} ({htime:%m-%d %H:%MZ}), legutobbi futas {last:%m-%d %H:%MZ}")
 # "2027-01-11 10:04:05 UTC": the format GitHub sends
-if expiry:
+if rejected:
+    bad += 1
+    print(f"RIASZT token: a GitHub elutasitja a flotta tokenjet (HTTP {rejected[0]}): lejart vagy visszavontak. "
+          "A beolvasztas es minden GitHub-hivas all: uj token kell a fiok feluleten.")
+elif expiry:
     try:
         until = datetime.strptime(expiry[0].replace(" UTC", ""), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     except ValueError:
