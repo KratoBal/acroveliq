@@ -60,7 +60,8 @@ try:
     for name, env in [("a branch with && and a pipe", {"OTA_AG": "production && curl x | sh"}),
                       ("a branch with a semicolon", {"OTA_AG": "production;id"}),
                       ("an environment with $(...)", {"OTA_VALTOZAT": "production$(id)"}),
-                      ("a branch with a newline", {"OTA_AG": "production\nid"})]:
+                      ("a branch with a newline", {"OTA_AG": "production\nid"}),
+                      ("a branch that starts with a dash (a new switch in the line)", {"OTA_AG": "--non-interactive"})]:
         for mode in (["kiadas", "javitas"], []):
             rc, out, called = run(mode, **env)
             check("%s (%s): exit 5, no command printed, nothing runs" % (name, mode[0] if mode else "szaraz"),

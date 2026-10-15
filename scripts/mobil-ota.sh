@@ -163,7 +163,8 @@ esac
 # D5 (lasd fent): kiadni csak a preview agra, preview kornyezettel. Ez az ELSO lepes:
 # elotte nincs klon, token, npx, tehat egy eles kiadasnak semmilyen resze nem indul el.
 KIADHATO_AG="preview"
-NEV_MINTA='^[A-Za-z0-9._-]{1,64}$'
+# az elso karakter betu vagy szam: egy `-`-tel kezdodo nev a kiirt sorban uj kapcsolonak latszana
+NEV_MINTA='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 
 # egyes idezojelbe tesz egy szoveget ugy, hogy egy shell egyetlen szokent, szo szerint lassa
 egyes() {
