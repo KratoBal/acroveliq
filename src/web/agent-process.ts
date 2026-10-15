@@ -33,7 +33,7 @@ import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import { atomicWriteFileSync, atomicWriteInTree, atomicWriteGroupPrivate, agentTreeRootOf } from './atomic-write.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
-import { emitIntoBusyPane, typedLine, type BusyPaneReport } from './busy-pane-emit.js'
+import { emitIntoBusyPane, splitForSendKeys, typedLine, type BusyPaneReport } from './busy-pane-emit.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -2517,32 +2517,20 @@ export async function sendPromptToSession(
   // instead of guessing from a lossy screen scrape. Recorded before the send so
   // a delivery that parks mid-stream is recoverable too.
   recordInjectedPrompt(session, oneLine)
-  const CHUNK = 80
-  // Stream oneLine into the pane as CHUNK-sized literal send-keys writes,
-  // followed by a submitting Enter. Extracted as a closure so the
-  // clear-and-resend recovery path below can replay the EXACT same byte
-  // stream after a Ctrl-C, rather than duplicating the dash-slide logic.
+  // Stream oneLine into the pane as literal send-keys writes, followed by a
+  // submitting Enter. Extracted as a closure so the clear-and-resend recovery
+  // path below can replay the EXACT same byte stream after a Ctrl-C.
   //
-  // tmux send-keys doesn't support `--` option-terminator, so a chunk that
-  // starts with '-' parses as a flag ("command send-keys: unknown flag -s"
-  // on Hungarian suffixes like -szal/-vel/-ban). Slide the boundary up to a
-  // few chars past any '-' that lands at the start of the next chunk. Capped
-  // so a long run of dashes doesn't inflate one chunk past the paste-detector
-  // threshold; if the cap is reached, prepend a space to the chunk instead.
-  const MAX_SLIDE = 8
+  // The chunks come from splitForSendKeys (busy-pane-emit.ts), the ONE copy of
+  // the rules both paths need: a chunk starting with '-' would parse as a flag
+  // (the dash slide and the leading space), and a chunk ENDING in ';' would lose
+  // that ';' (tmux reads it as a command separator; measured 2026-10-15, before
+  // that a message with a chunk boundary on a ';' was delivered without it).
   const sendChunks = async (): Promise<void> => {
-    let i = 0
-    while (i < oneLine.length) {
-      let end = Math.min(i + CHUNK, oneLine.length)
-      let slide = 0
-      while (end < oneLine.length && oneLine[end] === '-' && slide < MAX_SLIDE) {
-        end++; slide++
-      }
-      let chunk = oneLine.slice(i, end)
-      if (chunk.startsWith('-')) chunk = ' ' + chunk
-      runTmux(host, ['send-keys', '-t', session, '-l', chunk], { timeout: 5000 })
-      i = end
-      if (i < oneLine.length) await delay(30)
+    const chunks = splitForSendKeys(oneLine)
+    for (let i = 0; i < chunks.length; i++) {
+      runTmux(host, ['send-keys', '-t', session, '-l', chunks[i]!], { timeout: 5000 })
+      if (i < chunks.length - 1) await delay(30)
     }
     runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
   }
