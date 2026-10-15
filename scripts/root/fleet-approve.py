@@ -38,9 +38,8 @@ step 7; barracuda, #200 review):
     place, and this script reads it from there;
   - it binds the approval to the head the PACKET names, and the packet is the developer's: its README
     head line is a claim, and diff.patch is what barracuda read. A head with more in it than the diff
-    would pass every check here. Closing this is a separate decision (acrobot): the verdict carrying the
-    diff's hash and this script comparing it with GitHub's diff of the head, or the review packet's diff
-    produced by the reviewer's tool from the head itself. Until one of them is in, step 7 waits.
+    would pass every check here. DECIDED (acrobot 31441): the review packet's diff is produced by the
+    reviewer's tool from the full head itself (a separate change); until it is in, step 7 waits.
 
 Exit codes: 0 approved; 2 usage; 10 refused (nothing posted); 13 the dashboard or GitHub failed.
 """

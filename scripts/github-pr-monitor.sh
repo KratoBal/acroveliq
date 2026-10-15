@@ -63,7 +63,9 @@ fi
 if [ -z "${GH_TOKEN:-}" ] && [ "${FLEET_GITHUB_APP:-off}" != on ] && [ -f store/.github-token ]; then
   GH_TOKEN="$(cat store/.github-token)"
 fi
-[ -n "${GH_TOKEN:-}" ] && export GH_TOKEN || echo "WARN: no GH_TOKEN (vault+file both empty), gh calls may fail" >&2
+if [ -n "${GH_TOKEN:-}" ]; then export GH_TOKEN
+elif [ "${FLEET_GITHUB_APP:-off}" = on ]; then echo "WARN: no GH_TOKEN: the broker gave no read token for ${REPO}, gh calls will fail" >&2
+else echo "WARN: no GH_TOKEN (vault+file both empty), gh calls may fail" >&2; fi
 BOT_TOKEN="$(grep -E '^TELEGRAM_BOT_TOKEN=' .env | cut -d= -f2- | tr -d '"'"'"' ')"
 CHAT_ID="$(grep -E '^ALLOWED_CHAT_ID=' .env | cut -d= -f2- | tr -d '"'"'"' ')"
 
