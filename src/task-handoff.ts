@@ -12,6 +12,7 @@
 // returns the latest one for the task.
 
 import type Database from 'better-sqlite3'
+import type { TokenSource } from './github-token.js'
 
 /** A decision, with who made it and where it can be found. */
 export interface HandoffDecision {
@@ -472,14 +473,17 @@ function changedRuns(patch: string): string[][] {
 /**
  * The real probe: GitHub's REST API with the fleet's token. Any failure
  * (no token, network, a non-200 other than 404) answers `undefined`, which
- * the check reports as "not measurable".
+ * the check reports as "not measurable". The token is a fixed value or a
+ * source asked per repository (a broker token covers one repository,
+ * src/github-token.ts).
  */
-export function githubProbe(token: string | null, fetchImpl: typeof fetch = fetch): CodeStateProbe {
-  const call = async (path: string): Promise<any | null | undefined> => {
-    if (!token) return undefined
+export function githubProbe(token: string | null | TokenSource, fetchImpl: typeof fetch = fetch): CodeStateProbe {
+  const call = async (repo: string, rest: string): Promise<any | null | undefined> => {
+    const tok = typeof token === 'function' ? await token(repo) : token
+    if (!tok) return undefined
     try {
-      const response = await fetchImpl(`https://api.github.com${path}`, {
-        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+      const response = await fetchImpl(`https://api.github.com/repos/${repo}${rest}`, {
+        headers: { Authorization: `Bearer ${tok}`, Accept: 'application/vnd.github+json' },
         // a hanging GitHub must not hang the read: a timeout is "not measurable"
         signal: AbortSignal.timeout(10_000),
       })
@@ -492,18 +496,18 @@ export function githubProbe(token: string | null, fetchImpl: typeof fetch = fetc
   }
   return {
     async branchHead(repo, branch) {
-      const body = await call(`/repos/${repo}/git/ref/heads/${encodeURIComponent(branch).replace(/%2F/g, '/')}`)
+      const body = await call(repo, `/git/ref/heads/${encodeURIComponent(branch).replace(/%2F/g, '/')}`)
       return body === undefined || body === null ? body : (body.object?.sha ?? undefined)
     },
     async pullRequest(repo, number) {
-      const body = await call(`/repos/${repo}/pulls/${number}`)
+      const body = await call(repo, `/pulls/${number}`)
       return body === undefined || body === null
         ? body
         : { state: String(body.state), merged: Boolean(body.merged), headSha: String(body.head?.sha ?? ''),
             mergeSha: typeof body.merge_commit_sha === 'string' ? body.merge_commit_sha : null }
     },
     async changeOf(repo, sha) {
-      const body = await call(`/repos/${repo}/commits/${encodeURIComponent(sha)}`)
+      const body = await call(repo, `/commits/${encodeURIComponent(sha)}`)
       if (body === undefined || body === null) return body
       const files = Array.isArray(body.files) ? body.files : null
       // not measurable, never "the same": GitHub lists at most 300 files; an empty list
@@ -514,7 +518,7 @@ export function githubProbe(token: string | null, fetchImpl: typeof fetch = fetc
       return changeFingerprint(files)
     },
     async onBranch(repo, sha, branch) {
-      const body = await call(`/repos/${repo}/compare/${encodeURIComponent(sha)}...${encodeURIComponent(branch).replace(/%2F/g, '/')}`)
+      const body = await call(repo, `/compare/${encodeURIComponent(sha)}...${encodeURIComponent(branch).replace(/%2F/g, '/')}`)
       if (body === undefined || body === null) return body
       return body.status === 'identical' || body.status === 'ahead'
     },
