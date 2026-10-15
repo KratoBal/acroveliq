@@ -169,13 +169,23 @@ resolve_main_model() {
 # kvota-kapu-bemenet). A fresh install (no such dir) is answered once: empty is
 # its normal answer, and waiting would only slow every boot.
 # CHANNELS_CFG_RETRY_SLEEP shortens the wait for tests.
+# ONLY THE RESULT LINE COUNTS (acrobot, 2026-10-15 09:40). The helper imports the dashboard code,
+# whose logger writes to STDOUT, so a log line can come before the result -- or INSTEAD of it, when
+# the provisioning fails and logs a warning. The whole stdout used to be the answer: a lone warning
+# was "not empty", so no retry ran, it was no directory either, and the boot fell to the shared
+# ~/.claude with the warning lost. Now the answer is the last "<mode>\t<path>" line, and every other
+# stdout line goes to the failures log.
 resolve_main_config_line() {
-  local _node _line="" _try _sleep="${CHANNELS_CFG_RETRY_SLEEP:-5}"
+  local _node _raw _line="" _try _sleep="${CHANNELS_CFG_RETRY_SLEEP:-5}" _tab=$'\t'
   _node="$(command -v node || true)"
   [ -n "$_node" ] || return 0
   for _try in 1 2 3; do
+    _line=""
     if [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
-      _line="$("$_node" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 2>>"$INSTALL_DIR/store/channels-failures.log" || true)"
+      _raw="$("$_node" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 2>>"$INSTALL_DIR/store/channels-failures.log" || true)"
+      _line="$(printf '%s\n' "$_raw" | grep -E "^(explicit|isolated)${_tab}" | tail -n 1)"
+      printf '%s\n' "$_raw" | grep -v -E "^(explicit|isolated)${_tab}" | grep -v '^$' \
+        | sed "s|^|$(date '+%Y-%m-%d %H:%M:%S') channels.sh: helper stdout: |" >> "$INSTALL_DIR/store/channels-failures.log"
     fi
     [ -n "$_line" ] && break
     [ -d "$INSTALL_DIR/.channels-config" ] || break
