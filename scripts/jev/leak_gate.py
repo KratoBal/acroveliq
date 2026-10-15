@@ -24,12 +24,18 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 import redact  # noqa: E402
 
+sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "gpt-csomag"))
+import hatar  # noqa: E402
+
 SUITE = os.path.join(_HERE, "leak-suite.json")
 STATUS = os.environ.get("JEV_LEAK_GATE_STATUS", "/home/marveen/marveen/store/jev-leak-gate.json")
 # offline.py builds the texts of the offline measurement and hands them to the
 # same boundary; a change there must also close the gate until re-tested.
+# The GPT package's boundary (gpt-csomag/hatar.py) decides what the redactor sees: it swaps the
+# debate's participants for preserved tokens. A change there must close the gate too (barracuda,
+# #181 review; acrobot 31140), and the suite runs through that path as well (run(keep_names=...)).
 CODE_FILES = ["redact.py", "shadow.py", "offline.py", "hu-names.txt", "preserve-terms.json", "leak-suite.json",
-              "leak-suite-pairing.json"]
+              "leak-suite-pairing.json", "../gpt-csomag/hatar.py"]
 # The pairing mode (redact.PAIRING_KEEP) keeps business data, so it has its own
 # suite: the gate is green only if BOTH runs leak nothing.
 PAIRING_SUITE = os.path.join(_HERE, "leak-suite-pairing.json")
@@ -67,12 +73,17 @@ def load_suite(path=SUITE):
         return _expand(json.load(f))
 
 
-def run(verbose=False, path=SUITE, keep_kinds=()):
+def run(verbose=False, path=SUITE, keep_kinds=(), keep_names=()):
     suite = load_suite(path)
     leaks, kept, keep_total, errors = [], 0, 0, []
     for c in suite["cases"]:
         try:
-            out = redact.redact(c["text"], keep_kinds=keep_kinds)["text"]
+            if keep_names:
+                # the GPT package's path: the participants kept, everything else as in full mode
+                r, restore = hatar.redact_keeping(c["text"], keep_names)
+                out = hatar.restore_names(r["text"], restore)
+            else:
+                out = redact.redact(c["text"], keep_kinds=keep_kinds)["text"]
         except redact.RedactionError as e:
             errors.append((c["id"], str(e)))
             continue
@@ -108,7 +119,14 @@ def main():
         print(f"  LEAK {cid}: {s!r} survived -> {out}")
     for cid, e in perrors:
         print(f"  ERROR {cid}: {e}")
-    ok = not leaks and not errors and not pleaks and not perrors
+    gsuite, gleaks, gerrors, gkept, gkeep_total = run(verbose, SUITE, keep_names=hatar.PARTICIPANTS)
+    print(f"participants kept {list(hatar.PARTICIPANTS)}, suite {gsuite['suite_version']}: "
+          f"{len(gsuite['cases'])} cases, {len(gleaks)} leaks, {len(gerrors)} errors, keep {gkept}/{gkeep_total}")
+    for cid, s, out in gleaks:
+        print(f"  LEAK {cid}: {s!r} survived -> {out}")
+    for cid, e in gerrors:
+        print(f"  ERROR {cid}: {e}")
+    ok = not leaks and not errors and not pleaks and not perrors and not gleaks and not gerrors
     if ok:
         os.makedirs(os.path.dirname(STATUS), exist_ok=True)
         tmp = STATUS + ".tmp"
@@ -119,6 +137,8 @@ def main():
                        "pairing": {"suite_version": psuite["suite_version"],
                                    "cases": len(psuite["cases"]), "leaks": 0,
                                    "keep": [pkept, pkeep_total]},
+                       "participants": {"names": list(hatar.PARTICIPANTS), "cases": len(gsuite["cases"]),
+                                        "leaks": 0, "keep": [gkept, gkeep_total]},
                        "passed_at": int(time.time())}, f)
         os.replace(tmp, STATUS)
     elif os.path.exists(STATUS):
