@@ -7,14 +7,15 @@
 //     thread is not told which piece stopped it;
 //   - GPT's end mark is posted, or does not end the phase;
 //   - an answer the output filter stops is posted to the thread;
-//   - the address is anything but http://<IPv4>:<port>.
+//   - the address is anything but http://<IPv4>:<port>;
+//   - a timeout while the body is read is not said as a timeout, or an own abort is said as one.
 import { describe, it, expect, beforeEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDb, initDatabase } from '../db.js'
 import { handleOwnerMessage, type DebateConfig, type DebateDeps } from '../debates.js'
-import { makeRunGpt, readFinal, readRunnerToken, runnerEndpoint, type GptFilters, type RunnerClientOptions } from '../gpt-runner-client.js'
+import { isTimeout, makeRunGpt, readFinal, readRunnerToken, runnerEndpoint, type GptFilters, type RunnerClientOptions } from '../gpt-runner-client.js'
 import { GptBlocked } from '../gpt-package.js'
 import { debateDeps, debateFilters } from '../web/debates-discord.js'
 
@@ -143,6 +144,18 @@ describe('a call', () => {
     const slow = (async () => { throw new DOMException('The operation was aborted due to timeout', 'TimeoutError') }) as unknown as typeof fetch
     await askGpt(makeRunGpt(opts({ fetchImpl: slow })))
     expect([posts.some((p) => p.includes('a futtató nem válaszolt időben')), posts.some((p) => p.includes('valószínűleg a szolgáltatás nem fut'))]).toEqual([true, false])
+  })
+
+  it('KLIENS-BODY-TIMEOUT: the time limit firing while the BODY is read (headers already in) is said as a timeout too', async () => {
+    const slowBody = (async () => new Response(new ReadableStream({ start(c) { c.error(new DOMException('The operation was aborted due to timeout', 'TimeoutError')) } }), { status: 200 })) as unknown as typeof fetch
+    await askGpt(makeRunGpt(opts({ fetchImpl: slowBody })))
+    expect([posts.some((p) => p.includes('a futtató nem válaszolt időben')), posts.some((p) => /futtató hibát adott/.test(p))]).toEqual([true, false])
+  })
+
+  it('KLIENS-ABORT: an own abort (AbortError) is neither a timeout nor "not running" (barracuda, #171); isTimeout knows only TimeoutError', async () => {
+    const stopped = (async () => { throw new DOMException('This operation was aborted', 'AbortError') }) as unknown as typeof fetch
+    await askGpt(makeRunGpt(opts({ fetchImpl: stopped })))
+    expect([posts.some((p) => p.includes('nem válaszolt időben')), posts.some((p) => p.includes('nem érhető el')), isTimeout(new DOMException('x', 'AbortError')), isTimeout(new DOMException('x', 'TimeoutError'))]).toEqual([false, false, false, true])
   })
 
   it('KLIENS-TOKEN: the token is read at every call; missing or malformed: zero calls', async () => {
