@@ -9,11 +9,15 @@
 //   - the control without a record stops showing today's behaviour (Enter), so the test no
 //     longer proves the fix is what changed it;
 //   - a re-delivery typed and recorded after the abandon is cleared instead of submitted;
-//   - the send does not report what it typed, or reports when it typed nothing.
+//   - the send does not report what it typed, or reports when it typed nothing;
+//   - a clear that left the box non-empty spends the abandoned record, or a re-inject types its
+//     copy on top of it (acrobot 31076: one message stood in a box about fourteen times).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const calls = { clear: 0, send: 0, enter: 0 }
 let paneNow = ''
+/** what the mocked clearInputBuffer reports: did the box empty */
+let clearWorks = true
 
 vi.mock('node:child_process', async (importOriginal) => {
   const orig = await importOriginal<typeof import('node:child_process')>()
@@ -34,6 +38,7 @@ vi.mock('../web/agent-process.js', async (importOriginal) => {
     capturePane: () => paneNow,
     clearInputBuffer: vi.fn(async () => {
       calls.clear++
+      return clearWorks
     }),
     sendPromptToSession: vi.fn(async () => {
       calls.send++
@@ -76,6 +81,7 @@ describe('the half a busy-pane send left behind', () => {
     calls.clear = 0
     calls.send = 0
     calls.enter = 0
+    clearWorks = true
     paneNow = idleWithParked(HALF)
   })
 
@@ -130,6 +136,47 @@ describe('the half a busy-pane send left behind', () => {
     recordAbandonedPrompt(SESSION, preambleHalf)
     await recoverOnce() // the parked text (HALF) runs past what was abandoned
     expect([calls.clear, calls.enter + calls.send]).toEqual([0, 1])
+  })
+
+  it('STUB-NOT-CLEARED: a half that did not clear keeps its record (the next round still clears, never submits)', async () => {
+    recordAbandonedPrompt(SESSION, HALF)
+    clearWorks = false
+    await recoverOnce()
+    expect([calls.clear, calls.enter, calls.send, getAbandonedPrompt(SESSION)?.text]).toEqual([1, 0, 0, HALF])
+  })
+
+  // all three re-inject paths: the recorded text, the plain machine-origin scrape, a whole
+  // channel block (each types the full text again after its clear)
+  it('REINJECT-NOT-CLEARED: a re-inject types its copy only into a box the clear emptied, on every path', async () => {
+    // a block wrapped over two rows: a plain Enter would corrupt it, so it is re-injected
+    const BLOCK = '<channel source="plugin:telegram:telegram" chat_id="1268077055" message_id="5">hello\n  there</channel>'
+    const reinject = async (parked: string, recorded: string | null) => {
+      calls.clear = 0
+      calls.send = 0
+      calls.enter = 0
+      _resetInjectedPromptsForTest()
+      paneNow = idleWithParked(parked)
+      if (recorded) recordInjectedPrompt(SESSION, recorded)
+      const sig = stuckInputSignature(paneNow)
+      // past the Enter attempts: the recovery re-injects
+      await recoverStuckInputForSession(
+        SESSION,
+        { parkedSig: sig, firstSeenAt: Date.now() - 60_000, lastRecoverAt: null, attempts: 2 },
+        { confirmMs: 0, dedupMs: 0, maxAttempts: 5 },
+        true,
+      )
+      return [calls.clear, calls.send, calls.enter]
+    }
+    const paths: Array<[string, string | null]> = [[HALF, HALF], [HALF, null], [BLOCK, null]]
+    const cleared: number[][] = []
+    for (const [parked, recorded] of paths) cleared.push(await reinject(parked, recorded))
+    clearWorks = false
+    const notCleared: number[][] = []
+    for (const [parked, recorded] of paths) notCleared.push(await reinject(parked, recorded))
+    expect([cleared, notCleared], 'REINJECT-NOT-CLEARED').toEqual([
+      [[1, 1, 0], [1, 1, 0], [1, 1, 0]],
+      [[1, 0, 0], [1, 0, 0], [1, 0, 0]],
+    ])
   })
 
   it('STUB-REDELIVERY: a later typing recorded for the same pane is submitted, not cleared as the old half', async () => {

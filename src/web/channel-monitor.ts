@@ -205,6 +205,9 @@ let mainStuckInput: StuckInputState = { parkedSig: null, firstSeenAt: null, last
 // the sub-agent then "doesn't respond" until manually restarted. Entries are
 // dropped once the spell ends so this never grows unbounded.
 const agentStuckInput: Map<string, StuckInputState> = new Map()
+// A re-inject types the whole text again; onto a box that did not clear it is a second copy
+// after the first, and a round later a third (acrobot 31076: one message about fourteen times).
+const NOT_CLEARED_NO_REINJECT = 'Stuck-input recovery: the box is not empty after the clear; not re-injecting on top of it'
 // Raw Enters tried before escalating to clear+re-inject. Enter is faithful
 // (it submits the REAL buffer, no capture-truncation risk); re-inject is the
 // fallback for a TUI that swallows the Enter in raw-mode.
@@ -390,11 +393,16 @@ async function performStuckInputAction(
         // host MUST be threaded here or the fail-closed guarantee silently
         // evaporates (two different keys never contend).
         const res = await withSessionSendLock(session, null, 'recover', async () => {
-          await clearInputBuffer(session)
+          if (!(await clearInputBuffer(session))) return false
           await sendPromptToSession(session, block!.block!, null, { lockMode: 'held' })
+          return true
         })
         if (!res.ran) {
           logger.info({ session, attempt }, 'Stuck-input recovery (reinject-block) skipped: a delivery is in flight into this pane (fail-closed)')
+          break
+        }
+        if (!res.value) {
+          logger.warn({ session, attempt }, NOT_CLEARED_NO_REINJECT)
           break
         }
         submitted = true
@@ -405,11 +413,16 @@ async function performStuckInputAction(
         if (text != null) {
           logger.warn({ session, attempt }, 'Stuck input (non-channel) -- clear + re-inject parked text')
           const res = await withSessionSendLock(session, null, 'recover', async () => {
-            await clearInputBuffer(session)
+            if (!(await clearInputBuffer(session))) return false
             await sendPromptToSession(session, text, null, { lockMode: 'held' })
+            return true
           })
           if (!res.ran) {
             logger.info({ session, attempt }, 'Stuck-input recovery (reinject-plain) skipped: a delivery is in flight into this pane (fail-closed)')
+            break
+          }
+          if (!res.value) {
+            logger.warn({ session, attempt }, NOT_CLEARED_NO_REINJECT)
             break
           }
         } else {
@@ -434,11 +447,16 @@ async function performStuckInputAction(
         }
         logger.warn({ session, attempt }, 'Stuck input -- clear + re-inject the recorded prompt (registry-proven)')
         const res = await withSessionSendLock(session, null, 'recover', async () => {
-          await clearInputBuffer(session)
+          if (!(await clearInputBuffer(session))) return false
           await sendPromptToSession(session, recordedText, null, { lockMode: 'held' })
+          return true
         })
         if (!res.ran) {
           logger.info({ session, attempt }, 'Stuck-input recovery (reinject-recorded) skipped: a delivery is in flight into this pane (fail-closed)')
+          break
+        }
+        if (!res.value) {
+          logger.warn({ session, attempt }, NOT_CLEARED_NO_REINJECT)
           break
         }
         submitted = true
@@ -453,10 +471,10 @@ async function performStuckInputAction(
         // re-sends the whole message). Under the lane, like the re-injects: a
         // live delivery into this pane must not have its box cleared under it.
         logger.warn({ session, attempt }, 'Stuck input -- text an undelivered busy-pane send left behind, clearing buffer (no submit; the router re-sends)')
-        const res = await withSessionSendLock(session, null, 'recover', async () => {
-          await clearInputBuffer(session)
-        })
-        if (res.ran) clearAbandonedPrompt(session)
+        const res = await withSessionSendLock(session, null, 'recover', async () => clearInputBuffer(session))
+        // the record goes only with the text: a half that did not clear must still read as
+        // abandoned (clear, never submit) on the next round
+        if (res.ran && res.value) clearAbandonedPrompt(session)
         else logger.info({ session, attempt }, 'Stuck-input recovery (clear-abandoned) skipped: a delivery is in flight into this pane (fail-closed)')
         break
       }
