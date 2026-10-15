@@ -186,7 +186,10 @@ export interface CallerHint {
 
 const first = (value: string | string[] | null | undefined): string | undefined =>
   Array.isArray(value) ? value[0] : value ?? undefined
-const UA_PRODUCT = /^([A-Za-z][A-Za-z0-9._-]{0,31})(?:\/([0-9][0-9A-Za-z._-]{0,15}))?/
+// each part must END where its pattern ends (a space, a slash, a parenthesis or the end): an
+// unbounded prefix match logged the first 32 characters of a long value, a token in the header
+// included (barracuda, #167 review); a longer value is `?`, a version too long is dropped
+const UA_PRODUCT = /^([A-Za-z][A-Za-z0-9._-]{0,31})(?=[\s/(]|$)(?:\/([0-9][0-9A-Za-z._-]{0,15})(?=[\s(]|$))?/
 const CLAIMED_NAME = /^[a-z][a-z0-9_-]{0,31}$/
 const IP_ADDRESS = /^[0-9a-fA-F:.]{2,45}$/
 

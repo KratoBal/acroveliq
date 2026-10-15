@@ -10,6 +10,8 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import type http from 'node:http'
 import Database from 'better-sqlite3'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import { getDb, initDatabase } from '../db.js'
 import { resolveAuth } from '../web/auth-gate.js'
@@ -161,6 +163,10 @@ describe('the caller and the actor log', () => {
         // a header that is not a name, a token in the query, an e-mail, a path: none of them reaches the log
         callerHint({ userAgent: '"; DROP TABLE', fleetCaller: 'balazs@example.com', remoteAddress: 'unix:/tmp/x.sock' }),
         callerHint({ queryAgent: 'mvp_' + 'a'.repeat(40) }),
+        // a token in the User-Agent: neither its start nor a long version reaches the log (barracuda, #167)
+        callerHint({ userAgent: 'mvp_' + 'a'.repeat(40) }),
+        callerHint({ userAgent: 'curl/1' + 'f'.repeat(40) }),
+        callerHint({ userAgent: 'x'.repeat(33) + '/1.0' }),
         callerHint({ userAgent: '', fleetCaller: '   ', queryAgent: null, remoteAddress: undefined }),
       ],
       'LEGACY-CALLER-HINT',
@@ -169,8 +175,18 @@ describe('the caller and the actor log', () => {
       { ua: 'Mozilla/5.0', claimed: 'acrobot', remote: '-' },
       { ua: '?', claimed: '?', remote: '?' },
       { ua: '-', claimed: '?', remote: '-' },
+      { ua: '?', claimed: '-', remote: '-' },
+      { ua: 'curl', claimed: '-', remote: '-' },
+      { ua: '?', claimed: '-', remote: '-' },
       { ua: '-', claimed: '-', remote: '-' },
     ])
+  })
+
+  // the wiring in web.ts, which no test drives (barracuda, #167): the call with its four sources
+  it('LEGACY-CALLER-WIRING: web.ts passes the hint from the request to the actor log', () => {
+    const web = readFileSync(join(process.cwd(), 'src', 'web.ts'), 'utf-8')
+    const call = web.match(/recordRequestActor\(getDb\(\), auth, method, path, Math\.floor\(Date\.now\(\) \/ 1000\), callerHint\(\{([^}]*)\}\)\)/g) ?? []
+    expect([call.length, ...['userAgent: req.headers[\'user-agent\']', "fleetCaller: req.headers['x-fleet-caller']", "queryAgent: url.searchParams.get('agent')", 'remoteAddress: req.socket.remoteAddress'].map((f) => (call[0] ?? '').includes(f))], 'LEGACY-CALLER-WIRING').toEqual([1, true, true, true, true])
   })
 
   // barracuda, #20: the log keeps the route's pattern, never a value from a path
