@@ -39,6 +39,7 @@ iptables -w 5 -D INPUT -i "$BRIDGE" -j GPTF-GEP 2>/dev/null || true
 iptables -w 5 -D OUTPUT -o "$BRIDGE" -j GPTF-GEPROL 2>/dev/null || true
 iptables -w 5 -D DOCKER-USER -j GPTF-TOVABB 2>/dev/null || true
 iptables -w 5 -t nat -D POSTROUTING -o "$BRIDGE" -j GPTF-NAT 2>/dev/null || true
+iptables -w 5 -t raw -D PREROUTING -i "$BRIDGE" -j GPTF-RAW 2>/dev/null || true
 iptables -w 5 -F GPTF-GEP 2>/dev/null || true
 iptables -w 5 -F GPTF-PRIVAT 2>/dev/null || true
 iptables -w 5 -F GPTF-BE 2>/dev/null || true
@@ -48,6 +49,7 @@ iptables -w 5 -S INPUT | grep -F GPTF-GEP || { echo "STOP: az INPUT ugras hianyz
 iptables -w 5 -S OUTPUT | grep -F GPTF-GEPROL || { echo "STOP: az OUTPUT ugras hianyzik"; exit 1; }
 iptables -w 5 -S DOCKER-USER | grep -F GPTF-TOVABB || { echo "STOP: a DOCKER-USER ugras hianyzik"; exit 1; }
 iptables -w 5 -t nat -S POSTROUTING | grep -F GPTF-NAT || { echo "STOP: a nat POSTROUTING ugras hianyzik"; exit 1; }
+iptables -w 5 -t raw -S PREROUTING | grep -F GPTF-RAW || { echo "STOP: a raw PREROUTING ugras hianyzik"; exit 1; }
 iptables -w 5 -S FORWARD | grep -F -- '-j DOCKER-USER' || echo "FIGYELEM: a FORWARD nem ugrik a DOCKER-USER-re ebben az iptables-hatterben; a privat-tartomany szabaly igy nem hat (a proba N1-je megmutatja)"
 iptables -w 5 -S GPTF-GEP
 iptables -w 5 -S GPTF-PRIVAT
@@ -115,7 +117,8 @@ if ufw_aktiv; then
   ls -l /opt/gpt-futtato/ip*tables-elotte.rules
   echo "visszaallitas, ha kell: iptables-restore < /opt/gpt-futtato/iptables-elotte.rules (es ip6tables-restore ugyanigy)"
   ufw_before=$(ufw status verbose)
-  other_rules() { iptables-save | grep -v '^#' | grep -vE 'ufw-|GPTF-|gptf-ufw-proba' | grep -vE '^:' ; }
+  # an empty result is a result, not a failure (pipefail would stop the installer on it)
+  other_rules() { iptables-save | grep -v '^#' | grep -vE 'ufw-|GPTF-|gptf-ufw-proba' | grep -vE '^:' || true; }
   rules_before=$(other_rules)
   start=$(date +%s)
   ufw reload

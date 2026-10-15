@@ -338,6 +338,7 @@ esac
     ])
     // nat: our jump first in POSTROUTING, the chain empty while the channel is closed
     expect([chain(dir, 'nat:POSTROUTING'), chain(dir, 'nat:GPTF-NAT'), chain(dir, 'POSTROUTING')]).toEqual([['-o gptki0 -j GPTF-NAT'], [], []])
+    expect([chain(dir, 'raw:PREROUTING'), chain(dir, 'raw:GPTF-RAW')]).toEqual([['-i gptki0 -j GPTF-RAW'], []])
   }))
 
   it('FW-QUIET: the second and third run (the per-minute timer) change nothing, print nothing, flush nothing', () => run('', (dir) => {
@@ -503,6 +504,40 @@ esac
       ])
     }))
 
+  it('FW-RAW: the channel\'s REPLY passes Docker\'s raw direct-access guard, nothing else does; a NEW packet from the runner is still dropped by the filter; closing empties it FIRST', () => run(
+    'R|raw:PREROUTING|-d 10.0.2.4/32 ! -i br-flotta -j DROP\n', (dir) => {
+      writeFileSync(join(dir, 'env'), CHANNEL_ENV)
+      fleetAt(dir, '10.0.2.4 ')
+      fw(dir)
+      const rawRule = '-s 10.0.5.10/32 -d 10.0.2.4/32 -p tcp -m tcp --sport 8790 -j ACCEPT'
+      // a walk of raw PREROUTING as the kernel does it: our jump (into GPTF-RAW), then Docker's DROP
+      const raw = (p: Pkt) => {
+        for (const r of chain(dir, 'raw:PREROUTING')) {
+          if (r.endsWith('-j GPTF-RAW')) { if (matches(r, p) && accepts(chain(dir, 'raw:GPTF-RAW'), p)) return 'ACCEPT'; continue }
+          if (r.endsWith('-j DROP') && matches(r, p)) return 'DROP'
+        }
+        return 'tovabb'
+      }
+      const reply = { src: '10.0.5.10', dst: '10.0.2.4', proto: 'tcp', dport: 41000, sport: 8790, in: 'gptki0', state: 'ESTABLISHED' } as Pkt
+      expect([
+        chain(dir, 'raw:PREROUTING'), chain(dir, 'raw:GPTF-RAW'),
+        raw(reply), raw({ ...reply, sport: 22 }), raw({ ...reply, src: '10.0.5.11' }), raw({ ...reply, in: 'br-masik' }), raw({ ...reply, proto: 'udp' }),
+        // past raw, the filter still decides: a NEW packet from the runner (sport 8790) is dropped
+        verdict(chain(dir, 'GPTF-PRIVAT'), { ...reply, state: 'NEW' }), verdict(chain(dir, 'GPTF-PRIVAT'), reply),
+      ]).toEqual([
+        ['-i gptki0 -j GPTF-RAW', '-d 10.0.2.4/32 ! -i br-flotta -j DROP'], [rawRule],
+        'ACCEPT', 'DROP', 'DROP', 'DROP', 'DROP',
+        'DROP', 'tovabb',
+      ])
+      fleetAt(dir, '10.0.2.9 ')
+      const closing = calls(dir).length
+      fw(dir)
+      const cc = calls(dir).slice(closing)
+      const rawDel = cc.findIndex((x) => x.startsWith('W -t raw -D GPTF-RAW '))
+      const natDel = cc.findIndex((x) => x.startsWith('W -t nat -D GPTF-NAT '))
+      expect([chain(dir, 'raw:GPTF-RAW'), rawDel >= 0 && rawDel < natDel]).toEqual([[], true])
+    }))
+
   it('FW-ADDRESS-CLOSES: the fleet container without the fixed address (or unreadable) CLOSES the channel: GPTF-BE closed, no ACCEPT; back at the address it opens; the ACCEPTs leave first and come last', () => run('', (dir) => {
     writeFileSync(join(dir, 'env'), CHANNEL_ENV)
     const closedTv = ['-i gptki0 -j GPTF-PRIVAT', '-o gptki0 -j GPTF-BE']
@@ -573,6 +608,8 @@ esac
     const inst = R('host/telepit-tuzfal.sh')
     expect(inst).toMatch(/iptables -w 5 -D INPUT -i "\$BRIDGE" -j GPTF-GEP[\s\S]*systemctl restart gpt-futtato-tuzfal\.service[\s\S]*grep -F GPTF-GEP \|\| \{ echo "STOP/)
     expect(inst).toMatch(/systemctl enable --now gpt-futtato-tuzfal\.service/)
+    // the raw jump (the reply past Docker's guard) is in the persistence measurement too
+    expect(inst).toMatch(/iptables -w 5 -t raw -D PREROUTING -i "\$BRIDGE" -j GPTF-RAW[\s\S]*systemctl restart gpt-futtato-tuzfal\.service[\s\S]*iptables -w 5 -t raw -S PREROUTING \| grep -F GPTF-RAW \|\| \{ echo "STOP: a raw PREROUTING ugras hianyzik"/)
     // the nat jump (the channel's no-masquerade chain) is in the persistence measurement too
     expect(inst).toMatch(/iptables -w 5 -t nat -D POSTROUTING -o "\$BRIDGE" -j GPTF-NAT[\s\S]*systemctl restart gpt-futtato-tuzfal\.service[\s\S]*iptables -w 5 -t nat -S POSTROUTING \| grep -F GPTF-NAT \|\| \{ echo "STOP: a nat POSTROUTING ugras hianyzik"/)
     expect(inst).toMatch(/systemctl enable --now gpt-futtato-tuzfal-ellenor\.timer/)
@@ -851,7 +888,7 @@ case "$1 $2" in
   "ps -q") echo c1 ;;
   "inspect -f") case "$4" in gpt-szolga) echo exited ;; c1) echo "/marveen|/opt/marveen-docker/data/marveen " ;; marveen) printf 'fleetnet 10.0.2.4 10.0.2.1\\nmasik 192.168.250.2 192.168.250.1\\n' ;; esac ;;
   "network inspect") case "$5" in fleetnet) echo 1 ;; masik) echo 3 ;; gpt-futtato-ki) echo "10.0.5.0/24 " ;; esac ;;
-  "logs gpt-szolga") printf 'SZOLGA figyel 10.0.5.10:8790\\nFORRAS %s\\n' "$(cat "${dir}/forras")" ;;
+  "logs gpt-szolga") printf 'SZOLGA figyel 10.0.5.10:8790\\n'; [ -f "${dir}/nincs-forras" ] || printf 'FORRAS %s\\n' "$(cat "${dir}/forras")" ;;
   "exec marveen") cat "${dir}/forras"; echo ;;
   "run --rm") h="\${@: -2:1}"; p="\${@: -1}"; if grep -qxF "$h:$p" "${dir}/nyitott"; then echo NYITOTT; else echo "ZART (idotullepes)"; fi ;;
   "compose run") [ -f "${dir}/plugin-hiba" ] && exit 1; echo "elotte: 35 fajl" ;;
@@ -863,6 +900,8 @@ ${log}
 case "$3 $4 $5 $6" in
   "-t nat -S POSTROUTING") if [ -f "${dir}/nat-masodik" ]; then printf -- '-P POSTROUTING ACCEPT\\n-A POSTROUTING -s 192.168.250.0/24 ! -o br-x -j MASQUERADE\\n-A POSTROUTING -o gptki0 -j GPTF-NAT\\n'; else printf -- '-P POSTROUTING ACCEPT\\n-A POSTROUTING -o gptki0 -j GPTF-NAT\\n-A POSTROUTING -s 192.168.250.0/24 ! -o br-x -j MASQUERADE\\n'; fi; exit 0 ;;
   "-t nat -S GPTF-NAT") printf -- '-N GPTF-NAT\\n'; [ -f "${dir}/nat-nincs" ] || printf -- '-A GPTF-NAT -s 10.0.2.4/32 -d 10.0.5.10/32 -p tcp -m tcp --dport 8790 -j ACCEPT\\n'; exit 0 ;;
+  "-t raw -S PREROUTING") if [ -f "${dir}/raw-masodik" ]; then printf -- '-P PREROUTING ACCEPT\\n-A PREROUTING -d 10.0.2.4/32 ! -i br-x -j DROP\\n-A PREROUTING -i gptki0 -j GPTF-RAW\\n'; else printf -- '-P PREROUTING ACCEPT\\n-A PREROUTING -i gptki0 -j GPTF-RAW\\n-A PREROUTING -d 10.0.2.4/32 ! -i br-x -j DROP\\n'; fi; exit 0 ;;
+  "-t raw -S GPTF-RAW") printf -- '-N GPTF-RAW\\n'; [ -f "${dir}/raw-nincs" ] || printf -- '-A GPTF-RAW -s 10.0.5.10/32 -d 10.0.2.4/32 -p tcp -m tcp --sport 8790 -j ACCEPT\\n'; exit 0 ;;
 esac
 case "$4" in
   GPTF-BE) printf -- '-N GPTF-BE\\n-A GPTF-BE -m conntrack --ctstate INVALID -j DROP\\n-A GPTF-BE ! -s 10.0.2.4/32 -m conntrack --ctstate NEW -j DROP\\n-A GPTF-BE ! -d 10.0.5.10/32 -m conntrack --ctstate NEW -j DROP\\n' ;;
@@ -910,6 +949,26 @@ grep -qxF "$hp" "${dir}/nyitott"
     const c = calls(dir)
     expect([c[c.length - 2], c[c.length - 1], /^a gpt-szolga allapota a leallitas utan: exited$/m.test(r.stdout)]).toEqual(['docker compose --profile szolga stop gpt-szolga', expect.stringMatching(/^docker inspect -f .* gpt-szolga$/), true])
   }))
+
+  it('CSAT-RAW: our raw chain not first (Docker\'s guard above it), or its rule missing: STOP before the service starts', () => {
+    for (const [file, msg] of [['raw-masodik', 'STOP: a raw PREROUTING elso szabalya nem a GPTF-RAW ugras'], ['raw-nincs', 'STOP: a GPTF-RAW-ban nincs meg a csatorna valaszanak szabalya']] as const) {
+      const dir = setup({})
+      writeFileSync(join(dir, file), '')
+      try {
+        const r = go(dir)
+        expect([file, r.status, r.stdout.includes(msg), calls(dir).some((c) => c.includes('up -d gpt-szolga'))]).toEqual([file, 1, true, false])
+      } finally { rmSync(dir, { recursive: true, force: true }) }
+    }
+  })
+
+  it('CSAT-NO-FORRAS: the call never reached the service (no FORRAS line): the REAL step stops with its own message, not a pipeline failure', () => {
+    const dir = setup({ forras: 'HIBA The operation was aborted due to timeout' })
+    writeFileSync(join(dir, 'nincs-forras'), '')
+    try {
+      const r = go(dir)
+      expect([r.status, r.stdout.includes('(a szolgaltatas naplojaban nincs FORRAS sor: a hivas nem ert el hozza)'), r.stdout.includes('STOP: a futtato nem a flotta kontener cimet (10.0.2.4) latta, hanem: HIBA'), r.stderr.includes('a csatorna-meres a(z)')]).toEqual([1, true, true, false])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
 
   it('CSAT-NAT: our no-masquerade chain is not first in nat POSTROUTING, or its rule is missing: STOP before the service starts', () => {
     for (const [file, msg] of [['nat-masodik', 'STOP: a nat POSTROUTING elso szabalya nem a GPTF-NAT ugras'], ['nat-nincs', 'STOP: a GPTF-NAT-ban nincs meg a csatorna (maszkolas nelkuli) szabalya']] as const) {

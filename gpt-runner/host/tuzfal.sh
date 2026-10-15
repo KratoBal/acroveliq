@@ -31,6 +31,16 @@
 #                rewrote the source to gptki0's address, so the service saw a gateway, not the
 #                fleet container (the v3 host run, 2026-10-15 00:2x: FORRAS 10.0.5.128). ACCEPT in
 #                the nat table ends nat processing for that packet: no SNAT, nothing filtered.
+#   GPTF-RAW     (raw PREROUTING, first) while the channel is open: the channel's REPLY passes
+#                Docker's direct-access guard. Docker (29.6.2, measured on the host 2026-10-15)
+#                drops in raw PREROUTING every packet to a container address that does not come
+#                from that container's own bridge (-d 192.168.250.2/32 ! -i br-... -j DROP). With
+#                no masquerade (GPTF-NAT) the service's SYN-ACK goes to the fleet container's
+#                address and comes in on gptki0, so the guard dropped it before conntrack saw it
+#                (the v4 host run: the call timed out). ACCEPT in the raw table only ends the raw
+#                table for that packet (it is still tracked and filtered): the filter FORWARD
+#                lets only an ESTABLISHED reply through (GPTF-PRIVAT), and the runner cannot forge
+#                a source (cap_drop ALL).
 #   GPTF-TOVABB  the one DOCKER-USER jump, to GPTF-PRIVAT (-i) and GPTF-BE (-o); while the channel
 #                is open, also two ACCEPTs for exactly its one flow (past Docker's isolation).
 # Every other rule in our chains is a DROP, and the two ACCEPTs pass only what the DROP chains pass
@@ -148,6 +158,7 @@ allapot="$(cim_allapot)"
 be_rules=("-m conntrack --ctstate INVALID -j DROP")
 tovabb_rules=("-i $BRIDGE -j GPTF-PRIVAT" "-o $BRIDGE -j GPTF-BE")
 nat_rules=()
+raw_rules=()
 if [ "$allapot" = rendben ]; then
   be_rules+=(
     "! -s $VEZERLO/32 -m conntrack --ctstate NEW -j DROP"
@@ -161,6 +172,7 @@ if [ "$allapot" = rendben ]; then
   # anyway (GPTF-BE passes this NEW or ESTABLISHED flow, GPTF-PRIVAT passes a reply), so their
   # order against the two jumps changes no verdict. Isolation itself is not loosened.
   nat_rules+=("-s $VEZERLO/32 -d $SZOLGA/32 -p tcp -m tcp --dport $SZOLGA_PORT -j ACCEPT")
+  raw_rules+=("-s $SZOLGA/32 -d $VEZERLO/32 -p tcp -m tcp --sport $SZOLGA_PORT -j ACCEPT")
   tovabb_rules+=(
     "-s $VEZERLO/32 -d $SZOLGA/32 -o $BRIDGE -p tcp -m tcp --dport $SZOLGA_PORT -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT"
     "-s $SZOLGA/32 -d $VEZERLO/32 -i $BRIDGE -p tcp -m tcp --sport $SZOLGA_PORT -m conntrack --ctstate ESTABLISHED -j ACCEPT"
@@ -174,7 +186,9 @@ if [ "$allapot" = rendben ]; then
   ensure_chain GPTF-BE "${be_rules[@]}"
   ensure_chain GPTF-TOVABB "${tovabb_rules[@]}"
   IPT_TABLE=nat ensure_chain GPTF-NAT "${nat_rules[@]}"
+  IPT_TABLE=raw ensure_chain GPTF-RAW "${raw_rules[@]}"
 else
+  IPT_TABLE=raw ensure_chain GPTF-RAW
   IPT_TABLE=nat ensure_chain GPTF-NAT
   ensure_chain GPTF-TOVABB "${tovabb_rules[@]}"
   ensure_chain GPTF-BE "${be_rules[@]}"
@@ -189,6 +203,9 @@ ensure_first DOCKER-USER "-j GPTF-TOVABB"
 # the channel's no-masquerade chain, FIRST in nat POSTROUTING (before Docker's MASQUERADE); an
 # empty GPTF-NAT (channel closed) changes nothing
 IPT_TABLE=nat ensure_first POSTROUTING "-o $BRIDGE -j GPTF-NAT"
+# the channel's reply past Docker's raw direct-access guard, FIRST in raw PREROUTING (before
+# Docker's DROP); an empty GPTF-RAW (channel closed) changes nothing
+IPT_TABLE=raw ensure_first PREROUTING "-i $BRIDGE -j GPTF-RAW"
 # the jump of the first version (before the channel), now inside GPTF-TOVABB: removed AFTER the
 # new jump is in place, so the private ranges are never open
 while ipt -C DOCKER-USER -i "$BRIDGE" -j GPTF-PRIVAT 2>/dev/null; do

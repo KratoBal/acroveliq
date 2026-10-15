@@ -141,6 +141,13 @@ natch=$(iptables -w 5 -t nat -S GPTF-NAT)
 printf '%s\n' "$natch"
 [ "$(grep -m1 '^-A ' <<< "$natpost" || true)" = "-A POSTROUTING -o gptki0 -j GPTF-NAT" ] || stop "a nat POSTROUTING elso szabalya nem a GPTF-NAT ugras"
 grep -qxF -- "-A GPTF-NAT -s $VEZ/32 -d $SZOLGA/32 -p tcp -m tcp --dport $PORT -j ACCEPT" <<< "$natch" || stop "a GPTF-NAT-ban nincs meg a csatorna (maszkolas nelkuli) szabalya"
+# the reply past Docker's raw direct-access guard (the v4 host run: the SYN-ACK to the fleet
+# container's address came in on gptki0 and was dropped there); our chain FIRST in raw PREROUTING
+rawpre=$(iptables -w 5 -t raw -S PREROUTING)
+rawch=$(iptables -w 5 -t raw -S GPTF-RAW)
+printf '%s\n' "$rawch"
+[ "$(grep -m1 '^-A ' <<< "$rawpre" || true)" = "-A PREROUTING -i gptki0 -j GPTF-RAW" ] || stop "a raw PREROUTING elso szabalya nem a GPTF-RAW ugras"
+grep -qxF -- "-A GPTF-RAW -s $SZOLGA/32 -d $VEZ/32 -p tcp -m tcp --sport $PORT -j ACCEPT" <<< "$rawch" || stop "a GPTF-RAW-ban nincs meg a csatorna valaszanak szabalya"
 fails=$( { grep -E '^PROBA [^ ]+ FAIL' "$DIR/proba-teljes.log" || true; } | wc -l | tr -d ' ')
 grep -qE '^PROBA N1 OK' "$DIR/proba-teljes.log" || stop "a proba N1 sora nem OK (a futtatobol elerheto lehet a flotta vagy a gep)"
 [ "$fails" = 0 ] || stop "a probaban $fails FAIL sor van"
@@ -155,14 +162,17 @@ for _ in $(seq 1 30); do
   if grep -qxF "SZOLGA figyel $SZOLGA:$PORT" <<< "$naplo"; then ok=1; break; fi
   sleep 1
 done
-[ -n "$ok" ] || { docker logs gpt-szolga 2>&1 | tail -20; stop "a szolgaltatas nem indult el a $SZOLGA:$PORT cimen"; }
+[ -n "$ok" ] || { { docker logs gpt-szolga 2>&1 || true; } | tail -20; stop "a szolgaltatas nem indult el a $SZOLGA:$PORT cimen"; }
 echo "a szolgaltatas figyel: $SZOLGA:$PORT"
 
 # 8. THE measurement the design stands on: the source address the service sees
 echo "== a forrascim, amit a szolgaltatas lat (a flotta kontenerebol hivva)"
 forras=$(docker exec "$FLOTTA" node -e 'fetch(process.argv[1],{signal:AbortSignal.timeout(8000)}).then(r=>r.json()).then(j=>console.log(j.forras)).catch(e=>console.log("HIBA "+e.message))' "http://$KOZZ:$PORT/health")
 echo "a szolgaltatas ezt latta: $forras"
-docker logs gpt-szolga 2>&1 | grep '^FORRAS ' | tail -3
+# read first, then searched: with no FORRAS line (a timed-out call) a `grep | tail` under pipefail
+# stopped the script HERE and hid the real step's message (the v4 host run)
+szolganaplo=$(docker logs gpt-szolga 2>&1 || true)
+{ grep '^FORRAS ' <<< "$szolganaplo" || echo "(a szolgaltatas naplojaban nincs FORRAS sor: a hivas nem ert el hozza)"; } | tail -3
 [ "$forras" = "$VEZ" ] || stop "a futtato nem a flotta kontener cimet ($VEZ) latta, hanem: $forras. A forras-szures igy nem azt szuri, amit hiszunk."
 
 # 9. negative controls in the SAME round, each with its own positive control from the same place
