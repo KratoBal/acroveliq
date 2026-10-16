@@ -30,7 +30,7 @@ köztük **a vezérlőpult maga**:
 - a vezérlőpult forrása: `src/web/routes/task-handoffs.ts`, `src/web/routes/task-usage.ts`, `src/gpt-package.ts`;
 - flotta-szkriptek: `pr-allapot.sh`, `pr-allas.sh`, `pr-body-mirror.sh`, `github-pr-monitor.sh`, `ci-naplo.sh`, `ci-el-or.sh`,
   `mar-megvan.sh`, `eles-lemaradas.sh`, `review-csomag.sh`, `beolvadt-esemeny.py`, `git-auth.sh`, `hasonlo-kulcs-orzo.sh`,
-  `fleet-secrets.py` (ez csak a fájl jogát nézi, nem olvassa);
+  `fleet-secrets.py` (a fájl jogát nézi, ÉS a lejárati fejléchez olvassa is: lásd lent, a harmadik kivétel);
 - ügynökök saját szkriptjei (például murena `pr-body.sh`, `push-ha-nyitva.sh`, `pr-base.sh`, `ci-allapot.sh`; barracuda
   `hasonlo-kulcs-orzo.sh`; a PR-nyitók).
 
@@ -42,11 +42,45 @@ a 6. lépés nem indulhat; a lap visszaállítása addig a régi út.
 `github_token <owner/repo> <szerep>` hívásán át olvasnak: a kapcsolóval a bróker egyórás, egy repóra szóló tokenje, nélküle
 a régi fájl. Ahol egy szkript több repót kérdez (`mar-megvan.sh`, `hasonlo-kulcs-orzo.sh`), repónként kér. A
 `git-auth.sh` a kapcsolóval sima `git`-et futtat, a tokent a credential helper adja. A `scripts/__tests__/github-token.test.py`
-egy őrrel méri, hogy ezen kívül egyetlen szkript sem olvassa közvetlenül a tulajdonosi tokent. Két szándékos kivétel:
+egy őrrel méri, hogy ezen kívül egyetlen szkript sem olvassa közvetlenül a tulajdonosi tokent. Az őr a fájl NEVÉRE illeszt
+(`.github-token`, utána nem kötőjel és nem betű), nem a szó szerinti `store/.github-token` útra: az utóbbi 2026-10-15-ig
+átengedte a `fleet-secrets.py`-t, ami `os.path.join(STORE, ".github-token")` alakban nyitja meg. Három szándékos kivétel:
 - a `ci-el-or.sh` a tulajdonosi token lejáratát figyeli: a tokennel együtt nyugdíjba megy (a 6. lépés után a bróker naplója
   és az App kulcsa a figyelendő);
 - a `github-pr-monitor.sh` kapcsoló nélkül egy **vault-másolatot** is olvas (`github-github_token`): ez is a 6. lépés
   keresési listájára tartozik, a fájl, a git hitelesítő tárolók és a klónok címei mellé.
+- a `fleet-secrets.py` a titok-leltárban a tulajdonosi token lejáratát kérdezi le a GitHubtól (`github_expiry`): a
+  `ci-el-or.sh` párja, a tokennel együtt megy nyugdíjba.
+
+**A (3) állapota (mérve 2026-10-15, nautilus):** az ügynökök saját szkriptjei NINCSENEK gitben (`agents/*/scripts`), tehát
+ez a lépés nem PR, hanem gazdánkénti helyi átírás. nautilus hat GitHub-olvasó szkriptje (mérve) és murena tíz szkriptje (murena közlése, 31634) egy
+`gh_token <repo> <szerep>` burkolón át a `github_token`-t hívja; a nautilus `token-jogkor` a tulajdonosi token jogkörét
+méri, a tokennel együtt megy nyugdíjba. barracuda egyetlen találata (`hasonlo-kulcs-orzo.sh`) barracuda
+mérése szerint (31626) egy régi, halott másolat, a profilja a fájlt nem is olvashatja.
+
+**A 6. lépés keresési listája (mérve 2026-10-15, fájlnevek, érték nélkül).** A visszavonás előtt mindegyik sort
+ellenőrizni kell; ami nem került a brókerre, az a 401-gyel csendben eltörik:
+
+- **A klónok repó-szintű credential helperei** (a 9. lépés tárgya; amíg az App nincs meg, NEM törölhetők, mert ma ezeken
+  megy a push): `agents/nautilus/{acropora-os,ai-agent,marveen-repo,marveen-work}`, `agents/murena/{acropora-os,
+  acropora-commerce}` a tulajdonosi fájlt adják; az `agents/nautilus/commerce-work` a `.github-token-commerce`-t. A
+  `/home/marveen/work/*` klónok és a `marveen` globális git-konfigja: egyik sem ad credential helpert (acrobot mérése a
+  `marveen` felhasználóval, 31698).
+  Tokenes klón-cím (userinfo a `github.com` előtt) a 14 olvasható klónban nincs (egy klón konfigja nem olvasható).
+- **A második token, a `.github-token-commerce`**: két olvasója van (a fenti klón és a `fleet-secrets.py` leltára).
+  Ugyanazt az utat járja, mint a tulajdonosi token: a 9. lépésben vált át, külön döntés nem kell hozzá (acrobot 31690).
+- **Skillek, amelyek a fájl olvasását írják elő** (szöveg, nem kód; a token visszavonása után rossz utat tanítanak): a
+  globális `agens-agabol-pull-request`, `ios-testflight-bekotes`, `agent-report-review`, `agens-jogosultsag-megadasa`,
+  `deploy-ellenorzo-lista`, és a projekt-szintű `council-dontes-rogzitese`. Az átírásuk a 9. lépés része, a
+  `FLEET_GITHUB_APP` bekapcsolásakor; előtte nem, mert addig a fájl az élő forrás, és egy brókerre tanító skill rossz utat
+  mutatna (acrobot 31690).
+- **Hookok:** a `/home/marveen/.claude/hooks` és a `/home/marveen/.claude/settings.json` nem nevezi meg a tokent.
+- **A `marveen` felhasználóval mérve (acrobot, 31690):** az ütemezett feladatok közül egy nevezi meg a tokent
+  (`pr-993-figyeles`), az KIKAPCSOLT (`enabled: false`), és törlésre jelölt, nem átírandó; a projekt
+  `.claude/settings*.json` fájljai: 0 találat; a `store/tokens` alatt nincs git vagy gh nevű token; a hookok: 0 találat.
+- **Nem mérve, szándékosan:** a `.env` fájlok (általános kiolvasásuk tilos); a vault-másolatot (`github-github_token`) a
+  fenti második kivétel nevezi meg.
+
 
 **A (2) állapota:** a vezérlőpult két GitHub-olvasása (az átadó rekord kód-állapot ellenőrzése, `task-handoff.ts`, és a
 `done` őr beolvadás-ellenőrzése, `task-usage.ts`) a `src/github-token.ts` `githubToken(repo, szerep)` hívásán át olvas,
