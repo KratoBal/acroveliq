@@ -225,6 +225,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', path: '/api/memories/import', module: 'memories', class: 'ERZEKENY' },
   { method: 'POST', path: '/api/memories/backfill', module: 'memories', class: 'ERZEKENY' },
   { method: 'GET', path: '/api/memories/stats', module: 'memories', class: 'OLVASO' },
+  { method: 'GET', path: '/api/memories/:id', module: 'memories', class: 'OLVASO' },
   { method: 'PUT', path: '/api/memories/:id', module: 'memories', class: 'ERZEKENY' },
   { method: 'DELETE', path: '/api/memories/:id', module: 'memories', class: 'ERZEKENY' },
   { method: 'GET', path: '/api/schedules/agents', module: 'schedules', class: 'OLVASO' },

@@ -3,8 +3,8 @@
 ClaudeClaw fleet helper - shared, deterministic plumbing so agents don't burn
 tokens hand-rolling curl/SQL/escaping in the model.
 
-Covers: dashboard API auth (token always read from store/.dashboard-token, never
-hardcoded), memory save/search, daily log, inter-agent messages, agent list,
+Covers: dashboard API auth (the CALLING user's own token, store/tokens/<agent>.token, resolved by
+scripts/lib/dashboard_token.py; never hardcoded), memory save/search, daily log, inter-agent messages, agent list,
 kanban read helpers, and Telegram MarkdownV2 escaping.
 
 Importable as a module or used from the CLI. See README.md for usage.
@@ -12,7 +12,7 @@ Importable as a module or used from the CLI. See README.md for usage.
 Config (no hardcoded paths or secrets):
   CLAW_DIR  - project root (the dir containing `store/`). If unset, the project
               root is auto-detected by walking up from the current directory
-              until a `store/.dashboard-token` is found.
+              until a `store/` beside `scripts/lib/dashboard_token.py` is found.
   CLAW_BASE - dashboard base url (default http://localhost:3420).
 """
 import json
@@ -29,7 +29,7 @@ def project_dir():
         return env
     d = os.getcwd()
     while True:
-        if os.path.isfile(os.path.join(d, "store", ".dashboard-token")):
+        if os.path.isdir(os.path.join(d, "store")) and os.path.isfile(os.path.join(d, "scripts", "lib", "dashboard_token.py")):
             return d
         parent = os.path.dirname(d)
         if parent == d:
@@ -43,7 +43,14 @@ def base_url():
 
 
 def token():
-    with open(os.path.join(project_dir(), "store", ".dashboard-token")) as f:
+    """The caller's OWN dashboard token (P0-1): the shared store/.dashboard-token only as the
+    resolver's loud fallback, never as the first choice (task p0-1-harom-javitas)."""
+    root = project_dir()
+    lib = os.path.join(root, "scripts", "lib")
+    if lib not in sys.path:
+        sys.path.insert(0, lib)
+    from dashboard_token import token_file
+    with open(token_file(root)) as f:
         return f.read().strip()
 
 
