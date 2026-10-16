@@ -50,6 +50,8 @@ class FakeHttp:
         self.meta = {}
         self.google = (200, {"access_token": "AT-" + MARK, "refresh_token": "NEWRT-" + MARK})
         self.status = 200
+        self.health = 200
+        self.expo = (200, {"data": {"meActor": {"__typename": "User"}}})
 
     def __call__(self, method, url, headers=None, body=None, timeout=15):
         self.calls.append((method, url))
@@ -62,6 +64,11 @@ class FakeHttp:
         if "oauth2.googleapis.com" in url:
             st, d = self.google
             return st, {}, d
+        if url == "https://api.expo.dev/graphql":
+            st, d = self.expo
+            return st, {}, d
+        if url.endswith("/api/health"):
+            return self.health, {}, None
         return self.status, {}, {"error": "echo " + MARK}
 
 
@@ -135,13 +142,34 @@ class Sources(Base):
         rows, msgs, _ = self.run_check()
         self.assertEqual({self.row(rows, n)["eredmeny"] for n in (".coolify-token-prod", ".expo-token")}, {"OK"})
         self.assertIn(("GET", "http://10.0.1.1:8000/api/v1/version"), self.http.calls)
+        self.assertIn(("POST", "https://api.expo.dev/graphql"), self.http.calls)
         self.http.status = 0
+        self.http.expo = (200, {"data": {"meActor": None}})  # what Expo answers without a valid identity
         rows, msgs, _ = self.run_check()
         self.assertEqual(self.row(rows, ".coolify-token-prod")["eredmeny"], "NEM_MERT")
+        self.assertEqual(self.row(rows, ".expo-token")["eredmeny"], "NEM_MERT")
         self.assertEqual(msgs, [])
         self.http.status = 401
+        self.http.expo = (401, {"errors": [{"code": "AUTHENTICATION_ERROR"}]})
         rows, msgs, _ = self.run_check()
         self.assertEqual(len(msgs), 2)
+
+    def test_a_coolify_403_says_whether_the_host_or_the_key_refused(self):
+        self.put(".coolify-token-ai")
+        self.http.status, self.http.health = 403, 403
+        rows, msgs, _ = self.run_check()
+        self.assertIn("a hoszt a flottabol zarva", self.row(rows, ".coolify-token-ai")["ok"])
+        self.http.health = 200
+        rows, msgs, _ = self.run_check()
+        self.assertIn("jogkor?", self.row(rows, ".coolify-token-ai")["ok"])
+        self.assertEqual(msgs, [])
+
+    def test_a_measured_key_carries_its_recorded_date(self):
+        self.put(".coolify-token-prod")
+        rows, msgs, _ = self.run_check(ann={".coolify-token-prod": day(365)})
+        r = self.row(rows, ".coolify-token-prod")
+        self.assertEqual((r["eredmeny"], r["lejarat"]), ("OK", day(365)))
+        self.assertIn("rogzitett datum", r["ok"])
 
     def test_recorded_dates_and_host_keys_and_kinds_without_a_call(self):
         self.put(".claude-oauth-token")
@@ -150,7 +178,8 @@ class Sources(Base):
         rows, _, _ = self.run_check(ann={".claude-oauth-token": day(200), "host:fleet-github": day(300)})
         self.assertEqual(self.row(rows, ".claude-oauth-token")["lejarat"], day(200))
         self.assertEqual(self.row(rows, "host:fleet-github")["lejarat"], day(300))
-        self.assertEqual(self.row(rows, "host:vegrehajto/discord-olvaso")["eredmeny"], "ISMERETLEN")
+        self.assertEqual(self.row(rows, "host:vegrehajto/coolify-ai-deploy")["eredmeny"], "ISMERETLEN")
+        self.assertEqual(self.row(rows, "host:vegrehajto/discord-olvaso")["eredmeny"], "NEM-JAR-LE")
         self.assertEqual(self.row(rows, ".dashboard-token")["eredmeny"], "NEM-JAR-LE")
         self.assertEqual(self.row(rows, ".gdrive-access-token")["eredmeny"], "ROVID-ELETU")
         self.assertEqual(self.http.calls, [])
@@ -160,7 +189,7 @@ class Sources(Base):
         rows, msgs, _ = self.run_check(names=[".uj-titok-key"])
         self.assertEqual(self.row(rows, ".uj-titok-key")["eredmeny"], "ISMERETLEN")
         self.assertEqual(msgs, [])
-        self.assertIn("ISMERETLEN 6", tl.summary_line(rows))  # it, and the five host keys without a date
+        self.assertIn("ISMERETLEN 5", tl.summary_line(rows))  # it, and the four host keys without a date (the Discord bot does not expire)
 
 
 class Thresholds(Base):

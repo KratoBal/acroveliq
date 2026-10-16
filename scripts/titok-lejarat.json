@@ -54,7 +54,7 @@
   "host": [
     {"kulcs": "host:vegrehajto/coolify-prod-deploy", "cel": "a végrehajtó éles telepítő kulcsa", "megujitas": "az éles Coolify felületén új token, a gépen az /opt/vegrehajto/titkok/ mappába (deploy-executor/README.md)"},
     {"kulcs": "host:vegrehajto/coolify-ai-deploy", "cel": "a végrehajtó AI gépi telepítő kulcsa", "megujitas": "a coolify2 felületén új token, a gépen az /opt/vegrehajto/titkok/ mappába"},
-    {"kulcs": "host:vegrehajto/discord-olvaso", "cel": "a végrehajtó Discord olvasó botja", "megujitas": "Discord Developer Portal, a bot Reset Token gombja, a gépen az /opt/vegrehajto/titkok/ mappába"},
+    {"kulcs": "host:vegrehajto/discord-olvaso", "fajta": "nem-jar-le", "indok": "Discord bot token: lejárat nélkül, csak Reset Token gombbal változik (p0-3 lap)", "cel": "a végrehajtó Discord olvasó botja"},
     {"kulcs": "host:vegrehajto/github-olvaso", "cel": "a végrehajtó GitHub olvasó tokenje", "megujitas": "github.com, Fine-grained tokens, Regenerate, a gépen az /opt/vegrehajto/titkok/ mappába"},
     {"kulcs": "host:fleet-github", "cel": "a flotta GitHub App kulcsa (/opt/marveen-docker/secrets/fleet-github)", "megujitas": "a GitHub App beállításaiban új privát kulcs, a gépen a fájl cseréje"}
   ]
