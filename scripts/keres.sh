@@ -50,6 +50,20 @@
 # kereses hibazott volna. Az elso meresem pont ezen bukott el: a nulla es a nem-nulla ag
 # egyarant 2-t adott, mert egyik sem futott le.
 #
+# === A TITKOT NEM OLVASSA, AKKOR SEM, HA ODA MUTATSZ (B28, 2026-10-16) ===
+#
+# 2026-10-14 14:38:54 UTC-kor egy keres.sh a flotta gyokereben 56 titok-fajlt olvasott
+# vegig (murena lelete, barracuda 31950): ha egy titok tartalmazza a mintat, a talalati
+# sor kiirja az erteket. Ezert a keresesbol kimarad, a VALODI utvonal szerint (szimlinken
+# at is), es kifejezett argumentumkent is:
+#   - minden .env es .env.* fajl, barhol;
+#   - egy store/ konyvtar alatt: minden ponttal kezdodo nev, a tokens/ alatti fajlok, es
+#     minden, ami (vagy aminek egy store/ alatti szulo-konyvtara) NEM vilag-olvashato.
+#     A titok-fajlok 0600/0640 alakuak (a titok-jog-figyelo ezt tartja), tehat egy uj
+#     titok nev-lista nelkul is kimarad. Az ara: a store/ alatti NEM titkos, de nem
+#     vilag-olvashato fajlokban (pl. claudeclaw.db, jev-shadow.json) sem keres.
+# A kimenet a vegen kiirja, hany fajl maradt ki igy: egy nulla mellett ez a lathatar.
+#
 set -uo pipefail
 
 if [ "$#" -lt 2 ]; then
@@ -79,6 +93,31 @@ if not cel:
     print("URES MINTA -- nincs mit keresni")
     sys.exit(2)
 
+def titok_e(ut):
+    """A keresesbol kimarado fajl: .env, vagy egy store/ alatti titok (a fejlec szerint)."""
+    valodi = os.path.realpath(ut)
+    reszek = valodi.split(os.sep)
+    nev = reszek[-1]
+    if nev == ".env" or nev.startswith(".env."):
+        return True
+    szulok = reszek[:-1]
+    if "store" not in szulok:
+        return False
+    i = len(szulok) - 1 - szulok[::-1].index("store")
+    alatta = reszek[i + 1:]
+    if any(r.startswith(".") for r in alatta) or "tokens" in alatta[:-1]:
+        return True
+    hely = os.sep.join(reszek[:i + 1]) or os.sep
+    for r in alatta:
+        hely = os.path.join(hely, r)
+        try:
+            if not os.stat(hely).st_mode & 0o004:
+                return True
+        except OSError:
+            return True
+    return False
+
+
 utak = []
 for arg in sys.argv[1:]:
     if os.path.isdir(arg):
@@ -89,6 +128,13 @@ for arg in sys.argv[1:]:
                 utak.append(os.path.join(gyoker, f))
     else:
         utak.append(arg)
+
+kizart = [ut for ut in utak if titok_e(ut)]
+for arg in sys.argv[1:]:
+    if not os.path.isdir(arg) and arg in kizart:
+        print("KIZARVA (titok-hely, nem olvasom): %s" % arg)
+kizart_halmaz = set(kizart)
+utak = [ut for ut in utak if ut not in kizart_halmaz]
 
 talalat = 0
 atugrott = 0
@@ -105,7 +151,8 @@ for ut in utak:
             print("%s:%d: %s" % (ut, i, sor.strip()[:160]))
 
 print()
-print("TALALAT: %d  (%d fajlban keresve, %d atugorva)" % (talalat, len(utak) - atugrott, atugrott))
+print("TALALAT: %d  (%d fajlban keresve, %d atugorva, %d titok-helyen kizarva)"
+      % (talalat, len(utak) - atugrott, atugrott, len(kizart)))
 if talalat == 0:
     print("A NULLA MELLE, hogy a kovetkezo olvaso ellenorizhesse a KERDEST:")
     print("  a beirt minta        : %r" % minta)
