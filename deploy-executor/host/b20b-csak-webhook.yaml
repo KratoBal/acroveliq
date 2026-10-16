@@ -1,0 +1,43 @@
+# B20b, step 4 (task b20b-coolify2-traefik): coolify2.acropora.hu keeps ONLY /webhooks/ public.
+#
+# Installed by the owner on the AI machine as /data/coolify/proxy/dynamic/b20b-csak-webhook.yaml
+# (root 0644, beside Coolify's own coolify.yaml). Coolify's routers stay untouched (the instance
+# domain still generates the webhook URLs); these routers win by explicit priority: Coolify's have
+# the default one (the rule's length, under 100 for all eight, measured in step 0, 2026-10-16).
+#
+# No entryPoints on purpose: step 0 did not show their names, and a router without entryPoints
+# attaches to all of them. The one with `tls` takes the TLS connections (443), the one without the
+# plain ones (80): today 80 redirects to https; after this file it refuses, like every other path.
+#
+# The services and the certificate resolver are Coolify's own (coolify.yaml, same file provider).
+# Webhook paths, measured in step 0 (routes/webhooks.php, all under /webhooks/): POST
+# /source/github/events and /events/manual (the GitHub App), GET /source/github/redirect and
+# /install (only while setting the App up), and the other sources' event paths.
+# Back: delete this file; Traefik drops the routers and Coolify's take over again.
+http:
+  middlewares:
+    b20b-mindenki-kizarva:
+      ipAllowList:
+        sourceRange:
+          - 127.0.0.1/32
+  routers:
+    b20b-webhook-https:
+      rule: Host(`coolify2.acropora.hu`) && PathPrefix(`/webhooks/`)
+      priority: 2000
+      service: coolify
+      tls:
+        certResolver: letsencrypt
+    b20b-zar-https:
+      rule: Host(`coolify2.acropora.hu`)
+      priority: 1000
+      middlewares:
+        - b20b-mindenki-kizarva
+      service: coolify
+      tls:
+        certResolver: letsencrypt
+    b20b-zar-http:
+      rule: Host(`coolify2.acropora.hu`)
+      priority: 1000
+      middlewares:
+        - b20b-mindenki-kizarva
+      service: coolify
