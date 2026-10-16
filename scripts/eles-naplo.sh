@@ -18,11 +18,15 @@
 set -uo pipefail
 
 TOKEN_FILE=/home/marveen/marveen/store/.coolify-token-prod
+# B20 (2026-10-16): the public name coolify.acropora.hu is being closed (tailnet only).
+# The fleet runs on the same host, so it reaches Coolify on the coolify network gateway.
+# A fixed constant on purpose: the target of a secret is not settable from the environment.
+COOLIFY_PROD_URL="http://10.0.1.1:8000"
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: nem olvashato: $TOKEN_FILE" >&2; exit 1; }
 MODE="${1:-}"
 
 curl -s -m 20 -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")") \
-  "https://coolify.acropora.hu/api/v1/applications" \
+  "${COOLIFY_PROD_URL}/api/v1/applications" \
   | python3 -c 'import json,sys
 for a in json.load(sys.stdin):
     print(a.get("uuid",""), a.get("name","?"), sep="\t")' \
@@ -30,7 +34,7 @@ for a in json.load(sys.stdin):
       echo
       echo "===== $name ====="
       curl -s -m 40 -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")") \
-        "https://coolify.acropora.hu/api/v1/applications/${uuid}/logs?lines=100000" \
+        "${COOLIFY_PROD_URL}/api/v1/applications/${uuid}/logs?lines=100000" \
         | AC_NAME="$name" AC_MODE="$MODE" python3 -c '
 import json, os, sys
 try:
