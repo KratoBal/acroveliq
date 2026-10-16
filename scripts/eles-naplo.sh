@@ -20,7 +20,8 @@ set -uo pipefail
 TOKEN_FILE=/home/marveen/marveen/store/.coolify-token-prod
 # B20 (2026-10-16): the public name coolify.acropora.hu is being closed (tailnet only).
 # The fleet runs on the same host, so it reaches Coolify on the coolify network gateway.
-COOLIFY_PROD_URL="${COOLIFY_PROD_URL:-http://10.0.1.1:8000}"
+# A fixed constant on purpose: the target of a secret is not settable from the environment.
+COOLIFY_PROD_URL="http://10.0.1.1:8000"
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: nem olvashato: $TOKEN_FILE" >&2; exit 1; }
 MODE="${1:-}"
 

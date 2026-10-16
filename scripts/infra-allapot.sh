@@ -64,7 +64,10 @@ for item in data:
   done
 }
 
-show "ELES GEP" "${COOLIFY_PROD_URL:-http://10.0.1.1:8000}" "$INSTALL_DIR/store/.coolify-token-prod"
+# B20 (2026-10-16): coolify.acropora.hu is closed to the public; the fleet shares the host,
+# so it reaches Coolify on the gateway. A fixed constant: a secret's target is not env-settable.
+COOLIFY_PROD_URL="http://10.0.1.1:8000"
+show "ELES GEP" "$COOLIFY_PROD_URL" "$INSTALL_DIR/store/.coolify-token-prod"
 show "AI GEP -- ITT VAN A VALODI STAGING" "https://coolify2.acropora.hu" "$INSTALL_DIR/store/.coolify-token-ai"
 
 echo
@@ -111,7 +114,7 @@ mode="AUTOMATIKUS" if v is True else ("kezi" if v is False else "NEM MERHETO")
 print("     %-30s %-12s %s" % (a.get("name") or "?", mode, a.get("fqdn") or ""))'
   done
 }
-mod "ELES GEP" "${COOLIFY_PROD_URL:-http://10.0.1.1:8000}" "$INSTALL_DIR/store/.coolify-token-prod"
+mod "ELES GEP" "$COOLIFY_PROD_URL" "$INSTALL_DIR/store/.coolify-token-prod"
 mod "AI GEP (teszt)" "https://coolify2.acropora.hu" "$INSTALL_DIR/store/.coolify-token-ai"
 echo
 echo " AMIT EZ A LEKERDEZES NEM MER: a GitHub App tovabbra is az ELES gep"
