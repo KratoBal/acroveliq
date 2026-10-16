@@ -26,6 +26,7 @@ import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
 import { startUpdateChecker } from './web/update-checker.js'
 import { startScheduleRunner } from './web/schedule-runner.js'
+import { checkBootstrapStatus } from './web/bootstrap-signal.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
@@ -409,6 +410,9 @@ export function startWebServer(port = 3420): http.Server {
 
   const scheduleInterval = webOnly ? undefined : startScheduleRunner()
   if (!webOnly) logger.info('Schedule runner started (60s poll)')
+
+  // B1: a fleet-bootstrap that failed at container start becomes one urgent card (once per start).
+  if (!webOnly) checkBootstrapStatus()
 
   // Pre-start the interactive agent worker (subscription backend) so the first
   // heartbeat / scheduled generation after boot does not pay the cold-boot
