@@ -355,7 +355,15 @@ for _jel in ('NE OLVASZD BE', 'DO NOT MERGE', '[WIP]', 'NE OLVASSZ'):
 # nem a MEGITELES.
 def _jeloltek_kiir(_sha, _push_epoch):
     try:
-        with open('/home/marveen/marveen/store/.dashboard-token') as _f:
+        # a hivo sajat tokenje, ha van, kulonben a kozos, hangosan (P0-1, terv 5.2)
+        _tf = '/home/marveen/marveen/store/.dashboard-token'
+        try:
+            sys.path.insert(0, '/home/marveen/marveen/scripts/lib')
+            from dashboard_token import token_file as _token_file
+            _tf = _token_file('/home/marveen/marveen')
+        except Exception:
+            pass
+        with open(_tf) as _f:
             _tok = _f.read().strip()
         _r = subprocess.run(
             ['curl', '-s', '-m', '10', '-H', '@-',

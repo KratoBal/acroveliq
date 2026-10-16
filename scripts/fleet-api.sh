@@ -1171,33 +1171,33 @@ sys.exit(3 if bad else 0)'
     # elerheto (`agent=X&before=<id+1>`, es a keresett sor a lap ELSO eleme lesz).
     # Az agens nelkuli alak tovabbra is csak az utolso 200-at latja -- az nem hiba, csak
     # kevesebb, es a kimenet meg is mondja, mivel lehet tovabbmenni.
+    #
+    # 2026-10-16 (P0-1 kikenyszerites elokeszites): az uzenet a `/api/messages/<id>` vegpontrol
+    # jon, EGY sor, ablak nelkul. A listas ut (agens nelkul a flotta utolso 200 uzenete, vagy egy
+    # MASIK agens postafiokja) a hozzaferesi matrixban nem a hivo sajatja: egy alagens tokenjevel
+    # a kikenyszerites 403-at ad ra. Az egy-soros ut a feladot es a cimzettet egyarant sajatnak
+    # tekinti. A masodik argumentumot elfogadjuk a regi hivasok miatt, de mar nem kell.
     argc_max 2 "$#" "fleet-api.sh message-read <uzenet_id> [agens]"
     ID="${1:?message id required}"
-    WHO="${2:-}"
-    if [ -n "$WHO" ]; then
-      MREQ="/messages?agent=${WHO}&limit=200&before=$((ID + 1))"
-    else
-      MREQ="/messages?limit=200"
-    fi
-    get "$MREQ" | MSG_ID="$ID" MSG_WHO="$WHO" python3 -c '
+    case "$ID" in ''|*[!0-9]*) echo "FAIL: az uzenet-azonosito szam: $ID"; exit 1 ;; esac
+    get "/messages/${ID}" | MSG_ID="$ID" python3 -c '
 import json, os, sys, time
 mid = int(os.environ["MSG_ID"])
-d = json.load(sys.stdin)
-rows = d if isinstance(d, list) else d.get("messages", d.get("data", []))
-m = next((r for r in rows if r.get("id") == mid), None)
-if m is None:
-    oldest = min((r.get("id", 0) for r in rows), default=0)
-    who = os.environ.get("MSG_WHO") or ""
-    print("FAIL: nincs %d azonositoju uzenet ebben az ablakban (%d sor, a legregebbi: %d)."
-          % (mid, len(rows), oldest))
-    if who:
-        print("      Az agens-szures MEGVOLT (%s), tehat ez NEM latohatar-kerdes:" % who)
-        print("      ez az uzenet nem tartozik hozza, vagy nem letezik.")
+raw = sys.stdin.read()
+try:
+    m = json.loads(raw)
+except ValueError:
+    print("FAIL: a valasz nem JSON: %s" % raw[:200]); raise SystemExit(1)
+# a 404-es valasz is visz `id` mezot, tehat elobb a hibat kell nezni
+if not isinstance(m, dict) or m.get("error") or m.get("id") != mid:
+    err = m.get("error") if isinstance(m, dict) else None
+    if err == "message not found":
+        print("FAIL: nincs %d azonositoju uzenet." % mid)
+    elif err == "Forbidden":
+        # a kikenyszerito allasban egy nem letezo uzenet is ide jut: a tulajdonosa ismeretlen
+        print("FAIL: a %d uzenet nem a tied, vagy nem letezik: %s" % (mid, m.get("reason", "")))
     else:
-        print("      EZ NEM AZT JELENTI, HOGY NEM LETEZIK. Agens nelkul csak az utolso 200")
-        print("      uzenet latszik, es az ablak a flotta forgalmaval csuszik. Add meg,")
-        print("      KINEK az uzenete, es barmilyen regi azonosito elerheto:")
-        print("        fleet-api.sh message-read %d <agens>" % mid)
+        print("FAIL: varatlan valasz: %s" % raw[:200])
     raise SystemExit(1)
 print("%d | %s -> %s | %s | %s" % (
     m["id"], m.get("from_agent"), m.get("to_agent"), m.get("status"),
@@ -1279,10 +1279,16 @@ if known and to and to not in known:
     ;;
   messages-sent)
     : "${1:?agent required}"; AGENT="$(arg "$1")"; LIMIT="${2:-10}"
-    get "/messages?limit=500" | MSG_AGENT="$AGENT" MSG_LIMIT="$LIMIT" python3 -c '
+    # Az agens SAJAT beszelgetese (kuldott es kapott, a szerver legfeljebb 200 sort ad), nem a
+    # flotta utolso uzenetei: azok egy alagens tokenjevel nem a hivo sajatjai, a kikenyszerites
+    # 403-at adna (P0-1, 2026-10-16). A szures a feladora ugyanugy itt tortenik.
+    get "/messages?agent=${AGENT}&limit=200" | MSG_AGENT="$AGENT" MSG_LIMIT="$LIMIT" python3 -c '
 import json, os, sys, time
 agent = os.environ["MSG_AGENT"]; limit = int(os.environ["MSG_LIMIT"])
 d = json.load(sys.stdin)
+if isinstance(d, dict) and d.get("error"):
+    # egy 403 vagy 400 ne latsszon "nincs kimeno uzenet"-nek
+    print("FAIL: %s %s" % (d.get("error"), d.get("reason", ""))); raise SystemExit(1)
 rows = d if isinstance(d, list) else d.get("messages", d.get("data", []))
 mine = [r for r in rows if r.get("from_agent") == agent]
 mine.sort(key=lambda r: r.get("id", 0), reverse=True)
@@ -1304,7 +1310,7 @@ print()
 print("kezbesitetlen (pending): %d %s" % (len(pend), pend if pend else ""))
 if pend:
     print("EZEKET NEM KAPTA MEG A CIMZETT. Ne jelentsd oket atadottkent.")
-# A LATOHATAR KIIRASA. A lekerdezes limit=500-at ker, de a szerver ennel kevesebbet is adhat,
+# A LATOHATAR KIIRASA. A lekerdezes limit=200-at ker (a szerver ennel tobbet nem ad),
 # es a szures a KAPOTT ablakon belul fut. Ami az ablak ELE esik, az egyszeruen nem latszik --
 # jelzes nelkul. Murena merte 2026-08-27: a helper 41 sajat uzenetet mutatott neki, a
 # legregebbi lathato 5227-es azonositoval, holott aznap a 5118-cal kezdett. Aki egy REGEBBI
@@ -1314,8 +1320,8 @@ if pend:
 if rows:
     oldest = min(r.get("id", 0) for r in rows)
     print()
-    print("LATOHATAR: ez a lista a rendszer utolso %d uzenetet nezte at, a legregebbi benne: %d."
-          % (len(rows), oldest))
+    print("LATOHATAR: ez a lista %s utolso %d uzenetet nezte at (kuldott es kapott), a legregebbi benne: %d."
+          % (agent, len(rows), oldest))
     print("           Ennel REGEBBI sajat uzenet NEM latszik itt, es a hianya nem bizonyitek.")
     print("           Egy konkret regebbi uzenetet a message-status <id> paranccsal kerdezz le.")
 '

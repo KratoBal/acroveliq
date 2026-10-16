@@ -99,9 +99,16 @@ fi
 
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
+# the calling user's own token if handed out, else the shared one, loudly (P0-1, plan 5.2)
 TOKEN=""
-if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
-  TOKEN=$(cat "$INSTALL_DIR/store/.dashboard-token")
+if [ -r "$INSTALL_DIR/scripts/lib/dashboard-token.sh" ]; then
+  . "$INSTALL_DIR/scripts/lib/dashboard-token.sh"
+  TOKEN_FILE="$(dashboard_token_file "$INSTALL_DIR" 2>>"$LOG")"
+else
+  TOKEN_FILE="$INSTALL_DIR/store/.dashboard-token"
+fi
+if [ -f "$TOKEN_FILE" ]; then
+  TOKEN=$(cat "$TOKEN_FILE")
 fi
 
 # Replays delivered-but-not-completed messages from the last 2 hours into

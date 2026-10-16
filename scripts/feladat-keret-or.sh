@@ -23,7 +23,13 @@ set -uo pipefail
 TASK="${1:?task_id}"; AGENT="${2:?agent}"; MAX_CR="${3:?max cache-read millio}"; MAX_CALLS="${4:?max hivas}"; EVERY="${5:-5}"
 # KERET_OR_ROOT only exists for the contract test (scripts/__tests__/feladat-keret-or.test.sh).
 ROOT="${KERET_OR_ROOT:-/home/marveen/marveen}"
-TOKEN="$(cat "$ROOT/store/.dashboard-token")"
+# the calling user's own token if handed out, else the shared one, loudly (P0-1, plan 5.2)
+if [ -r "$ROOT/scripts/lib/dashboard-token.sh" ]; then
+  . "$ROOT/scripts/lib/dashboard-token.sh"
+  TOKEN="$(cat "$(dashboard_token_file "$ROOT")")"
+else
+  TOKEN="$(cat "$ROOT/store/.dashboard-token")"
+fi
 DB="$ROOT/store/claudeclaw.db"
 
 while true; do

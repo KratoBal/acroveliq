@@ -106,10 +106,12 @@ def main():
             when = day
         out.append("  %s  %s" % (when, head[:110]))
     out.append("")
+    # the helper presents the reader's own token; a printed curl with the shared
+    # token is what the reader would copy (acrovelIQ P0-1, legacy_callers)
     out.append(
-        "A teljes szoveg: curl -s -H \"Authorization: Bearer $(cat "
+        "A teljes szoveg: bash "
         + INSTALL_DIR
-        + '/store/.dashboard-token)" "http://localhost:3420/api/daily-log?agent=acrobot&date=<EEEE-HH-NN>"'
+        + "/scripts/fleet-api.sh daily-log-read %s <EEEE-HH-NN> full" % AGENT
     )
     sys.stdout.write("\n".join(out) + "\n")
     return 0

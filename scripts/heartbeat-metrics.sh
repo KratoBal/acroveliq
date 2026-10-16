@@ -52,7 +52,7 @@ echo "HB_METRICS_V1 ts=$(TZ="$TZNAME" date +'%Y-%m-%d %H:%M')"
 # piped data is silently lost; here the heredoc IS the program and nothing
 # is piped). python3's sqlite3 module replaces the sqlite3 CLI, which does
 # not exist on a stock Linux install (exit 127).
-STORE_DIR="$STORE_DIR" ORIGIN="$ORIGIN" python3 - <<'PY'
+CLAW_ROOT="$ROOT" STORE_DIR="$STORE_DIR" ORIGIN="$ORIGIN" python3 - <<'PY'
 import json, os, sqlite3, sys, urllib.request
 
 store = os.environ['STORE_DIR']
@@ -64,12 +64,25 @@ def err(section, reason):
     print('ERROR %s: %s' % (section, reason))
     fail = 1
 
+# the calling user's own token if handed out, else the shared one, loudly
+# (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py)
+root = os.path.dirname(os.path.abspath(store))
+token_path = os.path.join(store, '.dashboard-token')
+try:
+    sys.path.insert(0, os.path.join(os.environ['CLAW_ROOT'], 'scripts', 'lib'))
+    from dashboard_token import token_file
+    own = token_file(root)
+    # only a per-agent token; the fallback stays the given store's shared one
+    if os.path.basename(os.path.dirname(own)) == 'tokens':
+        token_path = own
+except Exception:
+    pass
 tok = None
 try:
-    with open(os.path.join(store, '.dashboard-token')) as f:
+    with open(token_path) as f:
         tok = f.read().strip()
 except OSError as e:
-    err('token', 'cannot read .dashboard-token: %s' % e)
+    err('token', 'cannot read %s: %s' % (os.path.basename(token_path), e))
 
 def get(path):
     req = urllib.request.Request(

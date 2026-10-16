@@ -45,9 +45,22 @@ def git(*args):
     return run(["git", "-C", ROOT] + list(args))[1]
 
 
+def _token_file():
+    # the calling user's own dashboard token if handed out, else the shared one,
+    # loudly (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py)
+    try:
+        lib = os.path.join(ROOT, "scripts", "lib")
+        if lib not in sys.path:
+            sys.path.insert(0, lib)
+        from dashboard_token import token_file
+        return token_file(ROOT)
+    except Exception:
+        return os.path.join(ROOT, "store", ".dashboard-token")
+
+
 def api(path):
     try:
-        tok = open(os.path.join(ROOT, "store", ".dashboard-token")).read().strip()
+        tok = open(_token_file()).read().strip()
         req = urllib.request.Request(DASH + path, headers={"Authorization": "Bearer " + tok})
         return json.load(urllib.request.urlopen(req, timeout=10))
     except Exception:
