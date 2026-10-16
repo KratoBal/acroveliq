@@ -41,7 +41,10 @@ case "\$1" in
   *) echo "stub: unexpected \$1"; exit 1 ;;
 esac
 EOF
+# the approver's two fixed lines: the main copy names one that is not there (CI, a container
+# before D4), so the cases below see the script as it was; the D4 section has its own copy
 sed -e "s|^ZONA=.*|ZONA=$Z|" -e "s|^FLEET_API=.*|FLEET_API=$T/fleet-api.sh|" -e 's|^ME=.*|ME=agent-tesztelo|' \
+  -e "s|^FLEET_APPROVE=.*|FLEET_APPROVE=$T/nincs-jovahagyo|" -e 's|^SUDO=.*|SUDO=""|' \
   "$HERE/../review-ellenoriz.sh" > "$T/ell.sh"
 sed -e 's|^ME=agent-tesztelo|ME=runner|' "$T/ell.sh" > "$T/ell-nem-agens.sh"
 # the packets below are owned by whoever runs the test (CI: runner): the main copy also
@@ -235,6 +238,70 @@ check 'doc- with a path in it -> 2' 2 "$(ell doc-../x tsk-d APPROVE)"
 check 'doc- alone -> 2' 2 "$(ell doc- tsk-d APPROVE)"
 check 'olvas: doc- with a path -> 2' 2 "$(olv doc-../x)"
 check 'no document refusal wrote an event' "$n" "$(events)"
+
+echo 'the root record (the D4 step list E3 (a)): where the approver is installed'
+check 'the script has the two fixed lines, once each' 2 \
+  "$(grep -cxE '(FLEET_APPROVE=/usr/local/sbin/fleet-approve|SUDO="sudo -n")' "$HERE/../review-ellenoriz.sh")"
+check 'the main copy has neither of them' 0 "$(grep -cxE '(FLEET_APPROVE=/usr/local/sbin/fleet-approve|SUDO="sudo -n")' "$T/ell.sh")"
+RC="$T/root-calls"
+cat > "$T/fleet-approve" <<EOF
+#!/usr/bin/env bash
+[ -f "$T/fail-root" ] && { echo "fleet-approve: refused: agent-tesztelo is not an approver" >&2; exit 10; }
+printf '%s\n' "\$*" >> "$RC"
+echo "recorded \$5 \$2#\$3 at \$6, task \$4"
+EOF
+chmod 755 "$T/fleet-approve"
+# a sudo stand-in: -n -l asks the policy (no rule while no-rule exists), -n <cmd> runs it,
+# and without the rule the run itself is refused too, as sudo -n would
+cat > "$T/sudo" <<EOF
+#!/usr/bin/env bash
+[ "\$1" = -n ] || { echo "sudo stub: -n expected"; exit 1; }
+shift
+[ -f "$T/no-rule" ] && { echo "sudo: a password is required" >&2; exit 1; }
+[ "\$1" = -l ] && exit 0
+exec "\$@"
+EOF
+chmod 755 "$T/sudo"
+sed -e "s|^FLEET_APPROVE=.*|FLEET_APPROVE=$T/fleet-approve|" -e "s|^SUDO=.*|SUDO=\"$T/sudo -n\"|" "$T/ell.sh" > "$T/ell-d4.sh"
+check 'the D4 copy names the stub sudo' 1 "$(grep -cxF "SUDO=\"$T/sudo -n\"" "$T/ell-d4.sh")"
+ell4() { bash "$T/ell-d4.sh" "$@" >"$T/out" 2>&1; echo $?; }
+roots() { [ -f "$RC" ] && wc -l < "$RC" | tr -d ' ' || echo 0; }
+check 'not installed: the verdict -> 0, as before' 0 "$(ell marveen70 tsk-a APPROVE)"
+check '... says no root record was made' 1 "$(grep -c '^MEGJEGYZES: a gepi jovahagyo itt nincs telepitve' "$T/out")"
+check '... and called nothing' 0 "$(roots)"
+n="$(events)"
+check 'installed: a 40-character head -> 0' 0 "$(ell4 marveen70 tsk-a APPROVE)"
+check '... the root record: repo, PR, task, verdict and the full head' \
+  'record KratoBal/acroveliq 70 tsk-a APPROVE 1234567890abcdef1234567890abcdef12345678' "$(tail -n1 "$RC")"
+check '... after the timeline verdict, not instead of it' "$((n + 1))" "$(events)"
+check '... and says it' 1 "$(grep -c '^OK root rekord: recorded APPROVE' "$T/out")"
+check 'a CHANGES is recorded too (the approver needs the latest, either way)' 0 "$(ell4 marveen70 tsk-a CHANGES)"
+check '... as CHANGES' 'record KratoBal/acroveliq 70 tsk-a CHANGES 1234567890abcdef1234567890abcdef12345678' "$(tail -n1 "$RC")"
+check 'the AI repo, the latest round head' 0 "$(ell4 ai37 tsk-a APPROVE)"
+check '... named for the approver' 'record KratoBal/acropora-ai-agent 37 tsk-a APPROVE 2a4c62f661f628ad557170e9ed80aadecabec6fd' "$(tail -n1 "$RC")"
+mkdir "$Z/pr-marveen75"; printf 'marveen PR 75 \npr: KratoBal/marveen#75\ntask_id: tsk-a\nfej: 5555555555555555555555555555555555555555\n' > "$Z/pr-marveen75/README.md"
+check 'a packet from before the rename -> 0' 0 "$(ell4 marveen75 tsk-a APPROVE)"
+check '... the timeline keeps the old name, the root record has the current one' \
+  "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/marveen#75 pr-marveen75 fej 5555555555555555555555555555555555555555|record KratoBal/acroveliq 75 tsk-a APPROVE 5555555555555555555555555555555555555555" \
+  "$(tail -n1 "$EV")|$(tail -n1 "$RC")"
+r="$(roots)"; n="$(events)"
+check 'a 7-character head -> 1' 1 "$(ell4 1700 tsk-b APPROVE)"
+check '... says the timeline has it and the root record does not' 1 "$(grep -c '^FAIL: az idovonalon rogzitve, de a csomag feje nem 40 jegyu' "$T/out")"
+check '... the timeline verdict was written, the approver not called' "$((n + 1))|$r" "$(events)|$(roots)"
+touch "$T/fail-root"
+check 'the approver refuses -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
+check '... and its answer is passed on' 1 "$(grep -c '^FAIL: az idovonalon rogzitve, de a root rekord NEM: fleet-approve: refused' "$T/out")"
+rm "$T/fail-root"
+r="$(roots)"
+touch "$T/no-rule"
+check 'installed, but sudo does not allow record yet (a live-tree update before the bootstrap) -> 0' 0 "$(ell4 marveen70 tsk-a APPROVE)"
+check '... says why no root record was made' 1 "$(grep -c '^MEGJEGYZES: a gepi jovahagyo telepitve, de a sudo a record iget meg nem engedi' "$T/out")"
+check '... and nothing was recorded' "$r" "$(roots)"
+check '... a short head is not an error then either (nothing could be recorded anyway)' 0 "$(ell4 1700 tsk-b APPROVE)"
+rm "$T/no-rule"
+check 'a document verdict -> 0' 0 "$(ell4 doc-tsk-d tsk-d APPROVE)"
+check '... has no PR: no root record' "$r" "$(roots)"
+check 'a refused verdict (another task) never reaches the approver' "1|$r" "$(ell4 marveen70 tsk-b APPROVE)|$(roots)"
 
 # the refs the script wrote, for the Task Core guard test (src/__tests__/review-ref-shape.test.ts)
 [ -n "${REVIEW_REFS_OUT:-}" ] && grep ' verdict ' "$EV" | sed -E 's/^task-event [^ ]+ verdict [^ ]+  //' > "$REVIEW_REFS_OUT"

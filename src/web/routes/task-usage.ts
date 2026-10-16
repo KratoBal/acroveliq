@@ -363,8 +363,9 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `a ${kind} event is written by POST /api/task-actions only` }, 403)
       return true
     }
-    // A VERDICT BECOMES A GITHUB APPROVAL (scripts/root/fleet-approve.py, D4 step 2): it is written only
-    // with the task reviewer's OWN agent token. The shared token stores the body's actor in `naplo`
+    // A VERDICT IS THE REVIEW'S RECORD ON THE TIMELINE: it is written only with the task reviewer's OWN
+    // agent token. (The GitHub approval no longer reads it: scripts/root/fleet-approve.py reads its own
+    // root record, which review-ellenoriz.sh writes next to this one; the D4 step list E3 (a).) The shared token stores the body's actor in `naplo`
     // mode, so without this anyone holding it could put an APPROVE on a timeline in the reviewer's
     // name (barracuda, #200 review). The other modes do not make it safe either: the check is the
     // token's agent against the task's reviewer, here, in every mode.
