@@ -20,7 +20,7 @@ import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-o
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureReadonlyCommandGate, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureReadonlyCommandGate, ensurePermissionApprovalHook, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -601,6 +601,7 @@ export function startWebServer(port = 3420): http.Server {
       const provPatched: string[] = []
       const egressPatched: string[] = []
       const readonlyPatched: string[] = []
+      const approvalPatched: string[] = []
       const govPatched: string[] = []
       const pruned: string[] = []
       // Include the main agent (MAIN_AGENT_ID) so the voice hook is also seeded
@@ -622,6 +623,7 @@ export function startWebServer(port = 3420): http.Server {
         if (ensureAgentProvenanceHook(agentName)) provPatched.push(agentName)
         if (ensureEgressGate(agentName)) egressPatched.push(agentName)
         if (ensureReadonlyCommandGate(agentName)) readonlyPatched.push(agentName)
+        if (ensurePermissionApprovalHook(agentName)) approvalPatched.push(agentName)
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
         ensureQuarantineReader(agentName)
       }
@@ -640,6 +642,7 @@ export function startWebServer(port = 3420): http.Server {
       if (provPatched.length) logger.info({ patched: provPatched }, 'provenance-gate UserPromptSubmit hook backfilled into agent settings.json')
       if (egressPatched.length) logger.info({ patched: egressPatched }, 'egress-gate WebFetch hook backfilled into agent settings.json')
       if (readonlyPatched.length) logger.info({ patched: readonlyPatched }, 'readonly-command-gate Bash hook backfilled into agent settings.json')
+      if (approvalPatched.length) logger.info({ patched: approvalPatched }, 'permission-approval PermissionRequest hook backfilled into agent settings.json')
       if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')
     } catch (err) {
       logger.warn({ err }, 'Agent hook backfill skipped')
