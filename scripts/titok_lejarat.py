@@ -35,6 +35,7 @@ the sent thresholds live in store/secrets-lejarat-allapot.json (names, dates, wo
 value). A renewed secret (a new date) starts over. The text is printed in a KULDENDO block,
 and the heartbeat posts it to the Eldontendo thread as it is.
 """
+import datetime
 import fnmatch
 import json
 import os
@@ -59,9 +60,12 @@ def rule_for(name, registry):
 
 
 def days_until(datestr, now):
+    """Calendar days from today to the expiry date. Not seconds over 86400: that floors a day
+    off whenever the hour of now is later than midnight, and a DST change hides it in one zone
+    and shows it in another (measured: 40 here, 39 in the UTC CI, the same input)."""
     try:
-        t = time.mktime(time.strptime(datestr[:10], "%Y-%m-%d"))
-        return int((t - now) // 86400)
+        exp = datetime.date.fromisoformat(datestr[:10])
+        return (exp - datetime.date.fromtimestamp(now)).days
     except Exception:
         return None
 
