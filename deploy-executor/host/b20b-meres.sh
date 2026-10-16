@@ -28,7 +28,7 @@ for f in "$DYN"/*.yaml "$DYN"/*.yml; do
   [ -f "$f" ] || continue
   echo "  -- $f"
   grep -n -E '^\s*(http|routers|services|middlewares|entryPoints|rule|service|priority|tls|certResolver|loadBalancer|url|redirectScheme|[A-Za-z0-9_-]+:)\s*' "$f" \
-    | grep -v -i -E 'password|secret|token|users|basicauth|key' | sed 's/^/     /'
+    | grep -v -i -E 'password|secret|token|users|basicauth|key|authorization|bearer|credential' | sed 's/^/     /'
 done
 
 echo "== 3. A Coolify webhook-utvonalai"
