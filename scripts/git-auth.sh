@@ -27,12 +27,55 @@
 
 set -uo pipefail
 
-# FLEET_GITHUB_APP=on: the agent's git asks the credential helper (scripts/git-credential-fleet-github),
-# which gets a token for exactly the repository git talks to; this script adds no header and reads no
-# owner token (the owner token's retirement, PR 1, docs/fleet-github.md)
+# FLEET_GITHUB_APP=on: no owner token is read (the owner token's retirement, PR 1, docs/fleet-github.md).
+#   - A READ (fetch, pull, ls-remote, clone) gets the broker's `olvas` token for exactly the repository
+#     the remote names, as the same Basic header, scoped to https://github.com/. WHY (the D4 step list
+#     step 10, 2026-10-16): without it the fetch went out unauthenticated, and the marveen user has no
+#     credential helper; and even with one, git asks a helper only on a 401, while GitHub's limit on
+#     unauthenticated downloads answers otherwise (the reason this script exists, see above). No token
+#     from the broker is a stop, not a silent anonymous fetch.
+#   - Anything else (push) runs plain git: the credential helper (scripts/git-credential-fleet-github)
+#     gives the push token for the one repository. A read header there would make the push use the
+#     read token and fail.
+GITHUB_TOKEN_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/github-token.sh"
 if [ "${FLEET_GITHUB_APP:-off}" = on ]; then
   [ $# -ge 1 ] || { echo "FAIL: adj meg git parancsot, pl.: git-auth.sh fetch origin" >&2; exit 1; }
-  exec git "$@"
+  # the subcommand: past git's own -C <dir> and -c <key=value>
+  pre=(); i=1
+  while [ $i -le $# ]; do
+    a="${!i}"
+    case "$a" in
+      -C|-c) j=$((i + 1)); pre+=("$a" "${!j}"); i=$((i + 2)) ;;
+      *) break ;;
+    esac
+  done
+  sub="${!i:-}"
+  case "$sub" in fetch|pull|ls-remote|clone) ;; *) exec git "$@" ;; esac
+  # the remote: the first non-option word after the subcommand (a URL or a remote name), else origin
+  remote=""; k=$((i + 1))
+  while [ $k -le $# ]; do
+    a="${!k}"; k=$((k + 1))
+    case "$a" in --) continue ;; -*) continue ;; *) remote="$a"; break ;; esac
+  done
+  if [[ "$remote" =~ ^https://github\.com/ ]]; then url="$remote"
+  elif [ "$sub" = clone ]; then echo "FAIL: clone csak https://github.com/ URL-lel, ez jott: '$remote'" >&2; exit 1
+  else url="$(git "${pre[@]}" remote get-url "${remote:-origin}" 2>/dev/null)" || url=""
+  fi
+  repo="${url#https://github.com/}"; repo="${repo%.git}"; repo="${repo%/}"
+  [[ "$url" =~ ^https://github\.com/ ]] && [[ "$repo" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$ ]] \
+    || { echo "FAIL: a(z) '${remote:-origin}' remote nem https://github.com/<owner>/<repo>: '$url'" >&2; exit 1; }
+  . "$GITHUB_TOKEN_LIB"
+  TOK="$(github_token "$repo" olvas)" || { echo "FAIL: a broker nem adott olvas tokent ($repo): nem fetch-elek nevtelenul" >&2; exit 1; }
+  BASIC="$(TOK="$TOK" python3 -c 'import base64, os; print(base64.b64encode(("x-access-token:" + os.environ["TOK"]).encode()).decode())')" \
+    || { echo "FAIL: a base64 eloallitasa nem sikerult" >&2; exit 1; }
+  TOK=""
+  GIT_CONFIG_COUNT=1 \
+  GIT_CONFIG_KEY_0=http.https://github.com/.extraHeader \
+  GIT_CONFIG_VALUE_0="Authorization: Basic ${BASIC}" \
+    git "$@"
+  RC=$?
+  BASIC=""
+  exit $RC
 fi
 
 TOKEN_FILE="/home/marveen/marveen/store/.github-token"
