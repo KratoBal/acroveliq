@@ -5,9 +5,57 @@
 #   /opt/vegrehajto/titkok/           (root 700; the four token files, 10001 400)
 # NOT under /opt/marveen-docker: that tree is mounted writable into the fleet.
 # No docker socket, no host port, no host path of the fleet.
+#
+# B20b (task b20b-coolify2-tailnet, plan exchange/biztonsag/baseline/b20b-coolify2-*): the AI
+# machine's Coolify (coolify2) is reachable on the tailnet only, so the executor gets its OWN
+# Tailscale identity through the `ts` sidecar (tag:vegrehajto; the tailnet policy gives it
+# tag:stage-ai:8000 and nothing else). The executor joins the sidecar's network namespace: its
+# hardening (read-only, no capabilities, no new privileges, uid 10001) does not change, and only the
+# sidecar holds NET_ADMIN and the tun device. Kernel mode, because in userspace mode (containerboot's
+# default) the executor would reach the tailnet only through a proxy its fetch does not use.
 name: vegrehajto
 
 services:
+  ts:
+    # set in /opt/vegrehajto/.env as tailscale/tailscale:<version>@sha256:<digest>; no value, no start
+    image: ${VEGREHAJTO_TS_IMAGE:?set VEGREHAJTO_TS_IMAGE in /opt/vegrehajto/.env to tailscale/tailscale:<version>@sha256:<digest>}
+    container_name: vegrehajto-ts
+    hostname: vegrehajto
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    environment:
+      # the variable names and the file: prefix: tailscale/tailscale cmd/containerboot/main.go
+      TS_AUTHKEY: file:/run/secrets/ts-authkey
+      TS_AUTH_ONCE: "true"
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+      # Docker's DNS stays: the fleet's name for the executor (`vegrehajto`) keeps resolving
+      TS_ACCEPT_DNS: "false"
+      TS_HOSTNAME: vegrehajto
+      # no subnet routes and no exit node, said aloud (barracuda, plan review): the tailnet has a
+      # subnet router and an exit node, and a later default must not send the executor's traffic there;
+      # no exit node is set (none is the default); the install reads both back from the prefs
+      TS_EXTRA_ARGS: --advertise-tags=tag:vegrehajto --accept-routes=false
+    volumes:
+      - type: volume
+        source: ts-allapot
+        target: /var/lib/tailscale
+    secrets:
+      - ts-authkey
+    networks:
+      hivas:
+        # the fleet calls http://vegrehajto:8787; the executor listens in this namespace
+        aliases:
+          - vegrehajto
+      ki: {}
+
   vegrehajto:
     build:
       context: /opt/vegrehajto/src
@@ -44,9 +92,10 @@ services:
       - coolify-ai-deploy
       - discord-olvaso
       - github-olvaso
-    networks:
-      - hivas
-      - ki
+    # the sidecar's namespace: its two networks and its tailnet address (B20b)
+    network_mode: service:ts
+    depends_on:
+      - ts
 
 networks:
   # the fleet's container joins this one (docker network connect); nothing else
@@ -60,6 +109,8 @@ networks:
 volumes:
   allapot:
     name: vegrehajto-allapot
+  ts-allapot:
+    name: vegrehajto-ts-allapot
 
 secrets:
   coolify-prod-deploy:
@@ -70,3 +121,7 @@ secrets:
     file: /opt/vegrehajto/titkok/discord-olvaso
   github-olvaso:
     file: /opt/vegrehajto/titkok/github-olvaso
+  # a one-time, pre-approved Tailscale auth key tagged tag:vegrehajto (root 600; read by the
+  # sidecar, which runs as root, at its first login only: TS_AUTH_ONCE)
+  ts-authkey:
+    file: /opt/vegrehajto/titkok/ts-authkey

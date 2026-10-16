@@ -68,7 +68,20 @@ for item in data:
 # so it reaches Coolify on the gateway. A fixed constant: a secret's target is not env-settable.
 COOLIFY_PROD_URL="http://10.0.1.1:8000"
 show "ELES GEP" "$COOLIFY_PROD_URL" "$INSTALL_DIR/store/.coolify-token-prod"
-show "AI GEP -- ITT VAN A VALODI STAGING" "https://coolify2.acropora.hu" "$INSTALL_DIR/store/.coolify-token-ai"
+# B20b (2026-10-16): the AI machine's Coolify (coolify2) is closed to the public, only its
+# /webhooks/ path stays; on the tailnet the fleet (tag:prod) may not reach its :8000. So the
+# public name is asked once, and a refusal is said in words, not as an empty or broken section.
+AI_COOLIFY_URL="https://coolify2.acropora.hu"
+ai_coolify_elerheto() {
+  [[ "$(/usr/bin/curl -s -o /dev/null -m 10 -w '%{http_code}' "$AI_COOLIFY_URL/api/health")" == 200 ]]
+}
+AI_ZART="  a coolify2 a flottabol nem erheto el (B20b: csak a tailneten, a 8000 a flottanak tiltott).
+  Az AI gep alkalmazasait Balazs a tailnetrol latja; telepites a vegrehajton at: scripts/vegrehajto.sh"
+if ai_coolify_elerheto; then
+  show "AI GEP -- ITT VAN A VALODI STAGING" "$AI_COOLIFY_URL" "$INSTALL_DIR/store/.coolify-token-ai"
+else
+  echo; echo "===== AI GEP ($AI_COOLIFY_URL) ====="; echo "$AI_ZART"
+fi
 
 echo
 echo "=========================================================================="
@@ -115,7 +128,11 @@ print("     %-30s %-12s %s" % (a.get("name") or "?", mode, a.get("fqdn") or ""))
   done
 }
 mod "ELES GEP" "$COOLIFY_PROD_URL" "$INSTALL_DIR/store/.coolify-token-prod"
-mod "AI GEP (teszt)" "https://coolify2.acropora.hu" "$INSTALL_DIR/store/.coolify-token-ai"
+if ai_coolify_elerheto; then
+  mod "AI GEP (teszt)" "$AI_COOLIFY_URL" "$INSTALL_DIR/store/.coolify-token-ai"
+else
+  echo " --- AI GEP (teszt) ---"; echo "$AI_ZART"
+fi
 echo
 echo " AMIT EZ A LEKERDEZES NEM MER: a GitHub App tovabbra is az ELES gep"
 echo " Coolify-jara mutat, tehat a kapcsolat adott. Az 'AUTOMATIKUS' sor azt"
