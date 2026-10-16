@@ -32,7 +32,8 @@ function stageTree(scriptNames: string[]): { bin: string } {
   const tokenLib = readFileSync(join(ROOT, 'scripts', 'lib', 'github-token.sh'), 'utf8')
   expect(tokenLib).toContain('GITHUB_OWNER_TOKEN_FILE=/home/marveen/marveen/store/.github-token\n')
   writeFileSync(join(scripts, 'lib', 'github-token.sh'), tokenLib
-    .replace('GITHUB_OWNER_TOKEN_FILE=/home/marveen/marveen/store/.github-token', `GITHUB_OWNER_TOKEN_FILE=${join(stage, 'store', '.github-token')}`))
+    .replace('GITHUB_OWNER_TOKEN_FILE=/home/marveen/marveen/store/.github-token', `GITHUB_OWNER_TOKEN_FILE=${join(stage, 'store', '.github-token')}`)
+    .replace('GITHUB_TOKEN_BROKER=/usr/local/sbin/fleet-github', `GITHUB_TOKEN_BROKER=${join(stage, 'nincs-broker')}`))
   const bin = join(stage, 'bin')
   mkdirSync(bin, { recursive: true })
   writeFileSync(join(bin, 'curl'),
@@ -50,6 +51,8 @@ function run(rel: string, env: Record<string, string>, bin: string, args: string
       HOME: stage,
       CURL_STUB_TOKEN: FAKE_TOKEN,
       CURL_ARGV_LOG: join(stage, 'curl-argv.log'),
+      // the owner token file is what these cases follow (the default is the broker since 2026-10-16)
+      FLEET_GITHUB_APP: 'off',
       ...env,
     },
     encoding: 'utf-8',

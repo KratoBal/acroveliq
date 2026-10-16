@@ -292,9 +292,9 @@ export const TASK_CORE_MODE_SETTING = env['TASK_CORE_MODE']
 // Projektek V1: the project and repo rules have their own mode (off|naplo|kenyszerit, default
 // naplo): turning the done guard to kenyszerit must not turn these on with it (two decisions)
 export const PROJECT_CHECK_MODE_SETTING = env['PROJECT_CHECK_MODE']
-// The owner token's retirement, PR 2 (docs/fleet-github.md): on, the dashboard's GitHub reads ask the
-// root broker for a one-hour, one-repository token; off (default), the owner token file. The process
-// environment wins over .env, as for the fleet scripts' FLEET_GITHUB_APP. Read once at start.
+// The owner token's retirement, PR 2 (docs/fleet-github.md): by default (unset, or anything but off)
+// the dashboard's GitHub reads ask the root broker for a one-hour, one-repository token; off, the owner
+// token file (the explicit rollback). The process environment wins over .env. Read once at start.
 export const FLEET_GITHUB_APP_SETTING = process.env['FLEET_GITHUB_APP'] ?? env['FLEET_GITHUB_APP']
 // The hidden heartbeat worker's agent id. Lives here (not in
 // heartbeat-agent-scaffold) so agent-scaffold can key gates on it without an

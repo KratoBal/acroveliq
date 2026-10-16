@@ -6,12 +6,15 @@
 //   - a malformed repository or an unknown role reaching the broker;
 //   - the broker asked on every call (the kept token), or a kept token outliving 45 minutes;
 //   - the two dashboard checks sending one repository's token to another repository;
-//   - a dashboard source file reading store/.github-token directly, outside the known list.
+//   - a dashboard source file reading store/.github-token directly, outside the known list;
+//   - the default (the setting unset) not being the broker, or anything but exactly `off` turning it off
+//     (the default is the broker since 2026-10-16, acrobot 32199; off is the explicit rollback);
+//   - the fleet repository's old name (KratoBal/marveen) asking the broker for itself, not for acroveliq.
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
-import { forgetGithubTokens, githubToken, githubTokenPlaces, readTokenSource, type GithubRole } from '../github-token.js'
+import { brokerSwitch, forgetGithubTokens, githubToken, githubTokenPlaces, readTokenSource, type GithubRole } from '../github-token.js'
 import { githubMergeProbe } from '../task-usage.js'
 import { githubProbe } from '../task-handoff.js'
 
@@ -47,6 +50,21 @@ afterAll(() => {
 
 const on = (v: boolean) => { githubTokenPlaces.switchOn = () => v }
 const brokerCalls = () => (existsSync(calls) ? readFileSync(calls, 'utf8').split('\n').filter(Boolean) : [])
+
+describe('the switch: the broker unless exactly off', () => {
+  it('unset is the broker; only the literal off is the owner file, the same rule as the shell', () => {
+    expect([undefined, 'on', '', 'Off', 'OFF', ' off', 'yes'].map(brokerSwitch)).toEqual([true, true, true, true, true, true, true])
+    expect(brokerSwitch('off')).toBe(false)
+  })
+})
+
+describe('the fleet repository\'s old name', () => {
+  it('KratoBal/marveen asks the broker for KratoBal/acroveliq', async () => {
+    on(true)
+    expect(await githubToken('KratoBal/marveen', 'olvas')).toBe('APP-KratoBal/acroveliq-olvas')
+    expect(brokerCalls()).toEqual(['token KratoBal/acroveliq olvas'])
+  })
+})
 
 describe('switch off: the owner token file', () => {
   it('gives the file, and an empty or missing file is no token', async () => {

@@ -1,7 +1,8 @@
 """github_token(repo, role): the Python twin of scripts/lib/github-token.sh (the owner token's retirement,
-PR 1, docs/fleet-github.md). FLEET_GITHUB_APP=on asks the root broker for a one-hour token for the one
-repository and role; off (the default) reads the owner token file, as before. Raises GithubTokenError
-instead of returning an empty token."""
+PR 1, docs/fleet-github.md). By default (unset, or anything but off) it asks the root broker for a
+one-hour token for the one repository and role; FLEET_GITHUB_APP=off reads the owner token file (the
+explicit rollback; the default is the broker since 2026-10-16, acrobot 32199). Raises GithubTokenError,
+with the broker's own reason, instead of returning an empty token or falling back to the owner token."""
 import os
 import re
 import subprocess
@@ -20,11 +21,12 @@ class GithubTokenError(Exception):
 def github_token(repo, role, owner_file=None):
     if not REPO_RX.match(repo or '') or role not in ROLES:
         raise GithubTokenError(f'bad repo or role: {repo} {role}')
-    if os.environ.get('FLEET_GITHUB_APP', 'off') == 'on':
+    if os.environ.get('FLEET_GITHUB_APP', 'on') != 'off':
         r = subprocess.run(SUDO + [BROKER, 'token', repo, role], capture_output=True, text=True)
         tok = r.stdout.strip()
         if r.returncode != 0 or not tok:
-            raise GithubTokenError(f'the broker gave no {role} token for {repo}')
+            why = (r.stderr or '').strip()[:200] or f'exit {r.returncode}'
+            raise GithubTokenError(f'the broker gave no {role} token for {repo}: {why}')
         return tok
     path = owner_file or OWNER_TOKEN_FILE
     try:

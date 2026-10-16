@@ -27,7 +27,9 @@
 
 set -uo pipefail
 
-# FLEET_GITHUB_APP=on: no owner token is read (the owner token's retirement, PR 1, docs/fleet-github.md).
+# By default (FLEET_GITHUB_APP unset, or anything but off; since 2026-10-16, acrobot 32199; off is the
+# explicit rollback to the owner token header below) no owner token is read (the owner token's
+# retirement, PR 1, docs/fleet-github.md).
 #   - A READ (fetch, pull, ls-remote, clone) gets the broker's `olvas` token for exactly the repository
 #     the remote names, as the same Basic header, scoped to https://github.com/. WHY (the D4 step list
 #     step 10, 2026-10-16): without it the fetch went out unauthenticated, and the marveen user has no
@@ -38,7 +40,7 @@ set -uo pipefail
 #     gives the push token for the one repository. A read header there would make the push use the
 #     read token and fail.
 GITHUB_TOKEN_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/github-token.sh"
-if [ "${FLEET_GITHUB_APP:-off}" = on ]; then
+if [ "${FLEET_GITHUB_APP:-on}" != off ]; then
   [ $# -ge 1 ] || { echo "FAIL: adj meg git parancsot, pl.: git-auth.sh fetch origin" >&2; exit 1; }
   # the subcommand: past git's own -C <dir> and -c <key=value>
   pre=(); i=1

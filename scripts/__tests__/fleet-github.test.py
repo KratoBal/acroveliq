@@ -16,7 +16,7 @@
 #   - the credential helper answering another host, a missing path, a store call, or a broker refusal
 #     with a password, or missing the last line without a newline;
 #   - pr-beolvaszt.sh reading the owner token file with the switch on.
-import importlib.util, json, os, shutil, subprocess, sys, tempfile, types
+import importlib.util, json, os, re, shutil, subprocess, sys, tempfile, types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..", "..")
@@ -275,7 +275,9 @@ try:
 
     print("pr-beolvaszt.sh: the switch")
     pb = open(os.path.join(ROOT, "scripts", "pr-beolvaszt.sh")).read()
-    start = pb.index('if [ "${FLEET_GITHUB_APP:-off}" = on ]; then')
+    # any shape of the switch line, so a changed default turns the checks below red instead of
+    # crashing the lookup (calibrated 2026-10-16)
+    start = re.search(r'^if \[ "\$\{FLEET_GITHUB_APP:-[a-z]+\}" (?:=|!=) [a-z]+ \]; then$', pb, re.M).start()
     end = pb.index(NL + "fi" + NL, start) + len(NL + "fi" + NL)
     block = pb[start:end]
     tokfile = os.path.join(T, "owner-token"); open(tokfile, "w").write("OWNER-TOKEN")
@@ -294,7 +296,9 @@ try:
         return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=e).stdout
     check("switch on: the broker's merge token, the owner file not read",
           "APP--n /usr/local/sbin/fleet-github token KratoBal/acroveliq beolvaszt", switch("on"))
-    check("switch off (the default): the owner token, as before", "OWNER-TOKEN", switch(None))
+    check("switch off (the explicit rollback): the owner token, as before", "OWNER-TOKEN", switch("off"))
+    check("UNSET (the default since 2026-10-16): the broker's merge token, the owner file not read",
+          "APP--n /usr/local/sbin/fleet-github token KratoBal/acroveliq beolvaszt", switch(None))
 finally:
     shutil.rmtree(T, ignore_errors=True)
 
