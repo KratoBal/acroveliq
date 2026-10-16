@@ -83,6 +83,37 @@ def diff(old, new):
     return out
 
 
+# B28 (P1-00e, P0-2): the live business keys and the Google mailbox tokens the owner took out of
+# the fleet (docs/b28-titok-kivetel.md). Nothing in the fleet reads them (measured 2026-10-16:
+# the router's tree, the live scripts, the skills and the three app repos), the live systems hold
+# their own copies, and the old values are rotated. Their return is not a change to report once:
+# it breaks the B28 rule, so every run says so until the file is gone, and STATE never absorbs it.
+# Stripe and Medusa keys are NOT here: the commerce freeze allows only an inventory (task brief).
+RETIRED = (
+    ".foxpost-credentials",
+    ".gls-credentials.json",
+    ".gls-credentials.json.bak-20261005",
+    ".gsuite-refresh-token-balazs",
+    ".gsuite-refresh-token-ticket",
+    ".os-balazs-google-refresh-token",
+    ".otp-ebiz-api-key",
+    ".szamlazz-agent-key",
+    ".szamlazz-banktranz-key",
+    ".szamlazz-prod-master-key-v1",
+)
+
+
+def retired_lines(rows):
+    """One line per retired key that is back in store/, with who can read it."""
+    out = []
+    for r in rows:
+        if r["file"] in RETIRED:
+            readers = sorted(u for u, v in r["readers"].items() if v == "IGEN")
+            out.append(f"KIVETT KULCS A STORE-BAN {r['file']}: {r['owner']} {r['group']} {r['mode']}, "
+                       f"olvassa: {', '.join(readers) or 'senki'} (B28: ide nem kerulhet vissza)")
+    return out
+
+
 def write_state(state):
     tmp = STATE + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -138,7 +169,7 @@ def main(argv=None):
         print(f"HIBA: az elozo allapot ({STATE}) nem olvashato ({type(e).__name__}); "
               "a valtozast nem merem, az allapot nem frissul.")
         return 2
-    changes = diff(old, new)
+    changes = diff(old, new) + retired_lines(rows)
     write_state(new)
     for line in changes:
         print(line)

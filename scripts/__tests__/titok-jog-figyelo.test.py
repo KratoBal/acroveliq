@@ -9,7 +9,9 @@
 #     it absorbs; an unknown argument writing anything;
 #   - a change alerting twice (the state not moved on after a run);
 #   - a mismatch with os.access, or an unreadable state, touching the state or exiting other than 2;
-#   - the state not 0600, a secret's content in the output or the state, or a network call.
+#   - the state not 0600, a secret's content in the output or the state, or a network call;
+#   - a retired B28 key in store/ not said on every run (absorbed after the first), or a commerce key
+#     (Stripe, Medusa) on the retired list despite the freeze.
 import importlib.util, io, json, os, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -114,6 +116,24 @@ try:
     check("no secret content in any output", False, any("TITOK-ERTEK" in s for s in seen))
     check("no secret content in the state", False, "TITOK-ERTEK" in open(state).read())
     check("no network (a stubbed urlopen would raise)", False, any("network called" in s for s in seen))
+
+    print("a retired B28 key back in store/ is said on EVERY run, never absorbed")
+    put(".szamlazz-agent-key", 0o600)
+    rc, out = run()
+    kivett = [l for l in out.splitlines() if l.startswith("KIVETT KULCS A STORE-BAN .szamlazz-agent-key: ")]
+    check("first run: exit 1, the new file AND the retired line", (1, True, 1),
+          (rc, any(l.startswith("UJ FAJL .szamlazz-agent-key:") for l in out.splitlines()), len(kivett)))
+    rc, out = run()
+    check("second run, nothing else changed: still exit 1, only the retired line", (1, 1, True),
+          (rc, len(out.splitlines()), out.startswith("KIVETT KULCS A STORE-BAN .szamlazz-agent-key: ")))
+    os.remove(os.path.join(store, ".szamlazz-agent-key"))
+    check("gone: the change once, then silent", ((1, "ELTUNT FAJL .szamlazz-agent-key"), (0, "")), (run(), run()))
+    put(".stripe-live-key", 0o600)
+    rc, out = run()
+    check("a commerce key is not on the list (freeze: inventory only)", (1, False), (rc, "KIVETT" in out))
+    os.remove(os.path.join(store, ".stripe-live-key"))
+    run()
+    check("no secret content in the retired lines either", False, any("TITOK-ERTEK" in s for s in seen))
 
     print("an unreadable state is exit 2, and the state is not replaced")
     open(state, "w").write("{nem json")
