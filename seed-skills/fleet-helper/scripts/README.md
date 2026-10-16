@@ -6,7 +6,7 @@ instead of burning model tokens doing it inside the LLM turn. Python 3 stdlib
 only.
 
 No secrets or personal data are baked in: the dashboard token is read from
-`store/.dashboard-token` at call time, paths come from `CLAW_DIR` (or are
+the caller's own token (`store/tokens/<agent>.token`, via `scripts/lib/dashboard_token.py`) at call time, paths come from `CLAW_DIR` (or are
 auto-detected), and any personal sender/keyword lists live in a gitignored
 `mail_rules.json` (see `mail_rules.example.json`).
 
@@ -83,7 +83,7 @@ mail_rules.example.json  # copy to mail_rules.json (gitignored) with real values
 ```
 
 ## Safety notes
-- Token is read from `store/.dashboard-token` at call time. Never print or commit it.
+- The token is the caller's own, read at call time (`scripts/lib/dashboard_token.py`). Never print or commit it.
 - Kanban helpers are READ-ONLY; mutations stay in your own audited flows.
 - `mail_rules.json` (your real senders) must be gitignored (see `.gitignore`).
 

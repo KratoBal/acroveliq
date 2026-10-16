@@ -255,6 +255,20 @@ Respond ONLY with JSON, nothing else:
   }
 
   const memUpdateMatch = path.match(/^\/api\/memories\/(\d+)$/)
+  // One memory by id (P0-1, task p0-1-harom-javitas): the same scope as the list (class OLVASO);
+  // a read, not a recall, so accessed_at is not touched.
+  if (memUpdateMatch && method === 'GET') {
+    const id = parseInt(memUpdateMatch[1], 10)
+    const m = getDb().prepare('SELECT * FROM memories WHERE id = ?').get(id) as Memory | undefined
+    if (!m) { json(res, { error: 'Not found' }, 404); return true }
+    json(res, {
+      ...m,
+      embedding: undefined,
+      created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
+      accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
+    })
+    return true
+  }
   if (memUpdateMatch && method === 'PUT') {
     const id = parseInt(memUpdateMatch[1], 10)
     const body = await readBody(req)

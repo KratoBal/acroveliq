@@ -1,6 +1,6 @@
 ---
 name: fleet-helper
-description: Shared, dependency-free Python helpers for the agent fleet - dashboard API (memory, messages, kanban), Telegram MarkdownV2 escaping, and rule-based Mail.app triage. Use to do deterministic work (fetch/filter/SQL/format/escape) in Python instead of burning model tokens doing it in the LLM turn. The dashboard token is read from store/.dashboard-token at call time, never hardcoded.
+description: Shared, dependency-free Python helpers for the agent fleet - dashboard API (memory, messages, kanban), Telegram MarkdownV2 escaping, and rule-based Mail.app triage. Use to do deterministic work (fetch/filter/SQL/format/escape) in Python instead of burning model tokens doing it in the LLM turn. The dashboard token is the calling user's own (store/tokens/<agent>.token via scripts/lib/dashboard_token.py), read at call time, never hardcoded.
 ---
 
 # fleet-helper
@@ -10,7 +10,7 @@ and into Python, so heartbeats and scheduled tasks stop spending tokens
 re-deriving the same plumbing each cycle. Python 3 stdlib only, no pip deps.
 
 No secrets or personal data are baked in: the dashboard token is read from
-`store/.dashboard-token` at call time, the project root comes from `CLAW_DIR`
+the CALLING user's own token (`store/tokens/<agent>.token`, via `scripts/lib/dashboard_token.py`; the shared `store/.dashboard-token` only as its loud fallback) at call time, the project root comes from `CLAW_DIR`
 (or is auto-detected), and any personal sender/keyword lists live in a gitignored
 `mail_rules.json` (see `scripts/mail_rules.example.json`).
 
@@ -65,6 +65,6 @@ only does the judgment + notification. Zero scheduler/runner changes. See
 (avoid cron collisions with other heartbeats; `skipIfBusy` trade-off).
 
 ## Safety
-- Token is read from `store/.dashboard-token` at call time; never printed or committed.
+- The token is the caller's own (`scripts/lib/dashboard_token.py`), read at call time; never printed or committed.
 - Kanban helpers are READ-ONLY; mutations stay in your own audited flows.
 - `mail_rules.json` (your real senders) is gitignored.

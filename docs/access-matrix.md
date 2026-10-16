@@ -240,6 +240,7 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | POST | `/api/memories/import` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | memory-write | body: agent_id |
 | POST | `/api/memories/backfill` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | memory-write | body: agent_id |
 | GET | `/api/memories/stats` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
+| GET | `/api/memories/:id` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
 | PUT | `/api/memories/:id` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | memory-change | rekord: memory (:id) |
 | DELETE | `/api/memories/:id` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | memory-change | rekord: memory (:id) |
 | GET | `/api/schedules/agents` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |

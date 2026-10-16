@@ -45,7 +45,7 @@ Az `id` rövid előtagja is elég a válaszhoz, ha egyértelmű -- de a PATCH-he
 ```bash
 curl -s -X PATCH "http://localhost:3420/api/approvals/<id>" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat <install>/store/.dashboard-token)" \
+  -H @<(bash <install>/scripts/dashboard-fejlec.sh) \
   -d '{"status":"approved","resolved_by":"telegram_text","telegram_message_id":<int|null>}'
 ```
 - `status`: `approved` | `rejected` | `timeout` -- más érték 400.
@@ -75,7 +75,8 @@ Egy rövid visszaigazolás. Ha nem szólsz, nem tudja, hogy a döntése célba �
   fut, és a tulajdonos csak annyit ír, hogy "IGEN", **kérdezz vissza, melyikre** --
   ne tippelj.
 - **A `Bearer` token soha ne kerüljön a csatornára** vagy logba: mindig
-  `$(cat <install>/store/.dashboard-token)` formában add át.
+  `-H @<(bash <install>/scripts/dashboard-fejlec.sh)` formában add át: ez a SAJÁT tokenedet adja
+  fájlleírón át (a közös token a P0-1 óta nem a te azonosítód, és a kikényszerítés szűkíti).
 
 ## Ellenőrzés
 
