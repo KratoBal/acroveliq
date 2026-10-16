@@ -21,6 +21,8 @@
 #   bash scripts/fleet-api.sh daily-log-read <agent> [YYYY-MM-DD] [full]   # READ it back
 #         (hossz + elso sor bejegyzesenkent; "full" a teljes szoveget irja ki)
 #   bash scripts/fleet-api.sh kanban-list
+#   bash scripts/fleet-api.sh kanban-keres [--cim ELOTAG] [--statusz S] [--id ELOTAG] [--felelos NEV]
+#   bash scripts/fleet-api.sh kanban-archive <card_id>
 #   bash scripts/fleet-api.sh kanban-new "<title>" <status> <assignee> <priority>
 #   bash scripts/fleet-api.sh kanban-move <card_id> <status> [actor]
 #   bash scripts/fleet-api.sh kanban-assign <card_id> <assignee>
@@ -1108,6 +1110,56 @@ sys.exit(3 if bad else 0)'
     CARD="${1:?card id required}"; : "${2:?author required}"; AUTHOR="$(arg "$2")"; : "${3:?content required}"; CONTENT="$(arg "$3")"
     post "/kanban/${CARD}/comments" "$(json_obj author "$AUTHOR" content "$CONTENT")"
     ;;
+  kanban-keres)
+    # B29 (task b29-fleet-api-kanban): the open cards, filtered, one line each. The main agent
+    # used to pipe the raw list into a python3 one-off; under a strict profile that one-off is a
+    # permission question every time. Filters are ANDed; none given lists every open card.
+    #   --cim ELOTAG     title starts with (case-insensitive)
+    #   --statusz S      planned | in_progress | waiting | done
+    #   --id ELOTAG      card id starts with
+    #   --felelos NEV    assignee
+    # Output: id, status, assignee, priority, title (tab-separated; the title cut to 120), then
+    # the count. Archived cards are not in this list (GET /api/kanban/archived has them).
+    argc_max 8 "$#" "fleet-api.sh kanban-keres [--cim ELOTAG] [--statusz S] [--id ELOTAG] [--felelos NEV]"
+    K_CIM=""; K_ST=""; K_ID=""; K_FEL=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --cim) K_CIM="${2-}"; shift 2 || { echo "FAIL: --cim ertek nelkul"; exit 1; } ;;
+        --statusz) K_ST="${2-}"; shift 2 || { echo "FAIL: --statusz ertek nelkul"; exit 1; } ;;
+        --id) K_ID="${2-}"; shift 2 || { echo "FAIL: --id ertek nelkul"; exit 1; } ;;
+        --felelos) K_FEL="${2-}"; shift 2 || { echo "FAIL: --felelos ertek nelkul"; exit 1; } ;;
+        *) echo "FAIL: kanban-keres: ismeretlen kapcsolo: $1"; exit 1 ;;
+      esac
+    done
+    case "$K_ST" in ''|planned|in_progress|waiting|done) ;; *) echo "FAIL: --statusz: planned|in_progress|waiting|done"; exit 1 ;; esac
+    get /kanban | K_CIM="$K_CIM" K_ST="$K_ST" K_ID="$K_ID" K_FEL="$K_FEL" python3 -c '
+import json, os, sys
+try:
+    cards = json.load(sys.stdin)
+except ValueError:
+    print("FAIL: a kanban lista nem JSON"); sys.exit(1)
+if not isinstance(cards, list):
+    print("FAIL: a kanban lista nem lista"); sys.exit(1)
+cim, st, cid, fel = (os.environ[k] for k in ("K_CIM", "K_ST", "K_ID", "K_FEL"))
+n = 0
+for c in cards:
+    t = c.get("title") or ""
+    if cim and not t.lower().startswith(cim.lower()): continue
+    if st and c.get("status") != st: continue
+    if cid and not str(c.get("id", "")).startswith(cid): continue
+    if fel and (c.get("assignee") or "") != fel: continue
+    n += 1
+    print("\t".join([str(c.get("id", "")), c.get("status") or "", c.get("assignee") or "-", c.get("priority") or "", t[:120].replace("\t", " ").replace("\n", " ")]))
+print("%d kartya" % n)
+'
+    ;;
+  kanban-archive)
+    # B29: archive a card (POST /api/kanban/<id>/archive, empty body); 404 says the card is not there.
+    argc_max 1 "$#" "fleet-api.sh kanban-archive <card_id>"
+    CARD="${1:?card id required}"
+    CARD_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$CARD")"
+    post "/kanban/${CARD_URL}/archive" '{}'
+    ;;
   kanban-comments)
     # READING a card's comments. This existed only as a WRITE (kanban-comment)
     # until 2026-08-27, and the gap cost four separate round trips in one day:
@@ -1481,7 +1533,7 @@ if d.get("action_description"):
 '
     ;;
   *)
-    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-comment|kanban-comments|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart|kiadas|deployed|task-project|project-repo)"
+    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|kanban-keres|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-comment|kanban-comments|kanban-archive|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart|kiadas|deployed|task-project|project-repo)"
     exit 1
     ;;
 esac
