@@ -21,20 +21,54 @@ terv 7. pontja: a stage-flottán előbb, élesen csak utána. A parancsok a host
 
 Ami benne van, az root-é, és a konténerben csak olvasható: a `marveen` nem írhatja, és egy újrateremtés nem viszi el.
 
+**A claude bináris NEM a konténerből jön** (barracuda, #210 review). A konténerbeli példány a `marveen` írható
+könyvtárában áll, tehát a `marveen` választaná ki, mit indít a közvetítő ágens-felhasználóként, és a B48 éppen ezt
+zárja ki. A bináris a hoston, a hivatalos telepítővel jön (a repó is ezt használja verzióra rögzítve:
+`install-linux.sh`), egy ideiglenes HOME-ba, a saját felhasználóddal (nem rootként):
+
+```bash
+cd /opt/marveen-docker
+T="$(mktemp -d)"
+HOME="$T" bash -c 'curl -fsSL https://claude.ai/install.sh | bash -s 2.1.301'
+ls -l "$T/.local/share/claude/versions/2.1.301" || echo "ALLJ MEG: a telepito nem ide tett binarist, ne menj tovabb"
+```
+
+**Összevetés, és eltérésnél nem megyünk tovább:** a hivatalos letöltés lenyomata egyezzen a konténerben ma futó
+példányéval. Két független forrás: ha egyeznek, a konténerbeli példány sem volt átírva, és a flotta ugyanazt a verziót
+kapja, amin ma fut. Ha eltérnek, **itt megállsz**, és semmi nem kerül a `fleet-pane` könyvtárba: vagy a konténerbeli
+példány változott meg, vagy a verzió más, és mindkettőt előbb meg kell érteni.
+
+```bash
+cd /opt/marveen-docker
+sha256sum "$T/.local/share/claude/versions/2.1.301"
+docker compose exec marveen sha256sum /home/marveen/.local/share/claude/versions/2.1.301
+```
+
+Ha a két szám betűre egyezik, a hivatalos letöltés kerül a helyére (a másolás `sudo`-val, mert a cél root-é):
+
 ```bash
 cd /opt/marveen-docker
 sudo install -d -o root -g root -m 0755 fleet-pane fleet-pane/claude fleet-pane/claude/2.1.301
-docker compose cp marveen:/home/marveen/.local/share/claude/versions/2.1.301 ./fleet-pane/claude/2.1.301/claude
-sudo chown root:root fleet-pane/claude/2.1.301/claude && sudo chmod 0755 fleet-pane/claude/2.1.301/claude
+sudo install -o root -g root -m 0755 "$T/.local/share/claude/versions/2.1.301" fleet-pane/claude/2.1.301/claude
 sha256sum fleet-pane/claude/2.1.301/claude
+rm -rf "$T"
 ```
 
-A verzió a mai (mérve 2026-10-16: a legújabb a `versions` alatt `2.1.301`); a pontos számot a
-`docker compose exec marveen readlink -f /home/marveen/.local/bin/claude` adja. A claude frissítése ezentúl root-lépés:
-új `claude/<verzió>/` könyvtár, és a `start-values.json` `claudeBin` sora.
+Az utolsó `sha256sum` ugyanaz a szám, mint a két előző. A verzió a mai (mérve 2026-10-16: a legújabb a `versions`
+alatt `2.1.301`); a pontos számot a `docker compose exec marveen readlink -f /home/marveen/.local/bin/claude` adja. A
+claude frissítése ezentúl ugyanez a root-lépés: új `claude/<verzió>/` könyvtár ugyanígy, és a `start-values.json`
+`claudeBin` sora. Hogy a telepítő maga ellenőriz-e lenyomatot, azt nem mértem (a flotta nem éri el a claude.ai-t); az
+összevetés ezért nem a telepítőre bízza.
 
-A két JSON a `scripts/root/*.example.json` alakjában, root 0644, a mai hat ágenssel (mérve az `agent-config.json`
-fájlokból 2026-10-16: mindegyik saját felhasználó alatt fut, egyiknek sincs channel-je):
+A két JSON a `scripts/root/*.example.json` alakjában, a mai hat ágenssel (mérve az `agent-config.json`
+fájlokból 2026-10-16: mindegyik saját felhasználó alatt fut, egyiknek sincs channel-je). Megírod őket a saját
+könyvtáradban, és root 0644-gyel teszed a helyükre:
+
+```bash
+cd /opt/marveen-docker
+sudo install -o root -g root -m 0644 ~/agents.json fleet-pane/agents.json
+sudo install -o root -g root -m 0644 ~/start-values.json fleet-pane/start-values.json
+```
 
 `fleet-pane/agents.json`:
 
@@ -119,20 +153,38 @@ Csak ha a 3. pont 24 órája rendben volt, és a 6. pont N- és P-sorai zöldek.
 
 ```bash
 cd /opt/marveen-docker
-docker compose cp marveen:/etc/sudoers.d/fleet-tmux ./fleet-tmux.elotte-b48
+sudo docker compose cp marveen:/etc/sudoers.d/fleet-tmux ./fleet-tmux.elotte-b48
+sudo cat ./fleet-tmux.elotte-b48
 ```
 
-Utána a döntés rögzítése (a jelölő a mountban: a `marveen` nem veheti vissza, és egy újrateremtés sem írja vissza a
-sort), és a sor törlése most:
+A kiírt fájlban hat `NOPASSWD: /usr/bin/tmux` sor áll (egy ágensenként), mellettük a token-olvasás próbája és az
+`is-paired.sh` sorai. Utána a döntés rögzítése (a jelölő a mountban: a `marveen` nem veheti vissza, és egy
+újrateremtés sem írja vissza a sort), és a sor törlése most:
 
 ```bash
 cd /opt/marveen-docker
 sudo touch fleet-pane/no-tmux-line
-docker compose exec -u root marveen sh -c 'grep -vF "NOPASSWD: /usr/bin/tmux" /etc/sudoers.d/fleet-tmux > /etc/sudoers.d/.fleet-tmux.uj; visudo -c -f /etc/sudoers.d/.fleet-tmux.uj && install -o root -g root -m 0440 /etc/sudoers.d/.fleet-tmux.uj /etc/sudoers.d/fleet-tmux; rm -f /etc/sudoers.d/.fleet-tmux.uj'
+docker compose exec -u root marveen sh -c '
+  f=/etc/sudoers.d/fleet-tmux; u=/etc/sudoers.d/.fleet-tmux.uj
+  grep -vF "NOPASSWD: /usr/bin/tmux" "$f" > "$u" || { echo "ALLJ MEG: a grep nem adott sort"; rm -f "$u"; exit 1; }
+  regi=$(wc -l < "$f"); uj=$(wc -l < "$u"); tm=$(grep -cF "NOPASSWD: /usr/bin/tmux" "$f")
+  if [ "$tm" -ne 6 ] || [ "$uj" -ne $((regi - 6)) ] || [ "$uj" -lt 1 ]; then
+    echo "ALLJ MEG: regi $regi sor, tmux $tm, uj $uj sor (vart: tmux 6, uj = regi - 6, legalabb 1)"; rm -f "$u"; exit 1
+  fi
+  diff "$f" "$u"
+  visudo -c -f "$u" && install -o root -g root -m 0440 "$u" "$f"; rm -f "$u"'
 ```
 
-A `fleet-tmux` többi sora (a token-olvasás próbája és az `is-paired.sh`) marad. A ponttal kezdődő ideiglenes nevet a
-sudo nem olvassa be (a `sudoers.d` a pontot tartalmazó neveket kihagyja).
+A parancs csak akkor írja át a fájlt, ha pontosan a hat tmux-sor esik ki, és a többi sor megmarad (barracuda: egy
+üres kimenet a `visudo -c`-n átmenne, és az `install` a token-próba és az `is-paired.sh` sorait is elvinné). A
+`diff` a telepítés előtt kiírja, mi esik ki: csak `<` kezdetű tmux-sorok lehetnek benne. Ha az ágensek száma közben
+változott, a 6 helyett a mentésben számolt tmux-sorok száma áll. A ponttal kezdődő ideiglenes nevet a sudo nem olvassa
+be (a `sudoers.d` a pontot tartalmazó neveket kihagyja).
+
+**Egy határ, amit a konténer belülről nem lát** (barracuda): a visszavonást egyedül a mountban álló jelölő hordozza. Ha
+egyszer a `docker-compose.yml`-ból kimarad a mount sora, a következő újrateremtés után a bootstrap a tmux-sort
+**csendben visszaírja**, és a 7. lépése zöldet mond (mert a mount nélkül nem tudja, hogy a sor vissza volt vonva). Ezt
+a 6. pont N10 sora fogja meg.
 
 ## 5. Visszaállítás
 
@@ -145,7 +197,7 @@ sudo nem olvassa be (a `sudoers.d` a pontot tartalmazó neveket kihagyja).
 ```bash
 cd /opt/marveen-docker
 sudo rm -f fleet-pane/no-tmux-line
-docker compose cp ./fleet-tmux.elotte-b48 marveen:/etc/sudoers.d/.fleet-tmux.vissza
+sudo docker compose cp ./fleet-tmux.elotte-b48 marveen:/etc/sudoers.d/.fleet-tmux.vissza
 docker compose exec -u root marveen sh -c 'visudo -c -f /etc/sudoers.d/.fleet-tmux.vissza && install -o root -g root -m 0440 /etc/sudoers.d/.fleet-tmux.vissza /etc/sudoers.d/fleet-tmux; rm -f /etc/sudoers.d/.fleet-tmux.vissza'
 ```
 
@@ -165,7 +217,7 @@ Amit a flotta tud mérni (a 2. pont után, a `marveen`-ként vagy ágensként, �
 | N5 | az ágens futó folyamata a sablon szerinti `claude` (`ps` az ágens felhasználójára) | 3. után |
 | P4 | 24 óra: kézbesített, elutasított, újrapróbált üzenetek, indítások, beragadások, az előző 24 órával összevetve | 3. után |
 | N3 | `sudo -n -l` a `marveen`-ként: nincs `tmux` sor; a bootstrap 7. lépése `ok: no tmux line for agent-...` | 4. után |
-| N10 | egy újrateremtés után (a következő, ami amúgy is jön): N3 és N8 ugyanúgy, és a 7. lépés zöld | 4. után |
+| N10 | egy újrateremtés után (a következő, ami amúgy is jön): N3 és N8 ugyanúgy, és a 7. lépés zöld. **Ha itt az N3 piros (a `marveen` újra futtathat tmux-ot ágensként), az a mount elvesztését jelenti** (a 4. pont határa): a `docker-compose.yml` mount sorát kell visszatenni, nem a sudoers-t javítani | 4. után |
 
 A naplót (`/var/log/fleet-pane.log`, root 0600) csak root olvassa: a P1 és a P4 számait te adod ki, vagy egy
 olvasó csoportot döntesz el hozzá. A napló a konténer fájlrendszerében van, tehát egy újrateremtés elviszi.
