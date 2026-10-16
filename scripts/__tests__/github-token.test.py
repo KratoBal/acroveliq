@@ -57,8 +57,11 @@ try:
     def ncalls():
         return len(open(calls).read().splitlines()) if os.path.exists(calls) else 0
 
-    check("off: the owner token file", (0, "OWNER-TOKEN" + NL), sh("KratoBal/acroveliq", "olvas"))
+    check("off: the owner token file", (0, "OWNER-TOKEN" + NL), sh("KratoBal/acroveliq", "olvas", "off"))
     check("off: the broker is not asked", 0, ncalls())
+    check("UNSET (the default since 2026-10-16): the broker, not the owner file", (0, "APP-KratoBal/acroveliq-olvas" + NL), sh("KratoBal/acroveliq", "olvas"))
+    check("any value but off (a typo, 'yes', an empty string): the broker", [(0, "APP-KratoBal/acroveliq-olvas" + NL)] * 3,
+          [sh("KratoBal/acroveliq", "olvas", v) for v in ("Off", "yes", " ")])
     check("on: the broker, for exactly the repository and the role", (0, "APP-KratoBal/acroveliq-push" + NL), sh("KratoBal/acroveliq", "push", "on"))
     check("on: the broker's argv", "token KratoBal/acroveliq push", open(calls).read().splitlines()[-1])
     check("on: a refusal is non-zero and prints nothing", (1, ""), sh("KratoBal/refused", "olvas", "on"))
@@ -68,9 +71,10 @@ try:
     check("an unknown role: 2", 2, sh("KratoBal/acroveliq", "admin", "on")[0])
     check("and the broker was not asked for either", n, ncalls())
     open(owner, "w").write("")
-    check("off: an empty owner file is not a token", (1, ""), sh("KratoBal/acroveliq", "olvas"))
+    check("off: an empty owner file is not a token", (1, ""), sh("KratoBal/acroveliq", "olvas", "off"))
     os.remove(owner)
-    check("off: a missing owner file is not a token", (1, ""), sh("KratoBal/acroveliq", "olvas"))
+    check("off: a missing owner file is not a token", (1, ""), sh("KratoBal/acroveliq", "olvas", "off"))
+    check("the default with a broker refusal: non-zero, never the owner file", (1, ""), sh("KratoBal/refused", "olvas"))
     open(owner, "w").write("OWNER-TOKEN" + NL)
 
     print("the python helper")
@@ -90,7 +94,9 @@ try:
         finally:
             os.environ.pop("FLEET_GITHUB_APP", None)
 
-    check("off: the owner token file", "OWNER-TOKEN", py("KratoBal/acroveliq", "olvas"))
+    check("off: the owner token file", "OWNER-TOKEN", py("KratoBal/acroveliq", "olvas", "off"))
+    check("UNSET (the default): the broker", "APP-KratoBal/acroveliq-olvas", py("KratoBal/acroveliq", "olvas"))
+    check("the default with a broker refusal: raises, never the owner file", "ERROR", py("KratoBal/refused", "olvas"))
     check("on: the broker", "APP-KratoBal/acroveliq-olvas", py("KratoBal/acroveliq", "olvas", "on"))
     check("on: a refusal raises", "ERROR", py("KratoBal/refused", "olvas", "on"))
     check("on: an empty answer raises", "ERROR", py("KratoBal/empty", "olvas", "on"))
@@ -151,6 +157,8 @@ try:
     check("on: the broker refuses: stop, NO anonymous fetch", (1, "", True), (rc, got, "nem fetch-elek nevtelenul" in err))
     open(os.path.join(fakebin, "git"), "w").write(src_git)
     rc, got, asked, _ = ga("fetch", "origin", switch=None)
+    check("UNSET (the default since 2026-10-16): a fetch asks the broker, like on", (0, ["token KratoBal/acroveliq olvas"]), (rc, asked))
+    rc, got, asked, _ = ga("fetch", "origin", switch="off")
     check("off: the owner token file, as before, for any command", (0, [], "value=" + "Authorization: Basic " + base64.b64encode(b"x-access-token:OWNER-TOKEN").decode()),
           (rc, asked, got[got.index("value="):] if "value=" in got else got))
 

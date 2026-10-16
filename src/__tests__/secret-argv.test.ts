@@ -33,11 +33,14 @@ function run(script: string, args: string[]): { argv: string; stdin: string; cal
   const lib = readFileSync(join(REPO, 'scripts', 'lib', 'github-token.sh'), 'utf8')
   expect(lib).toContain('GITHUB_OWNER_TOKEN_FILE=/home/marveen/marveen/store/.github-token\n')
   writeFileSync(join(root, 'scripts', 'lib', 'github-token.sh'),
-    lib.replace('GITHUB_OWNER_TOKEN_FILE=/home/marveen/marveen/store/.github-token\n', `GITHUB_OWNER_TOKEN_FILE=${join(root, 'store', '.github-token')}\n`))
+    lib.replace('GITHUB_OWNER_TOKEN_FILE=/home/marveen/marveen/store/.github-token\n', `GITHUB_OWNER_TOKEN_FILE=${join(root, 'store', '.github-token')}\n`)
+      .replace('GITHUB_TOKEN_BROKER=/usr/local/sbin/fleet-github\n', `GITHUB_TOKEN_BROKER=${join(root, 'nincs-broker')}\n`))
   const shim = join(root, 'bin', 'curl')
   writeFileSync(shim, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${root}/argv.log"\ncat >> "${root}/stdin.log"\necho '{}'\n`)
   chmodSync(shim, 0o755)
-  spawnSync('bash', [copy, ...args], { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}` }, encoding: 'utf8', input: '' })
+  // the owner token file is what this test follows, so the switch is explicitly off (the default is the
+  // broker since 2026-10-16), and the broker points nowhere: no real token is minted where it is installed
+  spawnSync('bash', [copy, ...args], { env: { ...process.env, FLEET_GITHUB_APP: 'off', PATH: `${join(root, 'bin')}:${process.env.PATH}` }, encoding: 'utf8', input: '' })
   const read = (f: string) => (existsSync(join(root, f)) ? readFileSync(join(root, f), 'utf8') : '')
   const argv = read('argv.log')
   return { argv, stdin: read('stdin.log'), calls: argv.split('\n').filter(Boolean).length }

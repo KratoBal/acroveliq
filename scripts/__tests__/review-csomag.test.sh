@@ -142,12 +142,15 @@ printf 'titok\n' > "$T/tok"
 api() { mkdir -p "$T/api/repos/KratoBal/acroveliq/pulls"; printf '%s' "$2" > "$T/api/repos/KratoBal/acroveliq/pulls/$1"; }
 sed -e "s|^GIT_AUTH=.*|GIT_AUTH=$T/git-auth-stub.sh|" -e "s|^GH_API=.*|GH_API=file://$T/api|" "$S" > "$T/csomag.sh"
 # the token comes from lib/github-token.sh next to the script (the owner token's retirement, PR 1): the
-# copy gets its own copy of the helper, its owner token file pointed here (the switch is off)
+# copy gets its own copy of the helper, its owner token file pointed here, the switch explicitly off
+# (the default is the broker since 2026-10-16), and the broker at a path that does not exist: a test must
+# never mint a real token where the real broker and its sudo rule are installed
 mkdir -p "$T/lib"
-sed -e "s|^GITHUB_OWNER_TOKEN_FILE=.*|GITHUB_OWNER_TOKEN_FILE=$T/tok|" "$HERE/../lib/github-token.sh" > "$T/lib/github-token.sh"
+sed -e "s|^GITHUB_OWNER_TOKEN_FILE=.*|GITHUB_OWNER_TOKEN_FILE=$T/tok|" -e "s|^GITHUB_TOKEN_BROKER=.*|GITHUB_TOKEN_BROKER=$T/nincs-broker|" \
+  "$HERE/../lib/github-token.sh" > "$T/lib/github-token.sh"
 check 'the copy points at the stubs' 2 "$(grep -cE "^(GIT_AUTH=$T/git-auth-stub.sh|GH_API=file://$T/api)\$" "$T/csomag.sh")"
-check '... and its helper at the test token' 1 "$(grep -c "^GITHUB_OWNER_TOKEN_FILE=$T/tok\$" "$T/lib/github-token.sh")"
-pk() { REVIEW_CSOMAG_REPO="$F" REVIEW_CSOMAG_DIR="$T/zona" bash "$T/csomag.sh" marveen "$1" tcl-proba 2>&1; }
+check '... and its helper at the test token, the broker nowhere' 2 "$(grep -cE "^(GITHUB_OWNER_TOKEN_FILE=$T/tok|GITHUB_TOKEN_BROKER=$T/nincs-broker)\$" "$T/lib/github-token.sh")"
+pk() { FLEET_GITHUB_APP=off REVIEW_CSOMAG_REPO="$F" REVIEW_CSOMAG_DIR="$T/zona" bash "$T/csomag.sh" marveen "$1" tcl-proba 2>&1; }
 pkr() { pk "$@" >"$T/pk.out"; echo $?; }
 printf '%s' "$C2" > "$T/fetched-head"
 api 120 "{\"head\":{\"sha\":\"$C2\"}}"

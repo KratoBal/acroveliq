@@ -80,8 +80,8 @@ def api_base():
 
 def on_branch(repo, sha, branch):
     """(True, '') when sha is part of branch; (False, reason) otherwise."""
-    # an explicit GITHUB_TOKEN_FILE (the tests) wins; otherwise lib/github_token.py: the owner token file
-    # with FLEET_GITHUB_APP off, the broker's read token for this repository with it on
+    # an explicit GITHUB_TOKEN_FILE (the tests) wins; otherwise lib/github_token.py: the broker's read token
+    # for this repository (the default since 2026-10-16), the owner token file only with FLEET_GITHUB_APP=off
     tok_file = os.environ.get('GITHUB_TOKEN_FILE')
     try:
         if tok_file:
@@ -91,8 +91,8 @@ def on_branch(repo, sha, branch):
             from github_token import GithubTokenError, github_token
             try:
                 tok = github_token(repo, 'olvas')
-            except GithubTokenError:
-                return False, 'a GitHub kulcs nem olvashato'
+            except GithubTokenError as e:
+                return False, f'a GitHub kulcs nem olvashato: {e}'
     except OSError:
         return False, 'a GitHub kulcs nem olvashato'
     url = f'{api_base()}/repos/{repo}/compare/{sha}...{urllib.parse.quote(branch, safe="")}'

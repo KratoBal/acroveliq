@@ -5,6 +5,16 @@ Terv: `agents/nautilus/biztonsag/d4-2-lepcso-github-app-2026-10-15.md` (barracud
 fiókkal). Feladat: `t-20261015-d4-app-flotta` (acrobot 31402). **Ebben a PR-ban semmi nincs telepítve**, és a kapcsoló
 alapból ki van kapcsolva.
 
+**2026-10-16 óta az alapérték a BRÓKER** (acrobot 32199, a 10. lépés lelete; feladat `b25-e3`). A `FLEET_GITHUB_APP`
+nélkül, vagy bármely `off`-tól eltérő értékkel a szkriptek, a `git-auth.sh`, a `pr-beolvaszt.sh`, a `github-pr-monitor.sh`
+és a vezérlőpult is a brókertől kér tokent. A tulajdonosi tokent csak a pontosan `FLEET_GITHUB_APP=off` adja: ez a kifejezett
+visszaállítás. **Miért:** a szkriptek a kapcsolót a saját folyamatuk környezetéből olvasták, az ügynök-munkamenetekben pedig nem
+volt benne, tehát a `.env`-be írt `on` csak a vezérlőpultot állította volna át. Egy kapcsoló, amit kézzel kell minden folyamatba
+eljuttatni, az üzemeltetési követelmény ellen van. **Bróker-hiba esetén nincs csendes visszaesés a tokenfájlra:** az ok (a bróker
+stderr-je) a hibaüzenetben áll, és a művelet megáll. **A marveen felhasználó nem pushol** (a szerepei: olvas, pr, beolvaszt;
+acrobot 32207): a beolvasztás API-n megy, az élő fára cherry-pick kerül, PR-t az API nyit. A régi `KratoBal/marveen` nevet a
+vezérlőpult `acroveliq`-re fordítja; a `KratoBal/Acrobot` repóra a bróker nem ad tokent, ott a mérés „nem mérhető”.
+
 ## Mi van benne
 
 | Rész | Hol | Mit csinál |
@@ -13,7 +23,7 @@ alapból ki van kapcsolva.
 | a szerepek | ugyanott | `olvas` (minden csak olvasás), `push` (tartalom írás), `pr` (PR írás), `beolvaszt` (tartalom írás, PR és ellenőrzés olvasás). Workflows, administration, secrets egyikben sincs |
 | az őrzött jóváhagyó | `scripts/root/fleet-approve.py` (telepítve: `/usr/local/sbin/fleet-approve`) | `record <owner/repo> <pr> <task_id> <APPROVE\|CHANGES> <fej>`: a hívó (barracuda) verdiktjét egy root tulajdonú, csak hozzáfűzhető fájlba írja (`/var/lib/fleet-approve/verdicts.jsonl`, root 0600), a hívó nevét a SUDO_UID-ból veszi. `approve <owner/repo> <pr> <task_id>`: csak akkor hagy jóvá, ha ebben a fájlban a hívó legutolsó verdiktje erre a PR-ra és feladatra APPROVE, és a PR feje az átnézett fej; a jóváhagyás a fejhez kötött (`commit_id`). A gépi fiók tokenje csak rootnak olvasható |
 | a git credential helper | `scripts/git-credential-fleet-github` | az ügynök gitje ezen át kap `push` tokent pontosan arra a repóra |
-| a beolvasztó kapcsolója | `scripts/pr-beolvaszt.sh` | `FLEET_GITHUB_APP=on`: a token a brókertől jön (`beolvaszt`); kikapcsolva a régi út |
+| a beolvasztó kapcsolója | `scripts/pr-beolvaszt.sh` | alapból (2026-10-16 óta) a token a brókertől jön (`beolvaszt`); `FLEET_GITHUB_APP=off`: a régi út |
 | a minta-konfiguráció | `scripts/root/fleet-github-app.example.json` | a hívók és szerepeik, a jóváhagyók |
 | a tesztek | `scripts/__tests__/fleet-github.test.py` (CI: `test.yml`) | 53 ellenőrzés, kalibrálva 13 szándékos rontással |
 
@@ -226,7 +236,7 @@ root-egyenértékű a NOPASSWD sorral), hanem az ellen, hogy egy át nem nézett
 
 ## Visszaállítás
 
-- **A 6. lépés előtt:** a `FLEET_GITHUB_APP` kapcsoló kikapcsolva (az alapérték) a régi utat adja; a sudo sorok és a két
+- **A 6. lépés előtt:** a `FLEET_GITHUB_APP=off` a régi utat adja (az alapérték 2026-10-16 óta a bróker); a sudo sorok és a két
   telepített szkript maradhat, kényszer nélkül senki nem hívja; az ügynökök `credential.helper` beállítása visszaírható a
   régire (`git config --global --unset credential.helper`, utána a régi helper).
 - **A 6. lépés után:** új fine-grained token Balázstól, és a rulesetek jóváhagyás-száma vissza 0-ra, a böngészőből (a
