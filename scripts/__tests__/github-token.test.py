@@ -162,10 +162,28 @@ try:
     check("off: the owner token file, as before, for any command", (0, [], "value=" + "Authorization: Basic " + base64.b64encode(b"x-access-token:OWNER-TOKEN").decode()),
           (rc, asked, got[got.index("value="):] if "value=" in got else got))
 
+    print("github-pr-monitor.sh: a broker refusal stops it (barracuda #231 review, acrobot 32218)")
+    mroot = os.path.join(T, "mon"); os.makedirs(os.path.join(mroot, "scripts", "lib")); os.makedirs(os.path.join(mroot, "bin"))
+    shutil.copy(os.path.join(SCRIPTS, "github-pr-monitor.sh"), os.path.join(mroot, "scripts", "github-pr-monitor.sh"))
+    shutil.copy(lib, os.path.join(mroot, "scripts", "lib", "github-token.sh"))
+    open(os.path.join(mroot, ".env"), "w").write("")
+    ghlog = os.path.join(mroot, "gh-calls")
+    open(os.path.join(mroot, "bin", "gh"), "w").write("#!/bin/sh\necho \"$*\" >> " + ghlog + "\necho '[]'\n")
+    os.chmod(os.path.join(mroot, "bin", "gh"), 0o755)
+    def mon(repo, switch=None):
+        env = {k: v for k, v in os.environ.items() if k != "FLEET_GITHUB_APP"}
+        env.update({"PATH": os.path.join(mroot, "bin") + ":" + env["PATH"], "GITHUB_PR_MONITOR_REPO": repo})
+        if switch:
+            env["FLEET_GITHUB_APP"] = switch
+        r = subprocess.run(["bash", os.path.join(mroot, "scripts", "github-pr-monitor.sh")], capture_output=True, text=True, env=env, timeout=60)
+        return r.returncode, r.stderr, os.path.exists(ghlog)
+    rc, err, gh_called = mon("KratoBal/refused")
+    check("the default with a broker refusal: exit 1, said, and gh is never called",
+          (1, True, False), (rc, "a monitor nem fut nevtelenul" in err, gh_called))
+
     print("who still names the owner token file")
     known = {
         "lib/github-token.sh", "lib/github_token.py",   # the helpers: the switch-off branch
-        "ci-el-or.sh",                                   # watches the owner token's expiry; retires with it
         "pr-beolvaszt.sh",                               # its own switch (D4 step 2), the off branch
         "git-auth.sh",                                   # the off branch; on, the broker (reads) or the credential helper (push)
         "github-pr-monitor.sh",                          # the off branch's fallback

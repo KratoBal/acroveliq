@@ -2,7 +2,10 @@
 # Guard for scripts/ci-el-or.sh's token-expiry line (acrobot 31196; barracuda, V-GH-1 v3). WHAT TURNS
 # THIS RED: a token expiring within 14 days without a RIASZT line and exit 1; one far off reported as
 # an alarm; a missing expiry header not named; a missing header claimed when no call answered; the
-# runs check (the script's first job) changing its verdict.
+# runs check (the script's first job) changing its verdict. Those are the OWNER token's (FLEET_GITHUB_APP=off).
+# With the default (the broker, 2026-10-16): the broker not asked for exactly the repository and olvas;
+# a broker token's one-hour expiry reported as an alarm; a broker refusal silent or without its reason;
+# a 401 on the broker's token not an alarm.
 # The real script runs in a copy of the tree with a fake token; GitHub is a stub of
 # urllib.request.urlopen, loaded through sitecustomize (test-only, no seam in the script).
 import json, os, shutil, subprocess, sys, tempfile
@@ -59,11 +62,29 @@ try:
     s = open(p).read().replace("ROOT=/home/marveen/marveen", "ROOT=" + T)
     open(p, "w").write(s)
     open(os.path.join(T, "store", ".github-token"), "w").write("teszt\n")
+    # the token library the script loads from ROOT/scripts/lib: a copy, its owner file the test one, the
+    # broker a fake (no real token is minted where the real broker is installed)
+    os.makedirs(os.path.join(T, "scripts", "lib"))
+    calls = os.path.join(T, "broker-calls")
+    fake = os.path.join(T, "broker")
+    open(fake, "w").write("#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + calls + "\n"
+                          "case \"$2\" in KratoBal/refused) echo 'fleet-github: refused: not a fleet repository' >&2; exit 10 ;; esac\n"
+                          "printf 'ghs_FAKE'\n")
+    os.chmod(fake, 0o755)
+    lib = open(os.path.join(HERE, "..", "lib", "github_token.py")).read()
+    for a, b in (("OWNER_TOKEN_FILE = '/home/marveen/marveen/store/.github-token'", "OWNER_TOKEN_FILE = " + repr(os.path.join(T, "store", ".github-token"))),
+                 ("BROKER = '/usr/local/sbin/fleet-github'", "BROKER = " + repr(fake)), ("SUDO = ['sudo', '-n']", "SUDO = []")):
+        assert lib.count(a) == 1, a
+        lib = lib.replace(a, b)
+    open(os.path.join(T, "scripts", "lib", "github_token.py"), "w").write(lib)
     open(os.path.join(T, "stub", "sitecustomize.py"), "w").write(STUB)
-    def run(fx):
+    def run(fx, switch="off", repo="KratoBal/acroveliq"):
         f = os.path.join(T, "fx.json"); json.dump(fx, open(f, "w"))
-        r = subprocess.run(["bash", p, "KratoBal/acroveliq"], capture_output=True, text=True,
-                           env={**os.environ, "PYTHONPATH": os.path.join(T, "stub"), "CI_ELOR_FIXTURE": f})
+        env = {k: v for k, v in os.environ.items() if k != "FLEET_GITHUB_APP"}
+        if switch is not None:
+            env["FLEET_GITHUB_APP"] = switch
+        r = subprocess.run(["bash", p, repo], capture_output=True, text=True,
+                           env={**env, "PYTHONPATH": os.path.join(T, "stub"), "CI_ELOR_FIXTURE": f})
         return r.returncode, r.stdout.splitlines()
     healthy = {"head": iso(now - timedelta(hours=2)), "run": iso(now - timedelta(hours=1))}
 
@@ -94,6 +115,20 @@ try:
     check("another 403 (a missing permission) is no token alarm", (0, False), (rc, any(l.startswith("RIASZT token") for l in out)))
     rc, out = run({**healthy, "fail": True})
     check("no call answered: no token line at all (the repo HIBA says enough)", [], [l for l in out if " token" in l.split(":")[0]])
+
+    print("the default: the broker (2026-10-16)")
+    if os.path.exists(calls):
+        os.unlink(calls)
+    rc, out = run({**healthy, "expiry": gh(now + timedelta(hours=1))}, switch=None)
+    check("unset: the broker asked for exactly the repository and olvas", ["token KratoBal/acroveliq olvas"], open(calls).read().splitlines())
+    check("... the runs check as before, and a one-hour expiry is no alarm (no token line), exit 0",
+          (0, True, []), (rc, any(l.startswith("OK KratoBal/acroveliq") for l in out), [l for l in out if " token" in l.split(":")[0]]))
+    rc, out = run(healthy, switch=None, repo="KratoBal/refused")
+    check("a broker refusal: RIASZT for the repository with the broker's reason, exit 1",
+          (1, True), (rc, any(l.startswith("RIASZT KratoBal/refused: nincs olvas token") and "not a fleet repository" in l for l in out)))
+    rc, out = run({**healthy, "http": [401, "Bad credentials"]}, switch=None)
+    check("a 401 on the broker's token: RIASZT token naming the App, exit 1",
+          (1, True), (rc, any(l.startswith("RIASZT token: a GitHub elutasitja a broker tokenjet") for l in out)))
 finally:
     shutil.rmtree(T, ignore_errors=True)
 
