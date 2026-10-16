@@ -21,9 +21,12 @@ WHERE THE DATE COMES FROM, by kind (scripts/titok-lejarat.json, no values in it)
               loses its refresh tokens after 7 days whatever the use, and that reads here as a
               weekly invalid_grant, a property of the client, not the token; and a response
               that brings a new refresh_token is neither stored nor printed (the old one lives on)
-  coolify     GET /api/v1/version with the token: 200 valid, 401 invalid; no date (a Coolify
-              token is made without expiry here); an unreachable host is no alarm
-  expo        GET api.expo.dev userinfo: 200 valid, 401 invalid; Expo tokens do not expire
+  coolify     GET /api/v1/version with the token: 200 valid, 401 invalid; a 403 is told apart
+              by /api/health WITHOUT a token (403 there too: the host is closed to the fleet,
+              as coolify2 since B20b); an unreachable host is no alarm
+  expo        the GraphQL meActor, as eas-keret.sh asks: 200 with an actor valid, 401 invalid
+  (coolify and expo: a date recorded when the key was made, in store/secrets-lejarat.json,
+  is carried with the measured validity)
   rogzitett   the date written in store/secrets-lejarat.json when the secret was made
   host:       the same file, for the host's secrets the fleet cannot read; the host's
               install or rotation sheet writes the date as its last step (barracuda 32058)
@@ -72,7 +75,12 @@ def days_until(datestr, now):
 
 def _http(method, url, headers=None, body=None, timeout=15):
     """(status, headers, parsed JSON or None). Never raises; never returns a body as text."""
-    data = urllib.parse.urlencode(body).encode() if isinstance(body, dict) else None
+    if isinstance(body, dict):
+        data = urllib.parse.urlencode(body).encode()
+    elif isinstance(body, str):
+        data = body.encode()  # a JSON body, already serialised by the caller
+    else:
+        data = None
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -165,13 +173,35 @@ def measure_google(refresh, client, store, http):
     return {"eredmeny": "NEM_MERT", "lejarat": None, "ok": "google %d %s" % (st, err if err in ("invalid_client", "unauthorized_client") else "")}
 
 
-def measure_status(url, headers, http, what):
-    st, _, _ = http("GET", url, headers)
+def measure_coolify(base, token, http):
+    base = base.rstrip("/")
+    st, _, _ = http("GET", base + "/api/v1/version", {"Authorization": "Bearer " + token})
     if st == 200:
-        return {"eredmeny": "OK", "lejarat": None, "ok": "%s 200" % what}
+        return {"eredmeny": "OK", "lejarat": None, "ok": "coolify 200"}
     if st == 401:
-        return {"eredmeny": "ERVENYTELEN", "lejarat": None, "ok": "%s 401" % what}
-    return {"eredmeny": "NEM_MERT", "lejarat": None, "ok": "%s %s" % (what, st or "nem erheto el")}
+        return {"eredmeny": "ERVENYTELEN", "lejarat": None, "ok": "coolify 401"}
+    if st == 403:
+        # the key's right or the host's gate? the health path without any token tells them apart
+        # (measured 2026-10-16: coolify2 answers 403 to it too, the host is closed to the fleet)
+        hst, _, _ = http("GET", base + "/api/health", {})
+        if hst == 403:
+            return {"eredmeny": "NEM_MERT", "lejarat": None, "ok": "coolify 403: a hoszt a flottabol zarva, token nelkul is 403"}
+        return {"eredmeny": "NEM_MERT", "lejarat": None, "ok": "coolify 403 a kulcsra (a hoszt elerheto): jogkor?"}
+    return {"eredmeny": "NEM_MERT", "lejarat": None, "ok": "coolify %s" % (st or "nem erheto el")}
+
+
+def measure_expo(token, http):
+    """The GraphQL meActor, as eas-keret.sh talks to Expo (measured 2026-10-16: an invalid
+    token is 401 AUTHENTICATION_ERROR; no token is 200 with meActor null)."""
+    st, _, d = http("POST", "https://api.expo.dev/graphql",
+                    {"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+                    json.dumps({"query": "{ meActor { __typename } }"}))
+    if st == 401:
+        return {"eredmeny": "ERVENYTELEN", "lejarat": None, "ok": "expo 401"}
+    actor = ((d or {}).get("data") or {}).get("meActor") if isinstance(d, dict) else None
+    if st == 200 and actor:
+        return {"eredmeny": "OK", "lejarat": None, "ok": "expo meActor"}
+    return {"eredmeny": "NEM_MERT", "lejarat": None, "ok": "expo %s, nincs meActor" % st}
 
 
 def measure(name, rule, store, annotations, http):
@@ -196,10 +226,13 @@ def measure(name, rule, store, annotations, http):
         return measure_meta_json(raw, http)
     if kind == "google":
         return measure_google(raw, rule.get("kliens", "yt"), store, http)
-    if kind == "coolify":
-        return measure_status(rule["url"].rstrip("/") + "/api/v1/version", {"Authorization": "Bearer " + raw}, http, "coolify")
-    if kind == "expo":
-        return measure_status("https://api.expo.dev/v2/auth/userinfo", {"Authorization": "Bearer " + raw}, http, "expo")
+    if kind in ("coolify", "expo"):
+        m = measure_coolify(rule["url"], raw, http) if kind == "coolify" else measure_expo(raw, http)
+        # validity is measured; the date, if one was set when the key was made, is the recorded one
+        if annotations.get(name):
+            m["lejarat"] = annotations[name]
+            m["ok"] += ", rogzitett datum"
+        return m
     return {"eredmeny": "ISMERETLEN", "lejarat": None, "ok": "ismeretlen fajta: %s" % kind}
 
 
@@ -219,7 +252,7 @@ def check(store, registry, annotations, state, base_names, now, http=None):
     rows, messages, new_state = [], [], {}
     entries = [(n, rule_for(n, registry)) for n in candidates(store, registry, base_names)]
     for h in registry.get("host", []):
-        entries.append((h["kulcs"], dict(h, fajta="rogzitett")))
+        entries.append((h["kulcs"], dict(h, fajta=h.get("fajta", "rogzitett"))))
     for name, rule in entries:
         m = measure(name, rule, store, annotations, http)
         d = days_until(m["lejarat"], now) if m["lejarat"] else None
