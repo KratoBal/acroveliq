@@ -154,7 +154,13 @@ elif [ -z "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
 else
   REVERTED="nem (a fa DIRTY, kezi beavatkozas kell)"
 fi
+# the calling user's own token if handed out, else the shared one, loudly (P0-1,
+# plan 5.2): the shared token may no longer send (route-access.ts LEGACY_KEPT)
 TOKEN_FILE="$PROD_ROOT/store/.dashboard-token"
+if [ -r "$PROD_ROOT/scripts/lib/dashboard-token.sh" ]; then
+  . "$PROD_ROOT/scripts/lib/dashboard-token.sh"
+  TOKEN_FILE="$(dashboard_token_file "$PROD_ROOT")"
+fi
 [ -r "$TOKEN_FILE" ] || exit 0
 # 'from' must be a registered fleet agent id (the API rejects made-up names,
 # measured 2026-08-22) -- the source is named in the content prefix instead.
