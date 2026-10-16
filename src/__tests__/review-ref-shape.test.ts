@@ -44,5 +44,7 @@ describe('review-ellenoriz.sh refs pass the Task Core review-ref guard', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-  })
+    // it runs the whole review-scripts.test.sh (2.7 s alone, with a local GitHub stub since E3 (b));
+    // under the parallel suite that went past vitest's 5 s default on 2026-10-16
+  }, 60_000)
 })
