@@ -60,6 +60,8 @@ jobs:
       - run: python3 -B scripts/__tests__/ci-el-or.test.py
       # F0-2: who can read which secret, computed from owner, group and mode (fleet-secrets.py --matrix)
       - run: python3 -B scripts/__tests__/fleet-secrets-matrix.test.py
+      # titok-lejarat-figyelo: each secret's expiry measured at its provider, one message per threshold, no value out
+      - run: python3 -B scripts/__tests__/titok-lejarat.test.py
       # D4 step 2: the GitHub App token broker, the guarded approver, the credential helper, the merge switch
       - run: python3 -B scripts/__tests__/fleet-github.test.py
       # B48 pótlás: a Bash permission prompt answered by the owner's Discord decision, never a key

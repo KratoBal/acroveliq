@@ -15,6 +15,15 @@ biztonsagos naploba iranyitani vagy csatornara masolni.
   python3 scripts/fleet-secrets.py            # a teljes lista
   python3 scripts/fleet-secrets.py --warn     # csak ami 30 napon belul lejar vagy ismeretlen
   python3 scripts/fleet-secrets.py --matrix   # ki olvashatja: a marveen es az agens-felhasznalok x titok
+  python3 scripts/fleet-secrets.py --napi     # napi meres a szolgaltatoknal + egy jelzes (titok-lejarat-figyelo)
+  python3 scripts/fleet-secrets.py --napi --naplo   # ugyanez, es valtozasnal egy sor a fo agens napi naplojaba
+
+A --napi MOD (titok-lejarat-figyelo, Balazs 2026-10-16): a scripts/titok-lejarat.json
+nyilvantartas (ertek nelkul) szerint minden titok lejaratat a SAJAT szolgaltatojanal meri, a
+modul leirasa: scripts/titok_lejarat.py. Allapot: store/secrets-lejarat-allapot.json (0600, ertek
+nelkul). Ha egy titok 14 vagy 3 napon belul lejar, vagy a meres ervenytelennek mondja, a kimenet
+vegen egy KULDENDO blokk all: ezt a fo agens heartbeatje egy az egyben az Eldontendo szalba teszi.
+Titkonkent es kuszobonkent egyszer. Kilepes: 0 (a jelzes a blokk, nem a kilepesi kod).
 
 EXIT 1, ha barmi 30 napon belul lejar. Igy utemezett feladatbol is hasznalhato.
 
@@ -240,9 +249,52 @@ def matrix():
     return 0
 
 
+STATE = os.path.join(STORE, "secrets-lejarat-allapot.json")
+REGISTRY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "titok-lejarat.json")
+
+
+def napi(write_log):
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import titok_lejarat as tl
+    registry = tl.load_registry(REGISTRY)
+    try:
+        with open(STATE) as f:
+            state = json.load(f)
+    except Exception:
+        state = {}
+    rows, messages, new_state = tl.check(STORE, registry, annotations(), state.get("titkok", {}),
+                                         secret_names(), time.time())
+    line = tl.summary_line(rows)
+    tbl = tl.table(rows)
+    changed = state.get("tabla") != tbl
+    out = {"titkok": new_state, "tabla": tbl, "osszegzes": line}
+    tmp = STATE + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(out, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, STATE)
+    print(line)
+    print()
+    print(tbl)
+    if write_log and changed:
+        import subprocess
+        subprocess.run(["bash", os.path.join(ROOT, "scripts", "daily-log.sh"),
+                        open(os.path.join(STORE, ".main-agent-id")).read().strip() or "acrobot",
+                        "Titok-lejárat", "-"], input=line + "\n\n" + tbl + "\n", text=True, timeout=30)
+    if messages:
+        print()
+        print("KULDENDO (az Eldontendo szalba, ahogy van):")
+        for m in messages:
+            print(m)
+        print("KULDENDO VEGE")
+    return 0
+
+
 def main():
     if "--matrix" in sys.argv:
         return matrix()
+    if "--napi" in sys.argv:
+        return napi("--naplo" in sys.argv)
     warn_only = "--warn" in sys.argv
     ann = annotations()
     gh = github_expiry()
