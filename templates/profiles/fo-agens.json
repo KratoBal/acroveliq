@@ -107,7 +107,9 @@
       "Bash(bash scripts/kirakat-telepites.sh allapot:*)",
       "Bash(bash ${HOME}/marveen/scripts/kirakat-telepites.sh allapot:*)",
       "Bash(bash scripts/kirakat-telepites.sh naplo:*)",
-      "Bash(bash ${HOME}/marveen/scripts/kirakat-telepites.sh naplo:*)"
+      "Bash(bash ${HOME}/marveen/scripts/kirakat-telepites.sh naplo:*)",
+      "Bash(bash scripts/flotta-olvas.sh:*)",
+      "Bash(bash ${HOME}/marveen/scripts/flotta-olvas.sh:*)"
     ],
     "deny": [
       "Read(${HOME}/marveen/store/.*)",

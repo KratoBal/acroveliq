@@ -195,6 +195,12 @@ const GROUPS: Group[] = [
     why: 'an agent\'s own settings (context guard, auto-restart, avatar, capabilities, its channel tests and invites)',
   },
   {
+    name: 'fleet-reads',
+    match: (r) => r.module === 'fleet-reads',
+    grants: g('yes', 'yes', 'no', 'no', 'no'),
+    why: 'B29: the main agent\'s fixed reads of the fleet database (access decisions, messages, the tool log): its session cannot open the database once it runs under its own user; no other caller needs them',
+  },
+  {
     name: 'log-prune',
     match: is('POST', '/api/tool-log/prune'),
     grants: g('yes', 'yes', 'no', 'no', 'no'),

@@ -226,6 +226,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'POST', path: '/api/memories/backfill', module: 'memories', class: 'ERZEKENY' },
   { method: 'GET', path: '/api/memories/stats', module: 'memories', class: 'OLVASO' },
   { method: 'GET', path: '/api/memories/:id', module: 'memories', class: 'OLVASO' },
+  { method: 'GET', path: '/api/fleet-reads/(access-decisions|request-actors|uzenet-ablak|uzenet|tool-log-osszesito|tool-log-minta|kartya-letrehozas)', module: 'fleet-reads', class: 'OLVASO', note: 'B29: a fő ágens rögzített olvasásai a flotta adatbázisából (hozzáférési döntések, üzenetek, eszköznapló, kártya-létrehozás), SQL a hívótól nincs' },
   { method: 'PUT', path: '/api/memories/:id', module: 'memories', class: 'ERZEKENY' },
   { method: 'DELETE', path: '/api/memories/:id', module: 'memories', class: 'ERZEKENY' },
   { method: 'GET', path: '/api/schedules/agents', module: 'schedules', class: 'OLVASO' },

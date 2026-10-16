@@ -56,6 +56,7 @@ import { tryHandleAgentTaskState } from './web/routes/agent-taskstate.js'
 import { sweepOrphanTaskStates } from './web/agent-taskstate.js'
 import { tryHandleDailyLog } from './web/routes/daily-log.js'
 import { tryHandleMemories } from './web/routes/memories.js'
+import { tryHandleFleetReads } from './web/routes/fleet-reads.js'
 import { tryHandleMigrate } from './web/routes/migrate.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
 import { tryHandleTaskHandoffs } from './web/routes/task-handoffs.js'
@@ -237,6 +238,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleFederation(routeCtx)) return
       if (await tryHandleDailyLog(routeCtx)) return
       if (await tryHandleMemories(routeCtx)) return
+      if (await tryHandleFleetReads(routeCtx)) return
       if (await tryHandleMigrate(routeCtx)) return
       if (await tryHandleKanban(routeCtx)) return
       if (await tryHandleTaskHandoffs(routeCtx)) return
