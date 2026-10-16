@@ -72,6 +72,24 @@ export function matchRouteRule(method: string, path: string): RouteRule | null {
   return best?.rule ?? null
 }
 
+/** The route families the rules know: the first segment under /api of a rule's literal start (`/api/kanban`). */
+const RULE_FAMILIES: ReadonlySet<string> = new Set(
+  ROUTE_RULES.map((rule) => rule.path.split('/').slice(0, 3).join('/')).filter((family) => /^\/api\/[a-z0-9-]+$/.test(family)),
+)
+
+/**
+ * How a log keeps a request no rule answers: `:ismeretlen`, with its family
+ * (`:ismeretlen /api/kanban`) when its first segment under /api is one the
+ * rules know. The family is then one of our own constants, never a value from
+ * the path (barracuda, #20); any other path stays bare `:ismeretlen`. Without
+ * the family a preflight row could not be traced to a caller (2026-10-16:
+ * acrobot 4x, murena 1x, path unknown).
+ */
+export function unknownRouteKey(path: string): string {
+  const family = path.split('/').slice(0, 3).join('/')
+  return RULE_FAMILIES.has(family) ? `:ismeretlen ${family}` : ':ismeretlen'
+}
+
 /**
  * The `:param` values of a concrete path under a rule pattern, decoded; null
  * when the path does not match it. Alternatives and a trailing `*` are not

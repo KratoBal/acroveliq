@@ -33,7 +33,7 @@ import { randomBytes, createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
 
 import { APP_TZ } from '../config.js'
-import { matchRouteRule } from './route-match.js'
+import { matchRouteRule, unknownRouteKey } from './route-match.js'
 
 export const DEFAULT_PROJECT = 'acropora'
 
@@ -166,10 +166,11 @@ export function actorOf(auth: ActorSource): { project: string; actor: string } {
  * answers to (`/api/agents/:name/channels/:provider/invites/:token`), so the
  * log holds routes, never a value from a path (barracuda, #20: an invite token
  * and an e-mail-like username were kept by a segment heuristic). A request no
- * rule answers is `:ismeretlen`.
+ * rule answers is `:ismeretlen`, with its route family where the rules know it
+ * (route-match.ts unknownRouteKey).
  */
 export function routeKey(method: string, path: string): string {
-  return matchRouteRule(method, path)?.path ?? ':ismeretlen'
+  return matchRouteRule(method, path)?.path ?? unknownRouteKey(path)
 }
 
 /** The fleet's day (Budapest), like the other daily breakdowns, not the UTC day. */

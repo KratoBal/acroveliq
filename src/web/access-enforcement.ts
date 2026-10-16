@@ -23,7 +23,7 @@ import { ACTOR_LOG_DAYS, DEFAULT_PROJECT, localDay, type Principal } from './aut
 import { json, primeBody } from './http-helpers.js'
 import { logger } from '../logger.js'
 import { accessOf, decide, type Caller, type Decision, type OwnerSource } from './route-access.js'
-import { matchRouteRule, ruleParams } from './route-match.js'
+import { matchRouteRule, ruleParams, unknownRouteKey } from './route-match.js'
 import type { RouteRule } from './route-rules.js'
 import { safeJoin, sanitizeScheduleName } from './sanitize.js'
 
@@ -188,6 +188,8 @@ export interface AccessVerdict {
   decision: Decision
   /** True when the denial is enforced in the current mode (a 403), false when only logged. */
   enforced: boolean
+  /** The request's path, for the family of a route no rule answers; never logged itself. */
+  requestPath?: string
 }
 
 /** Only the API and the fleet manifest are checked, the same scope as the actor log. */
@@ -214,7 +216,7 @@ export async function checkAccess(
     }
   }
   const decision = decide(rule, caller, owner)
-  return { rule, caller, decision, enforced: !decision.allowed && enforces(mode, caller.column) }
+  return { rule, caller, decision, enforced: !decision.allowed && enforces(mode, caller.column), requestPath: request.path }
 }
 
 export function ensureAccessDecisionSchema(db: Database.Database): void {
@@ -243,8 +245,8 @@ const logReason = (reason: string) => reason.replace(/ \(owner [^)]*\)$/, '')
 
 /**
  * Counts one denial, enforced (`denied`) or logged (`would-deny`). The path
- * is the rule's pattern (`:ismeretlen` when no rule), never a value from the
- * path. Must never throw: the log describes the request, it cannot fail it.
+ * is the rule's pattern (`:ismeretlen` when no rule, with the route family
+ * where the rules know it), never a value from the path. Must never throw: the log describes the request, it cannot fail it.
  */
 export function recordAccessDenial(db: Database.Database, verdict: AccessVerdict, mode: AccessMode, method: string, now: number): void {
   try {
@@ -260,7 +262,7 @@ export function recordAccessDenial(db: Database.Database, verdict: AccessVerdict
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
        ON CONFLICT (day, project, actor, method, path, outcome)
        DO UPDATE SET count = count + 1, last_seen = excluded.last_seen, mode = excluded.mode, reason = excluded.reason`,
-    ).run(day, project, label, method, verdict.rule?.path ?? ':ismeretlen', verdict.enforced ? 'denied' : 'would-deny', mode, logReason(verdict.decision.reason), now, now)
+    ).run(day, project, label, method, verdict.rule?.path ?? unknownRouteKey(verdict.requestPath ?? ''), verdict.enforced ? 'denied' : 'would-deny', mode, logReason(verdict.decision.reason), now, now)
   } catch {
     // the log is a measurement, not a gate
   }

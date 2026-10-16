@@ -139,6 +139,17 @@ describe('access enforcement: through the gate', () => {
     ])
   })
 
+  it('ACCESS-UNKNOWN-FAMILY: a route no rule answers is logged with its family, never with a value from the path', async () => {
+    mode = 'naplo'
+    await call(G, 'GET', '/api/kanban/ckz9x0abc123def456')
+    await call(G, 'GET', '/api/Zm9vYmFyYmF6cXV4MTIzNDU2/x')
+    const log = getDb().prepare('SELECT actor, method, path, outcome FROM access_decisions ORDER BY path').all()
+    expect(log, 'ACCESS-UNKNOWN-FAMILY').toEqual([
+      { actor: 'murena', method: 'GET', path: ':ismeretlen', outcome: 'would-deny' },
+      { actor: 'murena', method: 'GET', path: ':ismeretlen /api/kanban', outcome: 'would-deny' },
+    ])
+  })
+
   it('ACCESS-ENFORCED: the brief\'s cases, caller by caller, as status codes', async () => {
     mode = 'kikenyszerit'
     const cases: Array<[CallerSource, string, string, unknown, number]> = [
