@@ -85,7 +85,10 @@ with `npm ci` (integrity hashes, the same versions as the repo's lockfile). To g
 `docker buildx imagetools inspect node:22-bookworm-slim` (the `Digest:` line).
 
 **Reaching the Coolify APIs.** After B20 (the production Coolify reachable on the
-tailnet only) the `ki` network must reach `coolify.acropora.hu` over the tailnet;
+tailnet only) the public name `coolify.acropora.hu` no longer answers, so the
+`coolifyApiUrl` of the production host must be an internal address of the same
+host (the fleet uses `http://10.0.1.1:8000`; which address the `ki` network reaches
+is measured at install, not assumed);
 measure it at install: `docker compose exec vegrehajto node -e "fetch('<coolifyApiUrl>/version').then(r=>console.log(r.status))"`
 (401 without a token is the expected answer: reachable). The `ki` network allows
 any outbound traffic today; narrowing it to Discord, GitHub and the two Coolify

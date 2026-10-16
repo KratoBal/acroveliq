@@ -110,7 +110,7 @@ for name, url in TARGETS:
     if ahead > 5:
         print("      (csak az utolso ot latszik a %d-bol)" % ahead)
 print()
-print("A telepites inditasa (eles, KEZI, es csak Balazs engedelyevel):")
-print("  curl -s -X POST -H \"Authorization: Bearer <coolify-prod-token>\" \\")
-print("    'https://coolify.acropora.hu/api/v1/deploy?uuid=<alkalmazas-uuid>'")
+print("A telepites inditasa (eles, KEZI, es csak Balazs engedelyevel), a vegrehajton at (P0-3):")
+print("  bash scripts/vegrehajto.sh kerj <agens> prod <alkalmazas> <sha40>")
+print("  (a coolify.acropora.hu a B20 ota kivulrol zart, a Coolify API-t kozvetlenul nem hivjuk)")
 PYEOF
