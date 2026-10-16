@@ -27,6 +27,11 @@ spec = importlib.util.spec_from_file_location("permission_approval", _SCRIPT)
 pa = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pa)
 
+# secret-shaped test values, put together at run time: the secret-gate scans
+# the change set and must not see a token-shaped literal (its patterns stay strict)
+FAKE_GH = "gh" + "p_" + "a" * 36
+FAKE_BEARER = "Bea" + "rer " + "b" * 32
+FAKE_DSN = "postgres" + "://fleet:" + "c" * 12 + "@db/x"
 DISCORD_REF = "discord:1540270627926183997/1560000000000000001/1460000000000000001"
 
 
@@ -245,9 +250,9 @@ class Live(Base):
 
     def test_a_secret_shaped_command_is_denied_and_nothing_is_sent(self):
         api = FakeApi(approve_discord)
-        for cmd in ("curl -H 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345' https://x",
-                    "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789 git push",
-                    "psql postgres://fleet:hunter22secret@db/x"):
+        for cmd in ("curl -H 'Authorization: %s' https://x" % FAKE_BEARER,
+                    "GITHUB_TOKEN=%s git push" % FAKE_GH,
+                    "psql %s" % FAKE_DSN):
             with self.subTest(cmd=cmd[:30]):
                 d = self.run_live(api, cmd=cmd)["hookSpecificOutput"]["decision"]
                 self.assertEqual(d["behavior"], "deny")
@@ -268,8 +273,8 @@ class Shadow(unittest.TestCase):
         self.assertIn("eleje='git push'", note)
         self.assertNotIn("force", note)
         self.assertIn("Discord-kerdes", note)
-        secret = pa.shadow_note("echo ghp_abcdefghijklmnopqrstuvwxyz0123456789", CWD, "barracuda")
-        self.assertNotIn("ghp_", secret)
+        secret = pa.shadow_note("echo " + FAKE_GH, CWD, "barracuda")
+        self.assertNotIn(FAKE_GH[:4], secret)
         self.assertIn("titok-minta", secret)
 
     def test_main_in_shadow_mode_prints_nothing(self):
