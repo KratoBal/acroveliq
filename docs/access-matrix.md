@@ -241,6 +241,7 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | POST | `/api/memories/backfill` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | memory-write | body: agent_id |
 | GET | `/api/memories/stats` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
 | GET | `/api/memories/:id` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
+| GET | `/api/fleet-reads/(access-decisions\|request-actors\|uzenet-ablak\|uzenet\|tool-log-osszesito\|tool-log-minta\|kartya-letrehozas)` | OLVASO | ✓ | ✓ | ✗ | ✗ | ✗ | fleet-reads |  |
 | PUT | `/api/memories/:id` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | memory-change | rekord: memory (:id) |
 | DELETE | `/api/memories/:id` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | memory-change | rekord: memory (:id) |
 | GET | `/api/schedules/agents` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
@@ -406,6 +407,7 @@ Az L oszlopban csak ezek ✓, akármit ad a csoport vagy az osztály (a többi s
 - **session-read**: another agent's whole session: the supervisor and the agent itself; a device reads it (the phone dashboard shows panes; acrobot's D list names no read)
 - **agent-taskstate**: switches the pane-injection permission of an agent: only its own
 - **agent-self-settings**: an agent's own settings (context guard, auto-restart, avatar, capabilities, its channel tests and invites)
+- **fleet-reads**: B29: the main agent's fixed reads of the fleet database (access decisions, messages, the tool log): its session cannot open the database once it runs under its own user; no other caller needs them
 - **log-prune**: deletes the shared tool log: the session and the main agent
 - **memory-change**: an agent changes or deletes only its own memories; an update that would move one to another writer is not its own
 - **memory-write**: an agent writes its own namespace (plan 3). `shared` is a category: the record still names its writer, so that must be the caller. A missing agent_id is the main agent's, so it is not "own"
