@@ -46,7 +46,14 @@ PY
   if python3 -c "import sys; sys.exit(0 if float('$CR') >= float('$MAX_CR') or int('$CALLS') >= int('$MAX_CALLS') else 1)"; then
     # The message only claims the interruption when a send-keys call actually succeeded:
     # without the sudo tmux rule both calls fail, and "I interrupted your turn" would be false.
-    if sudo -n -u "agent-$AGENT" /usr/bin/tmux send-keys -t "agent-$AGENT" Escape 2>/dev/null \
+    # With the fleet-pane switch on the tmux line may be gone: the broker's interrupt verb sends
+    # the Escape, and only while a turn runs and no dialog is up (exit 0 = sent; B48 (2)).
+    if python3 -I "$ROOT/scripts/lib/fleet_pane_switch.py" "$ROOT" >/dev/null 2>&1; then
+      INTERRUPT=(sudo -n /usr/local/sbin/fleet-pane interrupt "$AGENT")
+    else
+      INTERRUPT=(sudo -n -u "agent-$AGENT" /usr/bin/tmux send-keys -t "agent-$AGENT" Escape)
+    fi
+    if "${INTERRUPT[@]}" 2>/dev/null \
       || /usr/bin/tmux send-keys -t "agent-$AGENT" Escape 2>/dev/null; then
       STOPPED="A futo koredet en szakitottam meg (Escape), a feladat-keret-or.sh miatt."
       LOGSTOP="$AGENT megallitva (Escape)."

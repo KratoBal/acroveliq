@@ -12,7 +12,7 @@ THE INSTALLED COPY RUNS, NOT THIS FILE: /usr/local/sbin/fleet-pane, root:root 07
 The repo is writable by `marveen`; running it from here would put us back where we started.
 Installing it, the sudoers line, and removing the tmux line are Balázs's steps, separately approved.
 
-Verbs (argv[1]); the agent must be listed in the root-owned /etc/fleet-pane/agents.json:
+Verbs (argv[1]); the agent must be listed in the root-owned /etc/fleet-pane/conf/agents.json:
   status <agent> [--created]          running? (exit 0 yes, 1 no); prints the session name, or with
                                       --created its #{session_created}
   capture <agent> [--ansi] [--lines N] the pane text (N <= 2000 lines of history)
@@ -53,8 +53,8 @@ import subprocess
 import sys
 import time
 
-AGENTS_FILE = '/etc/fleet-pane/agents.json'
-VALUES_FILE = '/etc/fleet-pane/start-values.json'
+AGENTS_FILE = '/etc/fleet-pane/conf/agents.json'
+VALUES_FILE = '/etc/fleet-pane/conf/start-values.json'
 START_DIR = '/etc/fleet-pane/start'
 LOG_FILE = '/var/log/fleet-pane.log'
 RUNUSER = '/usr/sbin/runuser'

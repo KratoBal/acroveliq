@@ -43,7 +43,7 @@ EOF
   fi
   printf 'printf "%%s\\n" "$*" > "%s/log.txt"\n' "$T" > "$T/root/scripts/daily-log.sh"
   printf '#!/bin/sh\nexit 0\n' > "$T/bin/curl"
-  printf '#!/bin/sh\nexit %s\n' "$([ "$sudo_rc" = ok ] && echo 0 || echo 1)" > "$T/bin/sudo"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/sudo-args.txt"\nexit %s\n' "$T" "$([ "$sudo_rc" = ok ] && echo 0 || echo 1)" > "$T/bin/sudo"
   chmod +x "$T/bin/curl" "$T/bin/sudo"
 }
 
@@ -108,6 +108,28 @@ if [ "$rc" = "4" ] && grep -q 'NEM ment el' "$T/log.txt" && ! grep -q 'sorba ker
   pass "send failed: exit 4, the log says the message did not go out"
 else
   fail "send failed, but rc=$rc log: $(cat "$T/log.txt" 2>/dev/null)"
+fi
+rm -rf "$T"
+
+echo ""
+echo "(d) The Escape takes the router's road: the broker's interrupt verb when the switch is on (B48 (2))"
+setup ok
+mkdir -p "$T/root/scripts/lib"
+cp "$INSTALL_DIR/scripts/lib/fleet_pane_switch.py" "$T/root/scripts/lib/"
+run_guard >/dev/null
+if [ "$(head -1 "$T/sudo-args.txt" 2>/dev/null)" = "-n -u agent-keret-or-test-nobody /usr/bin/tmux send-keys -t agent-keret-or-test-nobody Escape" ]; then
+  pass "switch off: the old tmux line"
+else
+  fail "switch off, but sudo got: $(cat "$T/sudo-args.txt" 2>/dev/null)"
+fi
+rm -f "$T/sudo-args.txt"
+echo 'FLEET_PANE_BROKER=on' > "$T/root/.env"
+run_guard >/dev/null
+if [ "$(cat "$T/sudo-args.txt" 2>/dev/null)" = "-n /usr/local/sbin/fleet-pane interrupt keret-or-test-nobody" ] \
+  && grep -q 'en szakitottam meg' "$T/sent.txt"; then
+  pass "switch on: fleet-pane interrupt, and nothing else through sudo"
+else
+  fail "switch on, but sudo got: $(cat "$T/sudo-args.txt" 2>/dev/null)"
 fi
 rm -rf "$T"
 

@@ -79,6 +79,20 @@ DEVDB=/etc/sudoers.d/fleet-devdb
 # container recreate brings it back; steps 4 and 4b key off its presence, because
 # once it is gone this script can no longer write to /etc/sudoers.d at all.
 BLANKET=/etc/sudoers.d/marveen
+# Dry runs only (the tests): a stand-in blanket file, so step 4 shows the rules it would build.
+if (( DRY )) && [[ -n "${FLEET_BLANKET_DRYRUN:-}" ]]; then BLANKET="$FLEET_BLANKET_DRYRUN"; fi
+# B48 (2), the fleet-pane broker (docs/fleet-pane.md). Its root files come from the owner's host
+# directory, mounted read-only here; `no-tmux-line` in it is the owner's decision that the old
+# `marveen ALL=(agent-*) NOPASSWD: /usr/bin/tmux` line is retired. The marker lives in the mount
+# so a recreate keeps the decision and `marveen` cannot take it back.
+FP_CONF=/etc/fleet-pane/conf
+# Only a dry run may look at another directory (the tests); a real run always checks the mount.
+if (( DRY )) && [[ -n "${FLEET_PANE_CONF_DRYRUN:-}" ]]; then FP_CONF="$FLEET_PANE_CONF_DRYRUN"; fi
+fp_mounted() {
+  if (( DRY )) && [[ -n "${FLEET_PANE_CONF_DRYRUN:-}" ]]; then test -d "$FP_CONF"; else mountpoint -q -- "$FP_CONF"; fi
+}
+TMUX_RETIRED=0
+if fp_mounted && test -f "$FP_CONF/no-tmux-line"; then TMUX_RETIRED=1; fi
 
 run() { if (( DRY )); then echo "DRY: $*"; else "$@"; fi }
 step() { echo; echo "== $*"; }
@@ -202,10 +216,22 @@ else
 tmp="$(mktemp)"
 if (( ! AS_ROOT )); then sudo -n cat "$SUDOERS" > "$tmp" 2>/dev/null || true; fi
 changed=0
+# Retired (the owner's no-tmux-line, see FP_CONF): the tmux line is not generated, and a copy read
+# back from the old file loses it. As root the file is built from scratch, so it simply is not there.
+if (( TMUX_RETIRED )); then
+  echo "retired: the tmux line ($FP_CONF/no-tmux-line); the router reaches the agents through fleet-pane"
+  if grep -qF "NOPASSWD: /usr/bin/tmux" "$tmp" 2>/dev/null; then
+    grep -vF "NOPASSWD: /usr/bin/tmux" "$tmp" > "$tmp.keep" || true
+    mv -f -- "$tmp.keep" "$tmp"; changed=1
+    echo "queued: removal of the tmux lines"
+  fi
+fi
 for pair in $AGENTS; do
   agent="${pair##*:}"; user="agent-$agent"
   rule="$ROUTER_USER ALL=($user) NOPASSWD: /usr/bin/tmux"
-  if grep -qF "($user) NOPASSWD: /usr/bin/tmux" "$tmp" 2>/dev/null; then
+  if (( TMUX_RETIRED )); then
+    :
+  elif grep -qF "($user) NOPASSWD: /usr/bin/tmux" "$tmp" 2>/dev/null; then
     echo "ok: rule present for $user"
   else
     echo "$rule" >> "$tmp"; changed=1
@@ -360,6 +386,82 @@ else
 fi
 rm -rf -- "$d4_tmpdir"
 
+step "4c. the fleet-pane broker: its root script, start directory and sudo rule (docs/fleet-pane.md)"
+# B48 (2). The same shape as 4a, for the same reason: a recreate resets /usr/local/sbin,
+# /etc/sudoers.d and /etc/fleet-pane/start to the image, and once the tmux line is retired
+# (no-tmux-line) the router reaches no agent without the broker. The agents list, the start
+# values and the claude binary come from the owner's host directory ($FP_CONF, read-only mount)
+# and survive by themselves.
+#
+# ONLY WHERE THE BROKER IS DEPLOYED, i.e. $FP_CONF is a mount: without it nothing is installed,
+# a sudo rule appearing by itself would be a permission change nobody asked for.
+# THE PIN IS THE REVIEWED VERSION. scripts/__tests__/fleet-bootstrap-fleet-pane.test.py fails while
+# it differs from scripts/root/fleet-pane.py, so a broker change carries its new pin in the same PR.
+# NEVER `fail` HERE: step 4b must always run. Problems are counted (FP_RC), step 7 reports them.
+FP_SUDOERS=/etc/sudoers.d/fleet-pane
+FP_BIN=/usr/local/sbin/fleet-pane
+FP_START=/etc/fleet-pane/start
+FP_PIN=d2ab5bc76d284c7ef182108a314539350ec2f4772efc278a2f4a017a3a5e061b
+FP_RC=0
+FP_DEPLOYED=0
+fp_tmpdir="$(mktemp -d)"
+fp_src_ok=1
+fp_path="$ROOT/scripts/root/fleet-pane.py"
+# Copied FIRST, the copy is hashed and installed: checking the file and then installing it by
+# name would leave a window in which it could change.
+if [[ -L "$fp_path" ]]; then
+  echo "REFUSED: $fp_path is a symlink; not reading or installing it" >&2; fp_src_ok=0
+elif ! cat -- "$fp_path" > "$fp_tmpdir/fleet-pane" 2>/dev/null; then
+  echo "MISSING: $fp_path (the live tree is not on the main branch?)" >&2; fp_src_ok=0
+elif [[ "$(sha256sum < "$fp_tmpdir/fleet-pane" | cut -d' ' -f1)" != "$FP_PIN" ]]; then
+  echo "MISMATCH: scripts/root/fleet-pane.py sha256 $(sha256sum < "$fp_tmpdir/fleet-pane" | cut -d' ' -f1), pinned $FP_PIN: not installing it" >&2; fp_src_ok=0
+else
+  echo "ok: scripts/root/fleet-pane.py is the pinned version"
+fi
+if ! fp_mounted; then
+  echo "skip: $FP_CONF is not mounted, the broker is not deployed here: nothing installed"
+elif (( ! fp_src_ok )); then
+  FP_DEPLOYED=1; FP_RC=1
+  echo "NOT INSTALLED: the broker is deployed ($FP_CONF is there), but its source is not the pinned version" >&2
+elif (( ! DRY && ! AS_ROOT )) && ! test -f "$BLANKET"; then
+  FP_DEPLOYED=1
+  echo "ok: not root and no blanket line: nothing can be written from here; step 7 checks the installed copy"
+else
+  FP_DEPLOYED=1
+  if [[ "$(sha256sum < "$FP_BIN" 2>/dev/null | cut -d' ' -f1)" == "$FP_PIN" ]]; then
+    echo "ok: $FP_BIN is the pinned version"
+  elif as_root install -o root -g root -m 0755 "$fp_tmpdir/fleet-pane" "$FP_BIN"; then
+    echo "installed: $FP_BIN"
+  else
+    echo "FAILED: could not install $FP_BIN" >&2; FP_RC=1
+  fi
+  # generate writes the start scripts here; root's, nobody else writes it.
+  if test -d "$FP_START" && [[ "$(stat -c '%U:%G %a' "$FP_START" 2>/dev/null)" == "root:root 755" ]]; then
+    echo "ok: $FP_START"
+  elif as_root install -d -o root -g root -m 0755 /etc/fleet-pane "$FP_START"; then
+    echo "installed: $FP_START"
+  else
+    echo "FAILED: could not create $FP_START" >&2; FP_RC=1
+  fi
+  echo "# The fleet-pane broker (docs/fleet-pane.md, B48 (2)). Written by fleet-bootstrap.sh 4c." > "$fp_tmpdir/sudoers"
+  # No arguments in the rule on purpose: the broker filters its own (plan 4.1).
+  echo "$ROUTER_USER ALL=(root) NOPASSWD: $FP_BIN" >> "$fp_tmpdir/sudoers"
+  if (( AS_ROOT )); then cat -- "$FP_SUDOERS" > "$fp_tmpdir/current" 2>/dev/null || : > "$fp_tmpdir/current"
+  else sudo -n cat -- "$FP_SUDOERS" > "$fp_tmpdir/current" 2>/dev/null || : > "$fp_tmpdir/current"; fi
+  if cmp -s "$fp_tmpdir/sudoers" "$fp_tmpdir/current"; then
+    echo "ok: $FP_SUDOERS is exactly the generated content"
+  elif (( DRY )); then
+    echo "DRY: install $FP_SUDOERS (0440) with:"; sed 's/^/DRY:   /' "$fp_tmpdir/sudoers"
+  elif ! as_root visudo -c -f "$fp_tmpdir/sudoers" >/dev/null; then
+    echo "FAILED: the generated $FP_SUDOERS does not parse; nothing installed" >&2; FP_RC=1
+  elif as_root install -o root -g root -m 0440 "$fp_tmpdir/sudoers" "$FP_SUDOERS"; then
+    echo "installed: $FP_SUDOERS"
+  else
+    echo "FAILED: could not install $FP_SUDOERS" >&2; FP_RC=1
+  fi
+fi
+rm -rf -- "$fp_tmpdir"
+
 step "4b. the dev-database sudo rule, and the removal of the blanket line"
 # 2026-08-24, Balazs approved on Discord at 16:13 ("Kivezetheted ha jonak latod").
 # The blanket "marveen ALL=(ALL) NOPASSWD:ALL" line lives in /etc/sudoers.d/marveen,
@@ -480,8 +582,17 @@ for pair in $AGENTS; do
   # form stopped working anyway (grep as root is no longer permitted), which is
   # how the gap surfaced. `sudo -l -u <user> <cmd>` asks the policy itself and
   # runs nothing.
-  sudo -n -l -U "$ROUTER_USER" -u "$user" /usr/bin/tmux >/dev/null 2>&1 \
-    || { echo "MISSING: $user cannot be reached with tmux" >&2; rc=1; }
+  if (( TMUX_RETIRED )); then
+    # N3 (plan section 8): the retired line must be GONE, asked of the policy, not of the file.
+    if sudo -n -l -U "$ROUTER_USER" -u "$user" /usr/bin/tmux >/dev/null 2>&1; then
+      echo "STILL OPEN: $ROUTER_USER can run tmux as $user, but the tmux line is retired ($FP_CONF/no-tmux-line)" >&2; rc=1
+    else
+      echo "ok: no tmux line for $user (retired)"
+    fi
+  else
+    sudo -n -l -U "$ROUTER_USER" -u "$user" /usr/bin/tmux >/dev/null 2>&1 \
+      || { echo "MISSING: $user cannot be reached with tmux" >&2; rc=1; }
+  fi
   # -U: the question is what the ROUTER may do. Asked as root without -U, root may run
   # anything as anyone, and this line reported TOO WIDE on a healthy container (2026-10-12).
   if sudo -n -l -U "$ROUTER_USER" -u "$user" /usr/bin/cat >/dev/null 2>&1; then
@@ -506,6 +617,20 @@ if (( D4_DEPLOYED && ! DRY )); then
     sudo -n -l "$D4_SBIN/fleet-github" token KratoBal/acroveliq olvas >/dev/null 2>&1 \
       || { echo "MISSING: $ROUTER_USER cannot run fleet-github token" >&2; rc=1; }
   fi
+fi
+# fleet-pane (step 4c): where the broker is deployed, the installed copy is the pinned version,
+# the start directory is root's and the router's line is there (asked of the policy, runs nothing).
+if (( FP_RC )); then echo "FLEET-PANE: step 4c reported a problem above" >&2; rc=1; fi
+if (( FP_DEPLOYED && ! DRY )); then
+  if [[ "$(sha256sum < "$FP_BIN" 2>/dev/null | cut -d' ' -f1)" == "$FP_PIN" ]]; then
+    echo "ok: $FP_BIN is the pinned version"
+  else
+    echo "MISSING: $FP_BIN is absent or not the pinned version" >&2; rc=1
+  fi
+  [[ "$(stat -c '%U:%G %a' "$FP_START" 2>/dev/null)" == "root:root 755" ]] \
+    || { echo "MISSING: $FP_START is absent or not root:root 0755" >&2; rc=1; }
+  sudo -n -l -U "$ROUTER_USER" "$FP_BIN" status probe >/dev/null 2>&1 \
+    || { echo "MISSING: $ROUTER_USER cannot run $FP_BIN" >&2; rc=1; }
 fi
 # B45 B2-4: the last daily write check (scripts/b45-jogellenorzo-napi.py, as marveen). A
 # JELZES fails this step: a recreate is exactly when a lost ACL or a wrong owner comes back.

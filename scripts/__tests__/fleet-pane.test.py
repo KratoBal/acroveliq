@@ -631,7 +631,7 @@ check('the example values and agents load, every example agent has a workdir and
 
 # --- the installed form -----------------------------------------------------------------------
 src = open(os.path.join(SCRIPTS, 'root', 'fleet-pane.py'), encoding='utf-8').read()
-check('the entry runs isolated (-I), with the fixed paths', (src.split('\n')[0], "AGENTS_FILE = '/etc/fleet-pane/agents.json'" in src,
+check('the entry runs isolated (-I), with the fixed paths', (src.split('\n')[0], "AGENTS_FILE = '/etc/fleet-pane/conf/agents.json'" in src,
       "TMUX = '/usr/bin/tmux'" in src, "RUNUSER = '/usr/sbin/runuser'" in src), ('#!/usr/bin/python3 -I', True, True, True))
 
 print('\n%d FAIL' % len(FAILS) if FAILS else '\nall pass')
