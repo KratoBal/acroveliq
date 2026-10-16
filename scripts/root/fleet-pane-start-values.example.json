@@ -1,5 +1,5 @@
 {
-  "claudeBin": "/opt/fleet-claude/2.1.300/claude",
+  "claudeBin": "/etc/fleet-pane/conf/claude/2.1.300/claude",
   "oauthTokenFile": "/home/marveen/marveen/store/.claude-oauth-token",
   "tz": "Europe/Budapest",
   "gitCeiling": "/home/marveen/marveen/agents",

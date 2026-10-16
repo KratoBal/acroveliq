@@ -33,6 +33,9 @@ INSTALL_DIR="$(cd "$HERE/.." && pwd)"
 # session: a counter that has only ever returned 0 is not a verified counter.
 AGENTS_DIR="${AGENT_PANE_AGENTS_DIR:-$INSTALL_DIR/agents}"
 TMUX_BIN="${TMUX_BIN:-/usr/bin/tmux}"
+# The fleet-pane switch, read the router's way (scripts/lib/fleet_pane_switch.py).
+BROKER=0
+python3 -I "$HERE/lib/fleet_pane_switch.py" "$INSTALL_DIR" >/dev/null 2>&1 && BROKER=1
 
 MODE="pane"
 TARGETS=()
@@ -103,7 +106,11 @@ capture_one() {
     return 3
   fi
   user="$(run_as_user "$name")"
-  if [[ -n "$user" ]]; then
+  if [[ -n "$user" ]] && (( BROKER )); then
+    # The router's road (B48 (2), docs/fleet-pane.md): with the switch on, the old tmux line may
+    # already be gone, so the pane is read through the broker's capture verb.
+    sudo -n /usr/local/sbin/fleet-pane capture "$name"
+  elif [[ -n "$user" ]]; then
     sudo -n -u "$user" "$TMUX_BIN" capture-pane -p -t "$session"
   else
     "$TMUX_BIN" capture-pane -p -t "$session"

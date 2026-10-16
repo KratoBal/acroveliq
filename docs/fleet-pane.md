@@ -34,7 +34,7 @@ The router used to build the launch as a shell string for `tmux new-session`, so
 
 - **`generate <agent>`** rewrites `/etc/fleet-pane/start/<agent>` (`root:root 0755`, atomic) from
   the root agents file (user, workdir, **profile**), the root value sets
-  (`/etc/fleet-pane/start-values.json`) and only two fields of the agent's config: `model` (must be
+  (`/etc/fleet-pane/conf/start-values.json`) and only two fields of the agent's config: `model` (must be
   on the list) and `displayName` (a pattern, else the agent's name; it becomes `--name`). The
   config's `securityProfile` is only compared: a difference refuses (`profile-mismatch`), because
   the agent can write its own config (barracuda measured it) and the router writes the
@@ -50,7 +50,7 @@ The router used to build the launch as a shell string for `tmux new-session`, so
 - **The claude binary** the script runs must be root's, with every directory above it, none
   writable by others and no symlink on the way (`claude-bin-...`); otherwise there is no start
   (acrobot 31242, barracuda 31245). Today's `~marveen/.local/share/claude/versions/...` is
-  `marveen`'s, so the install copies the pinned version to `/opt/fleet-claude/<version>/claude`.
+  `marveen`'s, so the install copies the pinned version to `/etc/fleet-pane/conf/claude/<version>/claude`.
 - **`start <agent> [--continue | --session-id <uuid>]`** runs that script, nothing else, with one
   item of the closed launch list (nautilus 31151), through `env -i` (HOME, USER, LOGNAME, SHELL,
   LANG, LC_ALL, TZ, TERM only), and without a shell between tmux and bash (tmux 3.3a runs a
@@ -104,34 +104,19 @@ message be typed into it idle, or queued into a running turn), and BOTH sides ar
 every row: `src/__tests__/pane-samples-shared.test.ts` and `scripts/__tests__/fleet-pane.test.py`.
 A pane-state change that moves an answer turns red there; the Python copy follows in the same PR.
 
-## Installing (Balázs's steps, on the stage fleet first, each separately approved)
+## Installing
 
-```
-cd /opt/marveen-docker && docker compose exec -u root marveen sh -c '
-  install -o root -g root -m 0755 /home/marveen/marveen/scripts/root/fleet-pane.py /usr/local/sbin/fleet-pane &&
-  install -d -o root -g root -m 0755 /etc/fleet-pane /etc/fleet-pane/start /opt/fleet-claude /opt/fleet-claude/2.1.300 &&
-  install -o root -g root -m 0755 /home/marveen/.local/share/claude/versions/2.1.300 /opt/fleet-claude/2.1.300/claude &&
-  install -o root -g root -m 0644 <the reviewed agents.json> /etc/fleet-pane/agents.json &&
-  install -o root -g root -m 0644 <the reviewed start-values.json> /etc/fleet-pane/start-values.json &&
-  install -o root -g root -m 0640 /dev/null /var/log/fleet-pane.log &&
-  echo "marveen ALL=(root) NOPASSWD: /usr/local/sbin/fleet-pane" > /etc/sudoers.d/fleet-pane &&
-  chmod 0440 /etc/sudoers.d/fleet-pane && visudo -c'
-```
+The step list, in Hungarian for the owner: `docs/fleet-pane-telepites.md` (what goes into sudoers, what is removed, how
+to go back, what to measure). In short: the root files (`agents.json`, `start-values.json`, the pinned claude binary and,
+once the tmux line is retired, the `no-tmux-line` marker) live in a host directory mounted read-only at
+`/etc/fleet-pane/conf`; `scripts/fleet-bootstrap.sh` step 4c installs the pinned broker, `/etc/fleet-pane/start` and
+`/etc/sudoers.d/fleet-pane` on every boot where that mount is, so a container recreate keeps the broker, and step 4 stops
+writing the tmux line once the marker is there. A broker change carries its new `FP_PIN` in the same PR
+(`scripts/__tests__/fleet-bootstrap-fleet-pane.test.py` is red until it does).
 
-The reviewed `agents.json` carries each agent's `profile` (the examples show the shape); the
-`start-values.json` points `claudeBin` at the root copy. Updating claude is then a root step: a new
-`/opt/fleet-claude/<version>/` and the value file's path.
-
-Then `FLEET_PANE_BROKER=on` and a dashboard restart. The old tmux line stays next to it (plan 7).
-Back: `FLEET_PANE_BROKER=off` and a dashboard restart (seconds); the files can stay.
-
-## Still to measure after installing (plan section 8)
-
-N3 (no tmux line in `sudo -l`, once Balázs removes it), N5 live (the running process is the
-template claude: `ps` on the agent's pane), N6 live, N7 (`/keys`), N8 (the installed files, the
-start scripts and `/opt/fleet-claude` not writable as `marveen`, the sha256 equal to the repo's),
-and P1-P4 (delivered with the log's hash, every verb on every agent, first start with the footer
-read as idle, 24 hours against the 24 before).
+The shell tools that reach agent panes (`agent-pane.sh`, `feladat-keret-or.sh`, `fleet-doctor.py`,
+`agent-to-own-user.sh`) read the switch the router's way (`scripts/lib/fleet_pane_switch.py`) and take the broker when it
+is on.
 
 The B48 class is not closed by the start verb alone: the router still writes the agent's
 `settings.json` (hooks) and the agent its own config (plan 2.3, B45).

@@ -92,7 +92,13 @@ echo "ok: $USER_NAME exists, groups: $(id -nG "$USER_NAME")"
 
 step "2. sudoers rule (tmux only)"
 RULE="marveen ALL=($USER_NAME) NOPASSWD: /usr/bin/tmux"
-if sudo -n grep -qF "($USER_NAME) NOPASSWD: /usr/bin/tmux" "$SUDOERS" 2>/dev/null; then
+if test -f /etc/fleet-pane/conf/no-tmux-line; then
+  # B48 (2): the owner retired the tmux line. The router reaches this agent through fleet-pane
+  # only when the agent is in the root agents list, which is the owner's file on the host
+  # (docs/fleet-pane.md, "Adding an agent"), not something this script may write.
+  echo "skip: the tmux line is retired (/etc/fleet-pane/conf/no-tmux-line)."
+  echo "      $AGENT must be in /etc/fleet-pane/conf/agents.json (the owner's host file) before step 6."
+elif sudo -n grep -qF "($USER_NAME) NOPASSWD: /usr/bin/tmux" "$SUDOERS" 2>/dev/null; then
   echo "ok: already present"
 else
   if (( DRY )); then
@@ -220,7 +226,12 @@ fi
 # an agent only by accident (measured 2026-08-20 07:29 -- it found korall and
 # nobody else). A session listed by the target user's own tmux server can only
 # have been created by that user.
-IN_OWN="$(sudo -n -u "$USER_NAME" tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -cx "agent-$AGENT")"
+if python3 -I "$HERE/lib/fleet_pane_switch.py" "$ROOT" >/dev/null 2>&1; then
+  # The router's road (B48 (2)): the broker answers for the agent user's own tmux server only.
+  IN_OWN="$(sudo -n /usr/local/sbin/fleet-pane status "$AGENT" 2>/dev/null | grep -cx "agent-$AGENT")"
+else
+  IN_OWN="$(sudo -n -u "$USER_NAME" tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -cx "agent-$AGENT")"
+fi
 IN_ROUTER="$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -cx "agent-$AGENT")"
 echo "session in $USER_NAME's tmux: $IN_OWN | still in the router's tmux: $IN_ROUTER"
 bash "$HERE/agent-pane.sh" --prompts "$AGENT"

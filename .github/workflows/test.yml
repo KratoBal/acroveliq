@@ -64,6 +64,12 @@ jobs:
       - run: python3 -B scripts/__tests__/fleet-github.test.py
       # D4 after a container recreate: fleet-bootstrap.sh 4a restores the broker's root scripts and sudo rule
       - run: python3 -B scripts/__tests__/fleet-bootstrap-d4.test.py
+      # B48 (2) after a container recreate: step 4c restores the fleet-pane broker, step 4 keeps a retired tmux line out
+      - run: python3 -B scripts/__tests__/fleet-bootstrap-fleet-pane.test.py
+      # the token-budget guard: its Escape takes the broker's interrupt verb when the switch is on
+      - run: bash scripts/__tests__/feladat-keret-or.test.sh
+      # the shell tools read FLEET_PANE_BROKER exactly as src/config.ts does
+      - run: python3 -B scripts/__tests__/fleet-pane-switch.test.py
       # docs/FIGMA-MAP.md: every node link, view and render function the map names exists
       - run: node scripts/figma-map-check.mjs
       # the owner token's retirement, PR 1: the github_token helpers and the guard on direct readers

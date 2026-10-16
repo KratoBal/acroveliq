@@ -130,9 +130,25 @@ def claude_process(user):
     return None
 
 
+def broker_on():
+    """The router's fleet-pane switch (scripts/lib/fleet_pane_switch.py, B48 (2))."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
+    try:
+        from fleet_pane_switch import broker_on as on
+    except ImportError:
+        return False
+    finally:
+        sys.path.pop(0)
+    return on(ROOT)
+
+
 def pane(user, session):
     """Captured pane WITH scrollback. A bare capture-pane came back empty on a parked
     agent and read as 'dead' -- measured 2026-09-01, cost an hour."""
+    if user != "marveen" and broker_on():
+        # With the switch on the tmux line may already be gone: the broker's capture verb.
+        rc, out = run(["sudo", "-n", "/usr/local/sbin/fleet-pane", "capture", session[len("agent-"):], "--lines", "40"])
+        return out if rc == 0 else None
     rc, out = run(["sudo", "-n", "-u", user, "tmux", "capture-pane", "-p", "-S", "-40", "-t", session])
     if rc != 0:
         return None
@@ -250,6 +266,14 @@ def main():
         return 0
     print("RESULT: %d agents, %d need attention: %s" % (len(rows), len(problems), ", ".join(problems)))
     print()
+    if broker_on():
+        # No broker verb answers a dialog (docs/fleet-pane.md); who may, and through what, is
+        # the plan's D6, the owner's decision.
+        print("A parked dialog is read through the broker; no broker verb answers it (plan D6):")
+        print("  sudo -n /usr/local/sbin/fleet-pane capture <name> --lines 40")
+        print("A missing profile is restored, not worked around:")
+        print("  cd %s && git checkout rebase-proba -- templates/profiles/<id>.json" % ROOT)
+        return 1
     print("A parked dialog is answered from the pane, never by a number:")
     print("  sudo -n -u <user> tmux capture-pane -p -S -40 -t agent-<name>   # find the > marker")
     print("  sudo -n -u <user> tmux send-keys -t agent-<name> Enter          # only if > is on the right option")
