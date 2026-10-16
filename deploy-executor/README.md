@@ -26,6 +26,13 @@ this container's secrets.
 5. GET http://vegrehajto:8787/requests/<r>  -> outcome: finished_verified | commit_mismatch | failed | unverified_timeout
 ```
 
+The fleet does not hand-write these calls: `scripts/vegrehajto.sh` does steps 1-2
+(`kerj <agent> <env> <app> <sha40>`: the approval goes up with the canonical
+line as its whole description and an expiry inside the R's window; the
+dashboard's default of 1440 minutes would be refused), step 4
+(`vegrehajt <R> <approval_id>`: only an approved, Discord-decided approval of
+this very R is sent on) and step 5 (`allapot <R>`).
+
 A refusal is `403 {"error": <reason>}` and leaves the R unused. Anything after
 the R is marked used spends it (also a failed Coolify call): a new request and a
 new approval are needed.
