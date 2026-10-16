@@ -172,7 +172,8 @@ describe('what goes into the image', () => {
     for (const must of [/NODE_IMAGE: \$\{VEGREHAJTO_NODE_IMAGE:\?/, /^\s+read_only: true$/m, /^\s+cap_drop:\n\s+- ALL$/m, /no-new-privileges:true/, /^\s+user: "10001:10001"$/m, /^\s+internal: true$/m, /^\s+context: \/opt\/vegrehajto\/src$/m]) {
       expect(code).toMatch(must)
     }
-    for (const never of [/docker\.sock/, /\/opt\/marveen-docker/, /^\s+ports:/m, /privileged: true/, /pid: host/, /network_mode/, /\/home\/marveen/]) {
+    // B20b: the executor joins the Tailscale sidecar's namespace, and nothing else may share one
+    for (const never of [/docker\.sock/, /\/opt\/marveen-docker/, /^\s+ports:/m, /privileged: true/, /pid: host/, /network_mode: (?!service:ts$)/m, /\/home\/marveen/]) {
       expect(code).not.toMatch(never)
     }
   })

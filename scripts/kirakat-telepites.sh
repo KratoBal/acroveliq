@@ -99,6 +99,14 @@ for e in json.loads(nyers):
 "
     ;;
   indit)
+    # B20b (2026-10-16): coolify2 is closed to the public except /webhooks/, and the fleet may not
+    # reach its :8000 on the tailnet. A refusal is said in words before any deploy call.
+    if [ "$(/usr/bin/curl -s -o /dev/null -m 10 -w '%{http_code}' "$COOLIFY/api/health")" != 200 ]; then
+      echo "NEM INDITHATO INNEN: a coolify2 a flottabol nem erheto el (B20b: csak a tailneten)." >&2
+      echo "A teszt kirakat a GitHub-push utan magatol telepul (a webhook nyitva marad); kezi inditas Balazse." >&2
+      echo "Az allapot es a naplo tovabbra is megy: kirakat-telepites.sh allapot | naplo <uuid>" >&2
+      exit 3
+    fi
     api -X POST "$COOLIFY/api/v1/deploy?uuid=$UUID_APP" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)

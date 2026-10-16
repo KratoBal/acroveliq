@@ -116,3 +116,22 @@ with no approval answers 403.
 `restart` (its Coolify ability is an estimate in the plan); the running image
 tag check (`<app-uuid>:<sha>`) needs host Docker access the B8 gate decides about;
 the fleet-side switch of `kirakat-telepites.sh` and the skills (plan step 5).
+
+## B20b: the AI machine's Coolify on the tailnet only (task b20b-coolify2-tailnet)
+
+`coolify2.acropora.hu` keeps only its `/webhooks/` path public. The executor reaches that
+Coolify's API on the tailnet through its own Tailscale identity:
+
+- the `ts` sidecar in `compose.yaml` (kernel mode, `NET_ADMIN` and the tun device only, tag
+  `tag:vegrehajto`, `--accept-routes=false`, no exit node, Docker's DNS kept); the executor runs in
+  its network namespace (`network_mode: service:ts`) with its own hardening unchanged, and the
+  fleet keeps calling `http://vegrehajto:8787` (the alias is on the `hivas` network);
+- the tailnet policy gives `tag:vegrehajto` exactly `tag:stage-ai:8000`, and nobody reaches
+  `tag:vegrehajto:8787`; `tag:prod` keeps its `:8000` denial;
+- `config.json`: `coolifyHosts.ai-gep.coolifyApiUrl` = `http://100.88.199.87:8000/api/v1`;
+- the auth key: `/opt/vegrehajto/titkok/ts-authkey`, root 600, one-time, pre-approved, tagged;
+  the sidecar reads it at its first login only (`TS_AUTH_ONCE`), its state is a named volume.
+
+`host/b20b-meres.sh` is step 0 on the AI machine (read-only: the Traefik version, the dynamic
+config's router lines, Coolify's webhook routes, the tailnet address). The step list for the
+owner is in Hungarian beside the plan (`b20b-telepitesi-lap-2026-10-16.md`).
