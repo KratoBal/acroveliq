@@ -118,10 +118,16 @@ class Description(unittest.TestCase):
                 self.assertIsNone(why)
                 self.assertEqual(pa.neutral_description(text), "> " + text)
                 # every character of the command is still there, as itself or its glyph
-                back = text.split(" :: ", 1)[1]
+                back = text.split(" :: ", 1)[1].split(" [jelek: ", 1)[0]
                 for k, v in pa._GLYPHS.items():
                     back = back.replace(v, k)
                 self.assertEqual(back.replace(pa._EXTRA_SPACE, " "), cmd)
+
+    def test_the_look_alikes_used_are_named_in_words(self):
+        text, _ = pa.description("cat a | grep b > c", CWD)
+        self.assertTrue(text.endswith(" [jelek: \u203a atiranyitas, \u00a6 cso]"), text)
+        plain, _ = pa.description("ls -la", CWD)
+        self.assertNotIn("[jelek:", plain)
 
     def test_what_cannot_be_shown_whole_is_refused(self):
         for cmd in ("x" * 600, "echo ¦", "a\rb", "echo ␣", " leading", "a b"):
@@ -139,7 +145,7 @@ class Live(Base):
         self.assertEqual(api.posts, 1)
         row = api.rows["apr-1"]
         self.assertEqual(row["category"], "bash_command")
-        self.assertTrue(row["action_description"].endswith(":: " + pa.encode(CMD)[0]))
+        self.assertIn(":: " + pa.encode(CMD)[0] + " [jelek: ", row["action_description"])
         # an approved row is never reused: the same command asks again
         self.run_live(api)
         self.assertEqual(api.posts, 2)
@@ -213,6 +219,29 @@ class Live(Base):
         out = self.run_live(first)
         self.assertEqual(out["hookSpecificOutput"]["decision"]["behavior"], "allow")
         self.assertEqual(first.posts, 1)
+
+    def test_a_cached_id_pointing_at_another_agents_row_is_not_waited_on(self):
+        # another agent's pending row with the very same text, planted in this agent's cache
+        api = FakeApi(approve_discord)
+        text, _ = pa.description(CMD, CWD)
+        api.rows["apr-x"] = {"id": "apr-x", "agent_id": "murena", "category": "bash_command",
+                             "action_description": text, "status": "pending",
+                             "resolved_by": None, "decision_ref": None}
+        import hashlib
+        with open(self.cache, "w") as f:
+            json.dump({hashlib.sha256(text.encode()).hexdigest(): {"id": "apr-x", "at": self.clock.t, "outcome": "pending"}}, f)
+        out = self.run_live(api)
+        self.assertEqual(out["hookSpecificOutput"]["decision"]["behavior"], "allow")
+        self.assertEqual(api.posts, 1)  # its own new row, not murena's
+        self.assertEqual(api.rows["apr-x"]["status"], "pending")
+
+    def test_a_row_of_another_agent_never_allows(self):
+        row = {"id": "a", "agent_id": "murena", "category": "bash_command", "action_description": "t",
+               "status": "approved", "resolved_by": "balazs", "decision_ref": DISCORD_REF}
+        d = pa._verdict(row, "t", "barracuda")["hookSpecificOutput"]["decision"]
+        self.assertEqual(d["behavior"], "deny")
+        self.assertIn("nem ennek az agensnek", d["message"])
+        self.assertEqual(pa._verdict(dict(row, agent_id="barracuda"), "t", "barracuda")["hookSpecificOutput"]["decision"]["behavior"], "allow")
 
     def test_a_secret_shaped_command_is_denied_and_nothing_is_sent(self):
         api = FakeApi(approve_discord)

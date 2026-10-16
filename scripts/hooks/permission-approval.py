@@ -16,7 +16,9 @@ agents only (a permissive one runs with --dangerously-skip-permissions and
 never asks), matcher Bash.
 
 TWO MODES, from store/permission-approval.json ({"mode": "eles"}); a missing
-or unreadable file is "arnyek":
+or unreadable file is "arnyek". The hook runs as the AGENT's user, so the file
+must be world-readable (0644, written by root or marveen, never by an agent):
+a 0600 file reads as shadow forever, silently (barracuda, #219 review):
   arnyek  decides nothing (the dialog comes as today) and tells the main agent
           what it would have asked: the first two words after secret masking,
           the length, a sha256 prefix, and what the live mode would do.
@@ -85,6 +87,14 @@ _GLYPHS = {
     "\t": "⇥",  # RIGHTWARDS ARROW TO BAR
 }
 _EXTRA_SPACE = "␣"  # OPEN BOX: the second and later space of a run
+# what each look-alike stands for, said in words: on a phone a redirect or a
+# pipe glyph reads as an ordinary letter, and those decide what is approved
+_LEGEND = {
+    _GLYPHS[">"]: "atiranyitas", _GLYPHS["|"]: "cso", _GLYPHS["_"]: "alahuzas",
+    _GLYPHS["*"]: "csillag", _GLYPHS["#"]: "kettoskereszt", _GLYPHS["~"]: "hullam",
+    _GLYPHS["`"]: "backtick", _GLYPHS["\n"]: "uj sor", _GLYPHS["\t"]: "tab",
+    _EXTRA_SPACE: "tobblet szokoz",
+}
 
 
 def encode(text: str):
@@ -128,6 +138,9 @@ def description(command: str, cwd: str):
     if d is None:
         return None, "a munkakonyvtar: " + why
     text = "PARANCS cwd=%s :: %s" % (d, c)
+    used = [g for g in _LEGEND if g in text]
+    if used:
+        text += " [jelek: %s]" % ", ".join("%s %s" % (g, _LEGEND[g]) for g in used)
     if len(text) > DESCRIPTION_MAX:
         return None, "a parancs tul hosszu a Discord-kereshez (%d > %d jel), bontsd fel" % (len(text), DESCRIPTION_MAX)
     if neutral_description(text) != "> " + text:
@@ -206,8 +219,13 @@ def _cache_write(path: str, cache: dict, now: float) -> None:
         pass  # a lost cache costs one more request, never a wrong decision
 
 
-def _verdict(row: dict, text: str):
+def _verdict(row: dict, text: str, agent: str):
     """allow/deny for a decided row, None while it is pending."""
+    # the row must be THIS agent's, on every path: a cached id is the agent's own
+    # writable file, and could point at another agent's row with the same text
+    # (barracuda, #219 review 1)
+    if row.get("agent_id") != agent:
+        return deny("a jovahagyas sora nem ennek az agensnek szol, nem futtatom")
     status = row.get("status")
     if status == "pending":
         return None
@@ -242,7 +260,8 @@ def live(command: str, cwd: str, agent: str, api: Api, cache_path: str,
         if hit.get("id"):
             try:
                 old = api.call("GET", "/approvals/%s" % hit["id"])
-                if isinstance(old, dict) and old.get("status") == "pending" and old.get("action_description") == text:
+                if (isinstance(old, dict) and old.get("status") == "pending" and old.get("action_description") == text
+                        and old.get("agent_id") == agent):
                     row = old  # wait on the pending one; an approved one is never reused
             except Exception:
                 row = None
@@ -260,7 +279,7 @@ def live(command: str, cwd: str, agent: str, api: Api, cache_path: str,
         _cache_write(cache_path, cache, now())
     deadline = now() + APPROVAL_SECONDS + POLL_SECONDS
     while True:
-        verdict = _verdict(row, text)
+        verdict = _verdict(row, text, agent)
         if verdict is not None:
             outcome = row.get("status")
             cache[key] = {"id": row.get("id"), "at": now(), "outcome": outcome}
