@@ -31,10 +31,10 @@ használója tehát lehet egy ütemezett prompt vagy egy kézi lépés: ezt a 3.
 |---|---|---|
 | **C** | **éles üzleti kulcs vagy postafiók-token, a flottában nincs használója** (H4 és H5, a commerce nélkül) | **kivétel és rotáció**: ez a B28 |
 | D | commerce: Stripe, Medusa, UNAS, és a commerce stage | a befagyasztás miatt **csak leltár**; a kivétel és a rotáció Balázs külön döntése |
-| A | az élő működéshez kell a `marveen` alatt (vezérlőpult, ágensek indítása, posztolás, naptár, hibajegy-levelezés, mentés, stage) | marad; a közvetítő mögé vitele külön tétel (a B48 és a D4 mintája) |
+| A | az élő működéshez kell a `marveen` alatt (vezérlőpult, ágensek indítása, posztolás, naptár, hibajegy-levelezés, mentés, SEO-mérés, stage) | marad; a közvetítő mögé vitele külön tétel (a B48 és a D4 mintája) |
 | B | infrastruktúra-hozzáférés, amire már külön tétel fut | a GitHub-tokenek a D4 (GitHub App közvetítő), a Coolify-tokenek a P0 terv H2 és H3 sora |
 | E | elavult másolat vagy mentés | törölhető; a két `.env` mentés a `.env` élő titkait hordozza |
-| ? | célja ismeretlen, használót nem találtunk | egy mondat kell róla (kié, mire), utána C vagy E |
+| ? | célja ismeretlen, használót nem találtunk (ma egy: `.flintsign-key`) | Balázs kérdése a lenti blokkban, utána C vagy E |
 
 A tíz C-osztályú fájl: `.foxpost-credentials`, `.gls-credentials.json` és a `.bak-20261005` másolata, `.otp-ebiz-api-key`,
 `.szamlazz-agent-key`, `.szamlazz-banktranz-key`, `.szamlazz-prod-master-key-v1`, `.gsuite-refresh-token-balazs`,
@@ -61,17 +61,17 @@ Ha valamelyik az elmúlt napokban olvasva volt, annál a fájlnál itt megállun
 
 **Mérve 2026-10-16 08:5x (murena, `stat`, olvasási jog nélkül; a mount `relatime`):** mind a tíz fájl utolsó olvasása
 2026-10-14 16:39:13 és 16:39:15 között volt. Ugyanebben a két másodpercben a `store/` 72 titok-fájljából 56-ot olvasott
-valami: ez egy tömeges olvasás (mentés vagy másolás), nem egy kulcs használata. A `relatime` szerint egy későbbi olvasás
-egy napon belül frissítette volna az időt, tehát **2026-10-15 16:39 óta ezeket semmi nem olvasta**. Hogy a 10-14-i tömeges
-olvasás mi volt, azt nem mértük (a `marveen` vagy a root olvashatta, mert a fájlok 600-asak); a lépés előtt érdemes
-tudni.
+valami: ez egy tömeges olvasás, nem egy kulcs használata. A `relatime` szerint egy későbbi olvasás egy napon belül
+frissítette volna az időt, tehát **2026-10-15 16:39 óta ezeket semmi nem olvasta**. A tömeges olvasás acrobot
+szövegkeresése volt (a saját átirata szerint 14:38:54 UTC: `scripts/keres.sh "nappl" .` a flotta gyökerében): a
+`keres.sh` a teljes fát tartalomra keresi, a `store/` titkait is. Ez maga is kockázat, lásd az 5. pontot.
 
 **2. Rotáció a szolgáltatóknál, kulcsonként** (a te fiókjaidban, a flotta nélkül; az új érték NEM kerül a `store/`-ba):
 
 | Kulcs | Hol él az új érték | Sorrend |
 |---|---|---|
-| Számlázz.hu agent kulcs, banki tranzakciós kulcs | az élő OS (Coolify környezeti változó vagy az OS beállításai) | új kulcs a Számlázz.hu fiókban, beírás az élő OS-be, egy próbaszámla-lekérdezés az OS-ből, utána a régi törlése |
-| `.szamlazz-prod-master-key-v1` | az OS titkosítási kulcsa a Számlázz-adatokhoz (a név szerint; a szerepét nem mértük) | **előbb meg kell nézni az OS-ben, mit titkosít**: ha a tárolt adatot, a csere újratitkosítás, nem csak kulcscsere. Addig csak a flotta-másolat törlése (4. lépés), rotáció nélkül |
+| Számlázz.hu agent kulcs és a `.szamlazz-prod-master-key-v1` | az élő OS környezete (`SZAMLAZZ_CREDENTIAL_MASTER_KEY_V<n>`, `SZAMLAZZ_CREDENTIAL_ACTIVE_KEY_VERSION`) és az OS-ben titkosítva tárolt agent kulcs | egy lépés, ebben a sorrendben: új mesterkulcs `..._V2` és `ACTIVE_KEY_VERSION=2` az élő OS környezetébe; új agent kulcs a Számlázz.hu fiókban, beírás az OS-be (már V2-vel titkosul); egy próbaszámla-lekérdezés; utána a régi agent kulcs törlése a Számlázz.hu-ban, és a `V1` változó törlése. **Mérve** (barracuda, visszamérve murenával, acropora-os fő ág, `szamlazz-credential-crypto.service.ts`): a mesterkulcs AES-256-GCM-mel EGYETLEN titkot titkosít, a tárolt agent kulcsot (AAD `secret:agent-key`), a boríték viszi a kulcs-verziót. Elvesztése nem adatvesztés (legrosszabb esetben az agent kulcsot újra be kell írni), tehát a flotta-másolat törlése a 3. lépésben a rotáció előtt is biztonságos, ha a Számlázz-kapcsolat ma működik |
+| Számlázz.hu banki tranzakciós kulcs | az élő OS, ha használja | új kulcs a Számlázz.hu fiókban, beírás az élő OS-be, egy lekérdezés, utána a régi törlése |
 | OTP eBiz API-kulcs | az élő OS, ha használja | ugyanaz, mint a Számlázz-kulcsnál |
 | Foxpost (e-kereskedelmi kód, jelszó, API-kulcs) | az élő OS `FOXPOST_API_*` | új jelszó és API-kulcs a Foxpost felületén, beírás az OS-be, egy követés-lekérdezés, utána a régi visszavonása |
 | GLS MyGLS belépés | az élő OS `GLS_MYGLS_*` | új jelszó a MyGLS-ben, beírás az OS-be, egy csomaglista-lekérdezés |
@@ -111,16 +111,25 @@ hanem a megfelelő közvetítő mögé (a B48 és a D4 mintája).
 | M3 | az élő OS a rotált kulcsokkal működik: egy számla-lekérdezés, egy Foxpost-követés, egy GLS-csomaglista | Balázs vagy az OS naplója |
 | M4 | a régi érték elutasít: a szolgáltató felülete a régi kulcsot visszavontnak mutatja (a flotta ezt nem tudja mérni, mert a régi értéket nem olvashatja, és nem is kell) | Balázs |
 
+## Kérdések Balázsnak (egy blokkban, egyszer)
+
+1. **`.os-balazs-google-refresh-token`:** az élő OS ugyanazzal a Google-alkalmazással és a balazs@ fiókkal dolgozik? Ha
+   igen, a visszavonás után az OS-ben újra be kell jelentkezni; ha nem, a visszavonás a többihez hasonló.
+2. **`.flintsign-key`:** kié, és mire való? A flottában semmi nem hivatkozik rá, és acrobot memóriájában sincs nyoma. A
+   válasz szerint C (kivétel és rotáció) vagy E (törlés).
+
 ## 5. Ami a B28 után nyitva marad
 
 - **D osztály** (Stripe éles és webhook, Medusa éles admin és mesterkulcs, UNAS): ugyanaz a helyzet, mint a C-nél (a
   Stripe és a Medusa éles kulcsokat a flottában semmi nem olvassa; az UNAS-t a `unas.sh` igen), de a commerce
   befagyasztása miatt ez csak leltár. A kivételük ugyanígy menne, a te szavadra; a figyelő listája akkor bővül.
-- **A osztály**: a `marveen` továbbra is olvassa a 40 A-osztályú titkot, köztük az info@ postafiók tokenjét (levél küldésére is), a FB,
+- **A osztály**: a `marveen` továbbra is olvassa a 43 A-osztályú titkot, köztük az info@ postafiók tokenjét (levél küldésére is), a FB,
   YouTube, Drive, Search Console, Merchant Center és Google Ads tokeneket. Ezek a B29 (acrobot bypass munkamenete) végleges
   zárásáig a munkamenetből olvashatók; a helyük egy közvetítő, ahogy a GitHubnál a D4.
-- **? osztály** (`.fleet-ro-password`, `.flintsign-key`, `.pagespeed-api-key`, `.szamlazz-stage-master-key-v1`): egy
-  mondat kell róluk, kié és mire, és utána C vagy E.
+- **A flotta-szintű szövegkeresés a titkokat is végigolvassa** (acrobot leletje, 2026-10-16): a `scripts/keres.sh` a fa
+  tartalmát keresi, a `store/` titok-fájljaival együtt. Ha egy titok tartalmazná a keresett mintát, a találati sor (benne
+  az érték) a munkamenetbe íródna. A C-osztályú kulcsoknál ezt a kivétel megoldja; az A, D és E osztálynál nyitva marad,
+  amíg a `keres.sh` ki nem zárja a `store/`-t, vagy a titkok el nem kerülnek onnan. Külön tétel, kód most nem kell.
 - **E osztály**: a két `.env` mentés (`.env.mentes-*-2026-10-15`) a `.env` élő értékeit hordozza; a `.yt-refresh-token.bak`
   és a lejárt `.figma-token` (acrobot mérése szerint 2026-09-28-án lejárt) törölhető.
 
@@ -152,7 +161,7 @@ kimarad). A `-` azt jelenti, hogy a négy forrás egyikében sem találtunk hiva
 | `.fb-page-tokens.json` | marveen:sec-fb 640 | barracuda | scripts/fb-insights.sh | A |
 | `.fb-user-token` | marveen:sec-fb 640 | barracuda | scripts/fb-campaign-draft.sh, scripts/fb-insights.sh | A |
 | `.figma-token` | marveen:sec-github 600 | - | - | E |
-| `.fleet-ro-password` | marveen:marveen 600 | - | - | ? |
+| `.fleet-ro-password` | marveen:marveen 600 | - | a stage OS adatbázis `fleet_ro` szerepe, fleet-gate 1b (acrobot) | A |
 | `.flintsign-key` | marveen:marveen 600 | - | - | ? |
 | `.foxpost-credentials` | marveen:marveen 600 | - | - | C |
 | `.gads-refresh-token` | marveen:marveen 600 | - | scripts/gads.sh (élő fa, nem követett) | A |
@@ -177,7 +186,7 @@ kimarad). A `-` azt jelenti, hogy a négy forrás egyikében sem találtunk hiva
 | `.medusa-stage-key` | marveen:marveen 600 | - | scripts/medusa-stage.sh | D |
 | `.os-balazs-google-refresh-token` | marveen:marveen 600 | - | - | C |
 | `.otp-ebiz-api-key` | marveen:marveen 600 | - | - | C |
-| `.pagespeed-api-key` | marveen:marveen 600 | - | - | ? |
+| `.pagespeed-api-key` | marveen:marveen 600 | - | SEO-mérések, Balázs hozta létre 10-05-én (acrobot) | A |
 | `.secrets-backup-passphrase` | marveen:marveen 600 | - | scripts/fleet-secrets-backup.sh | A |
 | `.stage-basic-auth` | marveen:marveen 600 | - | scripts/kirakat-build.sh, scripts/lap-szin.sh | A |
 | `.stage-os-smoke-admin-password` | marveen:marveen 600 | - | - | A |
@@ -192,7 +201,7 @@ kimarad). A `-` azt jelenti, hogy a négy forrás egyikében sem találtunk hiva
 | `.szamlazz-agent-key` | marveen:marveen 600 | - | - | C |
 | `.szamlazz-banktranz-key` | marveen:marveen 600 | - | - | C |
 | `.szamlazz-prod-master-key-v1` | marveen:marveen 600 | - | - | C |
-| `.szamlazz-stage-master-key-v1` | marveen:marveen 600 | - | - | ? |
+| `.szamlazz-stage-master-key-v1` | marveen:marveen 600 | - | a stage OS Számlázz titkosítási mesterkulcsa (acrobot) | A |
 | `.ticket-mail-access-token` | marveen:marveen 600 | - | scripts/ticket-mail.sh | A |
 | `.ticket-mail-client-secret` | marveen:marveen 600 | - | scripts/ticket-mail.sh | A |
 | `.ticket-mail-refresh-token` | marveen:marveen 600 | - | scripts/ticket-mail.sh | A |
