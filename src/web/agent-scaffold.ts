@@ -721,6 +721,56 @@ export function ensureReadonlyCommandGate(name: string): boolean {
   return true
 }
 
+// The permission-approval hook (B48 pótlás, Balázs 2026-10-16 10:36 UTC): when
+// Claude Code would show a Bash permission dialog, the PermissionRequest hook
+// answers it with the owner's Discord decision (#33) or a deny that says why,
+// so a strict agent no longer stands on a prompt nobody can answer (the B48
+// broker answers no prompts, on purpose). store/permission-approval.json
+// switches it from shadow (decides nothing) to live. Same strict-only rule as
+// the read-only gate: a permissive agent never sees a dialog.
+// The timeout is above the hook's own 14-minute approval window plus a poll,
+// so the hook denies by itself instead of being killed.
+const _permissionApprovalScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'permission-approval.py')
+const PERMISSION_APPROVAL_CMD = `bash -c '[ -f ${_permissionApprovalScript} ] && exec python3 ${_permissionApprovalScript}; exit 0'`
+export const PERMISSION_APPROVAL_TIMEOUT_SECONDS = 900
+
+export function injectPermissionApprovalHook(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  if (isUnsafeHookCommand(PERMISSION_APPROVAL_CMD)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command: PERMISSION_APPROVAL_CMD, timeout: PERMISSION_APPROVAL_TIMEOUT_SECONDS }],
+  }
+  const prev = Array.isArray(hooks.PermissionRequest) ? (hooks.PermissionRequest as unknown[]) : []
+  hooks.PermissionRequest = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('permission-approval.py')),
+    entry,
+  ]
+}
+
+export function ensurePermissionApprovalHook(name: string): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const profile = loadProfileTemplate(resolveAgentSecurityProfile(name))
+  if (!agentGetsReadonlyCommandGate(profile)) return false
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const pr = Array.isArray(hooks.PermissionRequest) ? hooks.PermissionRequest as unknown[] : []
+  if (JSON.stringify(pr).includes('permission-approval.py')) return false
+  if (isUnsafeHookCommand(PERMISSION_APPROVAL_CMD)) return false
+  injectPermissionApprovalHook(settings)
+  mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 // The domains the owner added for this install, from the egress allowlist.
 // That file is the owner's gate for outbound calls; the reader's own list used
 // to be a SECOND list of the same decision, kept by hand, and the two drifted:

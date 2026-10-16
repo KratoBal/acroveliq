@@ -62,6 +62,8 @@ jobs:
       - run: python3 -B scripts/__tests__/fleet-secrets-matrix.test.py
       # D4 step 2: the GitHub App token broker, the guarded approver, the credential helper, the merge switch
       - run: python3 -B scripts/__tests__/fleet-github.test.py
+      # B48 pótlás: a Bash permission prompt answered by the owner's Discord decision, never a key
+      - run: python3 -B scripts/hooks/tests/permission-approval.test.py
       # D4 after a container recreate: fleet-bootstrap.sh 4a restores the broker's root scripts and sudo rule
       - run: python3 -B scripts/__tests__/fleet-bootstrap-d4.test.py
       # B48 (2) after a container recreate: step 4c restores the fleet-pane broker, step 4 keeps a retired tmux line out
