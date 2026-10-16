@@ -57,6 +57,12 @@
 # said now, not at merge.
 # A document verdict has no PR to approve: no root record.
 #
+# AN APPROVE NEEDS THE HEAD'S OWN DIFF (the D4 step list E3 (b), acrobot 31441): the packet's
+# diff.patch is the developer's, so before an APPROVE goes into the root record, the reviewer's
+# tool must have made the diff of exactly this head (review-olvas.sh --fej <packet> writes
+# ~/.review-fej/<owner>-<repo>-<pr>-<head>.patch, the caller's own, not a symlink). Missing: exit 1,
+# the timeline verdict stands. A CHANGES needs nothing: it only closes.
+#
 # Exit: 0 recorded and read back (and root-recorded where the approver is installed);
 # 1 refused, not confirmed, or not root-recorded; 2 bad argument.
 set -uo pipefail
@@ -222,6 +228,15 @@ fi
 if [[ ! "$HEAD7" =~ ^[0-9a-f]{40}$ ]]; then
   echo "FAIL: az idovonalon rogzitve, de a csomag feje nem 40 jegyu ('$HEAD7'): root rekord nem keszult, a gepi jovahagyo erre nem hagy jova" >&2
   exit 1
+fi
+if [ "$V" = APPROVE ]; then
+  FEJD="$HOME/.review-fej"
+  SLUG="${PRREF_ROOT%#*}"; SLUG="${SLUG/\//-}"
+  FEJF="$FEJD/$SLUG-${PRREF_ROOT##*#}-$HEAD7.patch"
+  if [ -L "$FEJD" ] || [ ! -d "$FEJD" ] || [ -L "$FEJF" ] || [ ! -f "$FEJF" ] || [ "$(stat -c %u "$FEJF")" != "$(id -u)" ]; then
+    echo "FAIL: az idovonalon rogzitve, de a fejbol eloallitott diff nincs meg ehhez a fejhez ($FEJF): futtasd a review-olvas.sh --fej $C hivast, olvasd el, es rogzitsd ujra" >&2
+    exit 1
+  fi
 fi
 if ! $SUDO "$FLEET_APPROVE" "${ROOTARGS[@]}" > "$T/root" 2>&1; then
   echo "FAIL: az idovonalon rogzitve, de a root rekord NEM: $(head -c 300 "$T/root")" >&2

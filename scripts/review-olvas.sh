@@ -21,15 +21,30 @@
 # The statistics come from `git apply --numstat` run on the patch as data, outside any
 # repository, with an emptied environment: it parses, applies nothing, runs nothing.
 #
-# Exit: 0 read; 1 no such packet or nothing readable in it; 2 bad argument.
+# review-olvas.sh --fej <csomag>   (a PR packet only)
+#   -> the diff of the packet's head, made HERE from GitHub, not taken from the packet
+#      (the D4 step list E3 (b), acrobot 31441): scripts/lib/review-fej-diff.py asks GitHub
+#      anonymously (the fleet repositories are public) whether the PR's head is still the
+#      packet's latest full head, takes the compare diff of THAT sha, writes it to
+#      ~/.review-fej/ (0700/0600) and compares it with the packet's latest patch, file by file.
+#      WHY: the approver approves the head the README names, and the README and diff.patch are
+#      the developer's. A head with more in it than diff.patch would pass. Read the file it names.
+#
+# Exit: 0 read (--fej: and the packet's patch is the head's diff); 1 no such packet, nothing
+# readable in it (--fej: or the head is not 40 hex, the PR moved on, GitHub did not answer, or
+# the patch differs); 2 bad argument.
 set -uo pipefail
 set -f
 
 # the zone, one line: tests replace it in a copy
 ZONA=/home/marveen/marveen/review-csomagok
 GIT_BIN=/usr/bin/git
+GH_API=https://api.github.com
+FEJ_DIFF=/home/marveen/marveen/scripts/lib/review-fej-diff.py
 
-[ "$#" -eq 1 ] || { echo "usage: review-olvas.sh <csomag>   (pl. 1650, c512, marveen68, ai37, doc-<task_id>)" >&2; exit 2; }
+FEJ=0
+if [ "$#" -eq 2 ] && [ "$1" = --fej ]; then FEJ=1; shift; fi
+[ "$#" -eq 1 ] || { echo "usage: review-olvas.sh [--fej] <csomag>   (pl. 1650, c512, marveen68, ai37, doc-<task_id>)" >&2; exit 2; }
 C="$1"
 DOCS=0
 if [[ "$C" =~ ^doc-[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then DOCS=1; D="$ZONA/$C"
@@ -50,6 +65,34 @@ for r in README.md README; do
   found=1
 done
 [ "$found" = 1 ] || echo "!! nincs README a csomagban"
+
+if [ "$FEJ" = 1 ]; then
+  [ "$DOCS" = 0 ] || { echo "FAIL: --fej csak PR-csomagra: egy dokumentumnak nincs feje" >&2; exit 2; }
+  [ "$found" = 1 ] || exit 1
+  [[ "$C" =~ ^(c|marveen|ai)?([0-9]{1,6})$ ]]
+  case "${BASH_REMATCH[1]}" in
+    c) REPO=KratoBal/acropora-commerce ;; marveen) REPO=KratoBal/acroveliq ;;
+    ai) REPO=KratoBal/acropora-ai-agent ;; *) REPO=KratoBal/acropora-os ;;
+  esac
+  PRN="${BASH_REMATCH[2]}"
+  # the latest round's head and patch: review-csomag.sh writes `fej: <sha>` and diff.patch for the
+  # first round, a `vN: task_id X, fej <sha>, ...` line and diff-vN.patch for each later one
+  HEAD="" PATCH="$D/diff.patch"
+  for r in README.md README; do
+    { [ -f "$D/$r" ] && [ ! -L "$D/$r" ]; } || continue
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [[ "$line" =~ ^fej:[[:space:]]+([0-9a-f]+)[[:space:]]*$ ]] && [ -z "$HEAD" ]; then HEAD="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ ^v([0-9]+):.*[[:space:]]fej[[:space:]]+([0-9a-f]+)(,|[[:space:]]|$) ]]; then
+        HEAD="${BASH_REMATCH[2]}"; PATCH="$D/diff-v${BASH_REMATCH[1]}.patch"
+      fi
+    done < "$D/$r"
+    break
+  done
+  [[ "$HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo "FAIL: a csomag legutolso feje nem 40 jegyu ('$HEAD'): a fejbol nem allithato elo diff" >&2; exit 1; }
+  echo
+  python3 -I "$FEJ_DIFF" "$GH_API" "$REPO" "$PRN" "$HEAD" "$HOME/.review-fej" "$PATCH"
+  exit $?
+fi
 
 if [ "$DOCS" = 1 ]; then
   n_doc=0

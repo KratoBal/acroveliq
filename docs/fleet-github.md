@@ -155,6 +155,16 @@ A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker 
 - **A csomag és a fej kötése: ELDÖNTVE (acrobot, 31441): (b), a review-csomag diffjét a reviewer eszköze állítja elő a teljes fejből; amíg ez nincs bent, a 7. lépés vár.** A jóváhagyó azt a fejet hagyja jóvá, amit a csomag README-je
   megnevez, a README-t viszont a fejlesztő írja, barracuda pedig a `diff.patch`-et olvassa. Egy fej, amiben több áll, mint a
   diffben, ma átmenne. A választott alak a (b): a reviewer nem a fejlesztő állítását olvassa, hanem a fejből előállított diffet.
+  **Az eszköz (a lépéslista E3 (b), feladat `b25-e3`):** `review-olvas.sh --fej <csomag>`.
+  - Kiolvassa a csomag legutolsó, 40 jegyű fejét és a PR-t (a csomag nevéből).
+  - A GitHubtól névtelenül megkérdezi, hogy a PR mai feje még ez-e. A flotta négy repója nyilvános, token nincs.
+  - A diffet a GitHub compare-jéből veszi, PONTOSAN annak a fejnek a sha-jára (`<alap>...<fej>`).
+  - A diffet a reviewer saját `~/.review-fej/` mappájába írja (0700/0600), és fájlonként összeveti a csomag
+    legutolsó patch-ével.
+  - Eltérésnél (a fejben több vagy más áll, vagy push jött a csomagolás után) kilépés 1, és megnevezi a fájlokat.
+  - **A kötés:** a `review-ellenoriz.sh` egy APPROVE-ot csak akkor ír a root rekordba, ha ez a fájl PONTOSAN az átnézett
+    fejre megvan (a hívó sajátja, nem symlink). Ha hiányzik, kilépés 1, és az idővonal verdiktje áll. A CHANGES-hez
+    nem kell, az csak lezár.
 
 ## Konténer-újrateremtés után (fleet-bootstrap.sh 4a)
 
