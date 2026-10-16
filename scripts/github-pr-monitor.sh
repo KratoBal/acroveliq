@@ -55,7 +55,11 @@ fi
 # token file is read. FLEET_GITHUB_APP=off is the explicit rollback to the vault copy and the file.
 . "$INSTALL_DIR/scripts/lib/github-token.sh"
 if [ "${FLEET_GITHUB_APP:-on}" != off ]; then
-  GH_TOKEN="$(github_token "$REPO" olvas)" || GH_TOKEN=""
+  # a broker refusal is a STOP, not an anonymous run (barracuda #231 review, acrobot 32218): with an
+  # empty GH_TOKEN the gh calls below went on unauthenticated, and the WARN went to the stderr of a
+  # scheduled run nobody reads
+  GH_TOKEN="$(github_token "$REPO" olvas)" \
+    || { echo "HIBA: a broker nem adott olvas tokent (${REPO}): a monitor nem fut nevtelenul" >&2; exit 1; }
 elif [ -n "$NODE_BIN" ]; then
   GH_TOKEN="$(printf 'GH_TOKEN=github-github_token\n' | "$NODE_BIN" "$INSTALL_DIR/scripts/vault-resolve.mjs" 2>/dev/null | cut -d= -f2- || true)"
 fi
@@ -65,7 +69,6 @@ if [ -z "${GH_TOKEN:-}" ] && [ "${FLEET_GITHUB_APP:-on}" = off ] && [ -f store/.
   GH_TOKEN="$(cat store/.github-token)"
 fi
 if [ -n "${GH_TOKEN:-}" ]; then export GH_TOKEN
-elif [ "${FLEET_GITHUB_APP:-on}" != off ]; then echo "WARN: no GH_TOKEN: the broker gave no read token for ${REPO}, gh calls will fail" >&2
 else echo "WARN: no GH_TOKEN (vault+file both empty), gh calls may fail" >&2; fi
 BOT_TOKEN="$(grep -E '^TELEGRAM_BOT_TOKEN=' .env | cut -d= -f2- | tr -d '"'"'"' ')"
 CHAT_ID="$(grep -E '^ALLOWED_CHAT_ID=' .env | cut -d= -f2- | tr -d '"'"'"' ')"

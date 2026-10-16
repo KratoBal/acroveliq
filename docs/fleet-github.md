@@ -57,13 +57,16 @@ fetch-e névtelen volt, és a git a helpert csak 401-re kérdezi). Ha a bróker 
 Minden más (push) sima `git`, a tokent a credential helper adja. A `scripts/__tests__/github-token.test.py`
 egy őrrel méri, hogy ezen kívül egyetlen szkript sem olvassa közvetlenül a tulajdonosi tokent. Az őr a fájl NEVÉRE illeszt
 (`.github-token`, utána nem kötőjel és nem betű), nem a szó szerinti `store/.github-token` útra: az utóbbi 2026-10-15-ig
-átengedte a `fleet-secrets.py`-t, ami `os.path.join(STORE, ".github-token")` alakban nyitja meg. Három szándékos kivétel:
-- a `ci-el-or.sh` a tulajdonosi token lejáratát figyeli: a tokennel együtt nyugdíjba megy (a 6. lépés után a bróker naplója
-  és az App kulcsa a figyelendő);
-- a `github-pr-monitor.sh` kapcsoló nélkül egy **vault-másolatot** is olvas (`github-github_token`): ez is a 6. lépés
-  keresési listájára tartozik, a fájl, a git hitelesítő tárolók és a klónok címei mellé.
-- a `fleet-secrets.py` a titok-leltárban a tulajdonosi token lejáratát kérdezi le a GitHubtól (`github_expiry`): a
-  `ci-el-or.sh` párja, a tokennel együtt megy nyugdíjba.
+átengedte a `fleet-secrets.py`-t, ami `os.path.join(STORE, ".github-token")` alakban nyitja meg. Szándékos kivételek:
+- a `ci-el-or.sh` 2026-10-16 óta (#231 után, b25-e3) NEM kivétel: az Actions-ellenőrzés tokenjét repónként a brókertől kéri
+  (`lib/github_token.py`), a bróker elutasítása RIASZT a bróker saját okával, a bróker tokenjére jövő 401 RIASZT (az App
+  telepítése vagy kulcsa). A tulajdonosi token lejáratát csak `FLEET_GITHUB_APP=off` mellett figyeli: a bróker tokenje egy
+  óráig él, az nem riasztás. Enélkül a visszavonás után minden ütemezett futás riasztott volna;
+- a `github-pr-monitor.sh` csak `FLEET_GITHUB_APP=off` mellett olvas egy **vault-másolatot** (`github-github_token`): a
+  visszavonás után halott titok, törlendő. Alapból a bróker tokenjével fut, és ha az nem ad tokent, MEGÁLL (kilépés 1), nem
+  fut névtelenül tovább (barracuda #231 review, acrobot 32218);
+- a `fleet-secrets.py` a titok-leltárban a tulajdonosi token lejáratát kérdezi le a GitHubtól (`github_expiry`), és csak a
+  `store`-ban létező fájlokat listázza: a visszavonás és a 401-mérés után a fájl törlésével kiesik, nem riaszt.
 
 **A (3) állapota (mérve 2026-10-15, nautilus):** az ügynökök saját szkriptjei NINCSENEK gitben (`agents/*/scripts`), tehát
 ez a lépés nem PR, hanem gazdánkénti helyi átírás. nautilus hat GitHub-olvasó szkriptje (mérve) és murena tíz szkriptje (murena közlése, 31634) egy
