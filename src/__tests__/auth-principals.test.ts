@@ -199,6 +199,9 @@ describe('the caller and the actor log', () => {
         routeKey('GET', '/api/agents/murena'),
         routeKey('GET', '/api/kanban/ckz9x0abc123def456/comments'),
         routeKey('GET', '/api/nincs-ilyen/ut'),
+        routeKey('GET', '/api/kanban/ckz9x0abc123def456'), // no GET rule there: the family, not the id
+        routeKey('PATCH', '/api/kanban'),
+        routeKey('GET', '/api/Zm9vYmFyYmF6cXV4MTIzNDU2'), // an unknown first segment is never kept
       ],
       'PRINCIPAL-ROUTEKEY',
     ).toEqual([
@@ -207,6 +210,9 @@ describe('the caller and the actor log', () => {
       '/api/agents/activity',
       '/api/agents/:name',
       '/api/kanban/:id/comments',
+      ':ismeretlen',
+      ':ismeretlen /api/kanban',
+      ':ismeretlen /api/kanban',
       ':ismeretlen',
     ])
   })
