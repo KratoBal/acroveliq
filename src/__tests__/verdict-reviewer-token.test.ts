@@ -1,5 +1,6 @@
-// A verdict event becomes a GitHub approval (scripts/root/fleet-approve.py, D4 step 2), so the events
-// route accepts one ONLY with the task reviewer's own agent token (barracuda, #200 review). WHAT TURNS
+// A verdict event is the review's record on the timeline, so the events route accepts one ONLY with the
+// task reviewer's own agent token (barracuda, #200 review). (The GitHub approval reads root's own record
+// since the D4 step list E3 (a), not this event.) WHAT TURNS
 // THIS RED:
 //   - the shared token writing a verdict in the reviewer's name (the body's actor in `naplo` mode);
 //   - another agent's token, the owner's session, or a task with no reviewer getting a verdict stored;

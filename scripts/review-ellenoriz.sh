@@ -44,13 +44,29 @@
 # it is checked above. A would_reject mark on the new line is printed as a warning: the
 # verdict is recorded, but the Task Core would refuse it in kenyszerit mode.
 #
-# Exit: 0 recorded and read back; 1 refused or not confirmed; 2 bad argument.
+# THE ROOT RECORD (the D4 step list E3 (a), acrobot 31484): the guarded approver
+# (scripts/root/fleet-approve.py) no longer believes the dashboard's database, which every
+# marveen process can write. So a PR verdict, once read back from the timeline, is ALSO
+# recorded through `sudo -n fleet-approve record`, which takes the actor from SUDO_UID and
+# appends to a root-only file; the approver reads only that. Where the approver is not
+# installed (CI, a container before D4), or the sudo policy does not allow `record` yet (the
+# new rule comes with the bootstrap's 4a step, and a live-tree update alone does not run it),
+# this is said and skipped: `approve` then refuses ("no recorded verdict"), closed, not open.
+# Where `record` is allowed, a head that is not the full 40-character sha, or a failed record,
+# is exit 1: the timeline verdict stands, but the machine approval would refuse, and that is
+# said now, not at merge.
+# A document verdict has no PR to approve: no root record.
+#
+# Exit: 0 recorded and read back (and root-recorded where the approver is installed);
+# 1 refused, not confirmed, or not root-recorded; 2 bad argument.
 set -uo pipefail
 set -f
 
 # fixed places, one line each: tests replace them in a copy
 ZONA=/home/marveen/marveen/review-csomagok
 FLEET_API=/home/marveen/marveen/scripts/fleet-api.sh
+FLEET_APPROVE=/usr/local/sbin/fleet-approve
+SUDO="sudo -n"
 
 usage() { echo "usage: review-ellenoriz.sh <csomag> <task_id> <APPROVE|CHANGES>" >&2; exit 2; }
 [ "$#" -eq 3 ] || usage
@@ -69,6 +85,8 @@ elif [[ "$C" =~ ^(c|marveen|ai)?([1-9][0-9]{0,5})$ ]]; then
 else
   echo "FAIL: a csomag neve szam, c<szam>, marveen<szam>, ai<szam> vagy doc-<task_id>: '$C'" >&2; exit 2
 fi
+# the repo the approver knows: the current name, also for a packet made before the rename
+PRREF_ROOT="$PRREF"
 [[ "$TASK" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || { echo "FAIL: ervenytelen task_id: '$TASK'" >&2; exit 2; }
 case "$V" in APPROVE|CHANGES) ;; *) echo "FAIL: az itelet APPROVE vagy CHANGES, ez jott: '$V'" >&2; exit 2 ;; esac
 
@@ -189,3 +207,24 @@ case "$LAST" in
     WR="$(printf '%s' "$LAST" | sed -E -n 's/^.*"would_reject_reason": "([^"]*)".*$/\1/p')"
     echo "FIGYELEM: a szerver would_reject jelet tett az esemenyre (kenyszerit modban 409 lenne): ${WR:-ok nelkul}" >&2 ;;
 esac
+
+[ "$DOCS" = 1 ] && exit 0
+if [ ! -x "$FLEET_APPROVE" ]; then
+  echo "MEGJEGYZES: a gepi jovahagyo itt nincs telepitve ($FLEET_APPROVE): root rekord nem keszult"
+  exit 0
+fi
+ROOTARGS=(record "${PRREF_ROOT%#*}" "${PRREF_ROOT##*#}" "$TASK" "$V" "$HEAD7")
+# -l asks the policy and runs nothing
+if ! $SUDO -l "$FLEET_APPROVE" "${ROOTARGS[@]}" > /dev/null 2>&1; then
+  echo "MEGJEGYZES: a gepi jovahagyo telepitve, de a sudo a record iget meg nem engedi (a bootstrap 4a lepese irja be): root rekord nem keszult"
+  exit 0
+fi
+if [[ ! "$HEAD7" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "FAIL: az idovonalon rogzitve, de a csomag feje nem 40 jegyu ('$HEAD7'): root rekord nem keszult, a gepi jovahagyo erre nem hagy jova" >&2
+  exit 1
+fi
+if ! $SUDO "$FLEET_APPROVE" "${ROOTARGS[@]}" > "$T/root" 2>&1; then
+  echo "FAIL: az idovonalon rogzitve, de a root rekord NEM: $(head -c 300 "$T/root")" >&2
+  exit 1
+fi
+echo "OK root rekord: $(head -c 300 "$T/root")"

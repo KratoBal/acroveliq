@@ -11,7 +11,7 @@ alapból ki van kapcsolva.
 |---|---|---|
 | a token-kiadó bróker | `scripts/root/fleet-github.py` (telepítve: `/usr/local/sbin/fleet-github`) | egyetlen ige: `token <owner/repo> <szerep>`; egyórás, egy repóra és a szerep jogaira szűkített telepítési tokent ad. A privát kulcsot csak ez olvassa. Ki mit kérhet: a root-tulajdonú `/etc/fleet-github/app.json` |
 | a szerepek | ugyanott | `olvas` (minden csak olvasás), `push` (tartalom írás), `pr` (PR írás), `beolvaszt` (tartalom írás, PR és ellenőrzés olvasás). Workflows, administration, secrets egyikben sincs |
-| az őrzött jóváhagyó | `scripts/root/fleet-approve.py` (telepítve: `/usr/local/sbin/fleet-approve`) | `approve <owner/repo> <pr> <task_id>`: csak akkor hagy jóvá, ha a hívó (barracuda) legutolsó verdiktje erre a PR-ra APPROVE, és a PR feje az átnézett fej; a jóváhagyás a fejhez kötött (`commit_id`). A gépi fiók tokenje csak rootnak olvasható |
+| az őrzött jóváhagyó | `scripts/root/fleet-approve.py` (telepítve: `/usr/local/sbin/fleet-approve`) | `record <owner/repo> <pr> <task_id> <APPROVE\|CHANGES> <fej>`: a hívó (barracuda) verdiktjét egy root tulajdonú, csak hozzáfűzhető fájlba írja (`/var/lib/fleet-approve/verdicts.jsonl`, root 0600), a hívó nevét a SUDO_UID-ból veszi. `approve <owner/repo> <pr> <task_id>`: csak akkor hagy jóvá, ha ebben a fájlban a hívó legutolsó verdiktje erre a PR-ra és feladatra APPROVE, és a PR feje az átnézett fej; a jóváhagyás a fejhez kötött (`commit_id`). A gépi fiók tokenje csak rootnak olvasható |
 | a git credential helper | `scripts/git-credential-fleet-github` | az ügynök gitje ezen át kap `push` tokent pontosan arra a repóra |
 | a beolvasztó kapcsolója | `scripts/pr-beolvaszt.sh` | `FLEET_GITHUB_APP=on`: a token a brókertől jön (`beolvaszt`); kikapcsolva a régi út |
 | a minta-konfiguráció | `scripts/root/fleet-github-app.example.json` | a hívók és szerepeik, a jóváhagyók |
@@ -82,8 +82,9 @@ A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker 
    különben a jóváhagyása nem számít). A tokenje: mivel közreműködőként más személyes repójára fine-grained token nem adható
    ki [K, a lap 6. pontja; mérendő], klasszikus token `repo` hatókörrel, és ezért fontos, hogy a fiók csak ezen a négy repón
    legyen közreműködő. Átadás: `/etc/fleet-github/approver-token`, root 0600 (mint a 3. lépés, a fájlnévvel).
-5. **(Nincs teendő.)** A jóváhagyó a verdikteket a vezérlőpult saját adatbázisából olvassa, csak olvasó módban, token
-   nélkül (acrobot 31454): nincs titok, amit át kellene adni vagy forgatni. A fájl tulajdonosaként olvas, nem rootként.
+5. **(Nincs teendő.)** A jóváhagyó a verdikteket a saját root rekordjából olvassa (a `review-ellenoriz.sh` írja bele a
+   `record` igével, lásd lent az E3 (a) pontot), token nélkül: nincs titok, amit át kellene adni vagy forgatni. A
+   vezérlőpult adatbázisát nem olvassa.
 6. **A konfiguráció:** a `scripts/root/fleet-github-app.example.json` alapján `/etc/fleet-github/app.json`, a két
    azonosítóval, root 0644.
 7. **A két root szkript telepítése** a fő ágról, és összevetés a fő ággal:
@@ -101,6 +102,7 @@ A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker 
    agent-nautilus ALL=(root) NOPASSWD: /usr/local/sbin/fleet-github token *
    agent-murena ALL=(root) NOPASSWD: /usr/local/sbin/fleet-github token *
    agent-barracuda ALL=(root) NOPASSWD: /usr/local/sbin/fleet-approve approve *
+   agent-barracuda ALL=(root) NOPASSWD: /usr/local/sbin/fleet-approve record *
    ```
 9. **Az ügynökök gitje** (ügynökönként, a saját felhasználójával). A git a következő helperre lép, ha egy nem ad
    jelszót, tehát egy megmaradt régi helper (rendszer-, globális vagy repó-szinten; a mai klónokban repó-szinten áll, és a
@@ -124,9 +126,9 @@ A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker 
     visszaállító kapcsoló. **A bizonyíték minden lépésnél a bróker naplósora** (`/var/log/fleet-github.log`: `result ok`,
     a token lenyomata, időben a művelethez illesztve), és a jóváhagyásnál a `/var/log/fleet-approve.log` sora, nem a
     művelet sikere: egy régi tokennel lefutott push ugyanúgy sikeres. **A jóváhagyó rootként futó ágát is itt kell
-    mérni** (a tesztek nem rootként futnak): egy próba-jóváhagyás után a `store/claudeclaw.db-shm` és a `-wal` tulajdonosa
-    marveen, és a vezérlőpult utána is ír az adatbázisba. Ha valaha root marad a tulajdonos, a vezérlőpult csendben
-    elveszíti az írást a saját adatbázisába.
+    mérni** (a tesztek nem rootként futnak): egy próba-verdikt után a `/var/lib/fleet-approve` root 0700, a
+    `verdicts.jsonl` root 0600, és az utolsó sora a próba verdiktje; a `fleet-approve.log`-ban egy `recorded` és egy
+    `approved` sor.
 11. Utána a lap 6. lépése (a tulajdonosi token kivezetése a fenti előfeltétellel, a 401 méréssel) és 7. lépése (a rulesetek:
     jóváhagyás 1, a legutóbbi push jóváhagyása, a régi jóváhagyások elvetése).
 
@@ -138,12 +140,18 @@ A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker 
   „using the shared token” sort ír a stderr-re); ha nem, a verdiktjei 403-at kapnának.
 - **A verdikt a teljes, 40 karakteres fejet hordozza** (ez a PR: `review-ellenoriz.sh` nem rövidít), és a jóváhagyó csak
   ilyet fogad el; a régi, 7 karakteres verdiktekre nem hagy jóvá.
-- **A verdikt root tulajdonú helyre is (ELDÖNTVE, acrobot 31484, külön PR a 7. lépés előtt).** A jóváhagyó a
-  `task_events` táblának hisz, a `store/claudeclaw.db` viszont 0600 marveen: minden marveen-ként futó folyamat, a főágens
-  és a vezérlőpult is, közvetlenül beírhat egy verdikt-sort barracuda nevében, a route-ot megkerülve (barracuda, #202).
-  Addig a jóváhagyás annyit ér, amennyit a főágens munkamenete, ami külső szöveget is olvas. A javítás: a
-  `review-ellenoriz.sh` a verdiktet egy root segéden át (sudo, agent-barracuda) egy root tulajdonú helyre is írja, és a
-  jóváhagyó onnan olvas.
+- **A verdikt root tulajdonú helyre is (ELDÖNTVE, acrobot 31484; a lépéslista E3 (a), feladat `b25-e3`: KÉSZ a kódban,
+  telepítésre vár).** A jóváhagyó eddig a `task_events` táblának hitt, a `store/claudeclaw.db` viszont 0600 marveen:
+  minden marveen-ként futó folyamat, a főágens és a vezérlőpult is, közvetlenül beírhatott egy verdikt-sort barracuda
+  nevében, a route-ot megkerülve (barracuda, #202). Most a `review-ellenoriz.sh` az idővonal verdiktje után
+  `sudo -n fleet-approve record`-dal a root rekordba is ír (a szereplő a SUDO_UID, nem argumentum), és az `approve` csak
+  onnan olvas. Ahol a jóváhagyó nincs telepítve (CI), vagy a sudo még nem engedi a `record` igét (az élő fa frissítése a
+  bootstrap nélkül nem írja be az új sort), ezt kiírja és kihagyja: az `approve` ilyenkor elutasít. Ahol a `record`
+  engedélyezett, a nem 40 jegyű fej és a sikertelen rekord kilépés 1. **Amit nem old meg:** a rekord annyit ér, amennyit az agent-barracuda identitás (ma a
+  router `sudo tmux` sora barracuda paneljeibe, amit a B48 vált ki); és a rekord a konténer fájlrendszerében él, tehát egy
+  újrateremtés kiüríti: utána minden jóváhagyás „no recorded verdict” alakban elutasít, amíg barracuda újra nem rögzít.
+  Zárva marad, nem nyitva. **A telepítése jogosultság-változás:** barracuda új sudo-sort kap (`fleet-approve record *`),
+  amit a bootstrap 4a lépése magától ír, amint az élő fa ezt a változatot hordozza.
 - **A csomag és a fej kötése: ELDÖNTVE (acrobot, 31441): (b), a review-csomag diffjét a reviewer eszköze állítja elő a teljes fejből; amíg ez nincs bent, a 7. lépés vár.** A jóváhagyó azt a fejet hagyja jóvá, amit a csomag README-je
   megnevez, a README-t viszont a fejlesztő írja, barracuda pedig a `diff.patch`-et olvassa. Egy fej, amiben több áll, mint a
   diffben, ma átmenne. A választott alak a (b): a reviewer nem a fejlesztő állítását olvassa, hanem a fejből előállított diffet.
@@ -158,7 +166,7 @@ A `docker compose up -d` a képből teremti újra a konténert: a `/usr/local/sb
   semmit nem telepít, mert egy magától megjelenő sudo-sor jogosultság-változás volna;
 - a két szkriptet a `scripts/root/` alól, **egy másolatot hash-el és telepít** (nem a fájlt név szerint), és csak ha a
   lenyomata a bootstrapba rögzített érték; eltérésnél és symlinknél nem telepít, hanem a 7. lépésben hibát jelez;
-- a sudo-sort a bootstrap maga építi (a 8. lépés négy sora), `visudo -c -f` után, és csak ha a meglévőtől eltér;
+- a sudo-sort a bootstrap maga építi (a 8. lépés öt sora), `visudo -c -f` után, és csak ha a meglévőtől eltér;
 - **soha nem áll meg**: utána jön a teljes NOPASSWD sor törlése (4b), aminek mindig le kell futnia.
 
 A kulcs, a jóváhagyó tokenje és az `app.json` nem a bootstrapé: a hosti könyvtárból a mounttal jönnek. **Ha a

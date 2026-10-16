@@ -9,40 +9,54 @@ that uses it.
 
 THE INSTALLED COPY RUNS, NOT THIS FILE: /usr/local/sbin/fleet-approve, root:root 0755, with
   agent-barracuda ALL=(root) NOPASSWD: /usr/local/sbin/fleet-approve approve *
+  agent-barracuda ALL=(root) NOPASSWD: /usr/local/sbin/fleet-approve record *
 It reads nothing from the repository at run time: no script, no module, no config from the tree.
 
-One verb:
+Two verbs:
+  record <owner/repo> <pr> <task_id> <APPROVE|CHANGES> <head, 40 hex>
   approve <owner/repo> <pr> <task_id>
 
-It approves ONLY if all of these hold, each measured here, none taken from the caller:
-  1. the caller (SUDO_UID) is on the root config's `approvers` list;
+WHY A ROOT RECORD (the D4 step list E3 (a), acrobot 31484): until 2026-10-16 the approver read the
+verdicts from the dashboard's database. That file is 0600 marveen, so every process running as marveen
+(the main agent, which also reads outside text, and the dashboard) could write a verdict row in
+barracuda's name around the events route (barracuda, #202 review). Now review-ellenoriz.sh, after the
+dashboard verdict, also calls `record` through sudo; the caller is SUDO_UID, measured here, and the line
+goes to a root-owned, append-only file (/var/lib/fleet-approve/verdicts.jsonl, root 0600 in a root 0700
+directory). `approve` reads only that file. The dashboard's verdict stays the timeline's record; it no
+longer decides an approval. So root no longer reads the dashboard's database at all.
+
+`record` stores what the caller says, for the caller's own name only:
+  1. the caller is on the root config's `approvers` list;
   2. the repository is a fleet repository (the config's `owner` and `repos`);
-  3. the task's events (the dashboard's database, read-only) have a `verdict` by the CALLER for exactly this
-     owner/repo#N, and the LATEST such verdict BY THE SERVER'S EVENT ID is APPROVE (review-ellenoriz.sh
-     writes it: "APPROVE owner/repo#N pr-<packet> fej <full 40-character sha>");
+  3. the verdict is APPROVE or CHANGES and the head is a full 40-character sha.
+It does not ask whether the task asked for a review or whether the head is the PR's: review-ellenoriz.sh
+checks the first, and `approve` checks the second at approval time.
+
+`approve` approves ONLY if all of these hold, each measured here, none taken from the caller:
+  1. the caller (SUDO_UID) is on the root config's `approvers` list;
+  2. the repository is a fleet repository;
+  3. the root record has a verdict BY THE CALLER for exactly this owner/repo#N and task, and the LATEST
+     such line (the file's order: root appends, under a lock) is APPROVE;
   4. the PR is open, its base is main, and its head IS that verdict's sha, all 40 characters.
 Then it posts an APPROVE review pinned to that head (`commit_id`), so a push after the review is not
 covered: with "require approval of the most recent push" on, GitHub asks again.
 
-WHAT THIS DOES NOT DO, and what must hold before the required approval is switched on (the D4 sheet's
-step 7; barracuda, #200 review):
+WHAT THIS DOES NOT DO:
   - it does not judge the code: a wrong APPROVE verdict is approved;
-  - it trusts that the verdict event is barracuda's. The events route accepts a verdict only with the
-    task reviewer's own agent token (src/web/routes/task-usage.ts, this PR); before that is deployed,
-    anyone with the shared token can write one in barracuda's name;
-  - and the route is not the only way in: the database (store/claudeclaw.db, 0600 marveen) can be written
-    directly by any process running as marveen, the main agent and the dashboard included, around the
-    route (barracuda, #202 review). An approval is therefore worth as much as the main agent's session,
-    which also reads outside text. The decided fix (acrobot 31484, a separate PR before step 7):
-    review-ellenoriz also writes the verdict through a root helper (sudo, agent-barracuda) to a root-owned
-    place, and this script reads it from there;
+  - the record is worth what the agent-barracuda identity is worth. Anything that can act as
+    agent-barracuda can record (today: the router's sudo tmux rule into barracuda's panes, which B48
+    replaces with the fleet-pane broker);
+  - the record lives in the container's file system, so a container recreate empties it: approvals
+    then refuse ("no verdict") until barracuda records again. Closed, not open;
   - it binds the approval to the head the PACKET names, and the packet is the developer's: its README
-    head line is a claim, and diff.patch is what barracuda read. A head with more in it than the diff
-    would pass every check here. DECIDED (acrobot 31441): the review packet's diff is produced by the
-    reviewer's tool from the full head itself (a separate change); until it is in, step 7 waits.
+    head line is a claim, and diff.patch is what barracuda read. DECIDED (acrobot 31441, the step list
+    E3 (b)): the review packet's diff is produced by the reviewer's tool from the full head itself (a
+    separate change); until it is in, step 11 waits.
 
-Exit codes: 0 approved; 2 usage; 10 refused (nothing posted); 13 the dashboard or GitHub failed.
+Exit codes: 0 approved or recorded; 2 usage; 10 refused (nothing posted, nothing recorded); 13 the record
+file or GitHub failed.
 """
+import fcntl
 import json
 import os
 import pwd
@@ -55,12 +69,9 @@ import urllib.request
 
 CONFIG_FILE = '/etc/fleet-github/app.json'
 APPROVER_TOKEN_FILE = '/etc/fleet-github/approver-token'
-# the verdicts are read from the dashboard's own database, read-only, with no token at all (acrobot 31454,
-# option 1): no secret to hold or rotate, and nothing here can write. What gets into task_events is decided
-# by the events route (a verdict only with the task reviewer's own token, src/web/routes/task-usage.ts).
-DB_FILE = '/home/marveen/marveen/store/claudeclaw.db'
-VERDICT_SQL = ("SELECT id, kind, actor, ref, at FROM task_events "
-               "WHERE task_id = ? AND kind = 'verdict' ORDER BY id")
+# the verdicts: root's own append-only record (see "WHY A ROOT RECORD" above), not the dashboard's database
+RECORD_DIR = '/var/lib/fleet-approve'
+RECORD_FILE = RECORD_DIR + '/verdicts.jsonl'
 LOG_FILE = '/var/log/fleet-approve.log'
 API = 'https://api.github.com'
 
@@ -68,7 +79,10 @@ OWNER_RX = re.compile(r'^[A-Za-z0-9][A-Za-z0-9-]{0,38}$')
 REPO_RX = re.compile(r'^[A-Za-z0-9._-]{1,100}$')
 TASK_RX = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$')
 USER_RX = re.compile(r'^[a-z_][a-z0-9_-]{0,31}$')
-USAGE = 'usage: fleet-approve approve <owner/repo> <pr> <task_id>'
+SHA_RX = re.compile(r'^[0-9a-f]{40}$')
+VERDICTS = ('APPROVE', 'CHANGES')
+USAGE = ('usage: fleet-approve approve <owner/repo> <pr> <task_id>\n'
+         '       fleet-approve record <owner/repo> <pr> <task_id> <APPROVE|CHANGES> <40-hex head>')
 
 
 class Refused(Exception):
@@ -100,82 +114,117 @@ def read_secret(path, getstat=os.lstat):
 
 
 def parse(argv):
-    if len(argv) != 4 or argv[0] != 'approve':
+    """(verb, owner, repo, pr, task, verdict, head); verdict and head are None for approve."""
+    if len(argv) == 4 and argv[0] == 'approve':
+        verdict = head = None
+    elif len(argv) == 6 and argv[0] == 'record':
+        verdict, head = argv[4], argv[5]
+        if verdict not in VERDICTS or not SHA_RX.match(head):
+            raise ValueError(USAGE)
+    else:
         raise ValueError(USAGE)
     owner, _, repo = argv[1].partition('/')
     if not OWNER_RX.match(owner) or not REPO_RX.match(repo) or not argv[2].isdigit() or not TASK_RX.match(argv[3]):
         raise ValueError(USAGE)
-    return owner, repo, int(argv[2]), argv[3]
+    return argv[0], owner, repo, int(argv[2]), argv[3], verdict, head
 
 
-def latest_verdict(items, actor, owner, repo, pr):
-    """(verdict, sha) of the actor's latest verdict on exactly owner/repo#pr, or None.
+def _owned_fd(fd, path, uid, want_dir=False):
+    """The open descriptor is the owner's (root), the right kind, and closed to group and others."""
+    st = os.fstat(fd)
+    kind = stat.S_ISDIR(st.st_mode) if want_dir else stat.S_ISREG(st.st_mode)
+    if not kind or st.st_uid != uid or st.st_mode & 0o077:
+        raise Failed(f'not a {"directory" if want_dir else "file"} owned by uid {uid} with mode 0{"700" if want_dir else "600"}: {path}')
 
-    LATEST BY THE SERVER'S EVENT ID, not by `at` (barracuda, #200): `at` comes from the request
-    body, so a future-dated forged APPROVE would outrank a real, later CHANGES. The id is the
-    row's insertion order. And the head must be the FULL 40-character sha: a 7-character prefix
-    is 28 bits, and a commit with the same prefix and other content is minutes of work."""
-    rx = re.compile(rf'^(APPROVE|CHANGES) {re.escape(owner)}/{re.escape(repo)}#{pr} pr-\S+ fej ([0-9a-f]{{40}})$')
-    found = []
-    for i in items:
-        if i.get('source') != 'event' or i.get('kind') != 'verdict' or i.get('actor') != actor:
-            continue
-        if not isinstance(i.get('id'), int):
-            continue
-        m = rx.match((i.get('ref') or '').strip())
-        if m:
-            found.append((i['id'], m.group(1), m.group(2)))
-    if not found:
+
+def _open_record_dir(record_dir, uid, create):
+    """The record directory, opened without following a symlink; made 0700 if missing and asked to."""
+    if create:
+        try:
+            os.mkdir(record_dir, 0o700)
+        except FileExistsError:
+            pass
+        except OSError as e:
+            raise Failed(f'cannot make {record_dir}: {e.__class__.__name__}')
+    try:
+        fd = os.open(record_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
         return None
-    _, verdict, sha = max(found, key=lambda f: f[0])
-    return verdict, sha
+    except OSError as e:
+        raise Failed(f'cannot open {record_dir} (a symlink?): {e.__class__.__name__}')
+    try:
+        _owned_fd(fd, record_dir, uid, want_dir=True)
+    except Failed:
+        os.close(fd)
+        raise
+    return fd
 
 
-def read_verdicts(task, db_file, drop=True):
-    """The task's verdict events, read-only, as timeline items.
+def append_record(entry, record_dir=RECORD_DIR, uid=0):
+    """One JSON line, appended under an exclusive lock, to a file that only its owner can read or write."""
+    dfd = _open_record_dir(record_dir, uid, create=True)
+    try:
+        fd = os.open('verdicts.jsonl', os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
+    except OSError as e:
+        os.close(dfd)
+        raise Failed(f'cannot open the record (a symlink?): {e.__class__.__name__}')
+    os.close(dfd)
+    try:
+        _owned_fd(fd, record_dir + '/verdicts.jsonl', uid)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        data = (json.dumps(entry, ensure_ascii=False, sort_keys=True) + '\n').encode()
+        if os.write(fd, data) != len(data):
+            raise Failed('a short write to the record')
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
-    As root it reads in a child that has first become the database file's owner: in WAL mode even a
-    read-only connection may create the -shm side file, and a root-owned -shm would lock the dashboard
-    out of its own database. The connection is mode=ro, and the WAL is read (not immutable=1, which would
-    miss the verdicts not yet checkpointed)."""
-    import sqlite3
 
-    def query():
-        con = sqlite3.connect(f'file:{db_file}?mode=ro', uri=True, timeout=5)
+def read_records(record_dir=RECORD_DIR, uid=0):
+    """Every recorded verdict, in the file's order. No directory or no file: no verdicts (a fresh or
+    recreated container). A line that does not parse is a failure, not a skip: the file is root's alone."""
+    dfd = _open_record_dir(record_dir, uid, create=False)
+    if dfd is None:
+        return []
+    try:
+        fd = os.open('verdicts.jsonl', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        raise Failed(f'cannot open the record (a symlink?): {e.__class__.__name__}')
+    finally:
+        os.close(dfd)
+    try:
+        _owned_fd(fd, record_dir + '/verdicts.jsonl', uid)
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        with os.fdopen(fd, 'r', encoding='utf-8', closefd=False) as f:
+            text = f.read()
+    finally:
+        os.close(fd)
+    out = []
+    for n, line in enumerate(text.splitlines(), 1):
         try:
-            rows = con.execute(VERDICT_SQL, (task,)).fetchall()
-        finally:
-            con.close()
-        return [{'source': 'event', 'id': r[0], 'kind': r[1], 'actor': r[2], 'ref': r[3], 'at': r[4]} for r in rows]
+            r = json.loads(line)
+        except ValueError:
+            raise Failed(f'the record line {n} is not JSON')
+        if not isinstance(r, dict):
+            raise Failed(f'the record line {n} is not an object')
+        out.append(r)
+    return out
 
-    if not drop or os.geteuid() != 0:
-        return query()
-    st = os.stat(db_file)
-    if st.st_uid == 0:
-        raise Failed('the database is owned by root: refusing to read it as root')
-    r, w = os.pipe()
-    pid = os.fork()
-    if pid == 0:
-        os.close(r)
-        code, out = 0, b''
-        try:
-            os.setgroups([])
-            os.setgid(st.st_gid)
-            os.setuid(st.st_uid)
-            out = json.dumps(query()).encode()
-        except Exception as e:  # the parent says it; the child only reports
-            code, out = 1, json.dumps({'error': f'{e.__class__.__name__}'}).encode()
-        with os.fdopen(w, 'wb') as f:
-            f.write(out)
-        os._exit(code)
-    os.close(w)
-    with os.fdopen(r, 'rb') as f:
-        data = f.read()
-    _, status = os.waitpid(pid, 0)
-    parsed = json.loads(data.decode() or '{}')
-    if status != 0 or not isinstance(parsed, list):
-        raise Failed(f'reading the verdicts failed: {parsed.get("error") if isinstance(parsed, dict) else "?"}')
-    return parsed
+
+def latest_verdict(records, actor, owner, repo, pr, task):
+    """(verdict, sha) of the actor's latest recorded verdict on exactly owner/repo#pr in this task, or None.
+
+    LATEST BY THE FILE'S ORDER: root appends under a lock, so the order is the order of the calls; no
+    caller-given time is read. The head must be the full 40-character sha (a 7-character prefix is 28 bits)."""
+    found = None
+    for r in records:
+        if (r.get('actor'), r.get('owner'), r.get('repo'), r.get('pr'), r.get('task')) != (actor, owner, repo, pr, task):
+            continue
+        if r.get('verdict') in VERDICTS and isinstance(r.get('head'), str) and SHA_RX.match(r['head']):
+            found = (r['verdict'], r['head'])
+    return found
 
 
 def http(method, url, token, body=None, auth='Bearer'):
@@ -194,15 +243,27 @@ def http(method, url, token, body=None, auth='Bearer'):
         raise Failed(f'no answer from {url.split("/")[2]}: {e.__class__.__name__}')
 
 
-def decide(cfg, caller, owner, repo, pr, task, get_timeline, get_pr, post_review):
+def allowed(cfg, caller, owner, repo):
+    """The approver's name without agent-, after the two checks every verb shares."""
     if caller not in cfg.get('approvers', []):
         raise Refused(f'{caller} is not an approver')
     if owner != cfg.get('owner') or repo not in cfg.get('repos', []):
         raise Refused(f'not a fleet repository: {owner}/{repo}')
-    actor = caller[len('agent-'):] if caller.startswith('agent-') else caller
-    v = latest_verdict(get_timeline(task), actor, owner, repo, pr)
+    return caller[len('agent-'):] if caller.startswith('agent-') else caller
+
+
+def record(cfg, caller, owner, repo, pr, task, verdict, head, append, now):
+    actor = allowed(cfg, caller, owner, repo)
+    append({'ts': now, 'actor': actor, 'owner': owner, 'repo': repo, 'pr': pr, 'task': task,
+            'verdict': verdict, 'head': head})
+    return head
+
+
+def decide(cfg, caller, owner, repo, pr, task, get_records, get_pr, post_review):
+    actor = allowed(cfg, caller, owner, repo)
+    v = latest_verdict(get_records(), actor, owner, repo, pr, task)
     if v is None:
-        raise Refused(f'no verdict by {actor} on {owner}/{repo}#{pr} in task {task}')
+        raise Refused(f'no recorded verdict by {actor} on {owner}/{repo}#{pr} in task {task}')
     verdict, sha = v
     if verdict != 'APPROVE':
         raise Refused(f'the latest verdict by {actor} is {verdict}')
@@ -227,9 +288,9 @@ def log(path, entry):
 
 
 def run(argv, env):
-    entry = {'ts': int(time.time()), 'caller': env['caller'], 'argv': argv[:4]}
+    entry = {'ts': int(time.time()), 'caller': env['caller'], 'argv': argv[:6]}
     try:
-        owner, repo, pr, task = parse(argv)
+        verb, owner, repo, pr, task, verdict, head = parse(argv)
     except ValueError as e:
         log(env['log_file'], {**entry, 'result': 'usage'})
         return 2, str(e)
@@ -239,21 +300,24 @@ def run(argv, env):
         getstat = env.get('getstat', os.lstat)
         root_file(env['config_file'], getstat)
         cfg = json.load(open(env['config_file'], encoding='utf-8'))
-        head = decide(cfg, env['caller'], owner, repo, pr, task, env['get_timeline'], env['get_pr'], env['post_review'])
+        if verb == 'record':
+            record(cfg, env['caller'], owner, repo, pr, task, verdict, head, env['append_record'], entry['ts'])
+        else:
+            head = decide(cfg, env['caller'], owner, repo, pr, task, env['get_records'], env['get_pr'], env['post_review'])
     except Refused as e:
         log(env['log_file'], {**entry, 'result': 'refused', 'why': str(e)})
         return 10, f'fleet-approve: refused: {e}'
     except (Failed, ValueError, OSError) as e:
         log(env['log_file'], {**entry, 'result': 'failed', 'why': f'{e.__class__.__name__}: {e}'[:200]})
         return 13, f'fleet-approve: failed: {e}'
+    if verb == 'record':
+        log(env['log_file'], {**entry, 'result': 'recorded', 'verdict': verdict, 'head': head})
+        return 0, f'recorded {verdict} {owner}/{repo}#{pr} at {head}, task {task}'
     log(env['log_file'], {**entry, 'result': 'approved', 'head': head})
     return 0, f'approved {owner}/{repo}#{pr} at {head}'
 
 
 def real_env():
-    def timeline(task):
-        return read_verdicts(task, DB_FILE)
-
     def get_pr(owner, repo, pr):
         code, d = http('GET', f'{API}/repos/{owner}/{repo}/pulls/{pr}', read_secret(APPROVER_TOKEN_FILE))
         if code != 200:
@@ -271,7 +335,8 @@ def real_env():
     except KeyError:
         caller = ''
     return {'config_file': CONFIG_FILE, 'log_file': LOG_FILE, 'caller': caller,
-            'get_timeline': timeline, 'get_pr': get_pr, 'post_review': post_review}
+            'get_records': read_records, 'append_record': append_record,
+            'get_pr': get_pr, 'post_review': post_review}
 
 
 if __name__ == '__main__':

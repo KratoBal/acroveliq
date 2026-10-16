@@ -293,7 +293,7 @@ step "4a. the D4 GitHub broker: its two root scripts and their sudo rule (docs/f
 # the owner did step 6b; without it this step installs nothing, because a sudo rule installed
 # on its own would be a permission change nobody asked for.
 #
-# THE PINNED HASHES ARE THE REVIEWED VERSIONS (main a0e9fb4). The source is the router's tree,
+# THE PINNED HASHES ARE THE REVIEWED VERSIONS (main a0e9fb4; fleet-approve.py: the E3 (a) root record). The source is the router's tree,
 # so a pin here does not stop the router itself (at boot it holds the blanket line anyway); it
 # stops an unreviewed or half-updated tree from becoming root code. scripts/__tests__/
 # fleet-bootstrap-d4.test.py fails while a pin differs from the file, so a change to either
@@ -309,7 +309,7 @@ D4_SUDOERS=/etc/sudoers.d/fleet-github
 D4_SBIN=/usr/local/sbin
 # source-in-scripts/root:installed-name:sha256
 D4_SCRIPTS="fleet-github.py:fleet-github:9c1e090aea5401d649f5174bfc93759459d62a435fa5e28eb525f1955857457e
-fleet-approve.py:fleet-approve:11213d237967b3c2510006961570c2dba3d1fef62ade03d35f0980f3ef416a10"
+fleet-approve.py:fleet-approve:3566a92d136ba219fe45ae31b677e4e3915f97fa27e9a4a38eeb48f76e8fbcac"
 D4_RC=0
 D4_DEPLOYED=0
 as_root() { if (( AS_ROOT )); then run "$@"; else run sudo -n "$@"; fi }
@@ -319,6 +319,8 @@ d4_sudoers_content() {
   echo "agent-nautilus ALL=(root) NOPASSWD: $D4_SBIN/fleet-github token *"
   echo "agent-murena ALL=(root) NOPASSWD: $D4_SBIN/fleet-github token *"
   echo "agent-barracuda ALL=(root) NOPASSWD: $D4_SBIN/fleet-approve approve *"
+  # the verdict's root record (the D4 step list E3 (a)): review-ellenoriz.sh calls it, as barracuda
+  echo "agent-barracuda ALL=(root) NOPASSWD: $D4_SBIN/fleet-approve record *"
 }
 d4_tmpdir="$(mktemp -d)"
 d4_src_ok=1

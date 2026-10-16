@@ -8,8 +8,11 @@
 #   - a token wider than asked (an extra permission, a write for a read, another repository) passed on;
 #   - the token or the key in the log;
 #   - a JWT that openssl cannot verify with the App's public key, or claims outside GitHub's ten minutes;
-#   - an approval without the caller's own latest APPROVE on exactly that repo#PR, on a head that is not
-#     the reviewed one, on a closed PR or a non-main base, or not pinned to the head (commit_id);
+#   - an approval without the caller's own latest recorded APPROVE on exactly that repo#PR and task, on a
+#     head that is not the reviewed one, on a closed PR or a non-main base, or not pinned to the head;
+#   - a verdict recorded for a non-approver, a non-fleet repository, or with a head that is not 40 hex;
+#   - the root record read or written through a symlink, or when it is not its owner's alone (0700/0600),
+#     or a malformed line skipped instead of failing;
 #   - the credential helper answering another host, a missing path, a store call, or a broker refusal
 #     with a password, or missing the last line without a newline;
 #   - pr-beolvaszt.sh reading the owner token file with the switch on.
@@ -131,36 +134,38 @@ try:
 
     print("the approver")
     H = "021c2a7af0a92c30c3c13327b0ea5b4623da5078"
-    items = [
-        {"source": "event", "kind": "verdict", "actor": "barracuda", "ref": "CHANGES KratoBal/acroveliq#198 pr-marveen198 fej " + "d" * 40, "at": 10, "id": 1},
-        {"source": "event", "kind": "verdict", "actor": "barracuda", "ref": "APPROVE KratoBal/acroveliq#198 pr-marveen198 fej " + H, "at": 20, "id": 2},
-        {"source": "event", "kind": "verdict", "actor": "barracuda", "ref": "APPROVE KratoBal/acroveliq#1980 pr-marveen1980 fej " + "a" * 40, "at": 30, "id": 3},
-        {"source": "event", "kind": "verdict", "actor": "nautilus", "ref": "APPROVE KratoBal/acroveliq#198 pr-marveen198 fej " + "b" * 40, "at": 40, "id": 4},
-    ]
-    check("the latest verdict, by the actor, on exactly #198 (not #1980, not another actor)",
-          ("APPROVE", H), ap.latest_verdict(items, "barracuda", "KratoBal", "acroveliq", 198))
-    forged = [{**items[1], "at": 9_999_999_999, "id": 2}, {**items[0], "at": 30, "id": 5}]
-    check("latest by the server's id: a future-dated APPROVE does not outrank a later CHANGES",
-          ("CHANGES", "d" * 40), ap.latest_verdict(forged, "barracuda", "KratoBal", "acroveliq", 198))
-    short = [{**items[1], "ref": "APPROVE KratoBal/acroveliq#198 pr-marveen198 fej 021c2a7"}]
-    check("a verdict with a 7-character head is not a verdict here", None,
-          ap.latest_verdict(short, "barracuda", "KratoBal", "acroveliq", 198))
+    def rec(verdict, head, actor="barracuda", pr=198, task="t-x", repo="acroveliq"):
+        return {"ts": 1, "actor": actor, "owner": "KratoBal", "repo": repo, "pr": pr, "task": task,
+                "verdict": verdict, "head": head}
+    items = [rec("CHANGES", "d" * 40), rec("APPROVE", H), rec("APPROVE", "a" * 40, pr=1980),
+             rec("APPROVE", "b" * 40, actor="nautilus"), rec("APPROVE", "e" * 40, task="t-other")]
+    check("the latest verdict, by the actor, on exactly #198 in this task (not #1980, another actor or task)",
+          ("APPROVE", H), ap.latest_verdict(items, "barracuda", "KratoBal", "acroveliq", 198, "t-x"))
+    check("latest by the file's order: a CHANGES after an APPROVE wins, whatever its ts",
+          ("CHANGES", "d" * 40), ap.latest_verdict([{**items[1], "ts": 9_999_999_999}, items[0]],
+                                                   "barracuda", "KratoBal", "acroveliq", 198, "t-x"))
+    check("a recorded 7-character head is not a verdict here", None,
+          ap.latest_verdict([rec("APPROVE", H[:7])], "barracuda", "KratoBal", "acroveliq", 198, "t-x"))
+    check("a pr given as a string is not this pr", None,
+          ap.latest_verdict([{**items[1], "pr": "198"}], "barracuda", "KratoBal", "acroveliq", 198, "t-x"))
     acfg = {"owner": "KratoBal", "repos": ["acroveliq"], "approvers": ["agent-barracuda"]}
     pr_open = {"state": "open", "base": {"ref": "main"}, "head": {"sha": H}}
     posted = []
-    def decide(caller="agent-barracuda", its=items, pr=pr_open, repo="acroveliq", num=198):
+    def decide(caller="agent-barracuda", its=items, pr=pr_open, repo="acroveliq", num=198, task="t-x"):
         try:
-            return ap.decide(acfg, caller, "KratoBal", repo, num, "t-x", lambda t: its, lambda o, r, n: pr,
+            return ap.decide(acfg, caller, "KratoBal", repo, num, task, lambda: its, lambda o, r, n: pr,
                              lambda o, r, n, b: posted.append((o, r, n, b)))
         except ap.Refused as e:
             return "refused: " + str(e).split(":")[0]
-    check("approves the reviewed head", "021c2a7af0a92c30c3c13327b0ea5b4623da5078", decide())
-    check("the review is APPROVE pinned to the head", ("APPROVE", "021c2a7af0a92c30c3c13327b0ea5b4623da5078"),
-          (posted[-1][3]["event"], posted[-1][3]["commit_id"]))
+    check("approves the reviewed head", H, decide())
+    check("the review is APPROVE pinned to the head", [("APPROVE", H)], [(b["event"], b["commit_id"]) for *_, b in posted[-1:]])
     n = len(posted)
     check("not an approver", True, decide(caller="agent-nautilus").startswith("refused"))
-    check("the latest verdict is CHANGES", True, decide(its=items[:1]).startswith("refused"))
-    check("no verdict on this PR", True, decide(num=199).startswith("refused"))
+    check("the latest verdict is CHANGES", True, decide(its=items[:2][::-1]).startswith("refused"))
+    check("no verdict on this PR: refused for THAT reason", True, decide(num=199).startswith("refused: no recorded verdict"))
+    check("no verdict in this task: refused for THAT reason (another task's APPROVE does not count)", True,
+          decide(its=items[:2] + [rec("APPROVE", H, task="t-other")], task="t-y").startswith("refused: no recorded verdict"))
+    check("an empty record (a recreated container) refuses", True, decide(its=[]).startswith("refused: no recorded verdict"))
     check("a push after the review", True, decide(pr={**pr_open, "head": {"sha": "f" * 40}}).startswith("refused"))
     check("a head that only shares the reviewed prefix", True,
           decide(pr={**pr_open, "head": {"sha": H[:7] + "0" * 33}}).startswith("refused"))
@@ -168,14 +173,78 @@ try:
     check("a base other than main", True, decide(pr={**pr_open, "base": {"ref": "develop"}}).startswith("refused"))
     check("not a fleet repository", True, decide(repo="other").startswith("refused"))
     check("and nothing was posted for any of them", n, len(posted))
+
+    print("the approver: the root record file (as the test user, standing in for root)")
+    me = os.getuid()
+    rdir = os.path.join(T, "record")
+    ap.append_record(rec("CHANGES", "d" * 40), rdir, me)
+    ap.append_record(rec("APPROVE", H), rdir, me)
+    check("the directory is made 0700, the file 0600",
+          (0o700, 0o600), (os.stat(rdir).st_mode & 0o777, os.stat(os.path.join(rdir, "verdicts.jsonl")).st_mode & 0o777))
+    got = ap.read_records(rdir, me)
+    check("read back in the order written", [("CHANGES", "d" * 40), ("APPROVE", H)], [(r["verdict"], r["head"]) for r in got])
+    check("no directory: no verdicts, nothing made", ([], False),
+          (ap.read_records(os.path.join(T, "none"), me), os.path.exists(os.path.join(T, "none"))))
+    def failed(fn):
+        try:
+            fn()
+            return "passed"
+        except ap.Failed as e:
+            return "failed"
+    other = me + 1
+    check("a record owned by another uid: refused on read and on write", ("failed", "failed"),
+          (failed(lambda: ap.read_records(rdir, other)), failed(lambda: ap.append_record(rec("APPROVE", H), rdir, other))))
+    os.chmod(os.path.join(rdir, "verdicts.jsonl"), 0o640)
+    check("a group-readable record: refused", ("failed", "failed"),
+          (failed(lambda: ap.read_records(rdir, me)), failed(lambda: ap.append_record(rec("APPROVE", H), rdir, me))))
+    os.chmod(os.path.join(rdir, "verdicts.jsonl"), 0o600)
+    os.chmod(rdir, 0o750)
+    check("a directory open to the group: refused", "failed", failed(lambda: ap.read_records(rdir, me)))
+    os.chmod(rdir, 0o700)
+    ldir = os.path.join(T, "linked")
+    os.makedirs(ldir, 0o700)
+    os.symlink(os.path.join(rdir, "verdicts.jsonl"), os.path.join(ldir, "verdicts.jsonl"))
+    check("the file is a symlink: refused on read and on write", ("failed", "failed"),
+          (failed(lambda: ap.read_records(ldir, me)), failed(lambda: ap.append_record(rec("APPROVE", H), ldir, me))))
+    os.symlink(rdir, os.path.join(T, "dirlink"))
+    check("the directory is a symlink: refused", "failed", failed(lambda: ap.read_records(os.path.join(T, "dirlink"), me)))
+    with open(os.path.join(rdir, "verdicts.jsonl"), "a") as f:
+        f.write("not json" + NL)
+    check("a line that is not JSON: a failure, not a skip", "failed", failed(lambda: ap.read_records(rdir, me)))
+
+    print("the approver: run, both verbs")
     acfg_path = os.path.join(T, "approve.json"); json.dump(acfg, open(acfg_path, "w"))
+    store = []
     aenv = {"config_file": acfg_path, "log_file": os.path.join(T, "approve.log"), "caller": "agent-barracuda",
-            "get_timeline": lambda t: items, "get_pr": lambda o, r, n: pr_open, "post_review": lambda *a: None,
+            "get_records": lambda: list(store), "append_record": store.append,
+            "get_pr": lambda o, r, n: pr_open, "post_review": lambda *a: None,
             "getstat": fake_stat({acfg_path: 0o644})}
-    check("run: approved, exit 0", 0, ap.run(["approve", "KratoBal/acroveliq", "198", "t-x"], aenv)[0])
+    check("run approve before any record: refused, exit 10", 10, ap.run(["approve", "KratoBal/acroveliq", "198", "t-x"], aenv)[0])
+    check("run record APPROVE: exit 0", 0, ap.run(["record", "KratoBal/acroveliq", "198", "t-x", "APPROVE", H], aenv)[0])
+    check("the record names the CALLER, not an argument", "barracuda", store[-1]["actor"])
+    check("run approve after it: exit 0", 0, ap.run(["approve", "KratoBal/acroveliq", "198", "t-x"], aenv)[0])
+    check("run record CHANGES, then approve: refused", (0, 10),
+          (ap.run(["record", "KratoBal/acroveliq", "198", "t-x", "CHANGES", H], aenv)[0],
+           ap.run(["approve", "KratoBal/acroveliq", "198", "t-x"], aenv)[0]))
+    n = len(store)
+    check("record by a non-approver: refused, nothing stored", (10, n),
+          (ap.run(["record", "KratoBal/acroveliq", "198", "t-x", "APPROVE", H], {**aenv, "caller": "marveen"})[0], len(store)))
+    check("record on a non-fleet repository: refused, nothing stored", (10, n),
+          (ap.run(["record", "KratoBal/other", "198", "t-x", "APPROVE", H], aenv)[0], len(store)))
+    for bad in (["record", "KratoBal/acroveliq", "198", "t-x", "MAYBE", H],
+                ["record", "KratoBal/acroveliq", "198", "t-x", "APPROVE", H[:7]],
+                ["record", "KratoBal/acroveliq", "198", "t-x", "APPROVE", H.upper()],
+                ["record", "KratoBal/acroveliq", "198", "t-x", "APPROVE"],
+                ["approve", "KratoBal/acroveliq", "198", "t-x", "APPROVE", H]):
+        check("usage, exit 2, nothing stored: " + " ".join(bad[4:]) if len(bad) > 4 else "usage: " + bad[0],
+              (2, n), (ap.run(bad, aenv)[0], len(store)))
     check("run: usage, exit 2", 2, ap.run(["approve", "KratoBal/acroveliq", "x", "t-x"], aenv)[0])
     check("run: a group-writable config, exit 10", 10, ap.run(["approve", "KratoBal/acroveliq", "198", "t-x"],
           {**aenv, "getstat": fake_stat({acfg_path: 0o664})})[0])
+    def broken():
+        raise ap.Failed("x")
+    check("run: an unreadable record, exit 13", 13, ap.run(["approve", "KratoBal/acroveliq", "198", "t-x"],
+          {**aenv, "get_records": broken})[0])
 
     print("the credential helper")
     helper = os.path.join(T, "git-credential-fleet-github")
