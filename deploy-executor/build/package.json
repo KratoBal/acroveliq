@@ -1,6 +1,7 @@
 {
   "name": "vegrehajto-build",
   "private": true,
+  "type": "module",
   "devDependencies": {
     "@types/node": "22.19.12",
     "typescript": "5.9.3"
