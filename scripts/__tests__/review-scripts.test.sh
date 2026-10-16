@@ -382,12 +382,21 @@ check '... and the earlier match marker is gone' 0 "$(ls "$MK" 2>/dev/null | wc 
 # same files, one more line changed in the head: a hunk line starting with -- counts as removed
 sed -e 's/^+b$/+b\n--c/' "$Z/pr-marveen70/diff.patch" > "$T/api/compare-$HA.diff"
 check 'the same files with other counts -> 1' 1 "$(olvf marveen70)"
-check '... names the file, both counts and the first other line (a removed "--c" line counted)' 1 "$(grep -c '^   MAS TARTALOM: f.txt (fej (1, 1), csomag (1, 0); az elso elteres a(z) 2. valtozott sor)$' "$T/out")"
+check '... names the file, both counts and the first other line (a removed "--c" line counted)' 1 "$(grep -c '^   MAS TARTALOM: f.txt (fej (1, 1), csomag (1, 0); az elso elteres a(z) 2. valtozott sor, a fej 3. soranal)$' "$T/out")"
 # the SAME counts, another line: what counts alone let through (barracuda, #229 review)
 sed -e 's/^+b$/+rm -rf ~/' "$Z/pr-marveen70/diff.patch" > "$T/api/compare-$HA.diff"
 check 'the same counts with another line in the head -> 1' 1 "$(olvf marveen70)"
-check '... named as other content, at the first changed line' 1 "$(grep -c '^   MAS TARTALOM: f.txt (fej (1, 0), csomag (1, 0); az elso elteres a(z) 1. valtozott sor)$' "$T/out")"
+check '... named as other content, at the first changed line' 1 "$(grep -c '^   MAS TARTALOM: f.txt (fej (1, 0), csomag (1, 0); az elso elteres a(z) 1. valtozott sor, a fej 2. soranal)$' "$T/out")"
 check '... and no match marker' 0 "$(ls "$MK" 2>/dev/null | wc -l)"
+# the SAME lines in the same order, at ANOTHER place in the file (barracuda, #229 review v2: a guard
+# moved into another function); the head side line number is what tells them apart
+sed -e 's/^@@ -1 +1,2 @@/@@ -4 +4,2 @@/' "$Z/pr-marveen70/diff.patch" > "$T/api/compare-$HA.diff"
+check '... (the moved copy really differs from the packet only in that hunk header)' 1 \
+  "$(diff "$Z/pr-marveen70/diff.patch" "$T/api/compare-$HA.diff" | grep -c '^> @@ -4 +4,2 @@')"
+check 'the same added line at another place in the file -> 1' 1 "$(olvf marveen70)"
+check '... named, with the head line where it stands' 1 "$(grep -c '^   MAS TARTALOM: f.txt (fej (1, 0), csomag (1, 0); az elso elteres a(z) 1. valtozott sor, a fej 5. soranal)$' "$T/out")"
+printf '@@ broken\n' >> "$T/api/compare-$HA.diff"
+check 'an unreadable hunk header -> 1, said, no marker' '1 1 0' "$(olvf marveen70) $(grep -c 'egy hunk-fejlec nem olvashato' "$T/out") $(ls "$MK" 2>/dev/null | wc -l)"
 sed -e 's/^new file mode 100644$/new file mode 100755/' "$Z/pr-marveen70/diff.patch" > "$T/api/compare-$HA.diff"
 check 'the same lines, the file made executable in the head -> 1' '1 1' "$(olvf marveen70) $(grep -c '^   MAS MOD: g.txt' "$T/out")"
 printf 'diff --git a/k.png b/k.png\nnew file mode 100644\nBinary files /dev/null and b/k.png differ\n' > "$T/api/compare-$HA.diff"

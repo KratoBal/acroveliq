@@ -62,9 +62,14 @@ def parse_diff(text):
     The CONTENT is what is compared (barracuda, #229 review: counts alone let a head with another line
     of the same count through): per file, every changed line in order ('+...', '-...' and the
     '\\ No newline' marker), and the mode lines (an executable bit is a change too). Only inside hunks
-    (after an @@ line), so a removed '--' line counts and the ---/+++ headers do not; the index line
-    and the @@ line numbers are not compared (they name blobs and positions, not what changes)."""
-    out, cur, in_hunk = {}, None, False
+    (after an @@ line), so a removed '--' line counts and the ---/+++ headers do not.
+
+    AND WHERE: each changed line carries its line number IN THE HEAD FILE (the @@ +c value, counted
+    on through the hunk). The same lines in the same order at another place in the file are another
+    change (barracuda, #229 review v2: a guard moved into another function). The head side refers to
+    the head file in both diffs, so another merge base does not move it; the base side (-a) would, and
+    is not compared. The index line names blobs, not changes, and is not compared either."""
+    out, cur, in_hunk, at = {}, None, False, 0
     for line in text.split('\n'):
         if line.startswith('diff --git '):
             m = re.match(r'^diff --git a/(.*) b/(.*)$', line)
@@ -74,7 +79,10 @@ def parse_diff(text):
         elif cur is None:
             continue
         elif line.startswith('@@'):
-            in_hunk = True
+            m = re.match(r'^@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,[0-9]+)? @@', line)
+            if not m:
+                raise Stop(f'egy hunk-fejlec nem olvashato: {line[:80]!r}')
+            in_hunk, at = True, int(m.group(1))
         elif not in_hunk:
             if line.startswith('Binary files ') or line == 'GIT binary patch':
                 cur['binary'] = True
@@ -82,12 +90,15 @@ def parse_diff(text):
             elif line.startswith(MODE_PREFIXES):
                 cur['modes'].append(line)
         elif line[:1] in ('+', '-', '\\'):
-            cur['changes'].append(line)
+            cur['changes'].append((at, line))
             a, d = cur['stats']
             if line[:1] == '+':
                 cur['stats'] = (a + 1, d)
+                at += 1
             elif line[:1] == '-':
                 cur['stats'] = (a, d + 1)
+        elif line[:1] == ' ':
+            at += 1
     return out
 
 
@@ -125,7 +136,8 @@ def compare(head, packet):
         elif h['changes'] != k['changes']:
             i = next((n for n, (x, y) in enumerate(zip(h['changes'], k['changes'])) if x != y),
                      min(len(h['changes']), len(k['changes'])))
-            out.append(f'MAS TARTALOM: {p} (fej {h["stats"]}, csomag {k["stats"]}; az elso elteres a(z) {i + 1}. valtozott sor)')
+            where = h['changes'][i][0] if i < len(h['changes']) else '-'
+            out.append(f'MAS TARTALOM: {p} (fej {h["stats"]}, csomag {k["stats"]}; az elso elteres a(z) {i + 1}. valtozott sor, a fej {where}. soranal)')
     return out
 
 
