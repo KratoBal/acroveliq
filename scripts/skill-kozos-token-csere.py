@@ -31,6 +31,10 @@ FORMS = [
 def scan(root):
     out = []
     for name in sorted(os.listdir(root)):
+        # a symlinked skill DIRECTORY is not followed either (barracuda, #223): its target may be
+        # another tree (an agent's own), and writing there is not this script's change
+        if os.path.islink(os.path.join(root, name)):
+            continue
         p = os.path.join(root, name, 'SKILL.md')
         if os.path.islink(p) or not os.path.isfile(p):
             continue
