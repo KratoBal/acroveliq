@@ -24,7 +24,8 @@ Ami benne van, az root-é, és a konténerben csak olvasható: a `marveen` nem �
 **A claude bináris NEM a konténerből jön** (barracuda, #210 review). A konténerbeli példány a `marveen` írható
 könyvtárában áll, tehát a `marveen` választaná ki, mit indít a közvetítő ágens-felhasználóként, és a B48 éppen ezt
 zárja ki. A bináris a hoston, a hivatalos telepítővel jön (a repó is ezt használja verzióra rögzítve:
-`install-linux.sh`), egy ideiglenes HOME-ba, a saját felhasználóddal (nem rootként):
+`install-linux.sh`), egy ideiglenes HOME-ba, a saját felhasználóddal (nem rootként). **A pont három kódblokkja
+ugyanabban a terminálban fusson:** a `$T` az elsőben kap értéket, a többi erre épít.
 
 ```bash
 cd /opt/marveen-docker
