@@ -59,9 +59,11 @@
 #
 # AN APPROVE NEEDS THE HEAD'S OWN DIFF (the D4 step list E3 (b), acrobot 31441): the packet's
 # diff.patch is the developer's, so before an APPROVE goes into the root record, the reviewer's
-# tool must have made the diff of exactly this head (review-olvas.sh --fej <packet> writes
-# ~/.review-fej/<owner>-<repo>-<pr>-<head>.patch, the caller's own, not a symlink). Missing: exit 1,
-# the timeline verdict stands. A CHANGES needs nothing: it only closes.
+# tool must have made the diff of exactly this head AND found the packet's patch to be it, line by
+# line (review-olvas.sh --fej <packet> writes ~/.review-fej/<owner>-<repo>-<pr>-<head>.egyezik only
+# then, and removes it on every other outcome; barracuda, #229 review: the file's mere existence let
+# an APPROVE through after an ELTER). Missing: exit 1, the timeline verdict stands, and the way on is
+# a new packet from the developer. A CHANGES needs nothing: it only closes.
 #
 # Exit: 0 recorded and read back (and root-recorded where the approver is installed);
 # 1 refused, not confirmed, or not root-recorded; 2 bad argument.
@@ -232,9 +234,9 @@ fi
 if [ "$V" = APPROVE ]; then
   FEJD="$HOME/.review-fej"
   SLUG="${PRREF_ROOT%#*}"; SLUG="${SLUG/\//-}"
-  FEJF="$FEJD/$SLUG-${PRREF_ROOT##*#}-$HEAD7.patch"
+  FEJF="$FEJD/$SLUG-${PRREF_ROOT##*#}-$HEAD7.egyezik"
   if [ -L "$FEJD" ] || [ ! -d "$FEJD" ] || [ -L "$FEJF" ] || [ ! -f "$FEJF" ] || [ "$(stat -c %u "$FEJF")" != "$(id -u)" ]; then
-    echo "FAIL: az idovonalon rogzitve, de a fejbol eloallitott diff nincs meg ehhez a fejhez ($FEJF): futtasd a review-olvas.sh --fej $C hivast, olvasd el, es rogzitsd ujra" >&2
+    echo "FAIL: az idovonalon rogzitve, de a fej diffjenek egyezese nincs meg ehhez a fejhez ($FEJF): futtasd a review-olvas.sh --fej $C hivast; ha ELTER-t ad, a fejlesztotol uj csomag kell" >&2
     exit 1
   fi
 fi

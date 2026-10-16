@@ -26,7 +26,9 @@
 #      (the D4 step list E3 (b), acrobot 31441): scripts/lib/review-fej-diff.py asks GitHub
 #      anonymously (the fleet repositories are public) whether the PR's head is still the
 #      packet's latest full head, takes the compare diff of THAT sha, writes it to
-#      ~/.review-fej/ (0700/0600) and compares it with the packet's latest patch, file by file.
+#      ~/.review-fej/ (0700/0600) and compares it with the packet's latest patch, file by file and
+#      line by line (the changed lines and the mode lines, not only the counts). Only a full match
+#      leaves the <...>.egyezik marker review-ellenoriz.sh needs for an APPROVE.
 #      WHY: the approver approves the head the README names, and the README and diff.patch are
 #      the developer's. A head with more in it than diff.patch would pass. Read the file it names.
 #

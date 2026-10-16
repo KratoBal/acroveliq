@@ -295,12 +295,12 @@ chmod 755 "$T/sudo"
 sed -e "s|^FLEET_APPROVE=.*|FLEET_APPROVE=$T/fleet-approve|" -e "s|^SUDO=.*|SUDO=\"$T/sudo -n\"|" "$T/ell.sh" > "$T/ell-d4.sh"
 check 'the D4 copy names the stub sudo' 1 "$(grep -cxF "SUDO=\"$T/sudo -n\"" "$T/ell-d4.sh")"
 ell4() { HOME="$T/home4" bash "$T/ell-d4.sh" "$@" >"$T/out" 2>&1; echo $?; }
-# the head diffs review-olvas.sh --fej would have made (E3 (b)): an APPROVE is root-recorded only with one
+# the match markers review-olvas.sh --fej leaves on EGYEZIK (E3 (b)): an APPROVE is root-recorded only with one
 mkdir -p "$T/home4/.review-fej"; chmod 700 "$T/home4/.review-fej"
 for f in KratoBal-acroveliq-70-1234567890abcdef1234567890abcdef12345678 \
          KratoBal-acropora-ai-agent-37-2a4c62f661f628ad557170e9ed80aadecabec6fd \
          KratoBal-acroveliq-75-5555555555555555555555555555555555555555; do
-  : > "$T/home4/.review-fej/$f.patch"
+  : > "$T/home4/.review-fej/$f.egyezik"
 done
 roots() { [ -f "$RC" ] && wc -l < "$RC" | tr -d ' ' || echo 0; }
 check 'not installed: the verdict -> 0, as before' 0 "$(ell marveen70 tsk-a APPROVE)"
@@ -329,15 +329,17 @@ touch "$T/fail-root"
 check 'the approver refuses -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
 check '... and its answer is passed on' 1 "$(grep -c '^FAIL: az idovonalon rogzitve, de a root rekord NEM: fleet-approve: refused' "$T/out")"
 rm "$T/fail-root"
-echo 'the root record needs the head diff for an APPROVE (E3 (b))'
-FJ="$T/home4/.review-fej/KratoBal-acroveliq-70-1234567890abcdef1234567890abcdef12345678.patch"
+echo 'the root record needs the head diff MATCH for an APPROVE (E3 (b))'
+FJ="$T/home4/.review-fej/KratoBal-acroveliq-70-1234567890abcdef1234567890abcdef12345678.egyezik"
+: > "${FJ%.egyezik}.patch"
 mv "$FJ" "$FJ.el"
+check 'the head diff alone, without the match marker, is not enough -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
 r="$(roots)"; n="$(events)"
 check 'an APPROVE without the head diff -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
-check '... says to run review-olvas.sh --fej' 1 "$(grep -c 'futtasd a review-olvas.sh --fej marveen70 hivast' "$T/out")"
+check '... says to run review-olvas.sh --fej' 1 "$(grep -c 'futtasd a review-olvas.sh --fej marveen70 hivast; ha ELTER-t ad' "$T/out")"
 check '... the timeline verdict written, the approver not called' "$((n + 1))|$r" "$(events)|$(roots)"
 check 'a CHANGES needs no head diff -> 0, recorded' "0|$((r + 1))" "$(ell4 marveen70 tsk-a CHANGES)|$(roots)"
-: > "$T/home4/.review-fej/KratoBal-acroveliq-70-$(printf 'e%.0s' $(seq 40)).patch"
+: > "$T/home4/.review-fej/KratoBal-acroveliq-70-$(printf 'e%.0s' $(seq 40)).egyezik"
 check 'another head diff of the same PR does not count -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
 ln -s "$FJ.el" "$FJ"
 check 'a symlinked head diff -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
@@ -362,10 +364,12 @@ pull 70 "$HA"
 cp "$Z/pr-marveen70/diff.patch" "$T/api/compare-$HA.diff"
 : > "$T/api/requests"
 check 'the packet patch is the head diff -> 0' 0 "$(olvf marveen70)"
-check '... says so' 1 "$(grep -c '^EGYEZIK: a csomag diff.patch fajlonkent a fej diffje (2 fajl)$' "$T/out")"
+check '... says so' 1 "$(grep -c '^EGYEZIK: a csomag diff.patch sorrol sorra a fej diffje (2 fajl)' "$T/out")"
 check '... the head diff is written to the reviewer own 0700 folder, 0600' '700 600' \
   "$(stat -c %a "$T/home/.review-fej") $(stat -c %a "$T/home/.review-fej/KratoBal-acroveliq-70-$HA.patch")"
 check '... and it is what GitHub gave, byte for byte' 0 "$(cmp -s "$T/api/compare-$HA.diff" "$T/home/.review-fej/KratoBal-acroveliq-70-$HA.patch"; echo $?)"
+MK="$T/home/.review-fej/KratoBal-acroveliq-70-$HA.egyezik"
+check '... the match marker is left, 0600, naming the patch it matched' "600|diff.patch" "$(stat -c %a "$MK")|$(cut -d' ' -f3 "$MK")"
 check '... two anonymous calls: the PR, then the compare of THAT head' \
   "/repos/KratoBal/acroveliq/pulls/70 application/vnd.github+json auth=False|/repos/KratoBal/acroveliq/compare/main...$HA application/vnd.github.diff auth=False" \
   "$(paste -sd'|' "$T/api/requests")"
@@ -374,14 +378,28 @@ check '... two anonymous calls: the PR, then the compare of THAT head' \
 check 'a head with more in it than the packet -> 1' 1 "$(olvf marveen70)"
 check '... names the hidden file' 1 "$(grep -c '^   CSAK A FEJBEN: rejtett.sh (1, 0)$' "$T/out")"
 check '... and says to read the head diff' 1 "$(grep -c '^ELTER: a csomag diff.patch NEM a fej diffje (1 elteres)' "$T/out")"
+check '... and the earlier match marker is gone' 0 "$(ls "$MK" 2>/dev/null | wc -l)"
 # same files, one more line changed in the head: a hunk line starting with -- counts as removed
 sed -e 's/^+b$/+b\n--c/' "$Z/pr-marveen70/diff.patch" > "$T/api/compare-$HA.diff"
 check 'the same files with other counts -> 1' 1 "$(olvf marveen70)"
-check '... names the file and both counts (a removed "--c" line counted)' 1 "$(grep -c '^   MAS SZAMOK: f.txt fej (1, 1), csomag (1, 0)$' "$T/out")"
+check '... names the file, both counts and the first other line (a removed "--c" line counted)' 1 "$(grep -c '^   MAS TARTALOM: f.txt (fej (1, 1), csomag (1, 0); az elso elteres a(z) 2. valtozott sor)$' "$T/out")"
+# the SAME counts, another line: what counts alone let through (barracuda, #229 review)
+sed -e 's/^+b$/+rm -rf ~/' "$Z/pr-marveen70/diff.patch" > "$T/api/compare-$HA.diff"
+check 'the same counts with another line in the head -> 1' 1 "$(olvf marveen70)"
+check '... named as other content, at the first changed line' 1 "$(grep -c '^   MAS TARTALOM: f.txt (fej (1, 0), csomag (1, 0); az elso elteres a(z) 1. valtozott sor)$' "$T/out")"
+check '... and no match marker' 0 "$(ls "$MK" 2>/dev/null | wc -l)"
+sed -e 's/^new file mode 100644$/new file mode 100755/' "$Z/pr-marveen70/diff.patch" > "$T/api/compare-$HA.diff"
+check 'the same lines, the file made executable in the head -> 1' '1 1' "$(olvf marveen70) $(grep -c '^   MAS MOD: g.txt' "$T/out")"
+printf 'diff --git a/k.png b/k.png\nnew file mode 100644\nBinary files /dev/null and b/k.png differ\n' > "$T/api/compare-$HA.diff"
+cp "$Z/pr-marveen70/diff.patch" "$T/bin-save"; cp "$T/api/compare-$HA.diff" "$Z/pr-marveen70/diff.patch"
+check 'a binary file cannot be compared as text -> 1, no marker' '1 1 0' "$(olvf marveen70) $(grep -c '^   BINARIS: k.png' "$T/out") $(ls "$MK" 2>/dev/null | wc -l)"
+cp "$T/bin-save" "$Z/pr-marveen70/diff.patch"
 cp "$Z/pr-marveen70/diff.patch" "$T/api/compare-$HA.diff"
+check 'back to the same diff -> 0, the marker again' '0 1' "$(olvf marveen70) $(ls "$MK" 2>/dev/null | wc -l)"
 pull 70 "$(printf 'f%.0s' $(seq 40))"
 check 'the PR moved on after packaging -> 1' 1 "$(olvf marveen70)"
 check '... says a push came' 1 "$(grep -c 'a csomagolas utan push jott' "$T/out")"
+check '... and the earlier match marker is removed before anything is asked' 0 "$(ls "$MK" 2>/dev/null | wc -l)"
 pull 70 "$HA"
 rm "$T/api/compare-$HA.diff"
 check 'GitHub has no such compare -> 1, said' '1 1' "$(olvf marveen70) $(grep -c '^FAIL: GitHub HTTP 404' "$T/out")"

@@ -15,9 +15,12 @@ is written outside the reviewer's own output directory. Before the diff, the PR'
 the packet's head: a push after packaging is said, not reviewed silently.
 
 Output: the head's diff in <out dir>/<owner>-<repo>-<pr>-<head>.patch (0600, the directory 0700, no
-symlinks), its file list, and the comparison. Exit: 0 the packet's patch is the head's diff; 1 it is not,
+symlinks), its file list, and the comparison, line by line per file (the content, not only the counts).
+On a match, and only then, a marker <...>.egyezik next to it (the diff's sha256 and the packet patch's
+name); every run removes the old marker first. review-ellenoriz.sh root-records an APPROVE only with it. Exit: 0 the packet's patch is the head's diff; 1 it is not,
 or GitHub could not answer (said on stdout, one reason per line); 2 bad arguments.
 """
+import hashlib
 import json
 import os
 import re
@@ -50,35 +53,45 @@ def get(url, accept):
     return body
 
 
-def file_stats(text):
-    """{path: (added, removed)} of a unified git diff; a binary file is (None, None).
+MODE_PREFIXES = ('new file mode ', 'deleted file mode ', 'old mode ', 'new mode ')
 
-    Counts only inside hunks (after an @@ line), so a removed line that starts with '--' or an added
-    one that starts with '++' is counted, and the ---/+++ headers are not."""
-    out, path, in_hunk = {}, None, False
+
+def parse_diff(text):
+    """{path: {'stats': (added, removed) or (None, None), 'changes': [...], 'modes': [...], 'binary': bool}}.
+
+    The CONTENT is what is compared (barracuda, #229 review: counts alone let a head with another line
+    of the same count through): per file, every changed line in order ('+...', '-...' and the
+    '\\ No newline' marker), and the mode lines (an executable bit is a change too). Only inside hunks
+    (after an @@ line), so a removed '--' line counts and the ---/+++ headers do not; the index line
+    and the @@ line numbers are not compared (they name blobs and positions, not what changes)."""
+    out, cur, in_hunk = {}, None, False
     for line in text.split('\n'):
         if line.startswith('diff --git '):
             m = re.match(r'^diff --git a/(.*) b/(.*)$', line)
             path = m.group(2) if m else line[len('diff --git '):]
-            out[path] = (0, 0)
+            cur = out[path] = {'stats': (0, 0), 'changes': [], 'modes': [], 'binary': False}
             in_hunk = False
-        elif path is None:
+        elif cur is None:
             continue
         elif line.startswith('@@'):
             in_hunk = True
         elif not in_hunk:
             if line.startswith('Binary files ') or line == 'GIT binary patch':
-                out[path] = (None, None)
-        elif line.startswith('+'):
-            a, d = out[path]
-            out[path] = (a + 1, d)
-        elif line.startswith('-'):
-            a, d = out[path]
-            out[path] = (a, d + 1)
+                cur['binary'] = True
+                cur['stats'] = (None, None)
+            elif line.startswith(MODE_PREFIXES):
+                cur['modes'].append(line)
+        elif line[:1] in ('+', '-', '\\'):
+            cur['changes'].append(line)
+            a, d = cur['stats']
+            if line[:1] == '+':
+                cur['stats'] = (a + 1, d)
+            elif line[:1] == '-':
+                cur['stats'] = (a, d + 1)
     return out
 
 
-def write_private(out_dir, name, data):
+def ensure_private_dir(out_dir):
     try:
         os.mkdir(out_dir, 0o700)
     except FileExistsError:
@@ -86,6 +99,9 @@ def write_private(out_dir, name, data):
     st = os.lstat(out_dir)
     if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
         raise Stop(f'the output directory is not mine alone (0700, not a symlink): {out_dir}')
+
+
+def write_private(out_dir, name, data):
     path = os.path.join(out_dir, name)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'wb') as f:
@@ -97,12 +113,19 @@ def compare(head, packet):
     """Lines saying where the packet's patch is not the head's diff; empty when it is."""
     out = []
     for p in sorted(set(head) - set(packet)):
-        out.append(f'CSAK A FEJBEN: {p} {head[p]}')
+        out.append(f'CSAK A FEJBEN: {p} {head[p]["stats"]}')
     for p in sorted(set(packet) - set(head)):
-        out.append(f'CSAK A CSOMAGBAN: {p} {packet[p]}')
+        out.append(f'CSAK A CSOMAGBAN: {p} {packet[p]["stats"]}')
     for p in sorted(set(head) & set(packet)):
-        if head[p] != packet[p]:
-            out.append(f'MAS SZAMOK: {p} fej {head[p]}, csomag {packet[p]}')
+        h, k = head[p], packet[p]
+        if h['binary'] or k['binary']:
+            out.append(f'BINARIS: {p}: a tartalma szovegkent nem vetheto ossze')
+        elif h['modes'] != k['modes']:
+            out.append(f'MAS MOD: {p} fej {h["modes"]}, csomag {k["modes"]}')
+        elif h['changes'] != k['changes']:
+            i = next((n for n, (x, y) in enumerate(zip(h['changes'], k['changes'])) if x != y),
+                     min(len(h['changes']), len(k['changes'])))
+            out.append(f'MAS TARTALOM: {p} (fej {h["stats"]}, csomag {k["stats"]}; az elso elteres a(z) {i + 1}. valtozott sor)')
     return out
 
 
@@ -112,6 +135,15 @@ def run(argv):
     api, repo, pr, head, out_dir, patch = argv
     if not REPO_RX.match(repo) or not pr.isdigit() or not SHA_RX.match(head) or not api.startswith(('https://', 'http://127.0.0.1:')):
         raise ValueError(f'bad arguments: {repo} {pr} {head}')
+    base_name = f'{repo.replace("/", "-")}-{pr}-{head}'
+    # the match marker goes FIRST: whatever happens below, an earlier EGYEZIK for this head does not
+    # outlive a run that did not end in one (review-ellenoriz.sh root-records an APPROVE only with it)
+    ensure_private_dir(out_dir)
+    marker = os.path.join(out_dir, base_name + '.egyezik')
+    try:
+        os.unlink(marker)
+    except FileNotFoundError:
+        pass
     lines = []
     p = json.loads(get(f'{api}/repos/{repo}/pulls/{pr}', 'application/vnd.github+json').decode() or '{}')
     now = (p.get('head') or {}).get('sha') or ''
@@ -121,11 +153,11 @@ def run(argv):
     if not re.match(r'^[A-Za-z0-9._/-]{1,200}$', base):
         raise Stop(f'a PR alapja nem olvashato: {base!r}')
     diff = get(f'{api}/repos/{repo}/compare/{base}...{head}', 'application/vnd.github.diff')
-    name = f'{repo.replace("/", "-")}-{pr}-{head}.patch'
-    path = write_private(out_dir, name, diff)
-    hs = file_stats(diff.decode('utf-8', 'replace'))
+    path = write_private(out_dir, base_name + '.patch', diff)
+    hs = parse_diff(diff.decode('utf-8', 'replace'))
     lines.append(f'== a fejbol eloallitott diff (GitHub compare {base}...{head}): {path}')
-    for f, (a, d) in sorted(hs.items()):
+    for f, v in sorted(hs.items()):
+        a, d = v['stats']
         lines.append(f'   bin   {f}' if a is None else f'   +{a:<5} -{d:<5} {f}')
     lines.append(f'   osszesen: {len(hs)} fajl')
     try:
@@ -134,13 +166,15 @@ def run(argv):
         raise Stop(f'a csomag patch-e nincs meg: {patch}')
     if not stat.S_ISREG(st.st_mode):
         raise Stop(f'a csomag patch-e symlink vagy nem fajl: {patch}')
-    ps = file_stats(open(patch, encoding='utf-8', errors='replace').read())
+    ps = parse_diff(open(patch, encoding='utf-8', errors='replace').read())
     diffs = compare(hs, ps)
     if diffs:
         lines.append(f'ELTER: a csomag {os.path.basename(patch)} NEM a fej diffje ({len(diffs)} elteres). A fejbol eloallitottat olvasd:')
         lines += ['   ' + d for d in diffs]
         return 1, lines
-    lines.append(f'EGYEZIK: a csomag {os.path.basename(patch)} fajlonkent a fej diffje ({len(hs)} fajl)')
+    digest = hashlib.sha256(diff).hexdigest()
+    write_private(out_dir, base_name + '.egyezik', f'{digest}  {os.path.basename(patch)}\n'.encode())
+    lines.append(f'EGYEZIK: a csomag {os.path.basename(patch)} sorrol sorra a fej diffje ({len(hs)} fajl); jelolo: {marker}')
     return 0, lines
 
 

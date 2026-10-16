@@ -159,12 +159,14 @@ A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker 
   - Kiolvassa a csomag legutolsó, 40 jegyű fejét és a PR-t (a csomag nevéből).
   - A GitHubtól névtelenül megkérdezi, hogy a PR mai feje még ez-e. A flotta négy repója nyilvános, token nincs.
   - A diffet a GitHub compare-jéből veszi, PONTOSAN annak a fejnek a sha-jára (`<alap>...<fej>`).
-  - A diffet a reviewer saját `~/.review-fej/` mappájába írja (0700/0600), és fájlonként összeveti a csomag
-    legutolsó patch-ével.
+  - A diffet a reviewer saját `~/.review-fej/` mappájába írja (0700/0600), és fájlonként, SORRÓL SORRA összeveti a
+    csomag legutolsó patch-ével: a változott sorokat és a mód-sorokat, nem csak a számokat (barracuda, #229 review). A
+    bináris fájl szövegként nem vethető össze, ezért eltérésnek számít.
   - Eltérésnél (a fejben több vagy más áll, vagy push jött a csomagolás után) kilépés 1, és megnevezi a fájlokat.
-  - **A kötés:** a `review-ellenoriz.sh` egy APPROVE-ot csak akkor ír a root rekordba, ha ez a fájl PONTOSAN az átnézett
-    fejre megvan (a hívó sajátja, nem symlink). Ha hiányzik, kilépés 1, és az idővonal verdiktje áll. A CHANGES-hez
-    nem kell, az csak lezár.
+  - **A kötés:** teljes egyezésnél, és csak akkor, egy `<...>.egyezik` jelölő is keletkezik; minden futás először
+    törli a régit. A `review-ellenoriz.sh` egy APPROVE-ot csak akkor ír a root rekordba, ha ez a jelölő PONTOSAN az
+    átnézett fejre megvan (a hívó sajátja, nem symlink). Ha hiányzik, kilépés 1, és az idővonal verdiktje áll; eltérésnél
+    a fejlesztőtől új csomag kell. A CHANGES-hez nem kell, az csak lezár.
 
 ## Konténer-újrateremtés után (fleet-bootstrap.sh 4a)
 
