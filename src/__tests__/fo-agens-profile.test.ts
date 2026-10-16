@@ -30,9 +30,27 @@ describe('fo-agens profile (B29 step 1)', () => {
     expect(allow.filter((a) => a === 'Bash(python3:*)' || a === 'Bash(bash:*)' || a.startsWith('Bash(*'))).toEqual([])
   })
 
+  it('no executing or writing gate comes back through a named tool (barracuda, #225 review)', () => {
+    // each runs any command or writes any file through an allowed name: futtat.sh run, git-auth.sh
+    // (any git subcommand, -c alias), find (-exec, -delete), sed (e, w, -n -i), uniq and sort -o
+    // (an output file), echo and printf (a redirection), and the writing verbs of three scripts
+    const gates = [
+      /futtat\.sh(?! (olvas|keres):)/,
+      /git-auth\.sh/,
+      /^Bash\(find[ :]/,
+      /^Bash\(sed[ :]/,
+      /^Bash\((uniq|sort|echo|printf)[ :]/,
+      /gcal\.sh(?! (check|events|mail|search|fetch):)/,
+      /kirakat-telepites\.sh(?! (allapot|naplo):)/,
+      /skill-kozos-token-csere\.py/,
+      /titok-jog-figyelo\.py/,
+    ]
+    expect(allow.filter((a) => gates.some((g) => g.test(a)))).toEqual([])
+  })
+
   it('every allowed script exists in scripts/', () => {
     const missing = allow
-      .map((a) => /^Bash\((?:bash|python3(?: -I)?) (?:\$\{HOME\}\/marveen\/)?(scripts\/[A-Za-z0-9_.-]+\.(?:sh|py)):\*\)$/.exec(a)?.[1])
+      .map((a) => /^Bash\((?:bash|python3(?: -I)?) (?:\$\{HOME\}\/marveen\/)?(scripts\/[A-Za-z0-9_.-]+\.(?:sh|py))(?: [a-z-]+)?:\*\)$/.exec(a)?.[1])
       .filter((s): s is string => !!s && !existsSync(join(ROOT, s)))
     expect(missing).toEqual([])
   })
