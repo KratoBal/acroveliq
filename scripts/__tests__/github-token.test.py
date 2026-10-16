@@ -6,7 +6,11 @@
 #     empty answer passing as a token (an empty Authorization header is a silent unauthenticated call);
 #   - a malformed repository or an unknown role reaching the broker;
 #   - a fleet script reading store/.github-token directly, outside the known list below (a new reader would
-#     break at the owner token's revocation without anyone knowing).
+#     break at the owner token's revocation without anyone knowing);
+#   - git-auth.sh with the switch on: a read (fetch, pull, ls-remote, clone) going out without the broker's
+#     olvas token for exactly the remote's repository, the header not scoped to https://github.com/, a
+#     push carrying a read header (it would push with the read token), a broker refusal falling back to
+#     an anonymous fetch, or a remote that is not a GitHub repository reaching the broker.
 import importlib.util, os, re, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -92,12 +96,70 @@ try:
     check("on: an empty answer raises", "ERROR", py("KratoBal/empty", "olvas", "on"))
     check("a malformed repository raises", "ERROR", py("acroveliq", "olvas", "on"))
 
+    print("git-auth.sh with the switch on (the D4 step list step 10)")
+    gdir = os.path.join(T, "ga", "scripts"); os.makedirs(os.path.join(gdir, "lib"))
+    shutil.copy(lib, os.path.join(gdir, "lib", "github-token.sh"))
+    ga_src = open(os.path.join(SCRIPTS, "git-auth.sh")).read()
+    ga_src = ga_src.replace('TOKEN_FILE="/home/marveen/marveen/store/.github-token"', 'TOKEN_FILE="' + owner + '"')
+    open(os.path.join(gdir, "git-auth.sh"), "w").write(ga_src)
+    fakebin = os.path.join(T, "ga", "bin"); os.makedirs(fakebin)
+    seen = os.path.join(T, "ga", "seen")
+    open(os.path.join(fakebin, "git"), "w").write(NL.join([
+        "#!/bin/bash",
+        'ALL="$*"',
+        'if [ "$1" = -C ]; then shift 2; fi',
+        'if [ "$1 $2" = "remote get-url" ]; then case "$3" in origin) echo https://github.com/KratoBal/acroveliq.git ;; up) echo https://github.com/KratoBal/acropora-os ;; gl) echo https://gitlab.com/x/y.git ;; *) exit 2 ;; esac; exit 0; fi',
+        'printf "args=%s|count=%s|key=%s|value=%s\\n" "$ALL" "${GIT_CONFIG_COUNT:-}" "${GIT_CONFIG_KEY_0:-}" "${GIT_CONFIG_VALUE_0:-}" >> ' + seen,
+        ""]))
+    os.chmod(os.path.join(fakebin, "git"), 0o755)
+    import base64
+    def ga(*args, switch="on"):
+        if os.path.exists(seen):
+            os.unlink(seen)
+        n0 = ncalls()
+        env = {k: v for k, v in os.environ.items() if k != "FLEET_GITHUB_APP"}
+        env["PATH"] = fakebin + ":" + env["PATH"]
+        if switch:
+            env["FLEET_GITHUB_APP"] = switch
+        r = subprocess.run(["bash", os.path.join(gdir, "git-auth.sh")] + list(args), capture_output=True, text=True, env=env)
+        got = open(seen).read().strip() if os.path.exists(seen) else ""
+        asked = open(calls).read().splitlines()[n0:] if os.path.exists(calls) else []
+        return r.returncode, got, asked, r.stderr
+    def basic(repo):
+        return "Authorization: Basic " + base64.b64encode(("x-access-token:APP-%s-olvas" % repo).encode()).decode()
+    rc, got, asked, _ = ga("-C", "/x", "fetch", "origin")
+    check("on: fetch asks the broker for olvas on exactly the remote's repository", ["token KratoBal/acroveliq olvas"], asked)
+    check("on: ... and git gets that token as the Basic header, scoped to https://github.com/",
+          (0, "args=-C /x fetch origin|count=1|key=http.https://github.com/.extraHeader|value=" + basic("KratoBal/acroveliq")), (rc, got))
+    rc, got, asked, _ = ga("pull", "--ff-only", "up", "main")
+    check("on: pull past an option, another remote name: that remote's repository", (["token KratoBal/acropora-os olvas"], 0), (asked, rc))
+    rc, got, asked, _ = ga("ls-remote")
+    check("on: no remote named: origin", ["token KratoBal/acroveliq olvas"], asked)
+    rc, got, asked, _ = ga("clone", "https://github.com/KratoBal/acropora-ai-agent.git", "/tmp/x")
+    check("on: clone of a GitHub URL: that repository", ["token KratoBal/acropora-ai-agent olvas"], asked)
+    rc, got, asked, _ = ga("-C", "/x", "push", "origin", "HEAD")
+    check("on: a push gets NO header and asks nothing here (the credential helper gives the push token)",
+          (0, [], "args=-C /x push origin HEAD|count=|key=|value="), (rc, asked, got))
+    rc, got, asked, err = ga("fetch", "gl")
+    check("on: a remote that is not GitHub: stop, the broker not asked, git not run", (1, [], ""), (rc, asked, got))
+    rc, got, asked, err = ga("clone", "/some/local/path")
+    check("on: a clone that is not a GitHub URL: stop", (1, [], ""), (rc, asked, got))
+    open(os.path.join(fakebin, "remote-refused"), "w").close()
+    src_git = open(os.path.join(fakebin, "git")).read()
+    open(os.path.join(fakebin, "git"), "w").write(src_git.replace("origin) echo https://github.com/KratoBal/acroveliq.git", "origin) echo https://github.com/KratoBal/refused.git"))
+    rc, got, asked, err = ga("fetch", "origin")
+    check("on: the broker refuses: stop, NO anonymous fetch", (1, "", True), (rc, got, "nem fetch-elek nevtelenul" in err))
+    open(os.path.join(fakebin, "git"), "w").write(src_git)
+    rc, got, asked, _ = ga("fetch", "origin", switch=None)
+    check("off: the owner token file, as before, for any command", (0, [], "value=" + "Authorization: Basic " + base64.b64encode(b"x-access-token:OWNER-TOKEN").decode()),
+          (rc, asked, got[got.index("value="):] if "value=" in got else got))
+
     print("who still names the owner token file")
     known = {
         "lib/github-token.sh", "lib/github_token.py",   # the helpers: the switch-off branch
         "ci-el-or.sh",                                   # watches the owner token's expiry; retires with it
         "pr-beolvaszt.sh",                               # its own switch (D4 step 2), the off branch
-        "git-auth.sh",                                   # the off branch; on, plain git and the credential helper
+        "git-auth.sh",                                   # the off branch; on, the broker (reads) or the credential helper (push)
         "github-pr-monitor.sh",                          # the off branch's fallback
         "fleet-secrets.py",                              # reads it for the expiry header; retires with it
     }

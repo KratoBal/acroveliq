@@ -41,7 +41,10 @@ a 6. lépés nem indulhat; a lap visszaállítása addig a régi út.
 **Az (1) állapota:** a flotta-szkriptek a `scripts/lib/github-token.sh` (és a Pythonban a `scripts/lib/github_token.py`)
 `github_token <owner/repo> <szerep>` hívásán át olvasnak: a kapcsolóval a bróker egyórás, egy repóra szóló tokenje, nélküle
 a régi fájl. Ahol egy szkript több repót kérdez (`mar-megvan.sh`, `hasonlo-kulcs-orzo.sh`), repónként kér. A
-`git-auth.sh` a kapcsolóval sima `git`-et futtat, a tokent a credential helper adja. A `scripts/__tests__/github-token.test.py`
+`git-auth.sh` a kapcsolóval olvasásnál (fetch, pull, ls-remote, clone) a bróker `olvas` tokenjét teszi fejlécbe, pontosan a
+remote repójára, és csak a `https://github.com/` felé (a 10. lépés lelete, 2026-10-16: enélkül a marveen felhasználó
+fetch-e névtelen volt, és a git a helpert csak 401-re kérdezi). Ha a bróker nem ad tokent, megáll, nem fetch-el névtelenül.
+Minden más (push) sima `git`, a tokent a credential helper adja. A `scripts/__tests__/github-token.test.py`
 egy őrrel méri, hogy ezen kívül egyetlen szkript sem olvassa közvetlenül a tulajdonosi tokent. Az őr a fájl NEVÉRE illeszt
 (`.github-token`, utána nem kötőjel és nem betű), nem a szó szerinti `store/.github-token` útra: az utóbbi 2026-10-15-ig
 átengedte a `fleet-secrets.py`-t, ami `os.path.join(STORE, ".github-token")` alakban nyitja meg. Három szándékos kivétel:
