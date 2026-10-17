@@ -39,7 +39,7 @@ import {
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
 import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir, readAgentClaudeConfigDir } from './agent-config.js'
-import { readTranscriptMtimeFromProjectDir } from './active-model.js'
+import { readTranscriptLastTurnAtFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { channelStateDir, getProvider, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import {
   agentSessionName,
@@ -649,7 +649,7 @@ export function setQuotaNotifyForTest(fn: ((content: string) => void) | null): v
 
 /**
  * Every tick. `sampleAtMs`: when the gate's sample was made (null: none); `activityAtMs`: the main
- * session's newest transcript write (null: none readable). Returns what it sent, or null.
+ * session's last turn, from the transcript's own timestamps (null: none readable). Returns what it sent, or null.
  */
 export function noticeQuotaBlind(
   problem: string | null,
@@ -1646,7 +1646,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
     reportQuotaInput(quotaProblem)
     noticeQuotaBlind(quotaProblem, now, {
       sampleAtMs: typeof quotaSnapshot?.generatedAtMs === 'number' ? quotaSnapshot.generatedAtMs : null,
-      activityAtMs: readTranscriptMtimeFromProjectDir(PROJECT_ROOT),
+      activityAtMs: readTranscriptLastTurnAtFromProjectDir(PROJECT_ROOT),
     })
 
     for (const task of tasks) {
