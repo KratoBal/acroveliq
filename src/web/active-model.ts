@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -118,6 +118,46 @@ export function readContextTokensFromProjectDir(workingDir: string, configDir?: 
   } catch { /* fall through */ }
   ctxCache.set(cacheKey, { value, expiresAt: now + TTL_MS })
   return value
+}
+
+/**
+ * When the session last took a turn: the newest `timestamp` on a `user` or `assistant` line of
+ * the newest transcript, read from its last 256 KiB. Not the mtime: the file is also written
+ * between turns by lines that carry no time of their own (api-request-blob, file-history-snapshot,
+ * last-prompt), and on 2026-10-17 such a write at an idle 12:35 looked like work to the quota
+ * gate (msg 32305, 32307). Falls back to the mtime when the window holds no whole turn (barracuda,
+ * #234), null only when there is no transcript.
+ */
+export function readTranscriptLastTurnAtFromProjectDir(workingDir: string, configDir?: string): number | null {
+  try {
+    const dir = projectsDirFor(workingDir, configDir)
+    if (!existsSync(dir)) return null
+    let newest: { path: string; mtime: number; size: number } | null = null
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.jsonl')) continue
+      const st = statSync(join(dir, f))
+      if (newest === null || st.mtimeMs > newest.mtime) newest = { path: join(dir, f), mtime: st.mtimeMs, size: st.size }
+    }
+    if (newest === null) return null
+    const len = Math.min(newest.size, 256 * 1024)
+    const buf = Buffer.alloc(len)
+    const fd = openSync(newest.path, 'r')
+    try { readSync(fd, buf, 0, len, newest.size - len) } finally { closeSync(fd) }
+    let last: number | null = null
+    for (const line of buf.toString('utf-8').split('\n')) {
+      if (!line.includes('"timestamp"')) continue
+      let d: { type?: unknown; timestamp?: unknown }
+      try { d = JSON.parse(line) } catch { continue } // the first line of the window is usually cut
+      if (d.type !== 'user' && d.type !== 'assistant') continue
+      const t = typeof d.timestamp === 'string' ? Date.parse(d.timestamp) : NaN
+      if (Number.isFinite(t) && (last === null || t > last)) last = t
+    }
+    // No whole timestamped turn in the window: its end fell inside one line longer than the window
+    // (a big tool_result, an image, a compaction; barracuda measured 35 million characters). Such a
+    // line is written inside a turn, so the mtime is true there; null would read as "not working".
+    if (last === null && newest.size > 0) return newest.mtime
+    return last
+  } catch { return null }
 }
 
 /**

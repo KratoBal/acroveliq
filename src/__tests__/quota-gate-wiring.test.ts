@@ -349,7 +349,8 @@ describe('reportQuotaInput -- blind state is reported once per change', () => {
   it('is wired to the per-tick snapshot read', () => {
     expect(RUNNER_SRC).toContain('const quotaProblem = quotaRead.problem ?? quotaInputProblem(quotaSnapshot, now)')
     expect(RUNNER_SRC).toContain('reportQuotaInput(quotaProblem)')
-    // the notice reads the gate sample's time and the MAIN session's transcript activity
-    expect(RUNNER_SRC).toMatch(/noticeQuotaBlind\(quotaProblem, now, \{\s*sampleAtMs: typeof quotaSnapshot\?\.generatedAtMs === 'number'[^}]*activityAtMs: readTranscriptMtimeFromProjectDir\(PROJECT_ROOT\),/)
+    // the notice reads the gate sample's time and the MAIN session's last turn from the transcript's
+    // own timestamps (not the mtime: idle writes moved it, acrobot 2026-10-17, msg 32305)
+    expect(RUNNER_SRC).toMatch(/noticeQuotaBlind\(quotaProblem, now, \{\s*sampleAtMs: typeof quotaSnapshot\?\.generatedAtMs === 'number'[^}]*activityAtMs: readTranscriptLastTurnAtFromProjectDir\(PROJECT_ROOT\),/)
   })
 })
