@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, sym
 import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { QUOTA_BLIND_ACTIVITY_MARGIN_MS, noticeQuotaBlind, quotaWorkClass, reportQuotaInput, setQuotaNoticeStateForTest, setQuotaNotifyForTest } from '../web/schedule-runner.js'
+import { QUOTA_BLIND_ACTIVITY_MARGIN_MS, QUOTA_BLIND_CONFIRM_MS, noticeQuotaBlind, quotaWorkClass, reportQuotaInput, setQuotaNoticeStateForTest, setQuotaNotifyForTest } from '../web/schedule-runner.js'
 import { parseGateSample, readQuotaSnapshot } from '../quota-snapshot.js'
 import { decideQuotaAction, quotaInputProblem } from '../quota-gate.js'
 
@@ -274,7 +274,8 @@ describe('reportQuotaInput -- blind state is reported once per change', () => {
       ]
       const idleSent = sent.length
       const blind = [
-        // 07:30-09:50: the main session works, no sample
+        // 07:30-09:50: the main session works, no sample; the first such tick only opens the suspicion
+        noticeQuotaBlind('stale-snapshot:23m', t0 + 23 * 60_000, { sampleAtMs: t0, activityAtMs: t0 + 23 * 60_000 }),
         noticeQuotaBlind('stale-snapshot:25m', t0 + 25 * 60_000, { sampleAtMs: t0, activityAtMs: t0 + 24 * 60_000 }),
         noticeQuotaBlind('stale-snapshot:26m', t0 + 26 * 60_000, { sampleAtMs: t0, activityAtMs: t0 + 26 * 60_000 }),
         noticeQuotaBlind('no-snapshot', t0 + 27 * 60_000, { sampleAtMs: null, activityAtMs: t0 + 27 * 60_000 }), // another kind, the same episode
@@ -282,7 +283,37 @@ describe('reportQuotaInput -- blind state is reported once per change', () => {
         noticeQuotaBlind(null, t0 + 146 * 60_000, { sampleAtMs: t0 + 146 * 60_000, activityAtMs: t0 + 146 * 60_000 }),
       ]
       expect([idle, idleSent, blind, sent.length, /vak \(stale-snapshot:25m\): a fő munkamenet dolgozik/.test(sent[0] ?? ''), /újra friss \(az üzenet óta 120 perc\)/.test(sent[1] ?? '')],
-        'QUOTA-BLIND-NOTICE').toEqual([[null, null, null, null], 0, ['blind', null, null, 'recovered', null], 2, true, true])
+        'QUOTA-BLIND-NOTICE').toEqual([[null, null, null, null], 0, [null, 'blind', null, null, 'recovered', null], 2, true, true])
+    } finally {
+      noticeQuotaBlind(null, Date.now(), { sampleAtMs: null, activityAtMs: null })
+      setQuotaNotifyForTest(null)
+      setQuotaNoticeStateForTest(null)
+    }
+  })
+
+  // acrobot, 2026-10-17: msg 32290 (08:30) and 32292 (09:30), each followed by "újra friss, 0 perc". After an
+  // idle half hour the wakeup prompt writes the transcript at once and the statusline draws seconds later.
+  it('QUOTA-BLIND-TURN-START: a blind look that the next sample clears inside the confirm window sends nothing; one that holds past it sends once', () => {
+    const sent: string[] = []
+    setQuotaNotifyForTest((c) => sent.push(c))
+    setQuotaNoticeStateForTest(join(mkdtempSync(join(tmpdir(), 'quota-notice-')), 'state.json'))
+    try {
+      const t0 = Date.parse('2026-10-17T07:01:00Z') // the last sample before the idle stretch
+      const C = QUOTA_BLIND_CONFIRM_MS
+      const turnStart = t0 + 29 * 60_000 + 30_000
+      const race = [
+        noticeQuotaBlind('stale-snapshot:30m', turnStart + 5_000, { sampleAtMs: t0, activityAtMs: turnStart }),
+        noticeQuotaBlind(null, turnStart + 65_000, { sampleAtMs: turnStart + 3_000, activityAtMs: turnStart + 60_000 }),
+      ]
+      const raceSent = sent.length
+      const s1 = turnStart + 3_000
+      const later = s1 + 40 * 60_000 // a real blind state: activity goes on, no sample comes
+      const held = [
+        noticeQuotaBlind('stale-snapshot:40m', later, { sampleAtMs: s1, activityAtMs: later }),
+        noticeQuotaBlind('stale-snapshot:41m', later + C - 1, { sampleAtMs: s1, activityAtMs: later + C - 1 }),
+        noticeQuotaBlind('stale-snapshot:42m', later + C, { sampleAtMs: s1, activityAtMs: later + C }),
+      ]
+      expect([race, raceSent, held, sent.length], 'QUOTA-BLIND-TURN-START').toEqual([[null, null], 0, [null, null, 'blind'], 1])
     } finally {
       noticeQuotaBlind(null, Date.now(), { sampleAtMs: null, activityAtMs: null })
       setQuotaNotifyForTest(null)
@@ -299,6 +330,7 @@ describe('reportQuotaInput -- blind state is reported once per change', () => {
     try {
       const t0 = Date.parse('2026-10-15T07:30:00Z')
       const working = (m: number) => ({ sampleAtMs: t0, activityAtMs: t0 + m * 60_000 })
+      const suspected = noticeQuotaBlind('stale-snapshot:125m', t0 + 125 * 60_000, working(125))
       const first = noticeQuotaBlind('stale-snapshot:127m', t0 + 127 * 60_000, working(126))
       const saved = JSON.parse(readFileSync(state, 'utf-8')).notifiedAt
       setQuotaNoticeStateForTest(state) // the dashboard restarts: memory gone, the file stays
@@ -306,8 +338,8 @@ describe('reportQuotaInput -- blind state is reported once per change', () => {
       const recovered = noticeQuotaBlind(null, t0 + 140 * 60_000, { sampleAtMs: t0 + 140 * 60_000, activityAtMs: t0 + 140 * 60_000 })
       setQuotaNoticeStateForTest(state) // and once more: a cleared episode stays cleared
       const quiet = noticeQuotaBlind(null, t0 + 141 * 60_000, { sampleAtMs: t0 + 141 * 60_000, activityAtMs: t0 + 141 * 60_000 })
-      expect([first, saved, afterRestart, recovered, quiet, sent.length, JSON.parse(readFileSync(state, 'utf-8')).notifiedAt, /az üzenet óta 13 perc/.test(sent[1] ?? '')],
-        'QUOTA-BLIND-RESTART').toEqual(['blind', t0 + 127 * 60_000, null, 'recovered', null, 2, null, true])
+      expect([suspected, first, saved, afterRestart, recovered, quiet, sent.length, JSON.parse(readFileSync(state, 'utf-8')).notifiedAt, /az üzenet óta 13 perc/.test(sent[1] ?? '')],
+        'QUOTA-BLIND-RESTART').toEqual([null, 'blind', t0 + 127 * 60_000, null, 'recovered', null, 2, null, true])
     } finally {
       setQuotaNotifyForTest(null)
       setQuotaNoticeStateForTest(null)
