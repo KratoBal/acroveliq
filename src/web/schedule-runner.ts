@@ -588,6 +588,15 @@ export function reportQuotaInput(problem: string | null): 'blind' | 'recovered' 
 // no sample to expect. Once per episode, and a recovery message only after a blind one.
 export const QUOTA_BLIND_ACTIVITY_MARGIN_MS = 5 * 60_000
 
+// A TURN AFTER AN IDLE STRETCH LOOKS BLIND FOR A FEW SECONDS (acrobot, 2026-10-17: msg 32290 at 08:30
+// and 32292 at 09:30, each followed by "újra friss, 0 perc"). The wakeup prompt writes the transcript
+// at once, the statusline draws its sample a few seconds later, and a tick in between sees a
+// 30-minute-old sample with fresh activity. So the blind state must hold for this long, over more
+// than one tick, before the message goes. A statusline that never draws still holds it.
+export const QUOTA_BLIND_CONFIRM_MS = 2 * 60_000
+/** When the current blind-looking state was first seen (in memory: a restart only delays the message). */
+let quotaBlindSuspectedAt: number | null = null
+
 // THE EPISODE OUTLIVES A RESTART (acrobot, 2026-10-15: the blind message came twice, 09:37 and 09:43,
 // with a dashboard restart between). Held only in memory, every restart opened a new episode. The
 // time of the blind message is kept in store/ (the dashboard owns it), read once per process, and
@@ -622,6 +631,7 @@ function setBlindNotifiedAt(value: number | null): void {
 export function setQuotaNoticeStateForTest(path: string | null): void {
   quotaNoticeStatePath = path ?? QUOTA_NOTICE_STATE_DEFAULT
   quotaBlindNotifiedAt = undefined
+  quotaBlindSuspectedAt = null
 }
 
 function notifyMainAgent(content: string): void {
@@ -650,7 +660,12 @@ export function noticeQuotaBlind(
     if (blindNotifiedAt() !== null) return null
     const { sampleAtMs, activityAtMs } = evidence
     const worked = activityAtMs !== null && (sampleAtMs === null || activityAtMs > sampleAtMs + QUOTA_BLIND_ACTIVITY_MARGIN_MS)
-    if (!worked) return null
+    if (!worked) {
+      quotaBlindSuspectedAt = null
+      return null
+    }
+    if (quotaBlindSuspectedAt === null) quotaBlindSuspectedAt = nowMs
+    if (nowMs - quotaBlindSuspectedAt < QUOTA_BLIND_CONFIRM_MS) return null
     setBlindNotifiedAt(nowMs)
     quotaNotify(
       `[kvota-kapu] A kvóta-kapu vak (${problem}): a fő munkamenet dolgozik, de nincs friss kvóta-minta (store/quota-gate-sample.json), a háttér-feladatok kvóta-ellenőrzés nélkül futnak. ` +
@@ -658,6 +673,7 @@ export function noticeQuotaBlind(
     )
     return 'blind'
   }
+  quotaBlindSuspectedAt = null
   const since = blindNotifiedAt()
   if (since !== null) {
     const minutes = Math.round((nowMs - since) / 60_000)
