@@ -29,4 +29,17 @@ describe('readTranscriptLastTurnAtFromProjectDir', () => {
       readTranscriptLastTurnAtFromProjectDir('/work/x', empty),
     ], 'TRANSCRIPT-LAST-TURN').toEqual([Date.parse('2026-10-17T10:13:39.000Z'), idleWrite.getTime(), null])
   })
+
+  // barracuda, #234: a line longer than the window must not read as "not working"
+  it('TRANSCRIPT-LAST-TURN-LONG: a last line longer than the read window falls back to the mtime, not null', () => {
+    const config = mkdtempSync(join(tmpdir(), 'last-turn-'))
+    const dir = projectsDirFor('/work/y', config)
+    mkdirSync(dir, { recursive: true })
+    const f = join(dir, 's.jsonl')
+    const big = JSON.stringify({ type: 'user', timestamp: '2026-10-17T11:00:00.000Z', content: 'x'.repeat(300 * 1024) })
+    writeFileSync(f, ['{"type":"assistant","timestamp":"2026-10-17T10:59:00.000Z"}', big, ''].join('\n'))
+    const written = new Date('2026-10-17T11:00:01.000Z')
+    utimesSync(f, written, written)
+    expect(readTranscriptLastTurnAtFromProjectDir('/work/y', config), 'TRANSCRIPT-LAST-TURN-LONG').toBe(written.getTime())
+  })
 })

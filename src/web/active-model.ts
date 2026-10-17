@@ -125,7 +125,8 @@ export function readContextTokensFromProjectDir(workingDir: string, configDir?: 
  * the newest transcript, read from its last 256 KiB. Not the mtime: the file is also written
  * between turns by lines that carry no time of their own (api-request-blob, file-history-snapshot,
  * last-prompt), and on 2026-10-17 such a write at an idle 12:35 looked like work to the quota
- * gate (msg 32305, 32307). null when nothing readable is found.
+ * gate (msg 32305, 32307). Falls back to the mtime when the window holds no whole turn (barracuda,
+ * #234), null only when there is no transcript.
  */
 export function readTranscriptLastTurnAtFromProjectDir(workingDir: string, configDir?: string): number | null {
   try {
@@ -151,6 +152,10 @@ export function readTranscriptLastTurnAtFromProjectDir(workingDir: string, confi
       const t = typeof d.timestamp === 'string' ? Date.parse(d.timestamp) : NaN
       if (Number.isFinite(t) && (last === null || t > last)) last = t
     }
+    // No whole timestamped turn in the window: its end fell inside one line longer than the window
+    // (a big tool_result, an image, a compaction; barracuda measured 35 million characters). Such a
+    // line is written inside a turn, so the mtime is true there; null would read as "not working".
+    if (last === null && newest.size > 0) return newest.mtime
     return last
   } catch { return null }
 }
