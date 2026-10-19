@@ -28,8 +28,9 @@
 # THE ALERT'S ADDRESS (task flotta-or-es-infra-javitas, 2026-10-19): the installed hook of
 # 2026-10-14 sent the alert with the SHARED token and `from`/`to` = "marveen". Since P0-1 the
 # shared token may not send (route-access.ts LEGACY_KEPT: HTTP 403), and "marveen" is the main
-# agent's id only where MAIN_AGENT_ID is unset (here it is another name), so a message to it would
-# be accepted and delivered to nobody. The installed copy was STALE: this installer had been fixed
+# agent's id only where MAIN_AGENT_ID is unset (here the main agent's token file is acrobot.token, so
+# its id is probably acrobot; .env is not readable to an agent and was not measured), and a message to an
+# id nobody has is accepted and delivered to nobody. The installed copy was STALE: this installer had been fixed
 # on 2026-10-16 (#211), but it runs only from sync-hooks.sh on a dashboard update, and a live-tree
 # update by git does not run it. Now:
 #   - the main agent's id is read from .env at INSTALL time (the installer runs as the owner; an
