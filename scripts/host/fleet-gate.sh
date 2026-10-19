@@ -43,6 +43,17 @@ SQL_MAX_BYTES=1048576
 QUOTE_SYNC_PROG=/usr/local/lib/fleet-gate/quote-templates-sync.mjs
 QUOTE_SYNC_OWNER="root:root"
 QUOTE_SYNC_MAX_BYTES=262144
+# fleet-ro-grant (the no-command-line plan, point A; docs/fleet-gate.md "fleet_ro jogok gombbal"):
+# the list comes from GitHub at the commit the caller names, never from the caller
+CURL=/usr/bin/curl
+GH_RAW=https://raw.githubusercontent.com/KratoBal/acroveliq
+GH_API=https://api.github.com/repos/KratoBal/acroveliq
+GRANT_DOC=docs/fleet-gate.md
+GRANT_ROLE=fleet_ro_grantor
+GRANT_TO=fleet_ro
+GRANT_STATE_DIR="$(getent passwd "$(id -un)" | cut -d: -f6)/fleet-ro-grant"
+GRANT_SZUKIT_MAX=40
+GRANT_TODAY=""   # empty: today in Europe/Budapest (a test sets it)
 
 # Tests only. The authorized_keys line runs the gate with no arguments and an
 # SSH client cannot add any, so this is reachable only from a shell on the host.
@@ -51,7 +62,18 @@ if [ "${1:-}" = "--test-env" ] && [ -n "${2:-}" ]; then
   # shellcheck disable=SC1090
   . "$2"
   TEST_ENV=1
+  shift 2
 fi
+# WHICH KEY RAN THE GATE: the authorized_keys line of the executor's key runs
+# `fleet-gate vegrehajto`; the agents' key line runs it with no argument. Only
+# the executor's key may apply a fleet_ro grant (fleet-ro-grant alkalmaz), and
+# only after Balázs's approval, which the executor checks (docs/fleet-gate.md).
+KEY_ROLE=flotta
+case "${1:-}" in
+  "") ;;
+  vegrehajto) KEY_ROLE=vegrehajto ;;
+  *) KEY_ROLE=ismeretlen ;;
+esac
 
 # ---- the hosts ----------------------------------------------------------------
 # Which operation lives on which host, and the only containers, databases and
@@ -68,12 +90,15 @@ ENV_GET_KEY=""
 ENV_GET_NAMES=""
 QUOTE_SYNC_KEY=""
 APP_LOG_KEYS=""
+GRANT_TARGETS=""   # fleet-ro-grant: key:database
 BACKUP_GET=""     # what this host may hand out: dump:<db> or docstore
 BACKUP_PUT=""  # what this host may store from the other one
 host_config() {
   case "$HOST" in
     acropora-prod-01)
-      OPS="ps system-df df uptime reboot-required apt-check sshd-match builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-sum backup-put backup-prune quote-templates-sync app-log"
+      OPS="ps system-df df uptime reboot-required apt-check sshd-match builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-sum backup-put backup-prune quote-templates-sync app-log fleet-ro-grant"
+      # fleet-ro-grant: the fleet_ro grants of the OS database, through fleet_ro_grantor
+      GRANT_TARGETS="iwm34jaqp9xmwb72qkrqkwhy:acropora"
       # psql-ro connects as fleet_ro, a read-only role with per-table, per-column
       # SELECT grants only (#63; no pg_read_all_data, no superuser):
       # docs/fleet-gate.md, "Telepítés, gépenként"
@@ -116,6 +141,7 @@ deny() {
   exit 2
 }
 allow() { log "allow host=$HOST op=$*"; }
+[ "$KEY_ROLE" != ismeretlen ] || deny "ismeretlen kulcs-szerep a kényszerített parancsban"
 
 # ---- the input ----------------------------------------------------------------
 CMD="${SSH_ORIGINAL_COMMAND-}"
@@ -150,6 +176,118 @@ resolve() {
   deny "'$OP': nincs futó konténer ehhez: $key"
 }
 args() { [ "$NARGS" -eq "$1" ] || deny "'$OP': $1 argumentum kell, $NARGS jött"; }
+
+# ---- fleet-ro-grant: the list, its checks and the SQL built here ----------------
+# THE BLOCKED COLUMNS (the plan's "A részletesen"): a credential column is never
+# granted, whatever the list says. Two guards on the gate's side, a name pattern
+# and a fixed table.column list; the third is fleet_ro_grantor itself, which holds
+# no grant option on them (its install step, docs/fleet-gate.md).
+GRANT_BLOCKED_COLUMNS="User.passwordHash User.signatureCodeHash Session.tokenHash ServiceToken.tokenHash DeviceToken.token QuoteAcceptanceLink.tokenHash Asset.qrToken UnasConnectionSetting.encryptedApiKey UnasConnectionSetting.encryptionIv UnasConnectionSetting.authenticationTag NavConnectionSetting.encryptedCredentials NavConnectionSetting.encryptionIv NavConnectionSetting.authenticationTag SzamlazzConnectionSetting.encryptedAgentKey SzamlazzConnectionSetting.agentKeyEncryptionIv SzamlazzConnectionSetting.agentKeyAuthenticationTag SzamlazzConnectionSetting.encryptedFinancialApiKey SzamlazzConnectionSetting.financialApiKeyEncryptionIv SzamlazzConnectionSetting.financialApiKeyAuthenticationTag MedusaConnectionSetting.encryptedApiKey MedusaConnectionSetting.encryptionIv MedusaConnectionSetting.authenticationTag"
+grant_blocked() {
+  local l="${2,,}"
+  case "$l" in
+    *password*|*passwd*|*secret*|*token*|*encrypt*|*credential*|*apikey*|*api_key*|*privatekey*|*private_key*|*authenticationtag*|*signaturecode*) return 0 ;;
+  esac
+  in_targets "$1.$2" "$GRANT_BLOCKED_COLUMNS"
+}
+# THE LASTING BASE (acrobot, 32384): `tartos` (no expiry) is allowed only for the
+# B8 base grants, the columns of the production install step in
+# docs/fleet-gate.md. Every other line carries a date; there is no default.
+GRANT_BASE_COLUMNS="ExternalBillingDocument.documentNumber ExternalBillingDocument.source ExternalBillingDocument.cancelled User.firstName User.lastName User.displayName User.nickname User.email Customer.displayName Customer.companyName Customer.email CustomerAddress.name CustomerAddress.line1 CustomerAddress.line2 Supplier.name Supplier.contactPersonName Supplier.email Supplier.contactPersonEmail Contract.contactPersonName Contract.organizationalUnitName WorksheetVersionSignature.signerName DecisionRun.exposure DecisionRun.resolution DecisionRun.status DecisionRun.latencyMs DecisionRun.respondedModel DecisionRun.errorCode DecisionRun.createdAt _prisma_migrations.migration_name _prisma_migrations.started_at _prisma_migrations.finished_at _prisma_migrations.rolled_back_at _prisma_migrations.applied_steps_count"
+# a date is alive through its whole day in Europe/Budapest (barracuda): expired
+# when today there is later than it
+grant_today() { if [ -n "$GRANT_TODAY" ]; then echo "$GRANT_TODAY"; else TZ=Europe/Budapest date +%F; fi; }
+GRANT_ID_RX='^[A-Za-z_][A-Za-z0-9_]{0,62}$'
+# the list block on stdin -> one "table column expiry" line per column; any error
+# refuses the whole list (the line is named)
+grant_parse() {
+  local n=0 rows=0 line t cols exp reason c seen=" "
+  local -a cs
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    [ "$n" -le 500 ] || deny "'fleet-ro-grant': a lista hosszabb 500 sornál"
+    case "$line" in ''|'#'*) continue ;; esac
+    read -r t cols exp reason <<< "$line"
+    [[ "$t" =~ $GRANT_ID_RX ]] || deny "'fleet-ro-grant': a(z) $n. sor táblaneve nem azonosító"
+    [ -n "${reason:-}" ] || deny "'fleet-ro-grant': a(z) $n. sorból hiányzik a lejárat vagy az indok"
+    if [ "$exp" != tartos ]; then
+      [[ "$exp" =~ ^20[0-9][0-9]-[01][0-9]-[0-3][0-9]$ ]] && [ "$(date -d "$exp" +%F 2>/dev/null)" = "$exp" ] \
+        || deny "'fleet-ro-grant': a(z) $n. sor lejárata nem dátum (ÉÉÉÉ-HH-NN) és nem tartos"
+    fi
+    IFS=',' read -r -a cs <<< "$cols"
+    [ "${#cs[@]}" -ge 1 ] && [ "${#cs[@]}" -le 64 ] || deny "'fleet-ro-grant': a(z) $n. sor oszloplistája üres vagy túl hosszú"
+    for c in "${cs[@]}"; do
+      [[ "$c" =~ $GRANT_ID_RX ]] || deny "'fleet-ro-grant': a(z) $n. sor egyik oszlopneve nem azonosító"
+      grant_blocked "$t" "$c" && deny "'fleet-ro-grant': a(z) $n. sor tiltott (hitelesítő) oszlopot kér: $t.$c"
+      if [ "$exp" = tartos ] && ! in_targets "$t.$c" "$GRANT_BASE_COLUMNS"; then
+        deny "'fleet-ro-grant': a(z) $n. sor tartos, de $t.$c nem az alaplista oszlopa"
+      fi
+      case "$seen" in *" $t.$c "*) deny "'fleet-ro-grant': $t.$c kétszer szerepel" ;; esac
+      seen="$seen$t.$c "
+      rows=$((rows + 1))
+      printf '%s %s %s\n' "$t" "$c" "$exp"
+    done
+  done
+  [ "$rows" -le 2000 ] || deny "'fleet-ro-grant': több mint 2000 oszlop"
+}
+# the list at a commit: only a commit on main (a branch of this public repository
+# is not a reviewed list), fetched anonymously; exactly one fleet-ro-grant block
+grant_fetch() {
+  local sha="$1" cmp doc blocks
+  cmp="$("$CURL" -fsS --max-time 20 --max-filesize 4194304 -H 'Accept: application/vnd.github+json' "$GH_API/compare/$sha...main?per_page=1")" \
+    || deny "'fleet-ro-grant': a commit nem ellenőrizhető a GitHubon"
+  printf '%s' "$cmp" | grep -Eq '"behind_by": *0[,}]' || deny "'fleet-ro-grant': a commit nincs a main ágon"
+  doc="$("$CURL" -fsS --max-time 20 --max-filesize 1048576 "$GH_RAW/$sha/$GRANT_DOC")" \
+    || deny "'fleet-ro-grant': a lista nem tölthető le ($GRANT_DOC a commiton)"
+  blocks="$(printf '%s\n' "$doc" | grep -c '^```fleet-ro-grant[[:space:]]*$')"
+  [ "$blocks" = 1 ] || deny "'fleet-ro-grant': a dokumentumban nem pontosan egy fleet-ro-grant blokk áll ($blocks)"
+  printf '%s\n' "$doc" | awk '/^```fleet-ro-grant[[:space:]]*$/ {f = 1; next} f && /^```/ {exit} f'
+}
+# the SQL: built here from validated identifiers (no quote can be in one), the
+# grantee and the role fixed. $1: terv|alkalmaz (sync to the wanted pairs on stdin)
+# or szukit (revoke exactly the pairs on stdin, where the grantor holds them).
+grant_sql() {
+  local mode="$1" t c values="" first=1
+  while read -r t c; do
+    [ -n "$t" ] || continue
+    [ "$first" = 1 ] && first=0 || values="$values, "
+    values="$values('$t', '$c')"
+  done
+  # the wanted pairs as a VALUES list inside each query: no temporary table, so the role needs no
+  # TEMP right and the run writes nothing but the grants
+  local pairs="(SELECT NULL::text AS t, NULL::text AS c WHERE false)"
+  [ -n "$values" ] && pairs="(VALUES $values)"
+  local held="EXISTS (SELECT 1 FROM information_schema.column_privileges p WHERE p.grantee = '$GRANT_TO' AND p.grantor = current_user AND p.privilege_type = 'SELECT' AND p.table_schema = 'public' AND p.table_name = r.t AND p.column_name = r.c)"
+  printf '%s\n' "BEGIN;" "SET LOCAL lock_timeout = '5s';" "SET LOCAL statement_timeout = '60s';"
+  printf '%s\n' 'DO $fleetro$' 'DECLARE r record;' 'BEGIN'
+  if [ "$mode" = szukit ]; then
+    printf '%s\n' "  FOR r IN SELECT w.t, w.c FROM $pairs AS w(t, c) ORDER BY 1, 2 LOOP" \
+      "    IF $held THEN" \
+      "      RAISE NOTICE 'REVOKE SELECT (%) ON % FROM $GRANT_TO', quote_ident(r.c), quote_ident(r.t);" \
+      "      EXECUTE format('REVOKE SELECT (%I) ON %I FROM $GRANT_TO', r.c, r.t);" \
+      "    END IF;" "  END LOOP;"
+  else
+    printf '%s\n' "  FOR r IN SELECT p.table_name AS t, p.column_name AS c FROM information_schema.column_privileges p" \
+      "      WHERE p.grantee = '$GRANT_TO' AND p.grantor = current_user AND p.privilege_type = 'SELECT' AND p.table_schema = 'public'" \
+      "        AND NOT EXISTS (SELECT 1 FROM $pairs AS w(t, c) WHERE w.t = p.table_name AND w.c = p.column_name)" \
+      "      ORDER BY 1, 2 LOOP" \
+      "    RAISE NOTICE 'REVOKE SELECT (%) ON % FROM $GRANT_TO', quote_ident(r.c), quote_ident(r.t);" \
+      "    EXECUTE format('REVOKE SELECT (%I) ON %I FROM $GRANT_TO', r.c, r.t);" \
+      "  END LOOP;" \
+      "  FOR r IN SELECT w.t, w.c FROM $pairs AS w(t, c) ORDER BY 1, 2 LOOP" \
+      "    IF NOT $held THEN" \
+      "      RAISE NOTICE 'GRANT SELECT (%) ON % TO $GRANT_TO', quote_ident(r.c), quote_ident(r.t);" \
+      "      EXECUTE format('GRANT SELECT (%I) ON %I TO $GRANT_TO', r.c, r.t);" \
+      "      -- a GRANT the role holds no grant option for only WARNS; that is a stop here" \
+      "      IF NOT $held THEN RAISE EXCEPTION 'nem adhato: %.% (a $GRANT_ROLE nem birtokolja)', r.t, r.c; END IF;" \
+      "    END IF;" "  END LOOP;"
+  fi
+  printf '%s\n' 'END' '$fleetro$;'
+  if [ "$mode" = terv ]; then echo "ROLLBACK;"; else echo "COMMIT;"; fi
+}
+grant_psql() {
+  "$DOCKER" exec -i "$1" psql -X -q -v ON_ERROR_STOP=1 -U "$GRANT_ROLE" -d "$2"
+}
 
 # ---- the operations -----------------------------------------------------------
 case "$OP" in
@@ -224,7 +362,9 @@ case "$OP" in
     fi
     if [ -f "$KEYFILE" ]; then
       keyfile="$(stat -c '%U:%G:%a' "$KEYFILE")"
-      forced=$(grep -c '^restrict,from="[^"]*",command="/usr/local/sbin/fleet-gate" ' "$KEYFILE" || true)
+      # the agents' line runs the gate bare; the executor's line names its role, and only that
+      # one word (fleet-ro-grant alkalmaz is the executor's alone): any other command is unforced
+      forced=$(grep -cE '^restrict,from="[^"]*",command="/usr/local/sbin/fleet-gate( vegrehajto)?" ' "$KEYFILE" || true)
       keys=$(grep -cvE '^[[:space:]]*(#|$)' "$KEYFILE" || true)
     else
       keyfile="nincs"
@@ -504,6 +644,58 @@ case "$OP" in
     [ -d "$BACKUP_ROOT" ] || exit 0
     find "$BACKUP_ROOT" -name '*.dump' -mtime +14 -print -delete
     find "$BACKUP_ROOT" -path '*/dokumentumok/*' -name '*.tar.gz' -mtime +7 -print -delete
+    ;;
+  fleet-ro-grant)
+    # fleet-ro-grant <key> <database> <commit> terv|alkalmaz   (the list from GitHub at the commit)
+    # fleet-ro-grant <key> <database> szukit                   (the last applied list, its expired lines)
+    # docs/fleet-gate.md, "fleet_ro jogok gombbal". No SQL and no list from the caller.
+    [ "$NARGS" -ge 3 ] || deny "'fleet-ro-grant': kulcs, adatbázis és mód kell"
+    in_targets "${W[1]}:${W[2]}" "$GRANT_TARGETS" || deny "'fleet-ro-grant': ez a konténer és adatbázis nincs a listán"
+    STATE="$GRANT_STATE_DIR/alkalmazott-${W[1]}-${W[2]}.txt"
+    TODAY="$(grant_today)"
+    if [ "${W[3]}" = szukit ]; then
+      args 3
+      # (acrobot, barracuda) only lines of the LAST APPLIED list, only the expired ones: a
+      # missing or empty list never takes everything; what was dropped from the list is
+      # revoked by alkalmaz, with an approval. The file is written by this gate alone (the
+      # keys have no shell), in the fleet user's home: the gate does not run as root.
+      if [ ! -f "$STATE" ]; then allow fleet-ro-grant "${W[1]}" "${W[2]}" szukit nincs-alkalmazott-lista; echo "fleet-ro-grant szukit: nincs alkalmazott lista, nincs mit visszavenni"; exit 0; fi
+      GONE="$(grep -v '^#' "$STATE" | while read -r t c exp; do
+        [[ "$t" =~ $GRANT_ID_RX && "$c" =~ $GRANT_ID_RX ]] || continue
+        [ "$exp" != tartos ] && [[ "$exp" < "$TODAY" ]] && printf '%s %s\n' "$t" "$c"
+      done)"
+      N="$(printf '%s' "$GONE" | grep -c . || true)"
+      [ "$N" -le "$GRANT_SZUKIT_MAX" ] || deny "'fleet-ro-grant szukit': $N lejárt oszlop egy futásra (a határ $GRANT_SZUKIT_MAX): emberi döntés kell"
+      if [ "$N" -eq 0 ]; then allow fleet-ro-grant "${W[1]}" "${W[2]}" szukit 0; echo "fleet-ro-grant szukit: nincs lejárt sor ($TODAY)"; exit 0; fi
+      C="$(resolve "${W[1]}")" || exit 2
+      allow fleet-ro-grant "${W[1]}" "${W[2]}" szukit "$N"
+      printf '%s\n' "$GONE" | grant_sql szukit | grant_psql "$C" "${W[2]}"
+      exit $?
+    fi
+    args 4
+    [[ "${W[3]}" =~ ^[0-9a-f]{40}$ ]] || deny "'fleet-ro-grant': a commit 40 hexa jegy"
+    case "${W[4]}" in
+      terv) ;;
+      alkalmaz) [ "$KEY_ROLE" = vegrehajto ] || deny "'fleet-ro-grant alkalmaz': csak a végrehajtó kulcsával (Balázs jóváhagyása után)" ;;
+      *) deny "'fleet-ro-grant': a mód terv, alkalmaz vagy szukit" ;;
+    esac
+    LIST="$(grant_fetch "${W[3]}")" || exit 2
+    PARSED="$(printf '%s\n' "$LIST" | grant_parse)" || exit 2
+    WANT="$(printf '%s\n' "$PARSED" | while read -r t c exp; do
+      [ -n "$t" ] || continue
+      { [ "$exp" = tartos ] || ! [[ "$exp" < "$TODAY" ]]; } && printf '%s %s\n' "$t" "$c"
+    done)"
+    LIST_SHA="$(printf '%s\n' "$LIST" | sha256sum | cut -d' ' -f1)"
+    C="$(resolve "${W[1]}")" || exit 2
+    allow fleet-ro-grant "${W[1]}" "${W[2]}" "${W[3]}" "${W[4]}" "list-sha256=$LIST_SHA" "key=$KEY_ROLE"
+    echo "fleet-ro-grant ${W[4]}: commit ${W[3]}, lista sha256 $LIST_SHA, ma $TODAY (Europe/Budapest)"
+    printf '%s\n' "$WANT" | grant_sql "${W[4]}" | grant_psql "$C" "${W[2]}"
+    RC=$?
+    if [ "$RC" -eq 0 ] && [ "${W[4]}" = alkalmaz ]; then
+      mkdir -p -m 700 "$GRANT_STATE_DIR" && { printf '# commit %s, %s\n' "${W[3]}" "$TODAY"; printf '%s\n' "$PARSED"; } > "$STATE.tmp" \
+        && mv -f "$STATE.tmp" "$STATE" || { echo "fleet-gate: az alkalmazott lista nem íródott ki (a szukit a régit látja)" >&2; exit 1; }
+    fi
+    exit "$RC"
     ;;
   *)
     deny "ismeretlen művelet"

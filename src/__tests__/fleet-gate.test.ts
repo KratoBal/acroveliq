@@ -16,7 +16,12 @@
 //     docker or df command, or sends one the gate would refuse on its host;
 //   - quote-templates-sync runs a program that is not root's own file, takes
 //     anything but plan or apply, or lets the caller's stdin become the program;
-//   - the install step's sha256 lines in docs/fleet-gate.md are not the files'.
+//   - the install step's sha256 lines in docs/fleet-gate.md are not the files';
+//   - fleet-ro-grant (the no-command-line plan, point A): a list or SQL from the caller reaching psql; a
+//     commit not on main, a blocked (credential) column, a lasting line outside the base, a line without
+//     a date, a malformed name, or two blocks getting through; alkalmaz with the agents' key; another
+//     grantee or role than fleet_ro and fleet_ro_grantor; szukit revoking anything but the expired lines
+//     of the last applied list, or more than its cap in one run; the expiry day not alive through itself.
 import { describe, it, expect, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -326,9 +331,12 @@ describe('fleet-gate: what passes', () => {
         setUp(MATCH, `${forced}\n`, 0o644, 'ForceCommand /bin/true\n'), // an included ForceCommand, no Match around it
         setUp(`Include /etc/ssh/sshd_config.d/*.conf\n${MATCH}`, `${forced}\n`), // the usual Include is fine
         setUp(`Include /etc/ssh/sshd_config.d/*.conf\nInclude /etc/ssh/masik/*.conf\n${MATCH}`, `${forced}\n`), // another one is not
+        // the executor's key line names its role (fleet-ro-grant alkalmaz), and only that word
+        setUp(MATCH, `${forced}\n${forced.replace('fleet-gate"', 'fleet-gate vegrehajto"')}\n`),
+        setUp(MATCH, `${forced}\n${forced.replace('fleet-gate"', 'fleet-gate admin"')}\n`),
       ].map(([code]) => code),
       'GATE-SSHD-MATCH',
-    ).toEqual([0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1])
+    ).toEqual([0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 0, 1])
     expect(setUp(MATCH, `${forced}\n`)[1], 'GATE-SSHD-MATCH output').toBe(`match=1 others=0 keyopts=1 ours=1 forcecmds=0 includes=0 dropins=0 keyfile=${OWNER}:644 keys=1 forced=1`)
   })
 
@@ -601,6 +609,140 @@ describe('fleet-gate: the callers', () => {
       if (r.code !== 0) wrong.push(`${file} on ${host}: ${command} -> ${r.code} ${r.err.trim()}`)
     }
     expect(wrong, 'GATE-CALLERS-PASS').toEqual([])
+  })
+})
+
+describe('fleet-gate: fleet-ro-grant (the no-command-line plan, point A)', () => {
+  const COMMIT = 'c0ffee0123456789abcdef0123456789abcdef01'
+  /** A prod world with a GitHub stub (the compare answer and the document at the commit) and a state dir. */
+  function grantWorld() {
+    const w = world(PROD)
+    const env = join(w.dir, 'test.env')
+    const curl = join(w.dir, 'curl')
+    writeFileSync(curl, `#!/bin/bash
+printf 'curl' >> "${w.dir}/calls.log"; for a in "$@"; do printf ' [%s]' "$a" >> "${w.dir}/calls.log"; done; echo >> "${w.dir}/calls.log"
+url="\${@: -1}"
+case "$url" in
+  *"/compare/"*) f="${w.dir}/compare.json" ;;
+  *"/docs/fleet-gate.md") f="${w.dir}/doc.md" ;;
+  *) exit 22 ;;
+esac
+[ -f "$f" ] || exit 22
+cat "$f"
+`)
+    chmodSync(curl, 0o755)
+    const state = join(w.dir, 'grant-state')
+    writeFileSync(env, readFileSync(env, 'utf-8') + `CURL=${curl}\nGRANT_STATE_DIR=${state}\nGRANT_TODAY=2026-10-19\n`)
+    const run = (command: string, role?: string, input = '') => {
+      const r = spawnSync('bash', [GATE, '--test-env', env, ...(role ? [role] : [])], {
+        env: { PATH: process.env.PATH, SSH_ORIGINAL_COMMAND: command }, input,
+      })
+      const log = join(w.dir, 'calls.log')
+      const calls = existsSync(log) ? readFileSync(log, 'utf-8').trim().split('\n').filter(Boolean) : []
+      writeFileSync(log, '')
+      return { code: r.status, out: r.stdout.toString(), err: r.stderr.toString(), calls }
+    }
+    const doc = (block: string, extra = '') => writeFileSync(join(w.dir, 'doc.md'), `# fleet-gate\n\nszoveg\n\n\`\`\`fleet-ro-grant\n${block}\`\`\`\n${extra}`)
+    const onMain = (yes: boolean) => writeFileSync(join(w.dir, 'compare.json'), `{"status": "${yes ? 'ahead' : 'diverged'}", "ahead_by": 3, "behind_by": ${yes ? 0 : 2}, "files": [{"status": "modified"}]}`)
+    const sql = () => (existsSync(w.sql) ? readFileSync(w.sql, 'utf-8') : '')
+    const psqlCalls = (calls: string[]) => calls.filter((c) => c.startsWith('docker') && c.includes('[psql]'))
+    return { w, run, doc, onMain, sql, psqlCalls, state: join(state, `alkalmazott-${OS_DB}-acropora.txt`) }
+  }
+  const BASE = '# tábla oszlopok lejárat indok\nExternalBillingDocument documentNumber,source,cancelled tartos B8 alaplista\n'
+  const DATED = 'BankTransaction id,amount 2026-11-17 bejövő kifizetettség (10-17)\n'
+  const TODAY = 'PurchaseInvoice id 2026-10-19 a lejárat napja még él\n'
+  const OLD = 'Supplier taxNumber 2026-10-18 lejárt tegnap\n'
+
+  it('GRANT-PLAN: terv takes the list from GitHub at a commit on main, wants the lasting and the living lines, and rolls back', () => {
+    const g = grantWorld()
+    g.onMain(true)
+    g.doc(BASE + DATED + TODAY + OLD)
+    const r = g.run(`fleet-ro-grant ${OS_DB} acropora ${COMMIT} terv`, undefined, 'BankTransaction id 2030-01-01 a hívó listája\n')
+    const sql = g.sql()
+    const psql = g.psqlCalls(r.calls)
+    expect([
+      r.code,
+      r.calls.filter((c) => c.startsWith('curl')).map((c) => c.includes(`/compare/${COMMIT}...main`) || c.includes(`/${COMMIT}/docs/fleet-gate.md`)),
+      psql.length, psql[0]?.includes('[-U] [fleet_ro_grantor] [-d] [acropora]'),
+      ['BankTransaction','amount', 'BankTransaction','id', 'ExternalBillingDocument','cancelled', 'ExternalBillingDocument','documentNumber', 'ExternalBillingDocument','source', 'PurchaseInvoice','id']
+        .reduce<string[]>((acc, x, i, all) => (i % 2 ? acc : [...acc, `('${x}', '${all[i + 1]}')`]), []).every((pair) => sql.includes(pair)),
+      sql.includes("'Supplier'"), sql.includes('2030-01-01'), sql.trim().endsWith('ROLLBACK;'),
+      (sql.match(/ TO fleet_ro'/g) ?? []).length, /\bTO (?!fleet_ro')\w+'/.test(sql), // the NOTICE and the EXECUTE, both fixed
+      r.out.includes(`commit ${COMMIT}`) && r.out.includes('ma 2026-10-19'),
+    ], 'GRANT-PLAN').toEqual([0, [true, true], 1, true, true, false, false, true, 2, false, true])
+  })
+
+  it('GRANT-APPLY: alkalmaz only with the executor\'s key, then COMMIT and the applied list kept for szukit', () => {
+    const g = grantWorld()
+    g.onMain(true)
+    g.doc(BASE + DATED + OLD)
+    const agent = g.run(`fleet-ro-grant ${OS_DB} acropora ${COMMIT} alkalmaz`)
+    const agentPsql = g.psqlCalls(agent.calls).length
+    const exec = g.run(`fleet-ro-grant ${OS_DB} acropora ${COMMIT} alkalmaz`, 'vegrehajto')
+    const kept = existsSync(g.state) ? readFileSync(g.state, 'utf-8') : ''
+    const unknown = g.run(`fleet-ro-grant ${OS_DB} acropora ${COMMIT} terv`, 'admin')
+    expect([
+      agent.code, agentPsql, exec.code, g.sql().trim().endsWith('COMMIT;'),
+      kept.startsWith(`# commit ${COMMIT}, 2026-10-19\n`), kept.includes('Supplier taxNumber 2026-10-18'), kept.includes('ExternalBillingDocument source tartos'),
+      unknown.code, g.psqlCalls(unknown.calls).length,
+    ], 'GRANT-APPLY').toEqual([2, 0, 0, true, true, true, true, 2, 0])
+  })
+
+  it('GRANT-REFUSE: a commit off main, a credential column, a lasting line outside the base, no date, a bad name, two blocks: nothing reaches psql', () => {
+    const cases: Array<[string, string, boolean, string]> = [
+      ['off main', BASE, false, ''],
+      ['blocked by the fixed list', 'User passwordHash 2026-11-01 kell\n', true, ''],
+      ['blocked by the name pattern', 'Integration apiToken 2026-11-01 kell\n', true, ''],
+      ['lasting outside the base', 'Supplier taxNumber tartos kell\n', true, ''],
+      ['no date and no reason', 'Supplier taxNumber\n', true, ''],
+      ['a date that is not one', 'Supplier taxNumber 2026-13-40 kell\n', true, ''],
+      ['a quote in a name', 'Supplier tax"Number 2026-11-01 kell\n', true, ''],
+      ['a twice named column', 'Supplier taxNumber 2026-11-01 egy\nSupplier taxNumber 2026-11-02 ketto\n', true, ''],
+      ['two blocks', BASE, true, '\n```fleet-ro-grant\nSupplier taxNumber 2026-11-01 masik\n```\n'],
+    ]
+    const results = cases.map(([name, block, main, extra]) => {
+      const g = grantWorld()
+      g.onMain(main)
+      g.doc(block, extra)
+      const r = g.run(`fleet-ro-grant ${OS_DB} acropora ${COMMIT} terv`)
+      return [name, r.code, g.psqlCalls(r.calls).length]
+    })
+    const g = grantWorld()
+    const shape = [
+      g.run(`fleet-ro-grant ${OS_DB} acropora c0ffee terv`).code, // a short commit
+      g.run(`fleet-ro-grant ${OS_DB} masik ${COMMIT} terv`).code, // another database
+      g.run(`fleet-ro-grant ${OS_DB} acropora ${COMMIT} torol`).code, // another mode
+      world(STAGE).run(`fleet-ro-grant ${OS_DB} acropora ${COMMIT} terv`).code, // the stage host has no such operation
+    ]
+    expect([results, shape], 'GRANT-REFUSE').toEqual([cases.map(([name]) => [name, 2, 0]), [2, 2, 2, 2]])
+  })
+
+  it('GRANT-DOC: the list block in docs/fleet-gate.md passes the gate\'s own checks, 67 columns, the B8 base lasting', () => {
+    const g = grantWorld()
+    g.onMain(true)
+    writeFileSync(join(g.w.dir, 'doc.md'), readFileSync(join(process.cwd(), 'docs', 'fleet-gate.md'), 'utf-8'))
+    const r = g.run(`fleet-ro-grant ${OS_DB} acropora ${COMMIT} terv`)
+    const pairs: string[] = g.sql().match(/\('[A-Za-z_][A-Za-z0-9_]*', '[A-Za-z_][A-Za-z0-9_]*'\)/g) ?? []
+    expect([r.code, new Set(pairs).size, pairs.includes("('_prisma_migrations', 'migration_name')"), pairs.includes("('NavIncomingInvoice', 'purchaseInvoiceId')")], 'GRANT-DOC')
+      .toEqual([0, 67, true, true])
+  })
+
+  it('GRANT-NARROW: szukit revokes only the expired lines of the last applied list, never the caller\'s, never past its cap', () => {
+    const g = grantWorld()
+    const none = g.run(`fleet-ro-grant ${OS_DB} acropora szukit`)
+    mkdirSync(join(g.w.dir, 'grant-state'), { recursive: true })
+    writeFileSync(g.state, `# commit ${COMMIT}, 2026-10-01\nExternalBillingDocument source tartos\nBankTransaction id 2026-11-17\nPurchaseInvoice id 2026-10-19\nSupplier taxNumber 2026-10-18\nSupplier name 2026-09-30\n`)
+    const narrow = g.run(`fleet-ro-grant ${OS_DB} acropora szukit`, undefined, 'BankTransaction id 2000-01-01 a hívó listája\n')
+    const sql = g.sql()
+    writeFileSync(g.state, '# commit x\n' + Array.from({ length: 41 }, (_, i) => `T${i} c 2026-10-01\n`).join(''))
+    const many = g.run(`fleet-ro-grant ${OS_DB} acropora szukit`)
+    expect([
+      none.code, none.out.includes('nincs alkalmazott lista'), g.psqlCalls(none.calls).length,
+      narrow.code, sql.includes("('Supplier', 'name')") && sql.includes("('Supplier', 'taxNumber')"),
+      ["'BankTransaction'", "'PurchaseInvoice'", "'ExternalBillingDocument'"].map((t) => sql.includes(t)),
+      sql.includes('REVOKE SELECT (%I) ON %I FROM fleet_ro'), sql.includes('GRANT SELECT (%I)'), sql.trim().endsWith('COMMIT;'),
+      many.code, g.psqlCalls(many.calls).length,
+    ], 'GRANT-NARROW').toEqual([0, true, 0, 0, true, [false, false, false], true, false, true, 2, 0])
   })
 })
 

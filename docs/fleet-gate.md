@@ -24,6 +24,7 @@ akkor az éles, ha a próba-sor (lent) minden sora zöld rajta.
 | `builder-prune` | `docker builder prune -f` | mindkettő |
 | `image-prune-2h` | `docker image prune -a -f --filter until=2h` | csak stage |
 | `psql-ro <kulcs> <adatbázis> [plain\|tuples\|tuples-pipe\|tuples-spaced-pipe]` | psql a csak olvasó `fleet_ro` szereppel (a kapu listájából, nem a hívótól), az SQL a stdin-en; backslash az SQL-ben tilos | éles: OS; stage: AI és a stage OS (`acropora_staging`) |
+| `fleet-ro-grant <kulcs> <adatbázis> <commit> terv\|alkalmaz`, `fleet-ro-grant <kulcs> <adatbázis> szukit` | a `fleet_ro` oszlopjogai a lent álló `fleet-ro-grant` listából, a `fleet_ro_grantor` szereppel; a listát a kapu maga tölti le a GitHubról, a main-en álló commitról; hívótól SQL és lista nem jön. Az `alkalmaz` csak a végrehajtó kulcsával. Lásd „fleet_ro jogok gombbal” | éles: OS |
 | `coolify-deployments <app uuid>`, `coolify-deploy-log <deployment uuid>` | a Coolify adatbázisának két rögzített olvasása (a kapu építi az SQL-t, a 24 jeles uuid az egyetlen argumentum) | stage |
 | `pg-dump <kulcs> <adatbázis> <felhasználó>` | `pg_dump -Fc` a stdout-ra | éles: OS, Commerce; stage: AI |
 | `pg-restore-list <kulcs>` | `pg_restore -l`, a dump a stdin-en | éles: OS, Commerce; stage: AI |
@@ -41,6 +42,123 @@ akkor az éles, ha a próba-sor (lent) minden sora zöld rajta.
 
 A konténert a kapu a neve **elejéből** oldja fel (a Coolify az alkalmazás uuid-jával kezdi), a
 futók közül, így egy újratelepítés után is megtalálja.
+
+## fleet_ro jogok gombbal (`fleet-ro-grant`, a parancssor-nélkül terv A pontja)
+
+Balázs 2026-10-19 09:28 UTC-kor jóváhagyta (Eldöntendő, msg 1561672381229965395). A `fleet_ro` olvasási jogait ezentúl
+nem kézi `GRANT` adja, hanem ez a lista és egy gomb. A lista egy PR-ban változik, barracuda reviewjával; a beolvadás után
+a végrehajtó a gomb szövegében a kapu `terv` kimenetét mutatja, vagyis a pontos GRANT és REVOKE sorokat és a commitot. Balázs
+jóváhagyására ugyanazt a commitot alkalmazza.
+
+**A lista.** Soronként `<tábla> <oszlop,oszlop,...> <lejárat> <indok>`:
+- **A lejárat kötelező**, alapérték nincs: `ÉÉÉÉ-HH-NN`, Europe/Budapest szerint a nap VÉGÉIG él. Ha a budapesti dátum későbbi
+  nála, a sor lejárt.
+- **A `tartos` csak a B8 alaplista oszlopaié** (a lenti éles telepítés GRANT-sorai). A kapu ezt rögzített listából ellenőrzi,
+  nem csak a review: egy másik oszlop tartósként elutasítva.
+- **Hitelesítő oszlop soha.** A kapu egy névmintával (password, secret, token, encrypt, credential, apikey, privatekey,
+  authenticationtag, signaturecode) és egy rögzített tábla.oszlop listával (a `User` és a `Session` lenyomatai, a négy
+  `*ConnectionSetting` titkosított mezői és társaik) utasítja el. Harmadik őrként a `fleet_ro_grantor` ezekre grant optiont sem
+  kap (lent, 2. lépés).
+- **A nevek azonosítók** (`^[A-Za-z_][A-Za-z0-9_]{0,62}$`), egy oszlop csak egyszer szerepelhet, és a dokumentumban pontosan
+  egy ilyen blokk állhat.
+
+```fleet-ro-grant
+# tábla oszlopok(vesszővel) lejárat(ÉÉÉÉ-HH-NN vagy tartos) indok
+ExternalBillingDocument documentNumber,source,cancelled tartos B8 alaplista (#63): számla-párosítás
+User firstName,lastName,displayName,nickname,email tartos B8 alaplista (#63): név szerinti azonosítás
+Customer displayName,companyName,email tartos B8 alaplista (#63): vevő azonosítás
+CustomerAddress name,line1,line2 tartos B8 alaplista (#63): cím-egyezés
+Supplier name,contactPersonName,email,contactPersonEmail tartos B8 alaplista (#63): szállító azonosítás
+Contract contactPersonName,organizationalUnitName tartos B8 alaplista (#63): szerződés kapcsolattartó
+WorksheetVersionSignature signerName tartos B8 alaplista (#63): aláíró neve
+DecisionRun exposure,resolution,status,latencyMs,respondedModel,errorCode,createdAt tartos B8 alaplista: a döntési futások mérése
+_prisma_migrations migration_name,started_at,finished_at,rolled_back_at,applied_steps_count tartos B8 alaplista: migrációs állapot
+BankTransaction id,bankAccountId,bookingDate,amount,currency,counterpartyName,narrative,direction 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
+BankAccount id,name,currency 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
+IncomingBillingDocument id,issueDate,documentNumber,supplierName,source,kindCode,cancelled,currency,grossAmount,paymentsKnown,paidAmount,sourceDocumentId,externalId 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
+IncomingSupplierDocument id,payeeCheck,purchaseInvoiceId 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
+BankTransactionMatch documentId,bankTransactionId 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
+PurchaseInvoice id,invoiceDate,isPaid,status 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
+NavIncomingInvoice purchaseInvoiceId 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
+```
+
+**A három mód:**
+
+| Mód | Ki hívhatja | Mit tesz |
+|---|---|---|
+| `terv` | bármelyik kulcs | Letölti a listát a commitról (a commitnak a main-en kell állnia, a `compare/<commit>...main` `behind_by` 0). Kiszámolja a kívánt állapotot: a tartós és a még élő sorok. Kiírja a pontos `GRANT`/`REVOKE` sorokat, és visszagördíti a tranzakciót. Ez a gomb szövege. |
+| `alkalmaz` | csak a végrehajtó kulcsa (`command="/usr/local/sbin/fleet-gate vegrehajto"`), Balázs jóváhagyása után | Ugyanez, COMMIT-tal. A szinkron: amit a `fleet_ro_grantor` adott, de nincs a kívánt állapotban (kivett vagy lejárt sor), az REVOKE; ami hiányzik, az GRANT. Utána a lista a `fleet` felhasználó `~/fleet-ro-grant/` mappájába kerül, a szukit ebből dolgozik. |
+| `szukit` | bármelyik kulcs, jóváhagyás nélkül (ütemezve) | CSAK az utolsó alkalmazott lista LEJÁRT sorait veszi vissza; a hívótól nem kap listát, egy hiányzó sort soha nem von vissza. Egy futás legfeljebb 40 oszlopot: többnél megáll, és emberi döntést kér. |
+
+A kapu `fleet` felhasználóként fut, ezért a tárolt lista nem root-tulajdonú. A `fleet` kulcsain viszont shell nincs, csak a
+kapu, tehát a fájlt csak a kapu kódja írja. A kapu minden futást naplóz: a commitot, a lista sha256-ját és a kulcs szerepét.
+
+**Mit NEM tud:** a `fleet_ro`-n kívül más szerepnek jogot adni (a címzett és a szerep rögzített); SQL-t vagy listát a
+hívótól átvenni; nem a main-en álló commitot alkalmazni; a `fleet_ro_grantor`-nál többet adni, vagy a mások (például a
+tulajdonos `acropora`) adta jogokat visszavenni. Ez utóbbiakat a 4. lépés egyszer átadja.
+
+### Balázs lépései (egyszer, rootként az éles gépen; a kapu telepítése a lenti „Telepítés” szerint)
+
+1. **A szerep:** a konténer psql-jében, a tulajdonos `acropora` felhasználóval, egy tranzakcióban:
+
+   ```bash
+   cd /root && C=$(docker ps --format '{{.Names}}' | grep '^iwm34jaqp9xmwb72qkrqkwhy-' | head -1) && echo "$C"
+   docker exec -i "$C" psql -U acropora -d acropora -v ON_ERROR_STOP=1 -1 <<'SQL'
+   CREATE ROLE fleet_ro_grantor LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION;
+   ALTER ROLE fleet_ro_grantor SET statement_timeout = '60s';
+   GRANT USAGE ON SCHEMA public TO fleet_ro_grantor;
+   SQL
+   ```
+
+2. **A grant option OSZLOPONKÉNT, a hitelesítő oszlopok nélkül** (barracuda: egy tábla-szintű grant option a tiltott
+   oszlopokra is szólna). Ugyanaz a névminta, mint a kapuban. Ez a harmadik, a kaputól független őr:
+
+   ```bash
+   docker exec -i "$C" psql -U acropora -d acropora -v ON_ERROR_STOP=1 -1 <<'SQL'
+   DO $$
+   DECLARE r record;
+   BEGIN
+     FOR r IN SELECT table_name, string_agg(format('%I', column_name), ', ' ORDER BY ordinal_position) AS cols
+              FROM information_schema.columns
+              WHERE table_schema = 'public'
+                AND lower(column_name) !~ '(password|passwd|secret|token|encrypt|credential|apikey|api_key|privatekey|private_key|authenticationtag|signaturecode)'
+              GROUP BY table_name LOOP
+       EXECUTE format('GRANT SELECT (%s) ON %I TO fleet_ro_grantor WITH GRANT OPTION', r.cols, r.table_name);
+     END LOOP;
+   END $$;
+   SQL
+   docker exec "$C" psql -U acropora -d acropora -Atc "select count(*) from information_schema.column_privileges where grantee = 'fleet_ro_grantor' and is_grantable = 'YES' and lower(column_name) ~ '(password|token|encrypt|credential|apikey|secret)'"
+                                                # 0. Ha nem: állj meg, és szólj.
+   ```
+
+3. **A végrehajtó kulcs-sora** (a gomb PR-ja után; addig az `alkalmaz` senkinek nem fut): a `/etc/ssh/authorized_keys/fleet`
+   fájlba egy második sor, a végrehajtó kulcsával, `restrict,from="<a végrehajtó címe>",command="/usr/local/sbin/fleet-gate vegrehajto" ssh-ed25519 ...`.
+   A `sshd-match` ezt a két alakot fogadja el, mást nem.
+
+4. **Az első gombnyomás után, egyszer:** a mai, a tulajdonos adta `fleet_ro` jogok visszavétele. A lista ugyanezeket a
+   grantorral is megadta, tehát a mérések nem állnak meg; a tulajdonos REVOKE-ja csak a saját adását veszi el:
+
+   ```bash
+   docker exec -i "$C" psql -U acropora -d acropora -v ON_ERROR_STOP=1 -1 <<'SQL'
+   DO $$
+   DECLARE r record;
+   BEGIN
+     FOR r IN SELECT table_name, column_name FROM information_schema.column_privileges
+              WHERE grantee = 'fleet_ro' AND grantor = 'acropora' AND table_schema = 'public' LOOP
+       EXECUTE format('REVOKE SELECT (%I) ON %I FROM fleet_ro', r.column_name, r.table_name);
+     END LOOP;
+   END $$;
+   SQL
+   ```
+
+**Visszaállítás:**
+- A gomb a fordított irányra ugyanez: egy PR kiveszi a sort, és a következő `alkalmaz` visszavonja.
+- Teljes visszavonás, rootként: `REVOKE ALL ON ALL TABLES IN SCHEMA public FROM fleet_ro_grantor CASCADE;` (a `CASCADE` a
+  grantor adta `fleet_ro` jogokat is viszi), utána `DROP ROLE fleet_ro_grantor;`.
+- A kapu előző változata a telepítés szerint.
+
+**Ellenőrzés a flottából** (bármelyik kulcs, nem változtat): `fleet-ro-grant iwm34jaqp9xmwb72qkrqkwhy acropora <a main feje> terv`.
+Az első ilyen futás az élesen az első valódi SQL-futás is: a tesztek az SQL szövegét mérik, nem egy Postgres-szerveren.
 
 ## Telepítés előtt: ellenőrzés a gépen (rootként)
 
@@ -383,7 +501,7 @@ cd /root
 install -o root -g root -m 0755 /tmp/fleet-gate.sh /usr/local/sbin/fleet-gate
 install -d -o root -g root -m 0755 /usr/local/lib/fleet-gate
 install -o root -g root -m 0644 /tmp/quote-templates-sync.mjs /usr/local/lib/fleet-gate/quote-templates-sync.mjs
-echo 'a5262e1646e286576fe1a8297ed25077cd17425f9edb8091647fa1e593e5cf4f  /usr/local/sbin/fleet-gate' | sha256sum -c
+echo '79772b1f5d33aeaf8729054d412050331e8024e258f02a3ff7bb1f817216adb8  /usr/local/sbin/fleet-gate' | sha256sum -c
 echo 'd958d5a4050ebbf52610ca70f3574a3e572bf349751fbd7b011411a68a322834  /usr/local/lib/fleet-gate/quote-templates-sync.mjs' | sha256sum -c
                                              # mindkettő: OK. Ha nem: állj meg, és szólj.
 ```
