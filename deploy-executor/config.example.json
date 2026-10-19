@@ -84,5 +84,23 @@
       ],
       "approvalMinutes": 30
     }
+  ],
+  "gate": {
+    "host": "replace-with-the-bridge-gateway-address",
+    "port": 22,
+    "user": "fleet",
+    "keyFile": "/run/secrets/gate-key",
+    "knownHostsFile": "/run/secrets/gate-known-hosts"
+  },
+  "grants": [
+    {
+      "env": "prod",
+      "name": "fleet-ro",
+      "repo": "KratoBal/acroveliq",
+      "branch": "main",
+      "gateKey": "iwm34jaqp9xmwb72qkrqkwhy",
+      "database": "acropora",
+      "approvalMinutes": 30
+    }
   ]
 }

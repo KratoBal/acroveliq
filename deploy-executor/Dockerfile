@@ -29,6 +29,16 @@ ENV NODE_ENV=production
 WORKDIR /app
 COPY deploy-executor/package.json ./package.json
 COPY --from=build /build/out ./
+# The grant door's ssh client (task parancssor-a-fleet-ro-grant; barracuda, N1): Debian's signed repository, in the
+# owner's root build from a reviewed commit. The version is NOT pinned (the bookworm security updates would break the
+# build), and `ssh -V` prints it, so the build log names the version that went in.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-client \
+ && rm -rf /var/lib/apt/lists/* \
+ && ssh -V
+# ssh refuses to run for a uid that has no account: the executor's uid gets one, with no shell and no home
+RUN groupadd -g 10001 vegrehajto \
+ && useradd -u 10001 -g 10001 -M -d /nonexistent -s /usr/sbin/nologin vegrehajto
 # the state volume starts out owned by the executor's user (a new named
 # volume copies this directory, ownership included)
 RUN mkdir -p /var/lib/vegrehajto && chown 10001:10001 /var/lib/vegrehajto && chmod 700 /var/lib/vegrehajto

@@ -2,7 +2,7 @@
 #   /opt/vegrehajto/compose.yaml      (this file, root-owned)
 #   /opt/vegrehajto/src               (root-owned clone at a reviewed commit)
 #   /opt/vegrehajto/config.json       (root-owned, the allowlist and settings)
-#   /opt/vegrehajto/titkok/           (root 700; the four token files, 10001 400)
+#   /opt/vegrehajto/titkok/           (root 700; the four token files, the gate key and its known_hosts, 10001 400)
 # NOT under /opt/marveen-docker: that tree is mounted writable into the fleet.
 # No docker socket, no host port, no host path of the fleet.
 #
@@ -92,6 +92,10 @@ services:
       - coolify-ai-deploy
       - discord-olvaso
       - github-olvaso
+      # the SSH door to the B8 gate (fleet_ro grants, task parancssor-a-fleet-ro-grant): the executor's own key, and the
+      # host's key pinned in a known_hosts file (README, "The fleet_ro grant button")
+      - gate-key
+      - gate-known-hosts
     # the sidecar's namespace: its two networks and its tailnet address (B20b)
     network_mode: service:ts
     depends_on:
@@ -121,6 +125,10 @@ secrets:
     file: /opt/vegrehajto/titkok/discord-olvaso
   github-olvaso:
     file: /opt/vegrehajto/titkok/github-olvaso
+  gate-key:
+    file: /opt/vegrehajto/titkok/gate-key
+  gate-known-hosts:
+    file: /opt/vegrehajto/titkok/gate-known-hosts
   # a one-time, pre-approved Tailscale auth key tagged tag:vegrehajto (root 600; read by the
   # sidecar, which runs as root, at its first login only: TS_AUTH_ONCE)
   ts-authkey:
