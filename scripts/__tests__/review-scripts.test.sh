@@ -210,6 +210,19 @@ check 'an unknown prefix -> 2' 2 "$(ell xy37 tsk-a APPROVE)"
 check 'olvas: an unknown prefix -> 2' 2 "$(olv xy37)"
 check 'one event, from the good packet only' "$((n + 1))" "$(events)"
 
+echo 'the customer project packet (acrobot 32393): pr-cap<N> is KratoBal/caparium-napplo#N, c<N> stays commerce'
+n="$(events)"
+mkdir "$Z/pr-cap3"
+printf 'KratoBal/caparium-napplo#3 feat: belepes\ntask_id: tsk-a\nfej: 3333333333333333333333333333333333333333\n' > "$Z/pr-cap3/README"
+cp "$Z/pr-marveen70/diff.patch" "$Z/pr-cap3/diff.patch"
+check 'olvas: a cap packet -> 0' 0 "$(olv cap3)"
+check 'ellenoriz: a cap packet -> 0' 0 "$(ell cap3 tsk-a APPROVE)"
+check '... the ref names the Caparium repo' \
+  "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/caparium-napplo#3 pr-cap3 fej 3333333333333333333333333333333333333333" "$(tail -n1 "$EV")"
+mkdir "$Z/pr-cap4"; printf 'cap PR 4 \npr: KratoBal/acropora-commerce#4\ntask_id: tsk-a\nfej: 1234567\n' > "$Z/pr-cap4/README.md"
+check 'a cap packet whose README pr: names another repo -> 1' 1 "$(ell cap4 tsk-a APPROVE)"
+check 'one event, from the good cap packet only' "$((n + 1))" "$(events)"
+
 echo 'a document packet (task review-docs-verdict): the file path in the ref, the copy checked'
 n="$(events)"
 mkdir "$Z/doc-tsk-d"; printf 'terv\n' > "$Z/doc-tsk-d/v1-terv.md"

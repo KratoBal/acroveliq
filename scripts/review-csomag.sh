@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ANSWERS: Hogyan adok at egy PR-t barracudanak atnezesre ugy, hogy a diff tenyleg nala legyen?
 #
-# review-csomag.sh <os|commerce|marveen|ai> <PR> <task_id> [cimke]
+# review-csomag.sh <os|commerce|marveen|ai|cap> <PR> <task_id> [cimke]
 #   -> review-csomagok/pr-<PR> (os), pr-c<PR> (commerce), pr-marveen<PR> (a flotta
-#      repoja, KratoBal/acroveliq, 2026-10-15 elott KratoBal/marveen) vagy pr-ai<PR> (KratoBal/acropora-ai-agent): diff.patch + README.md
+#      repoja, KratoBal/acroveliq, 2026-10-15 elott KratoBal/marveen) vagy pr-ai<PR> (KratoBal/acropora-ai-agent), vagy pr-cap<PR> (KratoBal/caparium-napplo): diff.patch + README.md
 #      (pr: owner/repo#N, task_id, fej, merge-base, origin/main). Ha a mappa mar letezik, diff-vN.patch-et ir,
 #      a kovetkezo szabad N-nel, a README-hez egy sort fuz.
 #   A task_id KOTELEZO (TC-Lite L4): barracuda a verdict esemenyt erre irja, es eddig
@@ -51,7 +51,7 @@ set -uo pipefail
 GIT_AUTH=/home/marveen/marveen/scripts/git-auth.sh
 GH_API=https://api.github.com
 . "$(dirname "${BASH_SOURCE[0]}")/lib/github-token.sh"   # github_token <owner/repo> <role> (FLEET_GITHUB_APP)
-USAGE="usage: [REVIEW_CSOMAG_REPO=<sajat klon>] review-csomag.sh <os|commerce|marveen|ai> <PR> <task_id> [cimke]
+USAGE="usage: [REVIEW_CSOMAG_REPO=<sajat klon>] review-csomag.sh <os|commerce|marveen|ai|cap> <PR> <task_id> [cimke]
        review-csomag.sh docs <fajl> <task_id> [cimke]"
 ZONA="${REVIEW_CSOMAG_DIR:-/home/marveen/marveen/review-csomagok}"
 
@@ -136,6 +136,8 @@ case "${1:-}" in
   # the AI service (acrobot, 2026-10-14, msg 30257: pr-ai37 was made by hand, and the
   # reviewer's two scripts did not know the prefix; barracuda 30249)
   ai) DEFAULT_REPO=/home/marveen/work/acropora-ai-agent; PFX="pr-ai"; SLUG=KratoBal/acropora-ai-agent ;;
+  # the first customer project (Cápárium nAPPló, acrobot 32393, 2026-10-19): pr-cap<N>
+  cap) DEFAULT_REPO=/home/marveen/work/caparium-napplo; PFX="pr-cap"; SLUG=KratoBal/caparium-napplo ;;
   *) echo "$USAGE" >&2; exit 2 ;;
 esac
 REPO="${REVIEW_CSOMAG_REPO:-$DEFAULT_REPO}"

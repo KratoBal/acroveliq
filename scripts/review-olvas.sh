@@ -3,6 +3,7 @@
 #
 # review-olvas.sh <csomag>
 #   csomag: a mappa neve a pr- utan: 1650 (os), c512 (commerce), marveen68 (a flotta repoja), ai37 (az AI szolgaltatas),
+#      cap3 (a Caparium nAPPlo, az elso ugyfelprojekt),
 #      vagy egy dokumentum-csomag teljes neve: doc-<task_id> (review-csomag.sh docs)
 #   -> a README teljes szovege, majd minden .patch fajlra: tulajdonos, meret, ido, es a
 #      valtozott fajlok listaja soronkent (+ - ut), a vegen az osszesites. Dokumentum-
@@ -46,12 +47,12 @@ FEJ_DIFF=/home/marveen/marveen/scripts/lib/review-fej-diff.py
 
 FEJ=0
 if [ "$#" -eq 2 ] && [ "$1" = --fej ]; then FEJ=1; shift; fi
-[ "$#" -eq 1 ] || { echo "usage: review-olvas.sh [--fej] <csomag>   (pl. 1650, c512, marveen68, ai37, doc-<task_id>)" >&2; exit 2; }
+[ "$#" -eq 1 ] || { echo "usage: review-olvas.sh [--fej] <csomag>   (pl. 1650, c512, marveen68, ai37, cap3, doc-<task_id>)" >&2; exit 2; }
 C="$1"
 DOCS=0
 if [[ "$C" =~ ^doc-[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then DOCS=1; D="$ZONA/$C"
-elif [[ "$C" =~ ^(c|marveen|ai)?[0-9]{1,6}$ ]]; then D="$ZONA/pr-$C"
-else echo "FAIL: a csomag neve szam, c<szam>, marveen<szam>, ai<szam> vagy doc-<task_id>: '$C'" >&2; exit 2
+elif [[ "$C" =~ ^(cap|c|marveen|ai)?[0-9]{1,6}$ ]]; then D="$ZONA/pr-$C"
+else echo "FAIL: a csomag neve szam, c<szam>, marveen<szam>, ai<szam>, cap<szam> vagy doc-<task_id>: '$C'" >&2; exit 2
 fi
 [ -L "$D" ] && { echo "FAIL: $D symlink, nem olvasom: valaki mas tette oda" >&2; exit 1; }
 [ -d "$D" ] || { echo "FAIL: nincs ilyen csomag: $D" >&2; exit 1; }
@@ -71,10 +72,10 @@ done
 if [ "$FEJ" = 1 ]; then
   [ "$DOCS" = 0 ] || { echo "FAIL: --fej csak PR-csomagra: egy dokumentumnak nincs feje" >&2; exit 2; }
   [ "$found" = 1 ] || exit 1
-  [[ "$C" =~ ^(c|marveen|ai)?([0-9]{1,6})$ ]]
+  [[ "$C" =~ ^(cap|c|marveen|ai)?([0-9]{1,6})$ ]]
   case "${BASH_REMATCH[1]}" in
     c) REPO=KratoBal/acropora-commerce ;; marveen) REPO=KratoBal/acroveliq ;;
-    ai) REPO=KratoBal/acropora-ai-agent ;; *) REPO=KratoBal/acropora-os ;;
+    ai) REPO=KratoBal/acropora-ai-agent ;; cap) REPO=KratoBal/caparium-napplo ;; *) REPO=KratoBal/acropora-os ;;
   esac
   PRN="${BASH_REMATCH[2]}"
   # the latest round's head and patch: review-csomag.sh writes `fej: <sha>` and diff.patch for the

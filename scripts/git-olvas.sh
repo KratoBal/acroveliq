@@ -58,12 +58,12 @@ set -f
 umask 077
 
 # the only trees, by name. Tests replace this one line in a copy of the script.
-TREES="marveen=/home/marveen/marveen os=/home/marveen/work/acropora-os commerce=/home/marveen/work/acropora-commerce"
+TREES="marveen=/home/marveen/marveen os=/home/marveen/work/acropora-os commerce=/home/marveen/work/acropora-commerce cap=/home/marveen/work/caparium-napplo"
 GIT_BIN=/usr/bin/git
 
 deny() { echo "git-olvas: elutasitva: $*" >&2; exit 2; }
 usage() {
-  echo "usage: git-olvas.sh <marveen|os|commerce> <show|diff|log|status|ls-tree|cat-file|merge-base|rev-parse|grep> [argumentumok]" >&2
+  echo "usage: git-olvas.sh <marveen|os|commerce|cap> <show|diff|log|status|ls-tree|cat-file|merge-base|rev-parse|grep> [argumentumok]" >&2
   exit 2
 }
 
@@ -75,7 +75,7 @@ TREE=""
 for t in $TREES; do
   [ "${t%%=*}" = "$NAME" ] && TREE="${t#*=}"
 done
-[ -n "$TREE" ] || deny "ismeretlen fa: '$NAME' (lehet: marveen, os, commerce)"
+[ -n "$TREE" ] || deny "ismeretlen fa: '$NAME' (lehet: marveen, os, commerce, cap)"
 
 case "$SUB" in
   show|diff|log|status|ls-tree|cat-file|merge-base|rev-parse|grep) ;;
