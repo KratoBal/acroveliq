@@ -166,7 +166,9 @@ check('input a missing approver setting: elutasit before any request', (d['donte
 
 # --- K1 ---------------------------------------------------------------------------------------------
 for name, status, body, want in (
-    ('behind_by 2', 200, {'status': 'diverged', 'behind_by': 2, 'ahead_by': 1}, 'nincs-a-fagon'),
+    ('behind_by 2 with a diverged status', 200, {'status': 'diverged', 'behind_by': 2, 'ahead_by': 1}, 'nincs-a-fagon'),
+    ('behind_by 2 on its own (an "ahead" status that GitHub would not send with it)', 200, {'status': 'ahead', 'behind_by': 2}, 'nincs-a-fagon'),
+    ('no behind_by at all', 200, {'status': 'ahead'}, 'nincs-a-fagon'),
     ('status diverged with behind_by 0', 200, {'status': 'diverged', 'behind_by': 0}, 'nincs-a-fagon'),
     ('a 404', 404, None, 'github-nem-olvashato:compare:404'),
     ('a 301 (renamed repository)', 301, None, 'github-nem-olvashato:compare:301'),
@@ -317,7 +319,7 @@ check('K4 no block at the commit: elutasit', verdict(w=w), ('elutasit', 'blokk-h
 check('K4 neither paths nor a block to compare: elutasit', verdict(rule={}), ('elutasit', 'nincs-mit-osszevetni'))
 check('K4 a rule that is not an object: elutasit', verdict(rule=None), ('elutasit', 'nincs-mit-osszevetni'))
 for bad in ('../etc/passwd', '/abs', 'a b', 'a//b', ''):
-    check('K4 a bad path %r: elutasit' % bad, verdict(rule={'utak': [bad]})[0], 'elutasit')
+    check('K4 a bad path %r: elutasit, named, before any request about it' % bad, verdict(rule={'utak': [bad]}), ('elutasit', 'rossz-ut:%s' % bad))
 w = World()
 w.file(C, DOC, 'e1' * 20, text='\xe9\xff')
 w.routes['contents/%s?ref=%s' % (DOC, C)] = (200, {'type': 'file', 'sha': 'x', 'encoding': 'base64', 'content': base64.b64encode(b'\xff\xfe').decode()})
