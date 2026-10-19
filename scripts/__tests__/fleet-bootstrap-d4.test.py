@@ -68,7 +68,9 @@ def run(root, mount=None):
 
 
 def step4a(out):
-    m = re.search(r'== 4a\..*?(?=\n== 4b\.)', out, re.S)
+    # step 4a only: it ends where 4c starts (4c and 4d stand between 4a and 4b, and their own
+    # words, 'installer' for one, are not 4a's plans)
+    m = re.search(r'== 4a\..*?(?=\n== 4[bc]\.)', out, re.S)
     return m.group(0) if m else ''
 
 
