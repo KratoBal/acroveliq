@@ -140,3 +140,21 @@ measured it yet (plan v2, "Mérés és határ"). The smoke test, with the owner 
 
 Only after step 3 and 4 are seen does the sorting task (slice 4) include `archival`. Until then it runs `lista`, `olvas`
 and `cimkez` only.
+
+## The fleet's side (scripts/level-kozvetito.sh, the GCAL_KOZVETITO switch of scripts/gcal.sh)
+
+`bash /home/marveen/marveen/scripts/level-kozvetito.sh <info|balazs> <verb> < body.json` is the one HTTP client: the
+caller's token from its own 0400 file (`store/tokens/levelkozvetito-<agent>.token`, or `LVK_TOKEN_FILE`), the relay at the FIXED
+`http://levelkozvetito:8788` (`LVK_URL` counts only for `http://127.0.0.1[:port]` or `http://localhost[:port]`, the tests; anything
+else is refused before a request, so a mail cannot send the token to a host of its choosing), no retry, no redirect followed, a refusal as `FAIL <status> <fixed
+reason>` on stderr. The token is never an argument, never printed.
+
+`GCAL_KOZVETITO=1 bash scripts/gcal.sh mail|search|events|fetch|check` runs the same commands through the relay, with no
+Google key on the fleet's side. Differences from the old path, all on purpose: no `[PROMO]` tag and no attachment names
+in `search`; `search` returns at most 50; an excluded sender's mail shows as `KIZARVA (domain)` and `fetch` writes nothing
+for it; `fetch` leaves the attachment in the relay's quarantine folder (the fleet's read-only mount, `LVK_KARANTEN_DIR`,
+default `store/level-karanten`) and prints that path. Without the switch every command is the old one.
+
+**Rollback** is the switch off. **The info@ move** runs both ways for a day (the owner reads the two outputs side by side,
+including the invoice numbers that redaction turns into `[KOD]`; if that price is too high for the invoice reading, the
+info@ `redaction` setting goes to `near-code-word`) before the old key leaves the fleet's `store/`.
