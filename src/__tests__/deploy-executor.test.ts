@@ -665,8 +665,8 @@ describe('finished_verified means the public address is healthy too (nautilus, C
     await Promise.all(ex.following)
     expect(ex.status(r)!.outcome).toBe('finished_verified')
     expect(health.calls).toEqual([HEALTH_URL, HEALTH_URL, HEALTH_URL])
-    // the follow's own 10 s step, then two waits of 2 s between three looks
-    expect(clock - t0).toBe(10_000 + 2 * 2_000)
+    // two waits of 2 s between three looks (the follow's own 10 s step ran before t0 was taken)
+    expect(clock - t0).toBe(2 * 2_000)
     expect(store.get(r)!.observed).toEqual({ commit: MAIN[4], status: 'finished', health: 200 })
   })
 
@@ -676,8 +676,8 @@ describe('finished_verified means the public address is healthy too (nautilus, C
     await Promise.all(ex.following)
     expect(ex.status(r)!.outcome).toBe('finished_verified')
     expect(health.calls).toHaveLength(1)
-    // only the follow's own 10 s step: the first look is made before any health wait
-    expect(clock - t0).toBe(10_000)
+    // no health wait at all: the first look is made before any sleep
+    expect(clock - t0).toBe(0)
   })
 
   it.each([
@@ -693,9 +693,9 @@ describe('finished_verified means the public address is healthy too (nautilus, C
     await Promise.all(ex.following)
     expect(ex.status(r)!.outcome).toBe('finished_unhealthy')
     expect(store.get(r)!.observed!.health).toBe(last)
-    // 2 s apart for 120 s: looks at 0, 2, ... 120 s = 61 looks, and the clock moved by the follow's 10 s step plus the window
+    // 2 s apart for 120 s: looks at 0, 2, ... 120 s = 61 looks, and the clock moved by exactly the window
     expect(health.calls).toHaveLength(61)
-    expect(clock - t0).toBe(10_000 + 120_000)
+    expect(clock - t0).toBe(120_000)
   })
 
   it('a probe that throws counts as no answer: the next look is made, and a later 200 verifies', async () => {
