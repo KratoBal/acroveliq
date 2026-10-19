@@ -163,6 +163,17 @@ The command checks the `state` it issued, exchanges the code, and refuses a gran
 scope set; the token is written to `titkok/balazs-refresh-token` and never printed. Then `docker compose restart levelkozvetito`.
 Delete `pasted-address.txt` (the code is single-use, but the habit is cheap).
 
+**The consent container's rights (task `level-kozvetito-oauth-cap`).** It is uid 0 with `cap_drop: ALL` and exactly two capabilities:
+`DAC_READ_SEARCH` (READ the 10003 files: the client id and secret in `titkok/`, the client-secret store in `titkok-ver/`; without it the
+consent stops at `open /run/secrets/oauth-client-id: permission denied`) and `CHOWN` (hand the new token file to 10003). Not `DAC_OVERRIDE`:
+nothing here writes where root is not the owner. The consent `state` is kept next to the token file in `titkok/` (root's, 700), not in the
+relay's state volume (10003, 700; that mount is not in the `oauth` service any more), and the token file is replaced by a temp file in the same
+directory, handed to 10003 and renamed over the old one, never opened for writing (`src/level-kozvetito/token-file.ts`). The new token file is a
+new inode: the running relay keeps its old value until `docker compose restart levelkozvetito`, which is why that step is part of the consent.
+A crash between the hand-over and the rename can leave `titkok/.<name>.neu-<hex>` (10003, 0400); root may delete it. Not measured in this
+repo (no docker for the author): the first consent after this change is the measurement; if it stops on a permission error, report the exact
+`open` or `unlink` path before adding a capability.
+
 ## Checks after install (each must hold, or the relay stays down)
 
 - `docker inspect levelkozvetito`: no `docker.sock`, no `/opt/marveen-docker` path in `Mounts`; `ReadonlyRootfs=true`,
