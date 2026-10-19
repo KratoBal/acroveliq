@@ -9,6 +9,7 @@ import { join } from 'node:path'
 
 import { ACCOUNTS, parseRelayConfig, type AccountId } from './config.js'
 import { codeFrom, consentUrl, exchangeCode, OauthError } from './oauth.js'
+import { SecretStore } from './secret-store.js'
 
 function secret(path: string): string {
   const value = readFileSync(path, 'utf8').trim()
@@ -34,7 +35,11 @@ async function main(): Promise<void> {
   if (input !== '-') throw new OauthError('the pasted address comes on STDIN: `code <account> - < file`')
   const pasted = readFileSync(0, 'utf8')
   const code = codeFrom(pasted, readFileSync(stateFile, 'utf8').trim())
-  const token = await exchangeCode({ clientId, clientSecret: secret(config.oauthClientSecretFile), code, account })
+  // the same reader as the relay: with a secret store the ACTIVE client secret, so a consent after a rotation uses it
+  const clientSecret = config.secretStoreDir
+    ? new SecretStore({ dir: config.secretStoreDir, legacy: { 'oauth-client-secret': config.oauthClientSecretFile } }).read('oauth-client-secret')
+    : secret(config.oauthClientSecretFile)
+  const token = await exchangeCode({ clientId, clientSecret, code, account })
   const target = config.accounts[account].refreshTokenFile
   // 'wx' would refuse a re-consent; the owner replaces a token on purpose, so the file is rewritten
   writeFileSync(target, token, { mode: 0o400, flag: 'w' })

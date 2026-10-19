@@ -12,6 +12,8 @@ import { createRelayServer } from './http.js'
 import { fileLedger } from './ledger.js'
 import { WRITE_URL_SHAPES } from './modify.js'
 import { MailRelay, type LogFields } from './relay.js'
+import { SecretStore } from './secret-store.js'
+import { SecretService } from './titok.js'
 
 function secret(path: string): string {
   const value = readFileSync(path, 'utf8').trim()
@@ -21,9 +23,14 @@ function secret(path: string): string {
 
 function main(): void {
   const config = parseRelayConfig(JSON.parse(readFileSync(process.env['LEVELKOZVETITO_CONFIG'] ?? '/etc/levelkozvetito/config.json', 'utf8')))
+  // With a secret store named in the settings the client secret is read at the moment of use (pointer, then version,
+  // then the compose secret as version 0), so a new value is taken without a restart; without one it is read once.
+  const store = config.secretStoreDir
+    ? new SecretStore({ dir: config.secretStoreDir, legacy: { 'oauth-client-secret': config.oauthClientSecretFile } })
+    : null
   const google = googleRest({
     clientId: secret(config.oauthClientIdFile),
-    clientSecret: secret(config.oauthClientSecretFile),
+    clientSecret: store ? () => store.read('oauth-client-secret') : secret(config.oauthClientSecretFile),
     refreshTokens: { info: secret(config.accounts.info.refreshTokenFile), balazs: secret(config.accounts.balazs.refreshTokenFile) },
     // the only two shapes a POST may take: create one of the five labels, change the labels of one message
     writeShapes: WRITE_URL_SHAPES,
@@ -40,8 +47,10 @@ function main(): void {
     }
   }
   const port = Number(process.env['LEVELKOZVETITO_PORT'] ?? '8788')
-  createRelayServer(new MailRelay({ config, google, log, ledger: fileLedger(join(config.stateDir, 'archivalt.jsonl')) })).listen(port, '0.0.0.0', () => {
-    log({ at: new Date().toISOString(), event: 'listening', port, callers: config.callers.length })
+  const relay = new MailRelay({ config, google, log, ledger: fileLedger(join(config.stateDir, 'archivalt.jsonl')) })
+  const secrets = store ? new SecretService({ config, google, store, log }) : undefined
+  createRelayServer(relay, secrets).listen(port, '0.0.0.0', () => {
+    log({ at: new Date().toISOString(), event: 'listening', port, callers: config.callers.length, secretWriters: config.secretWriters.length })
   })
 }
 

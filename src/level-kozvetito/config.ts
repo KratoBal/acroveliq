@@ -46,6 +46,13 @@ export interface RelayConfig {
   excludedSenders: { domains: readonly string[]; addresses: readonly string[] }
   /** archivePerDay: the most mails the relay will archive on balazs@ in one Budapest day (plan v2 point A) */
   limits: { callsPerMinute: number; maxAttachmentBytes: number; archivePerDay: number }
+  /**
+   * The secret-writing door (contract parancssor-f-titok-urlap): the directory of the versioned store and the
+   * tokens that may write to it, kept apart from `callers` (a mail caller cannot write, a writer cannot read mail).
+   * Both absent = the door is OFF, `/titok/` is not served; one without the other refuses to start.
+   */
+  secretStoreDir: string | null
+  secretWriters: readonly CallerEntry[]
 }
 
 const NAME = /^[a-z][a-z0-9-]{0,31}$/
@@ -59,10 +66,10 @@ function fail(path: string, why: string): never {
   throw new ConfigError(`relay config ${path}: ${why}`)
 }
 
-function obj(v: unknown, path: string, keys: readonly string[]): Record<string, unknown> {
+function obj(v: unknown, path: string, keys: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) fail(path, 'must be an object')
   const o = v as Record<string, unknown>
-  for (const k of Object.keys(o)) if (!keys.includes(k)) fail(`${path}.${k}`, 'unknown key')
+  for (const k of Object.keys(o)) if (!keys.includes(k) && !optional.includes(k)) fail(`${path}.${k}`, 'unknown key')
   for (const k of keys) if (!(k in o)) fail(`${path}.${k}`, 'missing')
   return o
 }
@@ -91,32 +98,37 @@ function strings(v: unknown, path: string, re: RegExp): string[] {
 }
 
 export function parseRelayConfig(raw: unknown): RelayConfig {
-  const top = obj(raw, '', [
-    'stateDir',
-    'quarantineDir',
-    'oauthClientIdFile',
-    'oauthClientSecretFile',
-    'callers',
-    'accounts',
-    'excludedSenders',
-    'limits',
-  ])
+  const top = obj(
+    raw,
+    '',
+    ['stateDir', 'quarantineDir', 'oauthClientIdFile', 'oauthClientSecretFile', 'callers', 'accounts', 'excludedSenders', 'limits'],
+    ['secretStoreDir', 'secretWriters'],
+  )
 
-  const callersRaw = top['callers']
-  if (!Array.isArray(callersRaw) || callersRaw.length === 0) fail('callers', 'must be a non-empty array')
   const seenNames = new Set<string>()
   const seenHashes = new Set<string>()
-  const callers = callersRaw.map((v, i): CallerEntry => {
-    const c = obj(v, `callers[${i}]`, ['name', 'tokenSha256'])
-    const name = str(c['name'], `callers[${i}].name`, NAME)
-    const tokenSha256 = str(c['tokenSha256'], `callers[${i}].tokenSha256`, SHA256)
-    if (seenNames.has(name)) fail(`callers[${i}].name`, 'duplicate')
-    // two callers with one token would make the log name the wrong one
-    if (seenHashes.has(tokenSha256)) fail(`callers[${i}].tokenSha256`, 'duplicate token')
-    seenNames.add(name)
-    seenHashes.add(tokenSha256)
-    return { name, tokenSha256 }
-  })
+  const entries = (raw: unknown, path: string): CallerEntry[] => {
+    if (!Array.isArray(raw) || raw.length === 0) fail(path, 'must be a non-empty array')
+    return raw.map((v, i): CallerEntry => {
+      const c = obj(v, `${path}[${i}]`, ['name', 'tokenSha256'])
+      const name = str(c['name'], `${path}[${i}].name`, NAME)
+      const tokenSha256 = str(c['tokenSha256'], `${path}[${i}].tokenSha256`, SHA256)
+      if (seenNames.has(name)) fail(`${path}[${i}].name`, 'duplicate')
+      // two entries with one token would make the log name the wrong one; across both lists, so a mail caller
+      // and a secret writer can never be the same token
+      if (seenHashes.has(tokenSha256)) fail(`${path}[${i}].tokenSha256`, 'duplicate token')
+      seenNames.add(name)
+      seenHashes.add(tokenSha256)
+      return { name, tokenSha256 }
+    })
+  }
+  const callers = entries(top['callers'], 'callers')
+
+  const hasDir = 'secretStoreDir' in top
+  const hasWriters = 'secretWriters' in top
+  if (hasDir !== hasWriters) fail(hasDir ? 'secretWriters' : 'secretStoreDir', 'missing: the secret door needs both keys or neither')
+  const secretWriters = hasWriters ? entries(top['secretWriters'], 'secretWriters') : []
+  const secretStoreDir = hasDir ? absPath(top['secretStoreDir'], 'secretStoreDir') : null
 
   const accountsRaw = obj(top['accounts'], 'accounts', ACCOUNTS)
   const account = (id: AccountId): AccountEntry => {
@@ -143,6 +155,8 @@ export function parseRelayConfig(raw: unknown): RelayConfig {
     oauthClientIdFile: absPath(top['oauthClientIdFile'], 'oauthClientIdFile'),
     oauthClientSecretFile: absPath(top['oauthClientSecretFile'], 'oauthClientSecretFile'),
     callers,
+    secretStoreDir,
+    secretWriters,
     accounts: { info: account('info'), balazs: account('balazs') },
     excludedSenders: {
       domains: strings(ex['domains'], 'excludedSenders.domains', DOMAIN),
