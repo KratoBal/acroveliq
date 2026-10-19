@@ -230,18 +230,33 @@ grant_parse() {
   done
   [ "$rows" -le 2000 ] || deny "'fleet-ro-grant': több mint 2000 oszlop"
 }
-# the list at a commit: only a commit on main (a branch of this public repository
-# is not a reviewed list), fetched anonymously; exactly one fleet-ro-grant block
-grant_fetch() {
-  local sha="$1" cmp doc blocks
-  cmp="$("$CURL" -fsS --max-time 20 --max-filesize 4194304 -H 'Accept: application/vnd.github+json' "$GH_API/compare/$sha...main?per_page=1")" \
-    || deny "'fleet-ro-grant': a commit nem ellenőrizhető a GitHubon"
-  printf '%s' "$cmp" | grep -Eq '"behind_by": *0[,}]' || deny "'fleet-ro-grant': a commit nincs a main ágon"
-  doc="$("$CURL" -fsS --max-time 20 --max-filesize 1048576 "$GH_RAW/$sha/$GRANT_DOC")" \
-    || deny "'fleet-ro-grant': a lista nem tölthető le ($GRANT_DOC a commiton)"
+# the list block of the document at one commit: exactly one fleet-ro-grant block
+grant_block() {
+  local doc blocks
+  doc="$("$CURL" -fsS --max-time 20 --max-filesize 1048576 "$GH_RAW/$1/$GRANT_DOC")" \
+    || deny "'fleet-ro-grant': a lista nem tölthető le ($GRANT_DOC a(z) $1 commiton)"
   blocks="$(printf '%s\n' "$doc" | grep -c '^```fleet-ro-grant[[:space:]]*$')"
   [ "$blocks" = 1 ] || deny "'fleet-ro-grant': a dokumentumban nem pontosan egy fleet-ro-grant blokk áll ($blocks)"
   printf '%s\n' "$doc" | awk '/^```fleet-ro-grant[[:space:]]*$/ {f = 1; next} f && /^```/ {exit} f'
+}
+# the list at a commit: only a commit on main (a branch of this public repository is not a
+# reviewed list), and only while its block is still main's (barracuda, #238 review: an older main
+# commit would bring back a line a later PR took out; the commit need not be main's head, or an
+# approval would lapse whenever another PR merges). Fetched anonymously.
+grant_fetch() {
+  local sha="$1" cmp head block headblock
+  cmp="$("$CURL" -fsS --max-time 20 --max-filesize 4194304 -H 'Accept: application/vnd.github+json' "$GH_API/compare/$sha...main?per_page=1")" \
+    || deny "'fleet-ro-grant': a commit nem ellenőrizhető a GitHubon"
+  printf '%s' "$cmp" | grep -Eq '"behind_by": *0[,}]' || deny "'fleet-ro-grant': a commit nincs a main ágon"
+  block="$(grant_block "$sha")" || exit 2
+  head="$("$CURL" -fsS --max-time 20 -H 'Accept: application/vnd.github.sha' "$GH_API/commits/main")" \
+    || deny "'fleet-ro-grant': a main feje nem kérdezhető le"
+  [[ "$head" =~ ^[0-9a-f]{40}$ ]] || deny "'fleet-ro-grant': a main feje nem commit-azonosító"
+  if [ "$head" != "$sha" ]; then
+    headblock="$(grant_block "$head")" || exit 2
+    [ "$block" = "$headblock" ] || deny "'fleet-ro-grant': a lista a(z) $sha óta változott a main-en ($head): a mostani fejjel kérd újra"
+  fi
+  printf '%s\n' "$block"
 }
 # the SQL: built here from validated identifiers (no quote can be in one), the
 # grantee and the role fixed. $1: terv|alkalmaz (sync to the wanted pairs on stdin)

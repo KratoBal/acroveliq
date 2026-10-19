@@ -86,7 +86,7 @@ NavIncomingInvoice purchaseInvoiceId 2026-11-17 bejövő számlák kifizetettsé
 
 | Mód | Ki hívhatja | Mit tesz |
 |---|---|---|
-| `terv` | bármelyik kulcs | Letölti a listát a commitról (a commitnak a main-en kell állnia, a `compare/<commit>...main` `behind_by` 0). Kiszámolja a kívánt állapotot: a tartós és a még élő sorok. Kiírja a pontos `GRANT`/`REVOKE` sorokat, és visszagördíti a tranzakciót. Ez a gomb szövege. |
+| `terv` | bármelyik kulcs | Letölti a listát a commitról (a commitnak a main-en kell állnia, a `compare/<commit>...main` `behind_by` 0), és a main mostani fejéről is: ha a két blokk eltér, megtagad (egy régebbi main-commit nem adhat vissza egy azóta kivett sort; a fej maga nem kell, hogy a commit legyen, különben egy másik beolvadás minden jóváhagyást elavulttá tenne). Kiszámolja a kívánt állapotot: a tartós és a még élő sorok. Kiírja a pontos `GRANT`/`REVOKE` sorokat, és visszagördíti a tranzakciót. Ez a gomb szövege. |
 | `alkalmaz` | csak a végrehajtó kulcsa (`command="/usr/local/sbin/fleet-gate vegrehajto"`), Balázs jóváhagyása után | Ugyanez, COMMIT-tal. A szinkron: amit a `fleet_ro_grantor` adott, de nincs a kívánt állapotban (kivett vagy lejárt sor), az REVOKE; ami hiányzik, az GRANT. Utána a lista a `fleet` felhasználó `~/fleet-ro-grant/` mappájába kerül, a szukit ebből dolgozik. |
 | `szukit` | bármelyik kulcs, jóváhagyás nélkül (ütemezve) | CSAK az utolsó alkalmazott lista LEJÁRT sorait veszi vissza; a hívótól nem kap listát, egy hiányzó sort soha nem von vissza. Egy futás legfeljebb 40 oszlopot: többnél megáll, és emberi döntést kér. |
 
@@ -127,7 +127,13 @@ tulajdonos `acropora`) adta jogokat visszavenni. Ez utóbbiakat a 4. lépés egy
      END LOOP;
    END $$;
    SQL
-   docker exec "$C" psql -U acropora -d acropora -Atc "select count(*) from information_schema.column_privileges where grantee = 'fleet_ro_grantor' and is_grantable = 'YES' and lower(column_name) ~ '(password|token|encrypt|credential|apikey|secret)'"
+   # az ellenőrzés UGYANAZT a teljes mintát és a kapu rögzített tábla.oszlop listáját is számolja (barracuda, #238):
+   docker exec -i "$C" psql -U acropora -d acropora -At <<'SQL'
+   SELECT count(*) FROM information_schema.column_privileges
+   WHERE grantee = 'fleet_ro_grantor' AND is_grantable = 'YES' AND table_schema = 'public'
+     AND (lower(column_name) ~ '(password|passwd|secret|token|encrypt|credential|apikey|api_key|privatekey|private_key|authenticationtag|signaturecode)'
+          OR (table_name, column_name) IN (VALUES ('User', 'passwordHash'), ('User', 'signatureCodeHash'), ('Session', 'tokenHash'), ('ServiceToken', 'tokenHash'), ('DeviceToken', 'token'), ('QuoteAcceptanceLink', 'tokenHash'), ('Asset', 'qrToken'), ('UnasConnectionSetting', 'encryptedApiKey'), ('UnasConnectionSetting', 'encryptionIv'), ('UnasConnectionSetting', 'authenticationTag'), ('NavConnectionSetting', 'encryptedCredentials'), ('NavConnectionSetting', 'encryptionIv'), ('NavConnectionSetting', 'authenticationTag'), ('SzamlazzConnectionSetting', 'encryptedAgentKey'), ('SzamlazzConnectionSetting', 'agentKeyEncryptionIv'), ('SzamlazzConnectionSetting', 'agentKeyAuthenticationTag'), ('SzamlazzConnectionSetting', 'encryptedFinancialApiKey'), ('SzamlazzConnectionSetting', 'financialApiKeyEncryptionIv'), ('SzamlazzConnectionSetting', 'financialApiKeyAuthenticationTag'), ('MedusaConnectionSetting', 'encryptedApiKey'), ('MedusaConnectionSetting', 'encryptionIv'), ('MedusaConnectionSetting', 'authenticationTag')));
+   SQL
                                                 # 0. Ha nem: állj meg, és szólj.
    ```
 
@@ -135,8 +141,22 @@ tulajdonos `acropora`) adta jogokat visszavenni. Ez utóbbiakat a 4. lépés egy
    fájlba egy második sor, a végrehajtó kulcsával, `restrict,from="<a végrehajtó címe>",command="/usr/local/sbin/fleet-gate vegrehajto" ssh-ed25519 ...`.
    A `sshd-match` ezt a két alakot fogadja el, mást nem.
 
-4. **Az első gombnyomás után, egyszer:** a mai, a tulajdonos adta `fleet_ro` jogok visszavétele. A lista ugyanezeket a
-   grantorral is megadta, tehát a mérések nem állnak meg; a tulajdonos REVOKE-ja csak a saját adását veszi el:
+4. **Az első gombnyomás után, egyszer:** a mai, a tulajdonos adta `fleet_ro` jogok visszavétele. A tulajdonos REVOKE-ja
+   csak a saját adását veszi el. ELŐTTE ellenőrizni kell, hogy a grantor minden ilyen oszlopot megadott (barracuda, #238:
+   egy korábbi kézi GRANT a listán kívüli oszlopot is adhatott, és azt a REVOKE csendben elvenné). Várt: 0. Ha nem 0: állj
+   meg, és szólj; az az oszlop a listába kell, vagy tudatosan megy el:
+
+   ```bash
+   docker exec -i "$C" psql -U acropora -d acropora -At <<'SQL'
+   SELECT count(*) FROM information_schema.column_privileges o
+   WHERE o.grantee = 'fleet_ro' AND o.grantor = 'acropora' AND o.table_schema = 'public' AND o.privilege_type = 'SELECT'
+     AND NOT EXISTS (SELECT 1 FROM information_schema.column_privileges g
+                     WHERE g.grantee = 'fleet_ro' AND g.grantor = 'fleet_ro_grantor' AND g.table_schema = 'public'
+                       AND g.privilege_type = 'SELECT' AND g.table_name = o.table_name AND g.column_name = o.column_name);
+   SQL
+   ```
+
+   Ha 0:
 
    ```bash
    docker exec -i "$C" psql -U acropora -d acropora -v ON_ERROR_STOP=1 -1 <<'SQL'
@@ -501,7 +521,7 @@ cd /root
 install -o root -g root -m 0755 /tmp/fleet-gate.sh /usr/local/sbin/fleet-gate
 install -d -o root -g root -m 0755 /usr/local/lib/fleet-gate
 install -o root -g root -m 0644 /tmp/quote-templates-sync.mjs /usr/local/lib/fleet-gate/quote-templates-sync.mjs
-echo '79772b1f5d33aeaf8729054d412050331e8024e258f02a3ff7bb1f817216adb8  /usr/local/sbin/fleet-gate' | sha256sum -c
+echo '647add7ed5f38c35752d39080568d5e4094243831fb2114547b1bea1a68bd1df  /usr/local/sbin/fleet-gate' | sha256sum -c
 echo 'd958d5a4050ebbf52610ca70f3574a3e572bf349751fbd7b011411a68a322834  /usr/local/lib/fleet-gate/quote-templates-sync.mjs' | sha256sum -c
                                              # mindkettő: OK. Ha nem: állj meg, és szólj.
 ```

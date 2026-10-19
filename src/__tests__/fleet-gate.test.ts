@@ -624,7 +624,8 @@ printf 'curl' >> "${w.dir}/calls.log"; for a in "$@"; do printf ' [%s]' "$a" >> 
 url="\${@: -1}"
 case "$url" in
   *"/compare/"*) f="${w.dir}/compare.json" ;;
-  *"/docs/fleet-gate.md") f="${w.dir}/doc.md" ;;
+  *"/commits/main") if [ -f "${w.dir}/main-head" ]; then cat "${w.dir}/main-head"; else printf '%s' "${COMMIT}"; fi; exit 0 ;;
+  *"/docs/fleet-gate.md") s="\${url%/docs/fleet-gate.md}"; s="\${s##*/}"; f="${w.dir}/doc-\$s.md"; [ -f "$f" ] || f="${w.dir}/doc.md" ;;
   *) exit 22 ;;
 esac
 [ -f "$f" ] || exit 22
@@ -662,14 +663,14 @@ cat "$f"
     const psql = g.psqlCalls(r.calls)
     expect([
       r.code,
-      r.calls.filter((c) => c.startsWith('curl')).map((c) => c.includes(`/compare/${COMMIT}...main`) || c.includes(`/${COMMIT}/docs/fleet-gate.md`)),
+      r.calls.filter((c) => c.startsWith('curl')).map((c) => c.includes(`/compare/${COMMIT}...main`) || c.includes(`/${COMMIT}/docs/fleet-gate.md`) || c.includes('/commits/main')),
       psql.length, psql[0]?.includes('[-U] [fleet_ro_grantor] [-d] [acropora]'),
       ['BankTransaction','amount', 'BankTransaction','id', 'ExternalBillingDocument','cancelled', 'ExternalBillingDocument','documentNumber', 'ExternalBillingDocument','source', 'PurchaseInvoice','id']
         .reduce<string[]>((acc, x, i, all) => (i % 2 ? acc : [...acc, `('${x}', '${all[i + 1]}')`]), []).every((pair) => sql.includes(pair)),
       sql.includes("'Supplier'"), sql.includes('2030-01-01'), sql.trim().endsWith('ROLLBACK;'),
       (sql.match(/ TO fleet_ro'/g) ?? []).length, /\bTO (?!fleet_ro')\w+'/.test(sql), // the NOTICE and the EXECUTE, both fixed
       r.out.includes(`commit ${COMMIT}`) && r.out.includes('ma 2026-10-19'),
-    ], 'GRANT-PLAN').toEqual([0, [true, true], 1, true, true, false, false, true, 2, false, true])
+    ], 'GRANT-PLAN').toEqual([0, [true, true, true], 1, true, true, false, false, true, 2, false, true])
   })
 
   it('GRANT-APPLY: alkalmaz only with the executor\'s key, then COMMIT and the applied list kept for szukit', () => {
@@ -725,6 +726,38 @@ cat "$f"
     const pairs: string[] = g.sql().match(/\('[A-Za-z_][A-Za-z0-9_]*', '[A-Za-z_][A-Za-z0-9_]*'\)/g) ?? []
     expect([r.code, new Set(pairs).size, pairs.includes("('_prisma_migrations', 'migration_name')"), pairs.includes("('NavIncomingInvoice', 'purchaseInvoiceId')")], 'GRANT-DOC')
       .toEqual([0, 67, true, true])
+  })
+
+  it('GRANT-STALE: an older main commit whose list a later PR changed is refused; one whose list main still holds passes', () => {
+    const OLDER = 'a'.repeat(40)
+    const HEAD = 'b'.repeat(40)
+    const g = grantWorld()
+    g.onMain(true)
+    writeFileSync(join(g.w.dir, 'main-head'), HEAD)
+    // the older commit still has a line main took out since
+    writeFileSync(join(g.w.dir, `doc-${OLDER}.md`), `\`\`\`fleet-ro-grant\n${BASE}${DATED}\`\`\`\n`)
+    writeFileSync(join(g.w.dir, `doc-${HEAD}.md`), `\`\`\`fleet-ro-grant\n${BASE}\`\`\`\n`)
+    const stale = g.run(`fleet-ro-grant ${OS_DB} acropora ${OLDER} alkalmaz`, 'vegrehajto')
+    const stalePsql = g.psqlCalls(stale.calls).length
+    // another PR merged since, but the list is the same: the approval does not lapse
+    writeFileSync(join(g.w.dir, `doc-${HEAD}.md`), `masik szoveg\n\`\`\`fleet-ro-grant\n${BASE}${DATED}\`\`\`\n`)
+    const same = g.run(`fleet-ro-grant ${OS_DB} acropora ${OLDER} terv`)
+    expect([stale.code, stale.err.includes('változott a main-en'), stalePsql, same.code, g.psqlCalls(same.calls).length], 'GRANT-STALE')
+      .toEqual([2, true, 0, 0, 1])
+  })
+
+  it('GRANT-DOC-STEPS: the install steps check the same blocked columns as the gate (pattern and fixed list)', () => {
+    const gate = readFileSync(GATE, 'utf-8')
+    const doc = readFileSync(join(process.cwd(), 'docs', 'fleet-gate.md'), 'utf-8')
+    const fixed = (gate.match(/^GRANT_BLOCKED_COLUMNS="([^"]+)"/m)?.[1] ?? '').split(' ')
+    const pattern = gate.match(/\*password\*\|[^)]+\) return 0/)?.[0].replace(/\) return 0$/, '').split('|').map((x) => x.replace(/\*/g, '')) ?? []
+    const steps = doc.slice(doc.indexOf('### Balázs lépései'), doc.indexOf('**Visszaállítás:**'))
+    const sqlPattern = '(' + pattern.join('|') + ')'
+    expect([
+      fixed.length > 10, pattern.length > 10,
+      (steps.match(new RegExp(sqlPattern.replace(/[()|]/g, (c) => '\\' + c), 'g')) ?? []).length,
+      fixed.filter((tc) => !steps.includes(`('${tc.split('.')[0]}', '${tc.split('.')[1]}')`)),
+    ], 'GRANT-DOC-STEPS').toEqual([true, true, 2, []])
   })
 
   it('GRANT-NARROW: szukit revokes only the expired lines of the last applied list, never the caller\'s, never past its cap', () => {
