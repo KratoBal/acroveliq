@@ -18,7 +18,7 @@ import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, '..', 'lib', 'review-fej-diff.py')
-TOKEN = 'ghs_' + 'T' * 36
+TOKEN = 'ghs_' + 'T' * 386  # the measured length of a real installation token (390)
 HEAD = 'a' * 40
 DIFF = b'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1,2 @@\n a\n+b\n'
 seen_auth = []

@@ -47,7 +47,7 @@ class Stop(Exception):
 # not named here is read anonymously, as before.
 PRIVATE_REPOS = frozenset({'KratoBal/caparium-napplo'})
 BROKER = ('sudo', '-n', '/usr/local/sbin/fleet-github', 'token')
-TOKEN_RX = re.compile(r'^[A-Za-z0-9_.-]{20,255}$')
+TOKEN_RX = re.compile(r'^[A-Za-z0-9_.-]{20,2048}$')  # GitHub's installation tokens are ~390 characters (measured 2026-10-19)
 
 
 def broker_token(repo, api):
