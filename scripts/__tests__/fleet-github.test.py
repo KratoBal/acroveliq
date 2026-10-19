@@ -289,13 +289,17 @@ try:
     check("429: a Failed", "Failed", kind(429, {"message": "slow down"}))
     check("500: a Failed", "Failed", kind(500, {}))
     check("502 with no body at all: a Failed", "Failed", kind(502, None))
-    check("404 by default: a Failed (only a read of a proven PR may call it a rights problem)", "Failed", kind(404, {"message": "Not Found"}))
-    check("404 on the read of the PR the record names: NoRights", "NoRights",
-          type(ap.github_failure("GitHub PR", 404, {"message": "Not Found"}, not_found_is_rights=True)).__name__)
-    check("... and says the token cannot see the repository or the PR", True,
-          "the token cannot see the repository or the PR" in str(ap.github_failure("GitHub PR", 404, {"message": "Not Found"}, not_found_is_rights=True)))
-    check("a 500 on that read is still a Failed", "Failed",
-          type(ap.github_failure("GitHub PR", 500, {}, not_found_is_rights=True)).__name__)
+    check("404 on its own: a Failed (the cause is not known from the 404 alone)", "Failed", kind(404, {"message": "Not Found"}))
+    def k404(repo_code, msg=""):
+        return ap.pr_read_404("KratoBal", "acroveliq", 198, repo_code, msg)
+    check("404 on the PR read, the repository reads 200: a REFUSAL (the package names a PR that is not there)", "Refused", type(k404(200)).__name__)
+    check("... and says the package PR number is wrong", True, "the package PR number is wrong" in str(k404(200)))
+    for rc in (404, 403, 401):
+        check(f"404 on the PR read, the repository read answers {rc}: NoRights (the token cannot see the repository)", "NoRights", type(k404(rc)).__name__)
+    check("... and says so", True, "the token cannot see the repository" in str(k404(404)))
+    check("404 on the PR read, the repository read fails with a 502: only a Failed", "Failed", type(k404(502)).__name__)
+    check("404 on the PR read, the repository read hits a rate limit (403 or 429): only a Failed", ("Failed", "Failed"),
+          (type(k404(403, "You have exceeded a secondary rate limit.")).__name__, type(k404(429)).__name__))
     check("the text names the call, the status and GitHub's own words", "GitHub review HTTP 403: Resource not accessible by personal access token",
           str(ap.github_failure("GitHub review", 403, forbidden)))
     check("no message from GitHub: just the status", "GitHub PR HTTP 500", str(ap.github_failure("GitHub PR", 500, {})))
@@ -326,18 +330,41 @@ try:
                 except Exception as e:  # the class decides the exit code
                     got = type(e).__name__
                 check(f"real {what}, HTTP {code_}: {want}", want, got)
-        # a 404 is a rights problem only on the PR READ; on the review POST it stays a plain failure
-        ap.http = lambda *a, **k: (404, {"message": "Not Found"})
-        for what, call, want in (("PR read", lambda e: e["get_pr"]("KratoBal", "acroveliq", 198), "NoRights"),
-                                 ("review", lambda e: e["post_review"]("KratoBal", "acroveliq", 198, {"event": "APPROVE"}), "Failed")):
+        # a 404 on the PR READ asks the repository once, and the second answer decides; no other call asks twice
+        def fake(pr_code, repo_code):
+            calls = []
+            def http(method, url, token, body=None, auth="Bearer"):
+                calls.append((method, url))
+                if "/pulls/" in url:
+                    return pr_code, {"message": "Not Found"} if pr_code == 404 else {}
+                return repo_code, {"message": "Not Found"} if repo_code == 404 else {}
+            return http, calls
+        def attempt(call):
             try:
                 call(ap.real_env())
-                got = "returned"
+                return "returned"
             except Exception as e:
-                got = type(e).__name__
-            check(f"real {what}, HTTP 404: {want}", want, got)
+                return type(e).__name__
+        read = lambda e: e["get_pr"]("KratoBal", "acroveliq", 198)
+        for repo_code, want in ((200, "Refused"), (404, "NoRights"), (403, "NoRights"), (401, "NoRights"), (502, "Failed")):
+            ap.http, calls = fake(404, repo_code)
+            check(f"real PR read 404, repository {repo_code}: {want}", want, attempt(read))
+            check("... the repository was read once, with a GET, from the same repository", [("GET", "https://api.github.com/repos/KratoBal/acroveliq")],
+                  [c for c in calls if "/pulls/" not in c[1]])
+        ap.http, calls = fake(200, 200)
+        check("real PR read 200: no repository read", (1, "returned"), (lambda g: (len(calls), g))(attempt(read)))
+        ap.http, calls = fake(500, 200)
+        check("real PR read 500: a Failed and no repository read", (1, "Failed"), (lambda g: (len(calls), g))(attempt(read)))
+        ap.http, calls = fake(403, 200)
+        check("real PR read 403: NoRights and no repository read", (1, "NoRights"), (lambda g: (len(calls), g))(attempt(read)))
+        ap.http, calls = fake(404, 200)
+        review = lambda e: e["post_review"]("KratoBal", "acroveliq", 198, {"event": "APPROVE"})
+        got = attempt(review)
+        check("real review POST 404: a Failed, and exactly the one call (no repository read)", (1, "Failed"), (len(calls), got))
     finally:
         ap.http, ap.read_secret = real_http, real_secret
+    run10 = ap.run(["approve", "KratoBal/acroveliq", "198", "t-x"], {**aenv, "get_pr": raiser(ap.Refused("the PR KratoBal/acroveliq#198 does not exist: the package PR number is wrong"))})
+    check("run: a PR that is not there: exit 10, a refusal, not a token problem", (10, True), (run10[0], run10[1].startswith("fleet-approve: refused: the PR")))
 
     print("the credential helper")
     helper = os.path.join(T, "git-credential-fleet-github")

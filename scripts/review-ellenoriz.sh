@@ -237,9 +237,9 @@ github_review() {
   rc=$?
   if [ "$rc" -ne 0 ]; then
     case "$rc" in
-      10) why="elutasitva (nincs rogzitett APPROVE erre a fejre, a PR feje mas, mint amit atneztel, vagy a PR mar nem nyitott): a fejlesztotol uj csomag kell" ;;
+      10) why="elutasitva (nincs rogzitett APPROVE erre a fejre, a PR feje mas, mint amit atneztel, a PR mar nem nyitott, vagy a csomag PR-szama hibas): a fejlesztotol uj csomag kell" ;;
       13) why="a GitHub nem valaszolt vagy hibat adott: ujraprobalhato" ;;
-      14) why="a gepi fiok TOKENJENEK jogkore hianyzik (GitHub 401/403, vagy 404 a PR olvasasanal): ez nem atmeneti, ujraproba nem segit" ;;
+      14) why="a gepi fiok TOKENJENEK jogkore hianyzik (GitHub 401/403, vagy 404 a PR olvasasanal ugy, hogy a repo sem latszik): ez nem atmeneti, ujraproba nem segit" ;;
       *) why="ismeretlen hiba" ;;
     esac
     echo "FAIL: az idovonalon es a root rekordban az APPROVE megvan, de a GitHub-review NEM jott letre (kilepes $rc, $why): $(head -c 300 "$T/approve")" >&2
