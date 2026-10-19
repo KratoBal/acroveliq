@@ -186,6 +186,39 @@ measured it yet (plan v2, "Mérés és határ"). The smoke test, with the owner 
 Only after step 3 and 4 are seen does the sorting task (slice 4) include `archival`. Until then it runs `lista`, `olvas`
 and `cimkez` only.
 
+## The sorter of balazs@ (slice 4b, task level-kozvetito-4b; `src/level-besorol.ts`, `scripts/level-besorol.sh`)
+
+```
+bash /home/marveen/marveen/scripts/level-besorol.sh [--nez] [--q <gmail search>] [--max <1-50>] [--allapot <file>]
+```
+
+One run: the five labels are made if missing (`cimke-letrehoz`), `lista` names the inbox mails (default `in:inbox newer_than:2d`,
+30), `olvas` gives each body (redacted by the relay), a **tool-less** reader places them, this code checks its table, `cimkez`
+puts the labels on, and the **daily list** is printed. `--nez`: everything but the writes (no label made or put on, no state).
+
+- **The reader** is one claude process with `-p --restricted --tools "" --strict-mcp-config --no-session-persistence`
+  (`CLASSIFIER_ARGS`, pinned by a test; widening it is a permission change), the fixed instruction as its argument and the mails
+  on its standard input, ten at a time, at most 2000 characters of body each. It answers ONLY a table
+  `[{"id","cimke"}, ...]`. **The script checks it, not the reader:** an element passes with exactly the keys `id` and `cimke`, an id
+  that was in the input, and a label that is exactly one of the five; everything else (an extra field, an unknown id, `TRASH`,
+  prose around the table) is dropped and counted; an id given two different labels is dropped. A mail's own text cannot pass for
+  a section marker of the reader's input (`===` runs are made inert).
+- **The daily list** holds counts, the mails waiting for an answer (`Ügyfél`, `Beszállító`, `Tennivaló`: sender name at most 40 and
+  subject at most 60 characters, both through #33's `neutralDescription`, with the mail id), the unplaced ids, the excluded domains
+  and the errors. **No model-written text is in it.** The sender is shown by display name, or domain: never the address.
+- **What it never does:** `archival` and `inbox-vissza` (barracuda's binding: archiving stays out of the scheduled sorting until
+  the first smoke test above has measured the `labelIds` answer shape; a test pins the verb list in the source); sending; reading an
+  excluded sender's mail (it is listed by domain only and goes to neither `olvas` nor the reader).
+- **State** (`store/level-besorol-allapot.json`, 0600): a mail it labelled is skipped for 14 days, an unplaced one for the rest of
+  that day (retried the next day); a mail whose `olvas` or `cimkez` failed is not recorded, so the next run tries it again.
+- **The excluded senders** are the relay's own `excludedSenders` setting (`config.json`); the owner has not given the list yet, so
+  it holds the starter domains and can be widened without a code change.
+- **Not measured (no live relay, no claude binary for the author):** a real reader call (the first run must be `--nez` and then a
+  canary mail that asks the reader to run a command or read a file: the table must come back clean); that `--tools ""` means "no tool"
+  in the installed claude (the documented reference says so); that a mail on stdin of `claude -p` is read as input; the Gmail search
+  that selects the not-yet-sorted mails (`in:inbox newer_than:2d` plus this state file, because `lista` does not show labels). The
+  delivery of the list to the owner (the channel is his decision 1) is the scheduled task's, not this script's.
+
 ## The fleet's side (scripts/level-kozvetito.sh, the GCAL_KOZVETITO switch of scripts/gcal.sh)
 
 `bash /home/marveen/marveen/scripts/level-kozvetito.sh <info|balazs> <verb> < body.json` is the one HTTP client: the
