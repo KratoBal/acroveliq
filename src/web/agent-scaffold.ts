@@ -721,6 +721,50 @@ export function ensureReadonlyCommandGate(name: string): boolean {
   return true
 }
 
+// The B29 shadow hook (B29 step 2, task b29-arnyek-hook): on the MAIN agent only, a PreToolUse
+// hook on every tool that records whether the fo-agens strict profile would have allowed, asked or
+// denied the call (store/b29-arnyek/<day>.jsonl). It never blocks, asks or prints. It is wired only
+// while the switch is on (`B29_ARNYEK_HOOK=1` in .env, the owner's word), and removed when it is
+// off, so the switch is one line both ways. A settings change reaches a running session at its next
+// start. Why not the #219 hook: under --dangerously-skip-permissions the engine never fires
+// PermissionRequest, so a shadow #219 would log nothing (scripts/hooks/b29-arnyek.py).
+const _b29ShadowScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'b29-arnyek.py')
+export const B29_SHADOW_CMD = `bash -c '[ -f ${_b29ShadowScript} ] && exec python3 ${_b29ShadowScript}; exit 0'`
+const B29_MARK = 'b29-arnyek.py'
+
+export function setB29ShadowHook(existing: Record<string, unknown>, on: boolean): boolean {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  const kept = prev.filter((e) => !JSON.stringify(e).includes(B29_MARK))
+  const had = kept.length !== prev.length
+  if (!on) {
+    if (!had) return false
+    hooks.PreToolUse = kept
+    return true
+  }
+  if (had) return false
+  if (isUnsafeHookCommand(B29_SHADOW_CMD)) return false
+  hooks.PreToolUse = [...kept, { matcher: '*', hooks: [{ type: 'command', command: B29_SHADOW_CMD, timeout: 10 }] }]
+  return true
+}
+
+export function ensureB29ShadowHook(name: string, on: boolean): boolean {
+  if (name !== MAIN_AGENT_ID) return false
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  } else if (!on) {
+    return false
+  }
+  if (!setB29ShadowHook(settings, on)) return false
+  mkdirSync(dirname(settingsPath), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 // The permission-approval hook (B48 pótlás, Balázs 2026-10-16 10:36 UTC): when
 // Claude Code would show a Bash permission dialog, the PermissionRequest hook
 // answers it with the owner's Discord decision (#33) or a deny that says why,

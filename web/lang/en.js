@@ -1646,6 +1646,8 @@ window._i18n.en = {
   'overview.stat.tasks':         'Tasks run today',
   'overview.stat.memories':      'Memory',
   'overview.stat.skills':        'Generated skills',
+  'overview.stat.b29':           'Would have asked today (B29 shadow)',
+  'overview.stat.b29_sub':       '{deny} denied · {total} calls · estimate',
   'overview.card.team':          'Team',
   'overview.card.activity':      'Activity',
   'overview.meta.live':          'live status',

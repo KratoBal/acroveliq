@@ -11682,6 +11682,17 @@ async function loadOverview() {
     document.getElementById('statMemoriesSub').textContent = `${t('overview.stat.sub.memories')} · ${d.memories.categories} category`
     document.getElementById('statSkills').textContent = d.skills.count
     document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? t('overview.stat.skills_today', { n: d.skills.today }) : ''
+    // B29 step 2: the main agent's shadow counts, shown only while the hook writes data
+    fetch('/api/measurements/b29-arnyek?days=1').then((r) => (r.ok ? r.json() : null)).then((b) => {
+      const today = b && b.days && b.days[b.days.length - 1]
+      const card = document.getElementById('statB29Card')
+      // the newest file can be an earlier day: then there is no count for today
+      if (!card || !today || today.day !== new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Budapest' })) return
+      card.hidden = false
+      document.getElementById('statB29').textContent = today.ask
+      document.getElementById('statB29Sub').textContent = t('overview.stat.b29_sub', { deny: today.deny, total: today.total })
+      card.title = (today.topAsk || []).map((x) => x.count + '× ' + x.key).join('\n')
+    }).catch(() => {})
     // Team: reuse the hierarchy graph renderer so the overview card shows
     // exactly what the Csapat page does (avatars + reports-to tree).
     try {
