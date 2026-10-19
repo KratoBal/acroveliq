@@ -588,8 +588,11 @@ try:
     except hv.Refused:
         outcome = 'Refused'
     check('naplo: a filter that fails releases NOTHING (no raw log)', 'Refused', outcome)
-    os.chmod(broken, 0o777)
-    hv.FILTER_FILE = broken
+    # a WORKING filter in a file others can write: loading it would succeed, so only the owner check refuses it
+    writable = os.path.join(CONF, 'irhato-szuro')
+    _shutil.copyfile(FILTER_COPY, writable)
+    os.chmod(writable, 0o777)
+    hv.FILTER_FILE = writable
     check('naplo: a filter file others can write is not loaded', 'Refused', outcome_of(hv.cmd_naplo, ['levelkozvetito']))
     hv.FILTER_FILE = real_filter
     FAKE.logs_out = b'x ' * 400000
