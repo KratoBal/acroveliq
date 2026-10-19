@@ -22,8 +22,17 @@ Roles (the token's permissions; GitHub narrows the token to exactly these and to
              role can merge an approved, green PR: the roles differ here and in the log, not on GitHub)
   pr         pull requests write, contents read (open a PR, comment)
   beolvaszt  contents write, pull requests and checks read (the merge)
-No role carries workflows, administration, secrets or webhooks. A workflow-file change needs a
-separate, human-approved verb (the sheet, section 3), which this first version does not have.
+  ci         contents write, workflows write (ONE commit of a workflow file that the owner approved on
+             Discord; see below). Not a role anybody asks for.
+No role but `ci` carries workflows, and none carries administration, secrets or webhooks.
+
+THE `ci` ROLE OPENS THE `workflows` PERMISSION ON ONE DOOR ONLY (the sheet, section 3; Balázs gave the GitHub
+App the Workflows permission on 2026-10-19 11:18 UTC, and this is the only thing that can use it). It is
+refused for every caller that arrives through sudo, WHATEVER app.json says: the caller must be root itself,
+called by `root-telepito ci-vegrehajt` after the owner's `igen <code>` on the exact change, with the sudo
+variables scrubbed. So the token never reaches an agent: root uses it for one commit and drops it. An agent
+that runs `sudo fleet-github token <repo> ci` gets a refusal, and a config line that lists `ci` for an agent
+changes nothing.
 
 Who may ask for what: the root-owned /etc/fleet-github/app.json, `callers`: an OS user, a repository
 name (or "*"), the roles. The caller is the sudo caller (SUDO_UID), never an argument.
@@ -61,8 +70,11 @@ ROLE_PERMISSIONS = {
     'pr': {'metadata': 'read', 'contents': 'read', 'pull_requests': 'write'},
     'beolvaszt': {'metadata': 'read', 'contents': 'write', 'pull_requests': 'read', 'checks': 'read',
                   'statuses': 'read'},
+    'ci': {'metadata': 'read', 'contents': 'write', 'workflows': 'write'},
 }
 NEVER = ('workflows', 'administration', 'secrets', 'repository_hooks', 'organization_administration')
+# the one role that may carry `workflows`, and only for a caller that is root itself (see the docstring)
+CI_ROLE = 'ci'
 
 OWNER_RX = re.compile(r'^[A-Za-z0-9][A-Za-z0-9-]{0,38}$')
 REPO_RX = re.compile(r'^[A-Za-z0-9._-]{1,100}$')
@@ -205,7 +217,12 @@ def run(argv, env):
         cfg = load_config(env['config_file'], env.get('getstat', os.lstat))
         if owner != cfg['owner'] or repo not in cfg['repos']:
             raise Refused(f'not a fleet repository: {owner}/{repo}')
-        if not allowed(cfg, env['caller'], repo, role):
+        if role == CI_ROLE:
+            # not a matter of configuration: root itself, not through sudo (SUDO_UID is how an agent
+            # arrives), and the config is not even asked
+            if env['caller'] != 'root' or env.get('via_sudo'):
+                raise Refused(f'the {CI_ROLE} role is only for root-telepito, not for {env["caller"]}')
+        elif not allowed(cfg, env['caller'], repo, role):
             raise Refused(f'{env["caller"]} may not have {role} on {repo}')
         root_file(env['key_file'], env.get('getstat', os.lstat), secret=True)
         sign = env.get('sign') or openssl_sign(env['key_file'])
@@ -233,6 +250,7 @@ def caller_name():
 if __name__ == '__main__':
     os.umask(0o077)
     code, out = run(sys.argv[1:], {'config_file': CONFIG_FILE, 'key_file': KEY_FILE, 'log_file': LOG_FILE,
-                                   'caller': caller_name(), 'post': real_post})
+                                   'caller': caller_name(), 'post': real_post,
+                                   'via_sudo': 'SUDO_UID' in os.environ or 'SUDO_USER' in os.environ})
     (sys.stdout if code == 0 else sys.stderr).write(out + '\n')
     sys.exit(code)

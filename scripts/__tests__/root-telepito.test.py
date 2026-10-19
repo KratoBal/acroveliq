@@ -365,6 +365,23 @@ try:
     check('visudo checked the staged copy, the file before the rename and the whole configuration', True,
           sum(1 for line in open(VISUDO_LOG) if line.strip()) >= 3)
 
+    print('the approval line: up to 1500 characters for this category, no more')
+    def sudoers_line_length(count):
+        text = ''.join('%s ALL=(root) NOPASSWD: %s send arg%d\n' % (ME, BROKER, i) for i in range(count))
+        c = commit()
+        FILES[('templates/sudoers/fleet-pane', c)] = text.encode()
+        FILES[('templates/sudoers/fleet-pane', 'main')] = text.encode()
+        ON_MAIN[c] = True
+        try:
+            return len(kerj('fleet-pane-sudoers', c)['canonicalLine'])
+        except rt.Refused as e:
+            return 'refused:' + str(e)[:40]
+    mid = sudoers_line_length(8)
+    check('a line between 500 and 1500 characters is accepted (the category\'s own limit)', True,
+          isinstance(mid, int) and 500 < mid <= 1500)
+    over = sudoers_line_length(30)
+    check('a line over 1500 characters is refused, not cut', True, isinstance(over, str) and over.startswith('refused:'))
+
     print('the durable store')
     rt.REQUIRE_DURABLE_STORE = True
     check('refused when the store is not a mount', 'Refused', refused(kerj, 'fleet-pane', C2))
