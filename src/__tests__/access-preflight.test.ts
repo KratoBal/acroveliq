@@ -1,7 +1,9 @@
 // scripts/access-preflight.ts, run for real on a throwaway database. WHAT
 // TURNS THIS RED: the switch looks safe (exit 0) while a would-be denial is
 // logged; legacy-szukitett lists another caller than the shared token; an
-// already enforced denial or an old day is listed as new.
+// already enforced denial or an old day is listed as new; --since-ts (the daily run's window, task
+// preflight-ablak) dropping a row last seen after its start because its DAY is yesterday, or keeping one
+// last seen before it.
 import { describe, it, expect, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -35,6 +37,38 @@ const preflight = (db: string, ...args: string[]) => {
 }
 
 describe('access preflight', () => {
+  it('ACCESS-PREFLIGHT-SINCE-TS: the window is the last_seen time, not the day: yesterday after the start is in, before it is out', () => {
+    const file = join(root, `${Math.random().toString(36).slice(2)}.db`)
+    const db = new Database(file)
+    ensureAccessDecisionSchema(db)
+    const now = Math.floor(Date.now() / 1000)
+    const start = now - 30 * 3600 // the previous good run, yesterday or the day before
+    const put = (actor: string, path: string, outcome: 'denied' | 'would-deny', lastSeen: number) =>
+      db.prepare(
+        `INSERT INTO access_decisions (day, project, actor, method, path, outcome, mode, reason, count, first_seen, last_seen)
+         VALUES (?, 'acropora', ?, 'GET', ?, ?, 'naplo', 'no rule for this route: default-deny', 1, ?, ?)`,
+      ).run(localDay(lastSeen), actor, path, outcome, lastSeen, lastSeen)
+    put('acrobot', ':ismeretlen /api/memories', 'would-deny', now - 26 * 3600) // the 10-16 case: after the start, an old day
+    put('acrobot', ':ismeretlen /api/tasks', 'would-deny', now - 31 * 3600) // before the start: the previous run had it
+    put('murena', '/api/x', 'would-deny', now) // today
+    put('korall', '/api/y', 'denied', now - 3600) // already enforced: never new
+    db.close()
+    const json = (r: { out: string }) => JSON.parse(r.out.trim().split('\n').at(-1)!) as { since_ts: number | null; rows: Array<{ actor: string; path: string }> }
+    const win = preflight(file, '--since-ts', String(start), '--json')
+    const oneDay = preflight(file, '--napok', '1', '--json')
+    expect([
+      win.code, json(win).since_ts, json(win).rows.map((r) => `${r.actor} ${r.path}`),
+      json(oneDay).rows.some((r) => r.path === ':ismeretlen /api/memories'),
+      preflight(file, '--since-ts', String(start), '--napok', '1').code,
+      preflight(file, '--since-ts', 'tegnap').code,
+      preflight(file, '--since-ts', '0').code,
+    ], 'ACCESS-PREFLIGHT-SINCE-TS').toEqual([
+      1, start, ['acrobot :ismeretlen /api/memories', 'murena /api/x'],
+      false, // the old --napok 1 window: the gap this closes
+      2, 2, 2,
+    ])
+  }, 60_000) // seven tsx starts
+
   it('ACCESS-PREFLIGHT: lists what the mode would newly deny and stops the switch while the list holds anything', () => {
     const db = database([
       ['legacy', 'POST', '/api/schedules', 'would-deny', 0],

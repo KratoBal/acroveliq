@@ -17,6 +17,14 @@ Verdict:
             run failed: a timeout, an exit code the preflight does not define, or no readable
             JSON. A check that could not run is never reported as clean.
 
+Window (task preflight-ablak, 2026-10-19): every run reads from the START of the previous run whose
+window was delivered: both modes evaluated, the daily-log entry sent, and on JELZES the message too
+(store/access-preflight/napi.since, written only then), not a calendar day.
+With `--napok 1` the 07:30 run read today only, and the previous day's rows after 07:30 reached no
+report (acrobot's two would-deny rows of 10-16 12:43 and 14:14). A failed or undelivered run leaves
+napi.since as it was, so its window is read again by the next one. With no usable napi.since (the first run, an unreadable
+file, a time in the future) the window is the last two calendar days, and the report says so.
+
 Output (the dashboard is where it is read):
   every run   one daily-log entry for acrobot, and one line in store/access-preflight/napi.last
   JELZES      also one inter-agent message to acrobot
@@ -55,6 +63,7 @@ def paths(root):
     return {
         'dir': d,
         'last': os.path.join(d, 'napi.last'),
+        'since': os.path.join(d, 'napi.since'),
         'lock': os.path.join(d, '.lock'),
     }
 
@@ -67,9 +76,22 @@ def adat(s, limit=200):
     return q if len(q) <= limit else q[:limit] + '..."(csonkitva)'
 
 
-def run_mode(args, mode, out):
+def window_of(since_file, now):
+    """(preflight arguments, report words): from the previous good run's start, or two calendar days."""
+    try:
+        with open(since_file) as fh:
+            ts = int(fh.read().strip())
+    except (OSError, ValueError):
+        ts = None
+    if ts is not None and 0 < ts <= now:
+        when = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M')
+        return ['--since-ts', str(ts)], f'az elozo jo futas ({when}) ota'
+    return ['--napok', '2'], 'az elmult 2 naptari nap (nincs hasznalhato elozo futas)'
+
+
+def run_mode(args, mode, out, window=('--napok', '2')):
     """One preflight run. Returns (rows, error): rows is the list, error a sentence or None."""
-    cmd = [args.tsx, args.preflight, '--mode', mode, '--napok', '1', '--json']
+    cmd = [args.tsx, args.preflight, '--mode', mode, *window, '--json']
     out.write(f'$ {" ".join(cmd)}\n')
     out.flush()
     try:
@@ -134,14 +156,14 @@ def previous_legacy(last_file):
     return int(m.group(1)) if m else None
 
 
-def report_text(verdict, facts, errors, out_txt, previous=None, newest=None):
+def report_text(verdict, facts, errors, out_txt, previous=None, newest=None, window='az elmult 2 naptari nap'):
     if errors:
         lines = ['JELZES: a hozzaferesi preflight nem ertekelheto:'] + [f'  {e}' for e in errors]
         lines.append(f'Kimenet: {out_txt}')
         return '\n'.join(lines)
     lines = [
         f"{verdict}: kikenyszerit {facts['kikenyszerit']} sor, ebbol nevvel {len(facts['nevvel'])}, "
-        f"legacy {facts['legacy_maradek']}; legacy-szukitett {facts['legacy_szukitett']} sor (elmult 1 nap); "
+        f"legacy {facts['legacy_maradek']}; legacy-szukitett {facts['legacy_szukitett']} sor ({window}); "
         f"elozo futas legacy: {'-' if previous is None else previous}."
     ]
     lines.append('A legfrissebb naplozott tiltas: ' + (
@@ -199,9 +221,10 @@ def futtat(args):
     stamp = datetime.datetime.fromtimestamp(now).strftime('%Y-%m-%d-%H%M%S')
     out_txt = os.path.join(p['dir'], f'futas-{stamp}.txt')
     results, errors = {}, []
+    window, window_words = window_of(p['since'], now)
     with open(out_txt, 'w') as out:
         for mode in MODES:
-            rows, err = run_mode(args, mode, out)
+            rows, err = run_mode(args, mode, out, window)
             if err:
                 errors.append(err)
             else:
@@ -211,7 +234,7 @@ def futtat(args):
         verdict = 'JELZES'
     else:
         verdict, facts = classify(results)
-    text = report_text(verdict, facts, errors, out_txt, previous_legacy(p['last']), getattr(args, 'newest', None))
+    text = report_text(verdict, facts, errors, out_txt, previous_legacy(p['last']), getattr(args, 'newest', None), window_words)
     first = text.splitlines()[0]
     # .last: epoch first, so a shell can read it with `read` and nothing else
     with open(p['last'] + '.tmp', 'w') as fh:
@@ -222,11 +245,19 @@ def futtat(args):
     ok, resp = send(['bash', args.naplo_cmd, 'acrobot', 'Hozzaferesi preflight (napi, P0-1 L4)', '-'], text, p['dir'])
     if not ok:
         print(f'FAIL: a naplo-bejegyzes nem ment el: {resp}', file=sys.stderr)
+    ok2 = True
     if verdict == 'JELZES':
         msg = '[P0-1-L4-JELZES] A napi hozzaferesi preflight jelez.\n' + text
         ok2, resp2 = send(['bash', args.uzenet_cmd, 'acrobot', 'acrobot', '-'], msg, p['dir'])
         if not ok2:
             print(f'FAIL: az uzenet nem ment el: {resp2}', file=sys.stderr)
+    # the next window starts here, and only when this run's window has been delivered: both modes
+    # evaluated, the daily-log entry sent, and on JELZES the message too (barracuda, #235 review: a
+    # JELZES whose message did not go must be read again, or it never reaches acrobot)
+    if not errors and ok and ok2:
+        with open(p['since'] + '.tmp', 'w') as fh:
+            fh.write(f'{int(now)}\n')
+        os.replace(p['since'] + '.tmp', p['since'])
     if errors:
         return 3
     return 1 if verdict == 'JELZES' else 0

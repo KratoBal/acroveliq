@@ -17,6 +17,7 @@ Run: python3 -B <thisfile>   Exit 0 = all pass.
 """
 import importlib.util
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -46,6 +47,9 @@ def check(name, ok):
 FAKE_PREFLIGHT = r'''
 import json, os, sys, time
 mode = sys.argv[sys.argv.index('--mode') + 1]
+if os.environ.get('FAKE_ARGV_LOG'):
+    with open(os.environ['FAKE_ARGV_LOG'], 'a') as fh:
+        fh.write(' '.join(sys.argv[sys.argv.index('--mode'):]) + '\n')
 spec = json.loads(os.environ['FAKE_SPEC'])[mode]
 time.sleep(spec.get('sleep', 0))
 print('[db] opened')  # a log line before the JSON, as the database layer may write
@@ -89,7 +93,7 @@ class Env:
                 '--uzenet-cmd', os.path.join(self.bin, 'uzenet.sh')]
 
     def run(self, spec, mod='futtat', timeout=30):
-        env = dict(os.environ, FAKE_SPEC=json.dumps(spec))
+        env = dict(os.environ, FAKE_SPEC=json.dumps(spec), FAKE_ARGV_LOG=os.path.join(self.bin, 'argv.log'))
         return subprocess.run([sys.executable, '-B', NAPI] + self.args(mod, timeout), env=env,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=120)
 
@@ -125,7 +129,8 @@ check('only legacy rows: no message', e.sent('uzenet') == '')
 check('the legacy calls are listed per route in the daily entry, the most frequent first',
       '  legacy "GET" "/api/z" 39x\n  legacy "GET" "/api/a" 3x' in e.sent('naplo'))
 r2 = e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [])})
-check('the next run shows the previous legacy count', 'legacy 0; legacy-szukitett 0 sor (elmult 1 nap); elozo futas legacy: 1.' in e.sent('naplo'))
+check('the next run shows the previous legacy count, and its window: since the previous good run',
+      re.search(r'legacy 0; legacy-szukitett 0 sor \(az elozo jo futas \(\d{4}-\d{2}-\d{2} \d{2}:\d{2}\) ota\); elozo futas legacy: 1\.', e.sent('naplo')) is not None)
 check('and the newest logged denial', 'A legfrissebb naplozott tiltas: ' in e.sent('naplo') and 'nincs (a tabla ures)' not in e.sent('naplo'))
 e.done()
 
@@ -135,6 +140,56 @@ r = e.run({'legacy-szukitett': answer('legacy-szukitett', []),
 check('an agent on the kikenyszerit list: exit 1, JELZES', r.returncode == 1 and ' JELZES ' in e.last())
 check('the message goes to acrobot and names the call as data',
       'acrobot|acrobot|-|' in e.sent('uzenet') and '"murena" "PATCH" "/api/approvals/:id" (3x' in e.sent('uzenet'))
+e.done()
+
+
+
+print('the window (task preflight-ablak): from the previous GOOD run, never a calendar day that leaves a gap')
+e = Env()
+argv_log = os.path.join(e.bin, 'argv.log')
+def windows():
+    try:
+        return [l.split('--json')[0].split(' ', 2)[2].strip() for l in open(argv_log).read().splitlines()]
+    except FileNotFoundError:
+        return []
+good = {'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [])}
+t_before = int(time.time())
+e.run(good)
+check('the first run (no napi.since): both modes ask for the last 2 calendar days', windows() == ['--napok 2', '--napok 2'])
+check('... and the report says so', 'az elmult 2 naptari nap (nincs hasznalhato elozo futas)' in e.sent('naplo'))
+since1 = int(open(e.p['since']).read())
+check('a good run writes napi.since: its own start', t_before <= since1 <= int(time.time()))
+open(argv_log, 'w').close()
+time.sleep(1.1)  # a later second than since1, or a failed run that wrongly moved it would write the same number
+e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': {'rc': 1, 'out': 'not json'}})
+check('the next run reads from the previous good run, both modes', windows() == ['--since-ts %d' % since1] * 2)
+check('a failed run does NOT move napi.since (its window is read again)', int(open(e.p['since']).read()) == since1)
+open(argv_log, 'w').close()
+time.sleep(1.1)  # so the good run's start is a later second than since1: "moved" is then measurable
+t3 = int(time.time())
+e.run(good)
+check('so the run after the failure still starts at the last good one', windows() == ['--since-ts %d' % since1] * 2)
+check('and only now does napi.since move on, to this run\'s start', int(open(e.p['since']).read()) >= t3 > since1)
+# barracuda, #235 review: a JELZES whose message does not go must not move the window, nor a run whose
+# daily-log entry does not go
+jelzes = {'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [row('murena')])}
+for which, name in (('uzenet', 'a JELZES whose message fails'), ('naplo', 'a run whose daily-log entry fails')):
+    before = int(open(e.p['since']).read())
+    keep = open(os.path.join(e.bin, which + '.sh')).read()
+    open(os.path.join(e.bin, which + '.sh'), 'w').write('#!/usr/bin/env bash\ncat >/dev/null; echo "FAIL: nem ment" >&2; exit 1\n')
+    time.sleep(1.1)
+    open(argv_log, 'w').close()
+    e.run(jelzes if which == 'uzenet' else good)
+    check(name + ': napi.since does not move', int(open(e.p['since']).read()) == before)
+    open(os.path.join(e.bin, which + '.sh'), 'w').write(keep)
+    open(argv_log, 'w').close()
+    e.run(good)
+    check('... so the next run reads that window again', windows() == ['--since-ts %d' % before] * 2)
+for bad, name in (('holnap', 'an unreadable napi.since'), (str(int(time.time()) + 86400), 'a napi.since in the future')):
+    open(e.p['since'], 'w').write(bad + '\n')
+    open(argv_log, 'w').close()
+    e.run(good)
+    check(name + ': the 2-day fallback, not a gap and not a crash', windows() == ['--napok 2', '--napok 2'])
 e.done()
 
 print('2. a run that could not be evaluated is never clean')
