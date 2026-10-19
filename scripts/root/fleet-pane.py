@@ -642,6 +642,12 @@ class Broker:
         if over():
             self.drop_typed(line, before)
             raise Refused(11, 'deliver-timeout')
+        if box_state(before['plain'], line)[0] == 'stub-ours':
+            # the TUI folded our text AFTER the settle (a late fold): it is ours (this call typed into a box seen empty), so empty it
+            # now rather than leave a stub parked for a takeover to puzzle over
+            if not self.clear_typed():
+                raise Refused(11, 'placeholder-stuck')
+            raise Refused(11, 'placeholder-cleared')
         if not box_holds_only(before['plain'], line):
             raise Refused(11, 'placeholder' if PASTE_RX.search(before['plain']) else 'not-in-box')
         for attempt in range(SUBMIT_RETRIES + 1):

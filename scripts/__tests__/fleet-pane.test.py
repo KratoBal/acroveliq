@@ -655,8 +655,9 @@ class Tui(Pane):
     GAP = 0.10
     FOLD_AT = 700
 
-    def __init__(self, late=0.0, redraw_delay=0.3, intrude=None, **kw):
+    def __init__(self, late=0.0, redraw_delay=0.3, intrude=None, fold_over=None, fold_later=None, cc_ignore=0, **kw):
         super().__init__(**kw)
+        self.fold_over, self.fold_later, self.cc_ignore, self.cc_ignored, self.fold_due = fold_over, fold_later, cc_ignore, 0, None
         self.intrude = intrude
         self.T = 0.0
         self.buf, self.burst, self.last, self.stub_content = '', [], None, ''
@@ -673,7 +674,15 @@ class Tui(Pane):
     def real(self):
         return self.buf + ''.join(self.burst)
 
+    def fold(self):
+        self.stubs += 1
+        self.stub_content = self.buf[80:]
+        self.buf = self.buf[:80] + '[Pasted text #%d]' % self.stubs
+
     def flush(self, force=False):
+        if self.fold_due is not None and self.T >= self.fold_due and '[Pasted text' not in self.buf:
+            self.fold()
+            self.shown, self.queue, self.fold_due = self.buf, [], None
         if self.burst and (force or self.T - self.last >= self.GAP):
             if len(self.burst) >= 2 and sum(len(x) for x in self.burst) > self.FOLD_AT:
                 self.stubs += 1
@@ -682,6 +691,12 @@ class Tui(Pane):
             else:
                 self.buf += ''.join(self.burst)
             self.burst = []
+            due = (self.T if force else self.last + self.GAP)
+            if '[Pasted text' not in self.buf:
+                if self.fold_over and len(self.buf) > self.fold_over:
+                    self.fold()
+                elif self.fold_later is not None and len(self.buf) > self.FOLD_AT:
+                    self.fold_due = due + self.fold_later
             self.queue.append((((self.T if force else self.last + self.GAP)) + self.late, self.buf))
 
     def visible(self):
@@ -702,9 +717,12 @@ class Tui(Pane):
         self.last = self.T
 
     def on_key(self, k):
+        self.flush()
         if k == 'C-c':
             if not self.real():
                 self.exit_presses += 1
+            elif self.cc_ignored < self.cc_ignore:
+                self.cc_ignored += 1
             else:
                 self.buf, self.burst, self.stub_content = '', [], ''
                 self.queue = [(self.T + self.redraw_delay, '')]
@@ -821,6 +839,10 @@ p.preset(LONG[:80] + '[Pasted text #1]')
 tui_run(p, ['clear', 'proba'])
 check('T7c the stub still shows at the first look after the Ctrl-C and is gone at the next: the looks differ, so NO second Ctrl-C',
       (p.keys.count('C-c'), p.exit_presses, p.real()), (1, 0, ''))
+p = Tui(redraw_delay=0.1, cc_ignore=1)
+p.preset(LONG[:80] + '[Pasted text #1]')
+check('T6d the first Ctrl-C has no effect: a second one after another stable look, then empty, still no exit',
+      (tui_run(p, ['clear', 'proba', '--expect'], LONG.encode()), p.keys.count('C-c'), tui_state(p)), ((0, 'ok'), 2, ([], '', 0)))
 p = Tui()
 check('T7b clear on an empty box: refused box-empty, no Ctrl-C', (tui_run(p, ['clear', 'proba']), p.keys), ((12, 'box-empty'), []))
 
@@ -848,6 +870,24 @@ finally:
     fp.DELIVER_BASE, fp.DELIVER_PER_PIECE = saved
 check('T9 the broker deadline: typing stops, the typed beginning is emptied, deliver-timeout, no Enter',
       (res, tui_state(p), len([k for k in p.keys if k.startswith('TEXT:')]) < 25), ((11, 'deliver-timeout'), ([], '', 0), True))
+
+p = Tui(intrude='valaki mas piszkozata ')
+fp.DELIVER_BASE, fp.DELIVER_PER_PIECE = 0.3, 0.0
+try:
+    res = tui_run(p, ['deliver', 'proba'], LONG.encode())
+finally:
+    fp.DELIVER_BASE, fp.DELIVER_PER_PIECE = saved
+check('T9b the deadline hits while somebody else\'s draft is in the box: deliver-timeout, the draft stays (no Ctrl-C, no Delete)',
+      (res, [k for k in p.keys if k in ('C-c', 'C-k', 'Delete', 'Enter')], p.real().startswith('valaki mas piszkozata ')), ((11, 'deliver-timeout'), [], True))
+
+p = Tui(fold_later=0.25)
+check('T15 the TUI folds our text 0.25 s AFTER the settle, before the Enter: emptied (placeholder-cleared), never left parked, no Enter',
+      (tui_run(p, ['deliver', 'proba'], LONG.encode()), tui_state(p)), ((11, 'placeholder-cleared'), ([], '', 0)))
+
+p = Tui(fold_over=300)
+res = tui_run(p, ['deliver', 'proba'], LONG.encode())
+check('T16 the TUI folds even paced text past 300 chars: typing STOPS at the stub (a few pieces per pass), emptied, refused',
+      (res, tui_state(p), len([k for k in p.keys if k.startswith('TEXT:')]) < 14), ((11, 'placeholder-cleared'), ([], '', 0), True))
 
 PD = fp.load_pace
 check('T10 no pace file: the built-in values', PD(os.path.join(PDIR, 'nincs.json'), os.getuid()), {'piece': fp.PIECE_PAUSE, 'echo': fp.ECHO_WAIT})
