@@ -34,7 +34,8 @@
       "actions": [
         "deploy"
       ],
-      "approvalMinutes": 30
+      "approvalMinutes": 30,
+      "stageApp": "acropora-stage-api"
     },
     {
       "env": "prod",
@@ -46,7 +47,8 @@
       "actions": [
         "deploy"
       ],
-      "approvalMinutes": 30
+      "approvalMinutes": 30,
+      "stageApp": "acropora-stage-api"
     },
     {
       "env": "prod",
@@ -58,7 +60,8 @@
       "actions": [
         "deploy"
       ],
-      "approvalMinutes": 30
+      "approvalMinutes": 30,
+      "stageApp": "acropora-stage-api"
     },
     {
       "env": "prod",
@@ -102,5 +105,21 @@
       "database": "acropora",
       "approvalMinutes": 30
     }
-  ]
+  ],
+  "rules": {
+    "reviewerLogins": [
+      "replace-with-machine-login"
+    ],
+    "frozenPaths": [
+      "unas",
+      "medusa",
+      "webshop",
+      "storefront",
+      "kirakat",
+      "commerce"
+    ],
+    "frozenRepos": [
+      "KratoBal/acropora-commerce"
+    ]
+  }
 }

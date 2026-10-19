@@ -33,6 +33,45 @@ export interface GitHubReader {
   compare(repo: string, base: string, head: string): Promise<{ status: CompareStatus; baseSha: string } | null>
 }
 
+/** A pull request as the rule path reads it: which commit it merged as, into which branch, from which head. */
+export interface PullInfo {
+  number: number
+  merged: boolean
+  mergeCommitSha: string | null
+  baseRef: string
+  headSha: string
+}
+
+export interface ReviewInfo {
+  login: string
+  /** APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING */
+  state: string
+  commitId: string | null
+}
+
+export interface CheckRunInfo {
+  name: string
+  /** queued, in_progress, completed */
+  status: string
+  /** success, failure, neutral, cancelled, skipped, timed_out, action_required, null while running */
+  conclusion: string | null
+}
+
+/** The GitHub reads of the rule path (task vegrehajto-szabaly-jovahagyas). Each list is read whole, or the call throws. */
+export interface GitHubRuleReader {
+  /** the pull requests GitHub associates with the commit */
+  pullsForCommit(repo: string, sha: string): Promise<PullInfo[]>
+  /** every review of the pull request, oldest first */
+  reviews(repo: string, pr: number): Promise<ReviewInfo[]>
+  /** every check run on the commit */
+  checkRuns(repo: string, sha: string): Promise<CheckRunInfo[]>
+  /** every file the pull request changes, with the old path of a rename (GitHub lists at most 3000: a longer list throws) */
+  pullFiles(repo: string, pr: number): Promise<{ path: string; previousPath: string | null }[]>
+}
+
+/** Pages of 100; a list longer than this many pages is not judged (it throws). */
+export const RULE_MAX_PAGES = 30
+
 export interface CoolifyDeployment {
   commit: string | null
   status: string | null
@@ -109,11 +148,22 @@ export function discordRest(token: string, fetchImpl: typeof fetch = fetch): Dis
   }
 }
 
-export function githubRest(token: string, fetchImpl: typeof fetch = fetch): GitHubReader {
+export function githubRest(token: string, fetchImpl: typeof fetch = fetch): GitHubReader & GitHubRuleReader {
   const headers = {
     Accept: 'application/vnd.github+json',
     Authorization: `Bearer ${token}`,
     'X-GitHub-Api-Version': '2022-11-28',
+  }
+  const api = (repo: string) => `https://api.github.com/repos/${repo}`
+  /** every item of a paginated list, 100 a page; more than RULE_MAX_PAGES pages throws rather than judging a part */
+  const pages = async (url: string, items: (body: unknown) => unknown[]): Promise<unknown[]> => {
+    const out: unknown[] = []
+    for (let page = 1; page <= RULE_MAX_PAGES; page++) {
+      const batch = items(await getJson(fetchImpl, 'GitHub', `${url}?per_page=100&page=${page}`, headers))
+      out.push(...batch)
+      if (batch.length < 100) return out
+    }
+    throw new Error('GitHub list longer than the rule path reads')
   }
   return {
     async compare(repo, base, head) {
@@ -130,6 +180,41 @@ export function githubRest(token: string, fetchImpl: typeof fetch = fetch): GitH
         throw new Error('GitHub compare: unexpected status')
       }
       return { status, baseSha: String(body.base_commit?.sha ?? '') }
+    },
+    async pullsForCommit(repo, sha) {
+      const list = (await getJson(fetchImpl, 'GitHub', `${api(repo)}/commits/${sha}/pulls?per_page=100`, headers)) as unknown[]
+      return list.map((raw) => {
+        const p = (raw ?? {}) as { number?: unknown; merged_at?: unknown; merge_commit_sha?: unknown; base?: { ref?: unknown }; head?: { sha?: unknown } }
+        return {
+          number: Number(p.number),
+          merged: typeof p.merged_at === 'string' && p.merged_at !== '',
+          mergeCommitSha: typeof p.merge_commit_sha === 'string' ? p.merge_commit_sha : null,
+          baseRef: String(p.base?.ref ?? ''),
+          headSha: String(p.head?.sha ?? ''),
+        }
+      })
+    },
+    async reviews(repo, pr) {
+      const all = await pages(`${api(repo)}/pulls/${pr}/reviews`, (b) => b as unknown[])
+      return all.map((raw) => {
+        const r = (raw ?? {}) as { user?: { login?: unknown }; state?: unknown; commit_id?: unknown }
+        return { login: String(r.user?.login ?? ''), state: String(r.state ?? ''), commitId: typeof r.commit_id === 'string' ? r.commit_id : null }
+      })
+    },
+    async checkRuns(repo, sha) {
+      const all = await pages(`${api(repo)}/commits/${sha}/check-runs`, (b) => ((b ?? {}) as { check_runs?: unknown[] }).check_runs ?? [])
+      return all.map((raw) => {
+        const c = (raw ?? {}) as { name?: unknown; status?: unknown; conclusion?: unknown }
+        return { name: String(c.name ?? ''), status: String(c.status ?? ''), conclusion: typeof c.conclusion === 'string' ? c.conclusion : null }
+      })
+    },
+    async pullFiles(repo, pr) {
+      // GitHub lists at most 3000 files (30 pages): a list that fills them may be cut, and `pages` throws then
+      const all = await pages(`${api(repo)}/pulls/${pr}/files`, (b) => b as unknown[])
+      return all.map((raw) => {
+        const f = (raw ?? {}) as { filename?: unknown; previous_filename?: unknown }
+        return { path: String(f.filename ?? ''), previousPath: typeof f.previous_filename === 'string' ? f.previous_filename : null }
+      })
     },
   }
 }

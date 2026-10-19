@@ -36,6 +36,25 @@ export interface AppEntry {
    * still starting answers 503 from the proxy). Absent: the check is skipped, as before.
    */
   healthUrl?: string
+  /**
+   * A PROD app's stage counterpart (an app with env "stage" and the same repo and branch). The rule path deploys to
+   * prod only a commit this executor has already deployed to that stage app and seen `finished_verified` ("ami a
+   * teszten átment", Balázs 2026-10-19). Absent: prod by rule is refused, the Discord path remains.
+   */
+  stageApp?: string
+}
+
+/**
+ * THE RULE PATH (task vegrehajto-szabaly-jovahagyas; Balázs 2026-10-19 19:54 UTC, "1 mehet 2 mehet 3 mehet"): a deploy
+ * R is approved without a Discord answer when the evidence on GitHub says so. Absent: only the Discord path.
+ */
+export interface RuleConfig {
+  /** GitHub logins whose APPROVED review counts: the machine account `fleet-approve` posts with (D4, review bound to the head) */
+  reviewerLogins: readonly string[]
+  /** prod only: a changed file whose path matches one of these (case-insensitive) refuses, naming the file */
+  frozenPaths: readonly RegExp[]
+  /** prod only: these repositories are frozen as a whole (the commerce freeze stands on Balázs's word) */
+  frozenRepos: readonly string[]
 }
 
 /** A database whose fleet_ro grants this executor may apply, on the gate's host. */
@@ -87,6 +106,8 @@ export interface ExecutorConfig {
   /** both absent: the executor does no grants at all; one without the other refuses to start */
   gate: GateConfig | null
   grants: readonly GrantEntry[]
+  /** absent: no rule path, every deploy needs the owner's Discord answer */
+  rules: RuleConfig | null
 }
 
 export const MAX_APPROVAL_MINUTES = 60
@@ -102,6 +123,8 @@ const GATE_HOST = /^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/
 const GATE_USER = /^[a-z_][a-z0-9_-]{0,31}$/
 const GATE_KEY = /^[a-z0-9]{8,64}$/
 const DATABASE = /^[a-z][a-z0-9_]{0,62}$/
+// a GitHub login, or an App's bot login (`name[bot]`)
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$/
 
 class ConfigError extends Error {}
 
@@ -157,7 +180,7 @@ function healthUrl(v: unknown, path: string): string {
 }
 
 export function parseExecutorConfig(raw: unknown): ExecutorConfig {
-  const top = obj(raw, '', ['stateDir', 'discord', 'github', 'coolifyHosts', 'apps'], ['gate', 'grants'])
+  const top = obj(raw, '', ['stateDir', 'discord', 'github', 'coolifyHosts', 'apps'], ['gate', 'grants', 'rules'])
   const d = obj(top['discord'], 'discord', ['channelId', 'requestBotUserId', 'deciderUserIds', 'yes', 'no', 'tokenFile'])
   const deciders = d['deciderUserIds']
   if (!Array.isArray(deciders) || deciders.length === 0) fail('discord.deciderUserIds', 'must be a non-empty array')
@@ -190,7 +213,7 @@ export function parseExecutorConfig(raw: unknown): ExecutorConfig {
   const seenUuid = new Set<string>()
   const apps: AppEntry[] = appsRaw.map((v, i) => {
     const p = `apps[${i}]`
-    const a = obj(v, p, ['env', 'name', 'coolifyHost', 'coolifyUuid', 'repo', 'branch', 'actions', 'approvalMinutes'], ['healthUrl'])
+    const a = obj(v, p, ['env', 'name', 'coolifyHost', 'coolifyUuid', 'repo', 'branch', 'actions', 'approvalMinutes'], ['healthUrl', 'stageApp'])
     const env = str(a['env'], `${p}.env`, NAME)
     const name = str(a['name'], `${p}.name`, NAME)
     const coolifyHost = str(a['coolifyHost'], `${p}.coolifyHost`, NAME)
@@ -220,8 +243,40 @@ export function parseExecutorConfig(raw: unknown): ExecutorConfig {
       actions,
       approvalMinutes: minutes,
       ...('healthUrl' in a ? { healthUrl: healthUrl(a['healthUrl'], `${p}.healthUrl`) } : {}),
+      ...('stageApp' in a ? { stageApp: str(a['stageApp'], `${p}.stageApp`, NAME) } : {}),
     }
   })
+  // a stageApp names a real stage app of the same code: otherwise "verified on stage" would prove another repository
+  apps.forEach((a, i) => {
+    if (a.stageApp === undefined) return
+    if (a.env !== 'prod') fail(`apps[${i}].stageApp`, 'only a prod app has a stage counterpart')
+    const stage = apps.find((s) => s.env === 'stage' && s.name === a.stageApp)
+    if (!stage) fail(`apps[${i}].stageApp`, 'no stage app of that name')
+    if (stage.repo !== a.repo || stage.branch !== a.branch) fail(`apps[${i}].stageApp`, 'the stage app deploys another repository or branch')
+  })
+
+  let rules: RuleConfig | null = null
+  if ('rules' in top) {
+    const r = obj(top['rules'], 'rules', ['reviewerLogins', 'frozenPaths', 'frozenRepos'])
+    const logins = r['reviewerLogins']
+    if (!Array.isArray(logins) || logins.length === 0) fail('rules.reviewerLogins', 'must be a non-empty array')
+    const paths = r['frozenPaths']
+    if (!Array.isArray(paths)) fail('rules.frozenPaths', 'must be an array')
+    const repos = r['frozenRepos']
+    if (!Array.isArray(repos)) fail('rules.frozenRepos', 'must be an array')
+    rules = {
+      reviewerLogins: logins.map((x, i) => str(x, `rules.reviewerLogins[${i}]`, GITHUB_LOGIN)),
+      frozenPaths: paths.map((x, i) => {
+        const src = str(x, `rules.frozenPaths[${i}]`)
+        try {
+          return new RegExp(src, 'i')
+        } catch {
+          fail(`rules.frozenPaths[${i}]`, 'not a regular expression')
+        }
+      }),
+      frozenRepos: repos.map((x, i) => str(x, `rules.frozenRepos[${i}]`, REPO)),
+    }
+  }
 
   const hasGate = 'gate' in top
   const hasGrants = 'grants' in top
@@ -280,6 +335,7 @@ export function parseExecutorConfig(raw: unknown): ExecutorConfig {
     apps,
     gate,
     grants,
+    rules,
   }
 }
 

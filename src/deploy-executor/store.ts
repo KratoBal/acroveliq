@@ -8,6 +8,8 @@
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 
+import type { RuleEvidence, RuleName } from './rules.js'
+
 import type { ExecutorAction, GRANT_ACTION } from './config.js'
 
 export type Relation =
@@ -76,8 +78,10 @@ export interface RequestRecord {
   expiresAt: number
   status: RequestStatus
   usedAt?: number
-  /** evidence of the approval that was spent on this R */
-  approval?: { requestMessageId: string; decisionMessageId: string; deciderId: string; code: string }
+  /** evidence of the approval that was spent on this R: the owner's Discord answer, or the rule and what it read */
+  approval?:
+    | { requestMessageId: string; decisionMessageId: string; deciderId: string; code: string }
+    | { rule: RuleName; evidence: RuleEvidence }
   deploymentUuid?: string
   outcome?: DeploymentOutcome
   /** what Coolify reported, never more than these fields */
