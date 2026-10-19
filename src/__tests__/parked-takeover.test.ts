@@ -168,6 +168,7 @@ describe('takeOverParkedDelivery (the decisions, with the broker injected)', () 
   it.each(['dialog-while-typing:permission', 'dialog-before-enter:menu', 'dialog-after-enter:consent'])('%s: LEFT, no broker call at all (an Enter or a clear could answer it)', async (reason) => {
     const x = await run(reason, [], [])
     expect([x.r.outcome, x.log]).toEqual(['left', []])
+    expect(x.r.note).toContain('a dialog is up')
   })
 })
 
@@ -228,9 +229,11 @@ describe('sendPromptToSession through the broker: the takeover on the IDLE path'
 
   it('a refusal BEFORE typing (code 10: busy, box-not-free) is not a typed-not-landed: no takeover', async () => {
     script({ code: 10, out: 'box-not-free' })
-    const { result } = await send()
+    const { result, reports } = await send()
     expect(result).toBe('not-landed')
     expect(brokerVerbs()).toEqual(['deliver'])
+    // the reason alone, no takeover note: nothing was typed
+    expect(reports.map((r) => r.reason)).toEqual(['fleet-pane:box-not-free'])
     script({ code: 10, out: 'busy' })
     calls.length = 0
     // a caller that does not wait for idle retries the queued path once (existing behaviour): still no submit or clear
