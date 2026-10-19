@@ -143,6 +143,20 @@ def unquoted(part: str) -> str:
     return re.sub(r"'[^']*'", "''", part)
 
 
+SECRET_WORDS = "[titok-minta]"
+
+
+def words(part: str) -> str:
+    """The first two words of a command part for the log (review of #254): only this function lets
+    command text out, and it drops everything after an `=` (NAME=value: the name stays, the value
+    never), so a variable assignment or an option value cannot carry a secret into the log or the
+    OLVASO summary. A secret-shaped command loses even these words in record()."""
+    out = []
+    for w in part.split()[:2]:
+        out.append(w.split("=", 1)[0] + "=…" if "=" in w else w)
+    return " ".join(out)[:60]
+
+
 def bash_verdict(cmd: str, allow, deny):
     parts = split_compound(cmd)
     if parts is None:
@@ -150,7 +164,7 @@ def bash_verdict(cmd: str, allow, deny):
     worst, why = "allow", ""
     for part in parts:
         if any(t == "Bash" and spec and bash_rule_matches(spec, part) for t, spec in deny):
-            return "deny", "tiltott: " + " ".join(part.split()[:2])
+            return "deny", "tiltott: " + words(part)
         if re.match(r"^cd(\s|$)", part):
             continue
         bare = unquoted(part)
@@ -161,7 +175,7 @@ def bash_verdict(cmd: str, allow, deny):
             worst, why = "ask", "atiranyitas fajlba"
             continue
         if not any(t == "Bash" and spec and bash_rule_matches(spec, part) for t, spec in allow):
-            worst, why = "ask", "nincs szabaly: " + " ".join(part.split()[:2])
+            worst, why = "ask", "nincs szabaly: " + words(part)
     return worst, why
 
 
@@ -211,11 +225,16 @@ def _secret_shaped(text: str) -> bool:
 
 def record(tool: str, tin: dict, v: str, why: str, now: datetime.datetime) -> dict:
     rec = {"ts": now.isoformat(timespec="seconds"), "tool": tool, "verdict": v}
+    if tool == "Bash":
+        cmd = str(tin.get("command", ""))
+        secret = _secret_shaped(cmd)
+        rec["head"] = SECRET_WORDS if secret else words(cmd)
+        # the reason may quote command words ("tiltott: ...", "nincs szabaly: ..."): the same rule
+        if secret and ": " in why:
+            why = why.split(": ", 1)[0] + ": " + SECRET_WORDS
     if why:
         rec["reason"] = why
     if tool == "Bash":
-        cmd = str(tin.get("command", ""))
-        rec["head"] = "[titok-minta]" if _secret_shaped(cmd) else " ".join(cmd.split()[:2])[:60]
         rec["len"] = len(cmd)
         rec["sha"] = hashlib.sha256(cmd.encode()).hexdigest()[:8]
     return rec

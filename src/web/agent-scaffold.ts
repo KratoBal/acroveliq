@@ -729,7 +729,14 @@ export function ensureReadonlyCommandGate(name: string): boolean {
 // start. Why not the #219 hook: under --dangerously-skip-permissions the engine never fires
 // PermissionRequest, so a shadow #219 would log nothing (scripts/hooks/b29-arnyek.py).
 const _b29ShadowScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'b29-arnyek.py')
-export const B29_SHADOW_CMD = `bash -c '[ -f ${_b29ShadowScript} ] && exec python3 ${_b29ShadowScript}; exit 0'`
+// No `exec` (review of #254): in a PreToolUse hook exit code 2 BLOCKS, and python3 itself exits 2
+// when it cannot open the file (unreadable, or gone between the test and the start), before any of
+// the script's own try/except runs. Without exec the `exit 0` always has the last word, and the
+// output is dropped, so the hook can neither block nor talk.
+export function b29ShadowCmd(script: string): string {
+  return `bash -c '[ -f ${script} ] && python3 ${script} >/dev/null 2>&1; exit 0'`
+}
+export const B29_SHADOW_CMD = b29ShadowCmd(_b29ShadowScript)
 const B29_MARK = 'b29-arnyek.py'
 
 export function setB29ShadowHook(existing: Record<string, unknown>, on: boolean): boolean {

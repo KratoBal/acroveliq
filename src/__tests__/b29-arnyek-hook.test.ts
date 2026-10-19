@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { summarizeB29 } from '../web/b29-arnyek.js'
-import { B29_SHADOW_CMD, ensureB29ShadowHook, setB29ShadowHook } from '../web/agent-scaffold.js'
+import { B29_SHADOW_CMD, b29ShadowCmd, ensureB29ShadowHook, setB29ShadowHook } from '../web/agent-scaffold.js'
 
 /*
   THE B29 SHADOW HOOK (task b29-arnyek-hook). What turns these red: the hook printing anything or
@@ -89,6 +89,40 @@ describe('b29-arnyek.py: the log never holds the command', () => {
     const r = run(bash(`curl -H "Authorization: token ${secret}" https://api.github.com`))
     expect(r.rawLog).not.toContain(secret)
     expect(r.records.at(-1).head).toBe('[titok-minta]')
+  })
+
+  it('a value after = never reaches the log or the OLVASO summary; a secret-shaped command loses the words of its reason too (review of #254)', () => {
+    // a name the masker knows (TOKEN=) hides the words; any other NAME=value keeps the name, not the value
+    run(bash('export TOKEN=abcdefgh123'))
+    run(bash('TOKEN=abcdefgh123 curl x'))
+    run(bash('export FOO=abcdefgh123'))
+    run(bash('sajat-parancs --kulcs=abcdefgh123'))
+    const secret = 'ghp_' + 'b'.repeat(36)
+    const r = run(bash(`sajat-parancs ${secret}`))
+    expect(r.rawLog).not.toContain('abcdefgh123')
+    expect(r.rawLog).not.toContain(secret)
+    expect(r.records.map((x: { head: string }) => x.head)).toEqual(['[titok-minta]', '[titok-minta]', 'export FOO=…', 'sajat-parancs --kulcs=…', '[titok-minta]'])
+    expect(r.records.map((x: { reason: string }) => x.reason)).toEqual([
+      'nincs szabaly: [titok-minta]',
+      'nincs szabaly: [titok-minta]',
+      'nincs szabaly: export FOO=…',
+      'nincs szabaly: sajat-parancs --kulcs=…',
+      'nincs szabaly: [titok-minta]',
+    ])
+    const summary = JSON.stringify(summarizeB29(dir))
+    expect(summary).not.toContain('abcdefgh123')
+    expect(summary).not.toContain(secret)
+  })
+})
+
+describe('the hook command can neither block nor talk (review of #254)', () => {
+  it('a script that prints and exits 2 (what python3 does when it cannot open the file) still gives exit 0 and no output', () => {
+    dir = mkdtempSync(join(tmpdir(), 'b29-cmd-'))
+    const script = join(dir, 'kiir-es-2.py')
+    writeFileSync(script, 'import sys\nprint("x")\nsys.stderr.write("y")\nsys.exit(2)\n')
+    const r = spawnSync('bash', ['-c', b29ShadowCmd(script).replace(/^bash -c '/, '').replace(/'$/, '')], { encoding: 'utf8' })
+    expect([r.status, r.stdout, r.stderr]).toEqual([0, '', ''])
+    expect(B29_SHADOW_CMD).toBe(b29ShadowCmd(HOOK))
   })
 })
 
