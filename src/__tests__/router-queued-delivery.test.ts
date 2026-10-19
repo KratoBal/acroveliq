@@ -94,7 +94,10 @@ describe('message router: delivery into a busy pane', () => {
     mockIsReady.mockResolvedValue(true)
     await runMessageRouterTick()
     expect(mockQueueRefusal).not.toHaveBeenCalled()
-    expect(mockSendPrompt.mock.calls[0]![3]).toBeUndefined()
+    // the normal send: no busyTarget, no waitForIdle override; only the report callback (the broker's reason and the
+    // takeover's note reach the idle diagnostic row, task kezbesites-enter-parkol)
+    const opts = mockSendPrompt.mock.calls[0]![3] as { busyTarget?: boolean; waitForIdle?: boolean; onBusyReport?: unknown } | undefined
+    expect([opts?.busyTarget, opts?.waitForIdle, typeof opts?.onBusyReport]).toEqual([undefined, undefined, 'function'])
     expect(mockMarkDelivered).toHaveBeenCalledTimes(1)
   })
 
