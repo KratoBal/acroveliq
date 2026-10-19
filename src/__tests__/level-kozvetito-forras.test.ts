@@ -2,8 +2,9 @@
 // does not only allow moving a mail to the trash: it allows SENDING mail in Balázs's name, and inserting and
 // importing mail. The protection is therefore not the scope, it is this code and the container around it, and
 // the code is checked here by reading its source: any Gmail endpoint that sends, trashes, deletes, imports,
-// inserts or changes settings turns this red. Slice 2 adds exactly one write file (modify.ts: label and
-// archive); until then `/modify` is forbidden too.
+// inserts or changes settings turns this red. The only write file is modify.ts (label and archive): the
+// `/modify` and `/labels` endpoints may be named THERE and nowhere else, and what it may put in a request is
+// narrowed further below (a label id of the trash, spam or sent mail never appears in the source).
 //
 // The patterns are measured on samples first: a pattern that matched nothing would let everything through.
 import { readdirSync, readFileSync } from 'node:fs'
@@ -13,12 +14,21 @@ import { describe, expect, it } from 'vitest'
 
 const DIR = join(process.cwd(), 'src', 'level-kozvetito')
 
-/** The code without its comments: a comment may say "send" without calling it. */
+/**
+ * The code without its comments and without the paths of its imports: a comment may say "send" without
+ * calling it, and `from './modify.js'` is a module name, not an endpoint.
+ */
 function code(source: string): string {
+  return stripComments(source).replace(/\bfrom\s+'[^']*'/g, "from ''")
+}
+
+/** Comments off, imports kept: for the check of WHAT is imported. */
+function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1')
 }
 
 export const FORBIDDEN: readonly [string, RegExp][] = [
+  ['a labels endpoint', /\/labels\b/],
   ['a send endpoint', /\/(messages|drafts)(\/[^/\s'"`]+)?\/send\b|\/messages\/send\b|\/drafts\/send\b/],
   ['a trash or untrash endpoint', /\/(trash|untrash)\b/],
   ['a delete or batchDelete endpoint', /\/batchDelete\b|\bmethod:\s*['"`]DELETE['"`]/],
@@ -40,11 +50,15 @@ const SAMPLES: Record<string, string> = {
   'a settings endpoint (filters, forwarding, delegates)': "get(`${GMAIL}/settings/filters`)",
   'a batchModify endpoint': 'post(`${GMAIL}/messages/batchModify`)',
   'a modify endpoint': 'post(`${GMAIL}/messages/${id}/modify`)',
+  'a labels endpoint': 'get(`${GMAIL}/labels`)',
   'a watch endpoint': 'post(`${GMAIL}/watch`)',
   'the client-library form of a write': 'gmail.users.messages.send({})',
   'a write HTTP method other than the token refresh': "{ method: 'PATCH' }",
   'a send or compose scope': "scope: 'https://www.googleapis.com/auth/gmail.send'",
 }
+
+/** The only file allowed to name these (the write half). */
+const ONLY_IN_MODIFY = new Set(['a modify endpoint', 'a labels endpoint'])
 
 const sources = () =>
   readdirSync(DIR)
@@ -60,23 +74,58 @@ describe('the relay\'s source', () => {
     expect(pattern.test(SAMPLES[name]!), name).toBe(true)
   })
 
-  it('contains no endpoint, method or scope that sends, trashes, deletes, imports, inserts, changes settings or modifies', () => {
+  it('contains no endpoint, method or scope that sends, trashes, deletes, imports, inserts or changes settings; modify and labels only in modify.ts', () => {
     const found: string[] = []
     for (const [file, source] of sources()) {
       const text = code(source)
-      for (const [name, pattern] of FORBIDDEN) if (pattern.test(text)) found.push(`${file}: ${name}`)
+      for (const [name, pattern] of FORBIDDEN) {
+        if (ONLY_IN_MODIFY.has(name) && file === 'modify.ts') continue
+        if (pattern.test(text)) found.push(`${file}: ${name}`)
+      }
     }
     expect(found).toEqual([])
   })
 
-  it('the only POST of the transport is the token refresh', () => {
-    const google = code(readFileSync(join(DIR, 'google.ts'), 'utf8'))
-    expect(google.match(/method:\s*['"`]POST['"`]/g)).toHaveLength(1)
-    expect(google).toContain("const TOKEN_URL = 'https://oauth2.googleapis.com/token'")
+  it('modify.ts does name both of its endpoints (the allowance is not an empty one)', () => {
+    const modify = code(readFileSync(join(DIR, 'modify.ts'), 'utf8'))
+    expect(FORBIDDEN.filter(([name, pattern]) => ONLY_IN_MODIFY.has(name) && pattern.test(modify)).map(([name]) => name).sort()).toEqual(['a labels endpoint', 'a modify endpoint'])
   })
 
-  it('no module imports a write-capable Google or mail library', () => {
-    const imports = sources().flatMap(([, s]) => [...code(s).matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]!))
+  it('the transport posts only to a shape its constructor was given: its two POSTs are the token refresh and the guarded post', () => {
+    const google = code(readFileSync(join(DIR, 'google.ts'), 'utf8'))
+    expect(google.match(/method:\s*['"`]POST['"`]/g)).toHaveLength(2)
+    expect(google).toContain("const TOKEN_URL = 'https://oauth2.googleapis.com/token'")
+    // the guard comes BEFORE the post, and the default is no shape at all
+    expect(google.indexOf('writeShapes.some(')).toBeGreaterThan(-1)
+    expect(google.indexOf('writeShapes.some(')).toBeLessThan(google.indexOf("method: 'POST',\n        headers: { Authorization"))
+    expect(google).toContain('opts.writeShapes ?? []')
+  })
+
+  it('no source names a label of the trash, spam, sent, drafts, chat or the star/importance flags', () => {
+    const found: string[] = []
+    for (const [file, source] of sources()) {
+      const text = code(source)
+      for (const word of ['TRASH', 'SPAM', 'SENT', 'DRAFT', 'CHAT', 'STARRED', 'IMPORTANT', 'CATEGORY_']) {
+        if (new RegExp(`['"\`]${word}`).test(text)) found.push(`${file}: ${word}`)
+      }
+    }
+    expect(found).toEqual([])
+  })
+
+  it('INBOX is named only in modify.ts, and removeLabelIds only once, with INBOX alone', () => {
+    const outside = sources().filter(([file, source]) => file !== 'modify.ts' && /['"`]INBOX['"`]/.test(code(source))).map(([file]) => file)
+    expect(outside).toEqual([])
+    const modify = code(readFileSync(join(DIR, 'modify.ts'), 'utf8'))
+    expect(modify.match(/removeLabelIds/g)).toHaveLength(1)
+    expect(modify).toContain("removeLabelIds: ['INBOX']")
+    // the other label list put on a message is the one resolved from the five names, or INBOX for the undo
+    expect([...modify.matchAll(/addLabelIds:\s*(\[[^\]]*\])/g)].map((m) => m[1])).toEqual(['[labelId]', "['INBOX']"])
+  })
+
+  it('no module imports a Google or mail library: only its own files and node: modules', () => {
+    const imports = sources().flatMap(([, s]) => [...stripComments(s).matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]!))
+    // the control: the scan sees the imports it is about to judge
+    expect(imports).toEqual(expect.arrayContaining(['./relay.js', './modify.js', 'node:crypto']))
     expect(imports.filter((i) => !i.startsWith('.') && !i.startsWith('node:'))).toEqual([])
   })
 })

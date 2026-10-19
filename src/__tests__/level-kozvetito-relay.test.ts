@@ -32,7 +32,7 @@ function configAt(root: string, over: Record<string, unknown> = {}): RelayConfig
       balazs: { address: 'balazs@acropora.example', refreshTokenFile: '/run/secrets/balazs', calendar: false, redaction: 'all-short-numbers' },
     },
     excludedSenders: { domains: ['accounts.google.com', 'bank.example'], addresses: [] },
-    limits: { callsPerMinute: 100, maxAttachmentBytes: 1000 },
+    limits: { callsPerMinute: 100, maxAttachmentBytes: 1000, archivePerDay: 100 },
     ...over,
   })
 }
@@ -46,11 +46,15 @@ interface Msg {
   attachments?: { filename: string; data: Buffer; size?: number }[]
 }
 
-/** A fake Google: messages by id, the calls it was asked, and nothing but GET (the interface has no other verb). */
+/** A fake Google: messages by id and the calls it was asked. The READ verbs never post: a post here is a failure. */
 function fakeGoogle(messages: Record<string, Msg>, events: unknown[] = []) {
   const asked: { account: string; url: string }[] = []
   const attachmentData = new Map<string, Buffer>()
   const api: GoogleApi = {
+    async postJson(account, url) {
+      asked.push({ account, url: `POST ${url}` })
+      throw new GoogleError(0, 'request')
+    },
     async getJson(account, url) {
       asked.push({ account, url })
       const list = /\/messages\?(.*)$/.exec(url)
@@ -140,11 +144,13 @@ describe('the closed verb list', () => {
     ['info', 'kuld'],
     ['info', 'archival'],
     ['info', 'cimkez'],
+    ['info', 'cimke-letrehoz'],
+    ['info', 'inbox-vissza'],
     ['info', 'naptar-ir'],
     ['balazs', 'naptar'],
     ['balazs', 'kuld'],
-    ['balazs', 'archival'],
     ['balazs', 'torol'],
+    ['balazs', 'naptar-ir'],
     ['harmadik', 'lista'],
   ])('%s %s: 404, and Google is not asked', async (account, verb) => {
     const { relay, google } = relayWith({ [ID1]: normal })
@@ -333,7 +339,7 @@ describe('the log', () => {
 describe('the rate limit', () => {
   it('refuses past the per-minute limit and starts again the next minute', async () => {
     let now = T0
-    const { relay } = relayWith({ [ID1]: normal }, { limits: { callsPerMinute: 2, maxAttachmentBytes: 1000 } }, [], () => now)
+    const { relay } = relayWith({ [ID1]: normal }, { limits: { callsPerMinute: 2, maxAttachmentBytes: 1000, archivePerDay: 100 } }, [], () => now)
     await relay.handle('token-acrobot', 'info', 'lista', {})
     await relay.handle('token-acrobot', 'info', 'lista', {})
     await expect(relay.handle('token-acrobot', 'info', 'lista', {})).rejects.toMatchObject({ status: 429 })

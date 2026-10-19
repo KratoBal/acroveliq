@@ -9,6 +9,8 @@ import { join } from 'node:path'
 import { parseRelayConfig } from './config.js'
 import { googleRest } from './google.js'
 import { createRelayServer } from './http.js'
+import { fileLedger } from './ledger.js'
+import { WRITE_URL_SHAPES } from './modify.js'
 import { MailRelay, type LogFields } from './relay.js'
 
 function secret(path: string): string {
@@ -23,6 +25,8 @@ function main(): void {
     clientId: secret(config.oauthClientIdFile),
     clientSecret: secret(config.oauthClientSecretFile),
     refreshTokens: { info: secret(config.accounts.info.refreshTokenFile), balazs: secret(config.accounts.balazs.refreshTokenFile) },
+    // the only two shapes a POST may take: create one of the five labels, change the labels of one message
+    writeShapes: WRITE_URL_SHAPES,
   })
   const logFile = join(config.stateDir, 'naplo.jsonl')
   // one JSON line per call, on stdout and in the state volume; the line never carries mail content
@@ -36,7 +40,7 @@ function main(): void {
     }
   }
   const port = Number(process.env['LEVELKOZVETITO_PORT'] ?? '8788')
-  createRelayServer(new MailRelay({ config, google, log })).listen(port, '0.0.0.0', () => {
+  createRelayServer(new MailRelay({ config, google, log, ledger: fileLedger(join(config.stateDir, 'archivalt.jsonl')) })).listen(port, '0.0.0.0', () => {
     log({ at: new Date().toISOString(), event: 'listening', port, callers: config.callers.length })
   })
 }
