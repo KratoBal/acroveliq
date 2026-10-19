@@ -79,6 +79,8 @@ export interface PublicRecord {
   status: string
   deploymentUuid: string | null
   outcome: string | null
+  /** a grant R: what the plan run after the apply showed (ures | nem-ures | nem-olvashato), null before it and for a deploy */
+  planAfter: string | null
 }
 
 /** What may leave the executor about an R: ids, shas and states, nothing Coolify sent besides. */
@@ -94,6 +96,7 @@ export function publicView(rec: RequestRecord): PublicRecord {
     status: rec.status,
     deploymentUuid: rec.deploymentUuid ?? null,
     outcome: rec.outcome ?? null,
+    planAfter: rec.grant?.utana ?? null,
   }
 }
 
@@ -467,21 +470,29 @@ export class DeployExecutor {
       store.audit('apply_call_failed', { r: rec.id, error: err instanceof Error ? err.message : 'unknown' })
     }
     if (!applied || applied.code !== 0) {
+      // a timeout is not proof that nothing ran: a gate that answered after its COMMIT has applied the grants, so the plan is
+      // measured on this branch too, and the outcome carries what it showed (barracuda, #253 review, note 1)
       rec.outcome = 'alkalmaz_hiba'
+      grant.utana = await this.planAfter(entry, rec.sha)
       store.put(rec)
-      store.audit('alkalmaz_hiba', { r: rec.id, code: applied ? applied.code : -1, head: applied ? visible(applied.output) : '' })
+      store.audit('alkalmaz_hiba', { r: rec.id, code: applied ? applied.code : -1, head: applied ? visible(applied.output) : '', planAfter: grant.utana })
       return publicView(rec)
     }
     store.audit('applied', { r: rec.id, sha: rec.sha, planSha256: grant.planSha256 })
-    try {
-      const after = await this.gatePlan(entry, 'terv', rec.sha)
-      rec.outcome = after.ops.length === 0 ? 'finished_verified' : 'terv_nem_ures'
-    } catch {
-      rec.outcome = 'utomeres_nem_olvashato'
-    }
+    grant.utana = await this.planAfter(entry, rec.sha)
+    rec.outcome = grant.utana === 'ures' ? 'finished_verified' : grant.utana === 'nem-ures' ? 'terv_nem_ures' : 'utomeres_nem_olvashato'
     store.put(rec)
     store.audit(rec.outcome, { r: rec.id, sha: rec.sha })
     return publicView(rec)
+  }
+
+  /** One `terv` after the apply: is anything left to change? Never throws: an unreadable run is a state of its own. */
+  private async planAfter(entry: GrantEntry, sha: string): Promise<'ures' | 'nem-ures' | 'nem-olvashato'> {
+    try {
+      return (await this.gatePlan(entry, 'terv', sha)).ops.length === 0 ? 'ures' : 'nem-ures'
+    } catch {
+      return 'nem-olvashato'
+    }
   }
 
   private startFollow(r: string): void {

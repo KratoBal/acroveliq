@@ -152,7 +152,9 @@ cd /opt/vegrehajto/titkok && ssh-keygen -t ed25519 -N '' -C vegrehajto -f gate-k
 cd /opt/vegrehajto/titkok && printf '%s %s\n' "<the address the executor will use>" "$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)" > gate-known-hosts && chown 10001:10001 gate-known-hosts && chmod 400 gate-known-hosts
 ```
 
-The `known_hosts` line is made from the host's OWN key file, not from `ssh-keyscan` over the network. The public key goes into
+The `known_hosts` line is made from the host's OWN key file, not from `ssh-keyscan` over the network. **If `gate.port` is not 22, the
+first field of the line is `[<address>]:<port>`** (ssh looks the host up in that form, and with `StrictHostKeyChecking=yes` it would refuse
+every call otherwise); with port 22 it is the bare address, as in the command above. The public key goes into
 `/etc/ssh/authorized_keys/fleet` as a second line, `restrict,from="<the executor's source address>",command="/usr/local/sbin/fleet-gate vegrehajto" <the contents of gate-key.pub>`
 (`restrict` also switches off the pty, agent and port forwarding, X11 and user rc; the gate's own `sshd-match` check accepts exactly the two line shapes).
 `config.json` gets `gate` (host, port, user `fleet`, the two secret files) and `grants` (see `config.example.json`). The host

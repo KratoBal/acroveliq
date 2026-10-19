@@ -25,6 +25,7 @@ import {
   listRuns, listTasks, loadPriceFile, setRunOutcome, type SuccessValue,
 } from '../measurements.js'
 import type { RouteContext } from './types.js'
+import { B29_ARNYEK_DIR, summarizeB29 } from '../b29-arnyek.js'
 
 export const MEASUREMENTS_DIR = join(STORE_DIR, 'measurements')
 export const QUOTA_SAMPLES_PATH = join(MEASUREMENTS_DIR, 'quota-samples.jsonl')
@@ -91,6 +92,14 @@ export async function tryHandleMeasurements(ctx: RouteContext): Promise<boolean>
       source: 'claude-code-statusline rate_limits (one shared subscription account)',
       latest: samples[0] ?? null,
       samples,
+    })
+    return true
+  }
+
+  if (path === '/api/measurements/b29-arnyek' && method === 'GET') {
+    json(res, {
+      source: 'B29 shadow hook (scripts/hooks/b29-arnyek.py): an ESTIMATE of what the fo-agens strict profile would have asked or denied, not the engine',
+      days: summarizeB29(B29_ARNYEK_DIR, intParam(url, 'days') ?? 7),
     })
     return true
   }

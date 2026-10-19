@@ -556,22 +556,65 @@ describe('applying the approved grant', () => {
     expect(callModes().filter((m) => m === 'alkalmaz')).toHaveLength(1)
   })
 
-  it('`alkalmaz` failing (exit code or no answer) spends the R and says so', async () => {
+  it('`alkalmaz` failing (exit code or no answer) spends the R and says so, and the plan is measured afterwards on this branch too', async () => {
     const a = await approvedGrant()
     gate.code.alkalmaz = 1
-    expect((await exec(a.rec, a.msg)).outcome).toBe('alkalmaz_hiba')
+    const failed = await exec(a.rec, a.msg)
+    expect([failed.outcome, failed.planAfter]).toEqual(['alkalmaz_hiba', 'nem-ures'])
     expect(store.get(a.rec.r)!.status).toBe('used')
+    expect(callModes()).toEqual(['terv', 'terv', 'alkalmaz', 'terv'])
     gate.code.alkalmaz = 0
     const b = await approvedGrant()
     gate.throwOn = 'alkalmaz'
-    expect((await exec(b.rec, b.msg)).outcome).toBe('alkalmaz_hiba')
+    const lost = await exec(b.rec, b.msg)
+    expect([lost.outcome, lost.planAfter]).toEqual(['alkalmaz_hiba', 'nem-ures'])
     expect(callModes().filter((m) => m === 'alkalmaz')).toHaveLength(2)
+  })
+
+  it('an answer that never came (the gate timed out AFTER its COMMIT) is told apart from a failure that changed nothing: the plan afterwards is empty', async () => {
+    const { rec, msg } = await approvedGrant()
+    const run = gate.run.bind(gate)
+    gate.run = async (mode, key, db, commit) => {
+      if (mode === 'alkalmaz') {
+        await run(mode, key, db, commit)
+        throw new Error('gate call timed out')
+      }
+      return run(mode, key, db, commit)
+    }
+    const out = await exec(rec, msg)
+    expect([out.outcome, out.planAfter]).toEqual(['alkalmaz_hiba', 'ures'])
+    expect(store.get(rec.r)!.grant!.utana).toBe('ures')
+    expect(readFileSync(join(config.stateDir, 'audit.log'), 'utf8')).toContain('"planAfter":"ures"')
+  })
+
+  it('a plan run that cannot be read after a failed apply is `nem-olvashato`, not a guess', async () => {
+    const { rec, msg } = await approvedGrant()
+    let afterApply = false
+    const run = gate.run.bind(gate)
+    gate.run = async (mode, key, db, commit) => {
+      if (mode === 'terv' && afterApply) return { code: 0, output: 'psql: error: connection refused' }
+      if (mode === 'alkalmaz') {
+        afterApply = true
+        return { code: 1, output: 'fleet-gate: boom' }
+      }
+      return run(mode, key, db, commit)
+    }
+    const out = await exec(rec, msg)
+    expect([out.outcome, out.planAfter]).toEqual(['alkalmaz_hiba', 'nem-olvashato'])
+  })
+
+  it('the verified path reports `ures` too, and a deploy R has no planAfter', async () => {
+    const { rec, msg } = await approvedGrant()
+    expect((await exec(rec, msg)).planAfter).toBe('ures')
+    const deploy = await ex.request({ env: 'prod', app: 'acropora-api', action: 'deploy', sha: MAIN[4], requester: 'acrobot' })
+    expect(deploy.planAfter).toBeNull()
   })
 
   it('an applied plan that still shows changes is not verified; one that cannot be read is not verified either', async () => {
     const a = await approvedGrant()
     gate.after = 'same'
-    expect((await exec(a.rec, a.msg)).outcome).toBe('terv_nem_ures')
+    const still = await exec(a.rec, a.msg)
+    expect([still.outcome, still.planAfter]).toEqual(['terv_nem_ures', 'nem-ures'])
     gate.applied = false
     gate.after = 'garbage'
     const b = await approvedGrant()
@@ -863,6 +906,8 @@ describe('the install files of the grant door', () => {
     expect(readme).toContain('restrict,from="<the executor\'s source address>",command="/usr/local/sbin/fleet-gate vegrehajto"')
     expect(readme).toContain("For that key's thief the\nowner's approval step falls away")
     expect(readme).toContain('/etc/ssh/ssh_host_ed25519_key.pub')
+    // the known_hosts line for a port other than 22 (ssh looks it up as [address]:port; strict checking refuses every call otherwise)
+    expect(readme).toContain('[<address>]:<port>')
     expect(readme).toContain('ssh -V')
     expect(read('docs', 'fleet-gate.md')).toContain(
       'restrict,from="<a végrehajtó forráscíme>",command="/usr/local/sbin/fleet-gate vegrehajto"',

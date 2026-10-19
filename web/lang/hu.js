@@ -1649,6 +1649,8 @@ window._i18n.hu = {
   'overview.stat.tasks':         'Ma futott feladat',
   'overview.stat.memories':      'Memória',
   'overview.stat.skills':        'Generált skillek',
+  'overview.stat.b29':           'Kérdés lett volna ma (B29 árnyék)',
+  'overview.stat.b29_sub':       '{deny} tiltás · {total} hívás · becslés',
   'overview.card.team':          'Csapat',
   'overview.card.activity':      'Aktivitás',
   'overview.meta.live':          'élő állapot',

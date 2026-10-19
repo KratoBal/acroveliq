@@ -313,6 +313,7 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | ANY | `/lang/*` | NYILVANOS | ✓ | ✓ | ✓ | ✗ | ✓ | class:NYILVANOS |  |
 | ANY | `/avatars/*` | NYILVANOS | ✓ | ✓ | ✓ | ✗ | ✓ | class:NYILVANOS |  |
 | ANY | `/icons/*` | NYILVANOS | ✓ | ✓ | ✓ | ✗ | ✓ | class:NYILVANOS |  |
+| GET | `/api/measurements/b29-arnyek` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
 | GET | `/api/measurements/runs` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
 | GET | `/api/measurements/tasks` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
 | GET | `/api/measurements/usage` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
