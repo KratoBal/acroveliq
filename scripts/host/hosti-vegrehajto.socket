@@ -1,0 +1,20 @@
+# The host executor's socket (the no-command-line plan, point C; docs/hosti-vegrehajto.md).
+# One Unix socket, no network port. 0660 root:fleet only lets the fleet user OPEN it; the program decides by the
+# peer's UID (SO_PEERCRED), not by the group. The directory is created 0755 so the fleet user can reach the node; the node's
+# own mode is what keeps everybody else out. This directory is mounted into NO container: the install check measures it.
+[Unit]
+Description=hosti-vegrehajto (the closed-verb host executor): socket
+Documentation=file:///opt/hosti-vegrehajto/src/docs/hosti-vegrehajto.md
+
+[Socket]
+ListenStream=/run/hosti-vegrehajto/sock
+SocketUser=root
+SocketGroup=fleet
+SocketMode=0660
+DirectoryMode=0755
+# one process per connection: no resident daemon
+Accept=yes
+MaxConnections=8
+
+[Install]
+WantedBy=sockets.target

@@ -1,0 +1,35 @@
+# One connection of the host executor (docs/hosti-vegrehajto.md). Root, because the steps are docker's and git's on the host;
+# narrowed to what they need. Installed root-owned 0644 with the socket unit; the program is /usr/local/sbin/hosti-vegrehajto.
+#
+# A build takes minutes and the client (the gate's ssh call) may go away meanwhile: the program answers `elfogadva` at once,
+# closes the connection and works on in THIS process. So nothing here ties the unit's life to the client's:
+#   Type=simple, KillMode=control-group (a stop of the unit is the owner's act and ends the whole build, which the R then
+#   shows as megszakadt(<step>)), RuntimeMaxSec is the build's own upper bound, Restart=no (nothing continues by itself).
+#
+# ProtectSystem=strict leaves the file system read-only except what is listed. If a first real run fails with EROFS, the cause
+# is a missing path here, not a bug in the program: add it (the clones' WHOLE directories, .git included, and what docker
+# compose writes under the program's own HOME, which is inside the state directory).
+[Unit]
+Description=hosti-vegrehajto (the closed-verb host executor): one connection
+Documentation=file:///opt/hosti-vegrehajto/src/docs/hosti-vegrehajto.md
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/hosti-vegrehajto serve
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+User=root
+Restart=no
+KillMode=control-group
+TimeoutStopSec=60
+RuntimeMaxSec=3600
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectSystem=strict
+# the state, the clones (the whole directory), the docker socket; a `-` path that does not exist yet is ignored
+ReadWritePaths=/var/lib/hosti-vegrehajto /run/docker.sock
+ReadWritePaths=-/opt/levelkozvetito/src -/opt/vegrehajto/src
