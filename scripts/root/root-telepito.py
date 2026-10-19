@@ -31,6 +31,13 @@ THE FLOW
                recreate the image resets /usr/local/sbin and /etc); asks nothing new, installs nothing that was
                not approved. fleet-bootstrap.sh calls it.
 
+CI CHANGES (task ci-modositas-jovahagyassal, docs/root-telepito.md "CI changes")
+  ci-kerj <repo> <branch> <path> <kero>   the new workflow on STDIN; queued, not yet an approval
+  ci-athnezve <item> <sha256>             the reviewer's mark on exactly those bytes (he is the sudo caller)
+  ci-nap <kero>                           the daily batch: every marked item that fits ONE #33 line, as one R
+  vegrehajt <R> <message>                 as above; for a batch, root writes each approved file to the PR's branch
+                                          with a `ci` token fetched at that moment, after re-checking five facts
+
 WHAT IS ROOT'S, NOT THE CALLER'S
   /etc/root-telepito/conf/   the owner's host directory, mounted READ-ONLY: config.json, lista.json, the
                              Discord read token. A new target path comes only with a change there, which is not
@@ -87,6 +94,9 @@ ROOT_UID = 0
 # the ancestor check starts here; '/' checks every directory from the root down
 TRUST_FROM = '/'
 
+CI_CONFIG_FILE = CONF_DIR + '/ci.json'
+FLEET_GITHUB = '/usr/local/sbin/fleet-github'
+
 CATEGORY = 'root_telepites'
 CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
 CODE_LENGTH = 4
@@ -121,7 +131,23 @@ ESCALATING_COMMANDS = {'sh', 'bash', 'dash', 'zsh', 'ksh', 'csh', 'tcsh', 'fish'
 SUDOERS_RULE_RX = re.compile(
     r'^(?P<user>[a-z_][a-z0-9_-]{0,31}) ALL=\((?P<runas>[a-z_][a-z0-9_-]{0,31})\) NOPASSWD: '
     r'(?P<cmd>/[A-Za-z0-9._/-]+)(?P<args>( [A-Za-z0-9._/@:+*-]+)*| "")$')
+CI_PATH_RX = re.compile(r'^\.github/workflows/[A-Za-z0-9][A-Za-z0-9._-]{0,60}\.ya?ml$')
+CI_BRANCH_RX = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$')
+CI_REPO_RX = re.compile(r'^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$')
+CI_MAX_BYTES = 20_000
+SHA256_RX = re.compile(r'^[0-9a-f]{64}$')
+# The #33 text turns these seven characters into spaces and folds white space, so a workflow could not be
+# shown as it is (`run: |`, GITHUB_TOKEN and `#` are everywhere in one). The CI line therefore writes them as
+# FIXED, visible stand-ins, and a workflow may hold nothing but printable ASCII: no stand-in can occur in the
+# original, so what the owner reads maps back to exactly one text.
+CI_STAND_INS = {'`': '\u02cb', '>': '\u203a', '#': '\uff03', '*': '\u2217', '_': '\uff3f', '~': '\u223c', '|': '\u00a6'}
+CI_LEGEND = 'Jel: \uff03 kettoskereszt, \uff3f alahuzas, \u2217 csillag, \u203a nagyobb, \u00a6 csovonal, \u223c hullam, \u02cb visszaidezojel'
+CI_ITEM_SEP = ' \u2016 '
+CI_LINE_SEP = ' \u00b6 '
 USAGE = ('usage: root-telepito kerj <kulcs> <commit40> <kero>\n'
+         '       root-telepito ci-kerj <repo> <ag> <ut> <kero>   (the new file on STDIN)\n'
+         '       root-telepito ci-athnezve <tetel> <sha256>\n'
+         '       root-telepito ci-nap <kero>\n'
          '       root-telepito kerj-vissza <kulcs> <verzio> <kero>\n'
          '       root-telepito vegrehajt <R> <discord-uzenet-id>\n'
          '       root-telepito allapot\n'
@@ -730,6 +756,423 @@ def locked():
     return fd
 
 
+# ---------------------------------------------------------------- CI changes: a queue, a reviewer's mark, one daily approval
+#
+# A workflow file cannot be pushed by an agent (the fleet's App token has no `workflows` right on purpose). So an
+# agent hands the new file to root (`ci-kerj`, the bytes on STDIN), the reviewer confirms he read exactly those bytes
+# (`ci-athnezve`), and once a day (`ci-nap`) every confirmed item goes up as ONE #33 approval. After the owner's
+# `igen <code>`, root writes the approved bytes to the PR's branch itself (contents API, conditional on the base blob).
+# The token that can write a workflow exists only in root's process, for that one call.
+
+def load_ci_config():
+    root_file(CI_CONFIG_FILE)
+    try:
+        c = json.load(open(CI_CONFIG_FILE, encoding='utf-8'))
+        out = {'repos': list(c['repos']), 'reviewers': list(c['reviewers']),
+               'requestExpiryHours': int(c.get('requestExpiryHours', 48)),
+               'batchWindowMinutes': int(c.get('batchWindowMinutes', 720))}
+    except (OSError, ValueError, KeyError, TypeError):
+        raise Refused(f'olvashatatlan CI-beallitas: {CI_CONFIG_FILE}')
+    if not out['repos'] or not all(isinstance(x, str) and CI_REPO_RX.match(x) for x in out['repos']):
+        raise Refused('a CI-beallitas repos mezoje hibas')
+    if not out['reviewers'] or not all(isinstance(x, str) and USER_RX.match(x) for x in out['reviewers']):
+        raise Refused('a CI-beallitas reviewers mezoje hibas')
+    if not 1 <= out['requestExpiryHours'] <= 168 or not 60 <= out['batchWindowMinutes'] <= 24 * 60:
+        raise Refused('a CI-beallitas lejarati erteke hibas')
+    return out
+
+
+def ci_decode(data):
+    """The text of a workflow, or Refused. Only SHOWN lines must be plain ASCII (ci_line checks each one): a line
+    the change leaves alone is not shown, and the reviewer has read the whole file."""
+    if b'\0' in data:
+        raise Refused('a workflow nem tartalmazhat NUL bajtot')
+    try:
+        return data.decode('utf-8')
+    except UnicodeDecodeError:
+        raise Refused('a workflow nem UTF-8')
+
+
+def ci_text(value):
+    """One piece of text as the owner reads it: the seven characters as stand-ins, a run of two or more spaces
+    (or one at the end of a line) as ‹n›, so that nothing of the text is lost to the #33 white-space folding."""
+    out = ''.join(CI_STAND_INS.get(c, c) for c in value)
+    return re.sub(r' {2,}| $', lambda m: '‹%d›' % len(m.group(0)), out)
+
+
+def ci_lines(old, new):
+    """The changed lines, in order, as the owner reads them: `<number><+|-> (<indent>) <text>`. Only changed
+    lines (the reviewer reads the whole file; the owner approves the change). Returns (lines, plus, minus)."""
+    import difflib
+    a = old.split('\n') if old else []
+    b = new.split('\n')
+    if a and a[-1] == '':
+        a.pop()
+    if b and b[-1] == '':
+        b.pop()
+    out, plus, minus = [], 0, 0
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
+        if tag == 'equal':
+            continue
+        for n in range(i1, i2):
+            out.append(ci_line(n + 1, '-', a[n]))
+            minus += 1
+        for n in range(j1, j2):
+            out.append(ci_line(n + 1, '+', b[n]))
+            plus += 1
+    if old and old.endswith('\n') != new.endswith('\n'):
+        out.append('sorvege-vaiz' if new.endswith('\n') else 'sorvege-nincs')
+    return out, plus, minus
+
+
+def ci_line(number, sign, text):
+    # a SHOWN line must be printable ASCII, old or new: a stand-in character in an old line would read as the
+    # character it stands for
+    if any(not 32 <= ord(c) <= 126 for c in text):
+        raise Refused(f'a(z) {number}. sor ({"regi" if sign == "-" else "uj"}) nem nyomtathato ASCII: a jovahagyas nem '
+                      'tudna egyertelmuen megmutatni')
+    indent = len(text) - len(text.lstrip(' '))
+    body = text[indent:]
+    return f'{number}{sign}({indent}){ci_text(body)}' if body else f'{number}{sign}({indent})'
+
+
+def ci_item_text(it):
+    lines = CI_LINE_SEP.join(it['lines'])
+    return (f"{ci_text(it['repo'])} PR{it['pr']} {ci_text(it['branch'])} {ci_text(it['path'])} kero:{ci_text(it['kero'])} "
+            f"atnezte:{ci_text(it['athnezte']['by'])} regi:{it['baseBlob'][:8] or 'nincs'} uj:{it['sha'][:8]} "
+            f"+{it['plus']} -{it['minus']}: {lines}")
+
+
+def ci_batch_line(rid, items):
+    parts = [f'ROOT-TELEPITO R={rid} / CI-NAP / {len(items)} tetel / {CI_LEGEND} / '
+             'az agra irva a workflow AZONNAL lefut, a repo titkaival']
+    for k, it in enumerate(items, 1):
+        parts.append(f'{k}) {ci_item_text(it)}')
+    line = parts[0] + ' / ' + CI_ITEM_SEP.join(parts[1:])
+    return line
+
+
+def ci_fits(line):
+    return neutral_description(line, description_max(CATEGORY)) == '> ' + line
+
+
+def get_token(repo, role):
+    """A fleet-github installation token. The broker is asked in a scrubbed environment (no SUDO_*): the `ci`
+    role is refused for anything that arrives through sudo, and this process is not asking through it."""
+    root_file(FLEET_GITHUB)
+    r = subprocess.run([FLEET_GITHUB, 'token', repo, role], capture_output=True, text=True, timeout=60,
+                       env={'PATH': '/usr/bin:/bin'})
+    token = r.stdout.strip()
+    if r.returncode != 0 or not token or any(c.isspace() for c in token):
+        # the broker's refusal names the reason; the token is never in stderr
+        raise Failed(f'fleet-github {role} {repo}: kod {r.returncode}: {r.stderr.strip()[:200]}')
+    return token
+
+
+def github_api(token, method, path, body=None):
+    """(status, parsed JSON or {}). No redirect is followed: the token must stay on api.github.com."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(GITHUB_API + path, data=data, method=method, headers={
+        'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'root-telepito',
+        **({'Content-Type': 'application/json'} if data is not None else {})})
+    try:
+        with _OPENER.open(req, timeout=30) as r:
+            raw, status = r.read(2_000_000), r.status
+    except urllib.error.HTTPError as e:
+        raw, status = e.read(200_000), e.code
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise Failed(f'halozati hiba ({e.__class__.__name__}): {method} {path}')
+    try:
+        return status, json.loads(raw.decode('utf-8')) if raw else {}
+    except ValueError:
+        return status, {}
+
+
+def ci_pr_state(token, repo, branch, number=None):
+    """(default branch, the one open PR from `branch` into it) or Refused. With `number`, that PR and no other."""
+    st, info = github_api(token, 'GET', f'/repos/{repo}')
+    default = info.get('default_branch') if st == 200 else None
+    if not default:
+        raise Failed(f'a repo alapertelmezett aga nem olvashato (HTTP {st}): {repo}')
+    if branch == default:
+        raise Refused(f'{branch} a repo alapertelmezett aga: oda nem irok')
+    owner = repo.split('/')[0]
+    st, prs = github_api(token, 'GET', f'/repos/{repo}/pulls?state=open&base={urllib.parse.quote(default)}'
+                                       f'&head={urllib.parse.quote(owner + ":" + branch)}&per_page=5')
+    prs = [x for x in (prs if st == 200 and isinstance(prs, list) else [])
+           if isinstance(x, dict) and (x.get('head') or {}).get('ref') == branch
+           and ((x.get('head') or {}).get('repo') or {}).get('full_name') == repo
+           and (x.get('base') or {}).get('ref') == default]
+    if len(prs) != 1:
+        raise Refused(f'a(z) {branch} agnak nem pontosan egy nyitott PR-ja van a(z) {default} fele ugyanabbol a repobol')
+    if number is not None and prs[0].get('number') != number:
+        raise Refused(f'a(z) {branch} nyitott PR-ja mas, mint az R-ben (#{prs[0].get("number")}, nem #{number})')
+    return default, prs[0]
+
+
+def ci_blob(token, repo, branch, path):
+    """(blob sha, text) of the file on the branch, or ('', '') when there is none."""
+    st, f = github_api(token, 'GET', f'/repos/{repo}/contents/{urllib.parse.quote(path)}?ref={urllib.parse.quote(branch)}')
+    if st == 404:
+        return '', ''
+    if st != 200 or not isinstance(f, dict) or f.get('type') != 'file' or not f.get('sha'):
+        raise Failed(f'a fajl nem olvashato (HTTP {st}): {repo} {path}')
+    import base64
+    try:
+        raw = base64.b64decode(f.get('content') or '')
+    except ValueError:
+        raise Failed('a GitHub fajl-tartalma nem dekodolhato')
+    return f['sha'], raw.decode('utf-8', 'replace')
+
+
+def ci_all():
+    d = os.path.join(STORE, 'keresek')
+    out = []
+    try:
+        names = sorted(os.listdir(d))
+    except FileNotFoundError:
+        return out
+    for n in names:
+        if n.endswith('.json') and R_RX.match(n[:-5]):
+            try:
+                r = json.loads(open(os.path.join(d, n), encoding='utf-8').read())
+            except (OSError, ValueError):
+                continue
+            if r.get('mode') in ('ci-kerelem', 'ci-nap'):
+                out.append(r)
+    return out
+
+
+def cmd_ci_kerj(args, stdin=None):
+    if len(args) != 4:
+        raise Refused(USAGE)
+    repo, branch, path, kero = args
+    if not CI_REPO_RX.match(repo) or not CI_BRANCH_RX.match(branch) or '..' in branch or '//' in branch \
+            or branch.endswith(('/', '.lock')) or not CI_PATH_RX.match(path) or not AGENT_RX.match(kero):
+        raise Refused(USAGE)
+    cfg = load_config()
+    who = caller(cfg)
+    ci = load_ci_config()
+    require_durable_store()
+    if repo not in ci['repos']:
+        raise Refused(f'a(z) {repo} nincs a CI-lista repoi kozott')
+    data = (stdin if stdin is not None else sys.stdin.buffer.read(CI_MAX_BYTES + 1))
+    if not data or len(data) > CI_MAX_BYTES:
+        raise Refused(f'a workflow 1 es {CI_MAX_BYTES} bajt kozott legyen')
+    rid = secrets.token_hex(4)
+    staged = os.path.join(store_dir('staging'), rid)
+    write_private(staged, data)
+    try:
+        # copy-then-hash: what is judged, shown and later written is root's copy, read back
+        data = open(staged, 'rb').read()
+        new = ci_decode(data)
+        token = get_token(repo, 'olvas')
+        default, pr = ci_pr_state(token, repo, branch)
+        blob, old = ci_blob(token, repo, branch, path)
+        del token
+        if old == new:
+            raise Refused('a fajl az agon mar pontosan ez: nincs mit irni')
+        lines, plus, minus = ci_lines(old, new)
+        for ln in lines:
+            if '�' in ln:
+                raise Refused('egy megvaltozott regi sor nem ASCII: a jovahagyas nem tudna egyertelmuen megmutatni')
+        now = int(time.time())
+        it = {'id': rid, 'mode': 'ci-kerelem', 'status': 'varakozik', 'repo': repo, 'branch': branch, 'path': path,
+              'pr': pr['number'], 'default': default, 'baseBlob': blob, 'sha': sha256(data), 'staged': staged,
+              'lines': lines, 'plus': plus, 'minus': minus, 'kero': kero, 'caller': who, 'createdAt': now, 'createdNs': time.time_ns(),
+              'expiresAt': now + ci['requestExpiryHours'] * 3600, 'athnezte': None}
+        # the item must fit a batch ON ITS OWN, with the longest reviewer name: nothing is cut to fit
+        probe = dict(it, athnezte={'by': 'x' * 32})
+        if not ci_fits(ci_batch_line('0' * 8, [probe])):
+            raise Refused('a valtozas egy jovahagyasi sorba nem fer ki csonkitas nelkul: bontsd kisebb valtozasokra '
+                          f'(a sor legfeljebb {description_max(CATEGORY)} karakter)')
+    except BaseException:
+        os.unlink(staged)
+        raise
+    store_dir('keresek')
+    fd = locked()
+    try:
+        # a new request for the same file on the same branch replaces the waiting ones: an older item (and the
+        # reviewer's mark on it) can never be taken into a batch next to, or instead of, the newer bytes
+        for old_it in ci_all():
+            if (old_it['mode'] == 'ci-kerelem' and old_it['status'] == 'varakozik' and old_it['id'] != rid
+                    and (old_it['repo'], old_it['branch'], old_it['path']) == (repo, branch, path)):
+                old_it['status'] = 'felulirva'
+                old_it['felulirta'] = rid
+                save_r(old_it)
+                log({'event': 'ci-felulirva', 'r': old_it['id'], 'by': rid})
+        save_r(it)
+    finally:
+        os.close(fd)
+    log({'event': 'ci-kerj', 'r': rid, 'repo': repo, 'pr': it['pr'], 'path': path, 'sha': it['sha'], 'by': kero, 'caller': who})
+    return {'r': rid, 'status': 'varakozik', 'sha256': it['sha'], 'pr': it['pr'], 'alapag': default,
+            'lejar': it['expiresAt'], 'plus': plus, 'minus': minus}
+
+
+def cmd_ci_athnezve(args):
+    """The reviewer's mark: he read exactly the bytes with this sha256. The reviewer is the sudo caller, from the CI
+    list of reviewers, never an argument; he cannot be the requester."""
+    if len(args) != 2 or not R_RX.match(args[0]) or not SHA256_RX.match(args[1]):
+        raise Refused(USAGE)
+    rid, sha = args
+    cfg = load_config()
+    ci = load_ci_config()
+    require_durable_store()
+    if os.geteuid() != ROOT_UID:
+        raise Refused('rootkent kell futnia (sudo)')
+    try:
+        reviewer = pwd.getpwuid(int(os.environ['SUDO_UID'])).pw_name
+    except (KeyError, ValueError):
+        raise Refused('ismeretlen hivo')
+    if reviewer not in ci['reviewers']:
+        raise Refused(f'{reviewer} nincs a CI atnezoi kozott')
+    name = reviewer[len('agent-'):] if reviewer.startswith('agent-') else reviewer
+    fd = locked()
+    try:
+        it = load_r(rid)
+        if it.get('mode') != 'ci-kerelem' or it['status'] != 'varakozik':
+            raise Refused(f'nem varakozo CI-tetel: {rid}')
+        if int(time.time()) >= it['expiresAt']:
+            raise Rejected('a tetel lejart')
+        if name == it['kero'] or reviewer == it['caller']:
+            raise Refused('a tetelt nem nezheti at az, aki kerte')
+        data = open(it['staged'], 'rb').read()
+        if sha256(data) != it['sha'] or sha != it['sha']:
+            raise Refused('a megadott sha256 nem a tetel bajtjaira szol')
+        it['athnezte'] = {'by': name, 'at': int(time.time())}
+        save_r(it)
+        log({'event': 'ci-athnezve', 'r': rid, 'sha': sha, 'by': reviewer})
+        return {'r': rid, 'athnezte': name}
+    finally:
+        os.close(fd)
+
+
+def cmd_ci_nap(args, now=None):
+    """The daily batch: every reviewed, unexpired item that fits one approval line, as ONE R. What does not
+    fit stays in the queue for the next day (nothing is cut)."""
+    if len(args) != 1 or not AGENT_RX.match(args[0]):
+        raise Refused(USAGE)
+    kero = args[0]
+    cfg = load_config()
+    who = caller(cfg)
+    ci = load_ci_config()
+    require_durable_store()
+    fd = locked()
+    try:
+        now = int(time.time()) if now is None else now
+        everything = ci_all()
+        for b in everything:
+            if b['mode'] == 'ci-nap' and b['status'] == 'nyitott':
+                if now < b['expiresAt']:
+                    raise Refused(f"van nyitott CI-kotege (R={b['id']}): elobb az dontessel vagy lejarattal zarul")
+                # an undecided batch ran out: its items go back to the queue (if they have not run out themselves)
+                b['status'] = 'lejart'
+                save_r(b)
+                for iid in b['items']:
+                    it = load_r(iid)
+                    if it['status'] == 'kotegben':
+                        it['status'] = 'varakozik'
+                        save_r(it)
+        queue = []
+        for it in ci_all():
+            if it['mode'] != 'ci-kerelem' or it['status'] != 'varakozik':
+                continue
+            if now >= it['expiresAt']:
+                it['status'] = 'lejart'
+                save_r(it)
+                continue
+            if it.get('athnezte'):
+                queue.append(it)
+        if not queue:
+            return {'tetelek': 0}
+        queue.sort(key=lambda x: x['createdNs'])
+        rid = secrets.token_hex(4)
+        chosen = []
+        for it in queue:
+            if ci_fits(ci_batch_line(rid, chosen + [it])):
+                chosen.append(it)
+        if not chosen:
+            raise Refused('egyetlen tetel sem fer a jovahagyasi sorba')
+        r = {'id': rid, 'mode': 'ci-nap', 'status': 'nyitott', 'kulcs': 'ci-nap', 'kero': kero, 'caller': who,
+             'items': [x['id'] for x in chosen], 'createdAt': now, 'expiresAt': now + ci['batchWindowMinutes'] * 60,
+             'canonicalLine': ci_batch_line(rid, chosen)}
+        for it in chosen:
+            it['status'] = 'kotegben'
+            it['batch'] = rid
+            save_r(it)
+        save_r(r)
+        log({'event': 'ci-nap', 'r': rid, 'items': r['items'], 'by': kero})
+        return {'r': rid, 'canonicalLine': r['canonicalLine'], 'expiresAt': r['expiresAt'], 'category': CATEGORY,
+                'tetelek': len(chosen), 'sorban_maradt': len(queue) - len(chosen)}
+    finally:
+        os.close(fd)
+
+
+def ci_write_item(it, data):
+    """One approved item: re-check the five things the approval named, then write. Returns the commit sha."""
+    repo, branch, path = it['repo'], it['branch'], it['path']
+    token = get_token(repo, 'olvas')
+    ci_pr_state(token, repo, branch, number=it['pr'])
+    blob, _old = ci_blob(token, repo, branch, path)
+    del token
+    if blob != it['baseBlob']:
+        raise Refused('a fajl az agon azota megvaltozott (mas a regi blob)')
+    body = {'message': f"ci: {path} (approved on Discord, request {it['id']})", 'branch': branch,
+            'content': __import__('base64').b64encode(data).decode('ascii')}
+    if blob:
+        body['sha'] = blob
+    token = get_token(repo, 'ci')
+    try:
+        st, resp = github_api(token, 'PUT', f'/repos/{repo}/contents/{urllib.parse.quote(path)}', body)
+    finally:
+        del token
+    commit = (resp.get('commit') or {}).get('sha') if isinstance(resp, dict) else None
+    if st not in (200, 201) or not commit:
+        raise Failed(f"a GitHub nem fogadta az irast (HTTP {st}): {str((resp or {}).get('message', ''))[:120]}")
+    return commit
+
+
+def vegrehajt_ci(cfg, r, message_id, who, now_ms):
+    items = []
+    for iid in r['items']:
+        it = load_r(iid)
+        if it['status'] != 'kotegben' or it.get('batch') != r['id']:
+            raise Refused(f'a tetel ({iid}) nem ehhez a kotegehez tartozik')
+        data = open(it['staged'], 'rb').read()
+        if sha256(data) != it['sha']:
+            raise Refused(f'a tetel ({iid}) tarolt masolatanak lenyomata elter')
+        items.append((it, data))
+    if r['canonicalLine'] != ci_batch_line(r['id'], [i for i, _ in items]):
+        raise Refused('a kotegsor nem az, amit a tetelekbol ujraepitek')
+    request, later = discord_messages(cfg, message_id)
+    decision = verify_approval(r, request, later, cfg, now_ms)
+    r['status'] = 'elhasznalt'
+    r['decision'] = decision
+    r['usedBy'] = who
+    save_r(r)
+    log({'event': 'ci-vegrehajt', 'r': r['id'], 'decision': decision, 'by': who})
+    out = []
+    for it, data in items:
+        try:
+            commit = ci_write_item(it, data)
+            it['status'], it['commit'] = 'kesz', commit
+            out.append({'r': it['id'], 'repo': it['repo'], 'pr': it['pr'], 'path': it['path'], 'allapot': 'kesz',
+                        'commit': commit})
+        except (Refused, Failed) as e:
+            it['status'] = 'nem ment'
+            it['miert'] = str(e)[:200]
+            out.append({'r': it['id'], 'repo': it['repo'], 'pr': it['pr'], 'path': it['path'], 'allapot': 'nem ment',
+                        'miert': it['miert']})
+        save_r(it)
+        log({'event': 'ci-tetel', 'r': it['id'], 'status': it['status'], 'commit': it.get('commit', '')})
+    r['status'] = 'telepitve' if all(x['allapot'] == 'kesz' for x in out) else 'reszben'
+    save_r(r)
+    if not any(x['allapot'] == 'kesz' for x in out):
+        raise Failed('egyetlen tetel sem ment: ' + '; '.join(f"{x['r']}: {x['miert']}" for x in out))
+    return {'r': r['id'], 'status': r['status'], 'tetelek': out}
+
+
 # ---------------------------------------------------------------- verbs
 
 def cmd_kerj(args):
@@ -786,6 +1229,8 @@ def cmd_vegrehajt(args, now_ms=None):
         now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
         if now_ms >= r['expiresAt'] * 1000:
             raise Rejected('az R lejart')
+        if r['mode'] == 'ci-nap':
+            return vegrehajt_ci(cfg, r, message_id, who, now_ms)
         entries = load_list()
         if entries.get(r['kulcs']) != r['entry']:
             raise Refused('a lista eleme megvaltozott az R ota')
@@ -877,7 +1322,7 @@ def cmd_helyreallit(args):
 
 
 VERBS = {'kerj': cmd_kerj, 'kerj-vissza': cmd_kerj_vissza, 'vegrehajt': cmd_vegrehajt, 'allapot': cmd_allapot,
-         'helyreallit': cmd_helyreallit}
+         'helyreallit': cmd_helyreallit, 'ci-kerj': cmd_ci_kerj, 'ci-athnezve': cmd_ci_athnezve, 'ci-nap': cmd_ci_nap}
 
 
 def main(argv):

@@ -5,7 +5,7 @@ barracuda 6-9). Balázs approved B, with sudoers as a possible target (Eldönten
 Until now every update of a root file in the container (a broker, a sudo rule, a file under `/etc`) was a root
 shell command on the owner's side. With this, it is a Discord reply.
 
-Code: `scripts/root/root-telepito.py` (root), `scripts/root-telepito.sh` (the fleet's side),
+Code: `scripts/root/root-telepito.py` (root), `scripts/root-telepito.sh` (the fleet's side), `scripts/__tests__/root-telepito-ci.test.py` (the CI half),
 `scripts/fleet-bootstrap.sh` step 4d. Tests: `scripts/__tests__/root-telepito.test.py`,
 `scripts/__tests__/fleet-bootstrap-root-telepito.test.py`, `src/__tests__/approval-text-fixture.test.ts`.
 
@@ -122,3 +122,39 @@ telepítő minden telepítést elutasít.
 
 Innentől egy fleet-pane frissítés: a flotta kéri (`root-telepito.sh kerj`), Balázs a Discordon válaszol
 (`igen <kód>`), a flotta végrehajtja.
+
+## CI changes (task `ci-modositas-jovahagyassal`, PR B)
+
+An agent cannot push a workflow file: the fleet's GitHub App token has no `workflows` right on purpose
+(`docs/fleet-github.md`, the `ci` role is refused for anything that arrives through sudo). So a workflow change goes
+through this installer, in four steps, and the owner decides **once a day**, on ONE message that shows every item.
+
+```
+bash /home/marveen/marveen/scripts/root-telepito.sh ci-kerj <agent> <owner/repo> <branch> .github/workflows/<name>.yml <file>
+  -> the item (8 hex), the sha256 of the bytes ROOT keeps, the PR it belongs to
+the reviewer reads exactly those bytes (the review packet's README names the sha256) and marks them:
+bash /home/marveen/marveen/scripts/root-telepito.sh ci-athnezve <item> <sha256>
+once a day (a scheduled task of the main agent, suggestion 17:30):
+bash /home/marveen/marveen/scripts/root-telepito.sh ci-nap <agent>      -> ONE R, put up as a #33 approval
+(the owner answers on Discord: igen <code>)
+bash /home/marveen/marveen/scripts/root-telepito.sh vegrehajt <R> <approval_id>   -> root writes each approved file
+```
+
+| | |
+|---|---|
+| **What may be asked** | a repository on the root-owned `ci.json` list; a path exactly `.github/workflows/<name>.yml` or `.yaml`; a branch that is **not** the default branch and is the head of exactly **one open PR from the same repository into the default branch**; at most 20 kB; a change (not the file as it already is). The bytes come on STDIN, never from a commit: the agent cannot push the file, and root keeps its own copy (copy-then-hash). |
+| **The reviewer's mark** | a pushed workflow **runs at once, on the PR's event, with the repository's secrets**. So review after the run is too late. `ci-athnezve <item> <sha256>` is the reviewer saying "I read exactly these bytes": root takes WHO from sudo (never an argument), requires him on `ci.json` `reviewers`, refuses the requester (by name and by OS user), and refuses a digest that is not the one of the bytes it keeps. It is logged (who, item, digest, when). **`ci-nap` takes only marked items**, and a new `ci-kerj` for the same repo, branch and file supersedes the waiting one, mark included. |
+| **The line the owner reads** | repository, **PR number**, branch, file, the requester, the reviewer, the old file's blob (8 hex), the new bytes' digest (8 hex), the number of added and removed lines, and **the changed lines only** (`<line number>+/-(<indent>)<text>`, a line break shown as `¶`), plus the sentence "az agra irva a workflow AZONNAL lefut, a repo titkaival". The reviewer reads the whole file; the owner approves the change. |
+| **Why the line looks odd** | #33 turns `` ` > # * _ ~ | `` into spaces and folds white space, and a workflow is full of them (`run: |`, `GITHUB_TOKEN`, comments). So the line writes them as fixed visible stand-ins (the legend is in the line itself), writes a run of spaces as `‹n›`, and **every SHOWN line must be plain printable ASCII**: no stand-in can then occur in the original, and what the owner reads maps back to exactly one text (a test turns the line back into the lines). A changed line with an accent, a tab or a carriage return is refused; an unchanged line is not shown and may be anything. |
+| **Nothing is cut** | all items go up in one line of at most 1500 characters (the `root_telepites` limit). An item that cannot fit alone is refused at the request, with "split it". Items that do not fit **today** wait for the next batch, oldest first. There is no "truncated diff". |
+| **The write** | after the owner's `igen <code>` on exactly that line (the same Discord read-back as everything here), per item root checks the **five facts** again (repository, the same PR number from the same repository into the default branch, the branch, the old blob, the digest of the bytes it holds), then asks the broker for a `ci` token **at that moment** (`fleet-github token <repo> ci`, in an environment with no `SUDO_*`, which is how the broker knows root is not a sudo caller) and writes the approved bytes to the branch with the contents API, conditional on the old blob, with a fixed commit message. If a fact changed, **that item does not go**; the others do; the answer lists every item. If none went, it is an error. The token lives in root's process for that one call. |
+| **Who may ask** | the router user (`ci-kerj`, `ci-nap`), the reviewer (`ci-athnezve`, only with an 8-hex id and a 64-hex digest, in the sudo rule and again in root). An unanswered batch ends at `batchWindowMinutes`; its items go back to the queue; an item ends after `requestExpiryHours`. |
+
+Owner's host steps (once, as root; the fleet runs none of them):
+
+1. `/etc/root-telepito/conf/ci.json` (root 0644), next to `config.json`:
+   `{"repos": ["KratoBal/acroveliq", "KratoBal/acropora-os"], "reviewers": ["agent-barracuda"], "requestExpiryHours": 48, "batchWindowMinutes": 720}`
+2. `/etc/fleet-github/app.json`: a caller `root` with `olvas` on those repositories. Root reads the PR and the file with an `olvas` token; the `ci` role needs no entry (it is code, not configuration, and is refused to every sudo caller).
+3. The next bootstrap run installs the new installer (the pin) and the three sudo lines.
+
+What this does not do, said aloud: it does not judge the file; the reviewer's mark and the owner's reply do. It cannot see what the written workflow does on its first run; that is why the mark comes first. A GitHub App installation token cannot be tied to one write, which is why root does the writing itself.

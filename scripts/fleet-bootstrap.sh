@@ -502,7 +502,8 @@ step "4d. the root installer: its pinned script, its sudo rule, then the approve
 RT_BIN=/usr/local/sbin/root-telepito
 RT_SUDOERS=/etc/sudoers.d/root-telepito
 RT_STORE=/var/lib/root-telepito
-RT_PIN=e42638d7584aab7140c3115ebd5f0f8987d8dda140639d5b0c6bee57cf068bbf
+RT_REVIEWER=agent-barracuda
+RT_PIN=d244b165e00c8ddc411f430c00adc5cc7cdee00ff30e8c9990762ce6d445e72a
 RT_RC=0
 RT_DEPLOYED=0
 rt_tmpdir="$(mktemp -d)"
@@ -517,6 +518,8 @@ elif [[ "$(sha256sum < "$rt_tmpdir/root-telepito" | cut -d' ' -f1)" != "$RT_PIN"
 else
   echo "ok: scripts/root/root-telepito.py is the pinned version"
 fi
+# n sudoers character classes for lower-case hex: [0-9a-f] repeated
+rt_hex() { local n="$1" i out=''; for ((i = 0; i < n; i++)); do out+='[0-9a-f]'; done; printf '%s' "$out"; }
 rt_sudoers_content() {
   echo "# The root installer (docs/root-telepito.md). Written by fleet-bootstrap.sh 4d."
   # the arguments are the installer's to check; allapot and helyreallit take none
@@ -525,6 +528,11 @@ rt_sudoers_content() {
   echo "$ROUTER_USER ALL=(root) NOPASSWD: $RT_BIN vegrehajt *"
   echo "$ROUTER_USER ALL=(root) NOPASSWD: $RT_BIN allapot"
   echo "$ROUTER_USER ALL=(root) NOPASSWD: $RT_BIN helyreallit"
+  # CI changes: the requester and the daily batch (the router user), the reviewer's mark (the reviewer alone,
+  # and only with an 8-hex item id and a 64-hex digest: sudo's [0-9a-f] classes; root checks the shapes again)
+  echo "$ROUTER_USER ALL=(root) NOPASSWD: $RT_BIN ci-kerj * * .github/workflows/* *"
+  echo "$ROUTER_USER ALL=(root) NOPASSWD: $RT_BIN ci-nap *"
+  echo "$RT_REVIEWER ALL=(root) NOPASSWD: $RT_BIN ci-athnezve $(rt_hex 8) $(rt_hex 64)"
 }
 if ! rt_mounted; then
   echo "skip: $RT_CONF is not mounted, the installer is not deployed here: nothing installed"

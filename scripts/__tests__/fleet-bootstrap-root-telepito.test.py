@@ -89,7 +89,10 @@ RULES = ['marveen ALL=(root) NOPASSWD: /usr/local/sbin/root-telepito kerj *',
          'marveen ALL=(root) NOPASSWD: /usr/local/sbin/root-telepito kerj-vissza *',
          'marveen ALL=(root) NOPASSWD: /usr/local/sbin/root-telepito vegrehajt *',
          'marveen ALL=(root) NOPASSWD: /usr/local/sbin/root-telepito allapot',
-         'marveen ALL=(root) NOPASSWD: /usr/local/sbin/root-telepito helyreallit']
+         'marveen ALL=(root) NOPASSWD: /usr/local/sbin/root-telepito helyreallit',
+         'marveen ALL=(root) NOPASSWD: /usr/local/sbin/root-telepito ci-kerj * * .github/workflows/* *',
+         'marveen ALL=(root) NOPASSWD: /usr/local/sbin/root-telepito ci-nap *',
+         'agent-barracuda ALL=(root) NOPASSWD: /usr/local/sbin/root-telepito ci-athnezve ' + '[0-9a-f]' * 8 + ' ' + '[0-9a-f]' * 64]
 
 print('1. the pin matches the file')
 pins = re.findall(r'^RT_PIN=([0-9a-f]{64})$', TEXT, re.M)
