@@ -43,11 +43,12 @@ function configRaw(stateDir: string, rules: unknown = defaultRules()) {
     github: { tokenFile: '/run/secrets/github' },
     coolifyHosts: { 'prod-gep': { coolifyApiUrl: 'https://prod.example/api/v1', coolifyTokenFile: '/run/secrets/coolify-prod' } },
     apps: [
-      { env: 'prod', name: 'acropora-api', coolifyHost: 'prod-gep', coolifyUuid: 'prodapi0001', repo: 'KratoBal/acropora-os', branch: 'main', actions: ['deploy'], approvalMinutes: 30, stageApp: 'acropora-stage-api' },
-      { env: 'stage', name: 'acropora-stage-api', coolifyHost: 'prod-gep', coolifyUuid: 'stageapi0001', repo: 'KratoBal/acropora-os', branch: 'main', actions: ['deploy'], approvalMinutes: 30 },
-      { env: 'prod', name: 'nostage-api', coolifyHost: 'prod-gep', coolifyUuid: 'nostage0001', repo: 'KratoBal/acropora-os', branch: 'main', actions: ['deploy'], approvalMinutes: 30 },
-      { env: 'prod', name: 'commerce-api', coolifyHost: 'prod-gep', coolifyUuid: 'commerce001', repo: 'KratoBal/acropora-commerce', branch: 'main', actions: ['deploy'], approvalMinutes: 30, stageApp: 'commerce-stage' },
-      { env: 'stage', name: 'commerce-stage', coolifyHost: 'prod-gep', coolifyUuid: 'commstage01', repo: 'KratoBal/acropora-commerce', branch: 'main', actions: ['deploy'], approvalMinutes: 30 },
+      { env: 'prod', name: 'acropora-api', coolifyHost: 'prod-gep', coolifyUuid: 'prodapi0001', repo: 'KratoBal/acropora-os', branch: 'main', actions: ['deploy'], approvalMinutes: 30, stageApp: 'acropora-stage-api', requiredChecks: ['verify'] },
+      { env: 'stage', name: 'acropora-stage-api', coolifyHost: 'prod-gep', coolifyUuid: 'stageapi0001', repo: 'KratoBal/acropora-os', branch: 'main', actions: ['deploy'], approvalMinutes: 30, requiredChecks: ['verify'] },
+      { env: 'prod', name: 'nostage-api', coolifyHost: 'prod-gep', coolifyUuid: 'nostage0001', repo: 'KratoBal/acropora-os', branch: 'main', actions: ['deploy'], approvalMinutes: 30, requiredChecks: ['verify'] },
+      { env: 'prod', name: 'commerce-api', coolifyHost: 'prod-gep', coolifyUuid: 'commerce001', repo: 'KratoBal/acropora-commerce', branch: 'main', actions: ['deploy'], approvalMinutes: 30, stageApp: 'commerce-stage', requiredChecks: ['verify'] },
+      { env: 'stage', name: 'commerce-stage', coolifyHost: 'prod-gep', coolifyUuid: 'commstage01', repo: 'KratoBal/acropora-commerce', branch: 'main', actions: ['deploy'], approvalMinutes: 30, requiredChecks: ['verify'] },
+      { env: 'stage', name: 'nochecks-stage', coolifyHost: 'prod-gep', coolifyUuid: 'nochecks001', repo: 'KratoBal/acropora-os', branch: 'main', actions: ['deploy'], approvalMinutes: 30 },
     ],
     ...(rules === null ? {} : { rules }),
   }
@@ -115,7 +116,7 @@ function fakeRules() {
 }
 
 function fakeCoolify() {
-  const running: Record<string, string> = { prodapi0001: MAIN[2]!, stageapi0001: MAIN[2]!, nostage0001: MAIN[2]!, commerce001: MAIN[2]!, commstage01: MAIN[2]! }
+  const running: Record<string, string> = { prodapi0001: MAIN[2]!, stageapi0001: MAIN[2]!, nostage0001: MAIN[2]!, commerce001: MAIN[2]!, commstage01: MAIN[2]!, nochecks001: MAIN[2]! }
   const rollbacks: { app: string; commit: string }[] = []
   const deployments = new Map<string, CoolifyDeployment>()
   return {
@@ -277,7 +278,27 @@ describe('stage-auto: the commit, the PR, the review and the CI', () => {
     rules.runs[HEAD] = [{ name: 'verify', status: 'in_progress', conclusion: null }]
     await refused(await byRule('stage', 'acropora-stage-api'), 'verify is in_progress')
     rules.runs[HEAD] = []
-    await refused(await byRule('stage', 'acropora-stage-api'), 'no check run')
+    await refused(await byRule('stage', 'acropora-stage-api'), 'the required check verify is missing')
+  })
+
+  it('the required run must be there by name and success: another green run, or a skipped or neutral one, is not enough (barracuda #267, 1a)', async () => {
+    rules.runs[HEAD] = [{ name: 'scan', status: 'completed', conclusion: 'success' }]
+    await refused(await byRule('stage', 'acropora-stage-api'), 'the required check verify is missing')
+    rules.runs[HEAD] = [{ name: 'verify', status: 'completed', conclusion: 'skipped' }]
+    await refused(await byRule('stage', 'acropora-stage-api'), 'the required check verify is skipped')
+    rules.runs[HEAD] = [{ name: 'verify', status: 'completed', conclusion: 'neutral' }]
+    await refused(await byRule('stage', 'acropora-stage-api'), 'the required check verify is neutral')
+  })
+
+  it('an app that names no required run is not approved by rule', async () => {
+    await refused(await byRule('stage', 'nochecks-stage'), 'nochecks-stage names no required check runs')
+  })
+
+  it('a PR that changes a workflow file is refused on stage too, naming the file; an old path under .github too (barracuda #267, 1b)', async () => {
+    rules.files = [{ path: '.github/workflows/ci.yml', previousPath: null }]
+    await refused(await byRule('stage', 'acropora-stage-api'), 'changes the CI file .github/workflows/ci.yml')
+    rules.files = [{ path: 'ci/old-workflow.yml', previousPath: '.github/workflows/ci.yml' }]
+    await refused(await byRule('stage', 'acropora-stage-api'), 'changes the CI file .github/workflows/ci.yml')
   })
 
   it('a red run on the merge commit refuses; no run there at all does not', async () => {
@@ -320,6 +341,12 @@ describe('what the rule never approves', () => {
     const stored = store.get(rec.r)!
     store.put({ ...stored, grant: { gateKey: 'gatekey00001', database: 'acropora', listSha256: 'a'.repeat(64), planSha256: 'b'.repeat(64), ops: ['+ T c'] } })
     await refused({ rec, out: ex.executeByRule({ r: rec.r }) }, 'a grant is never approved by rule')
+  })
+
+  it('a running version that moved after the request (someone deployed a newer one) refuses at execution', async () => {
+    const rec = await ex.request({ env: 'stage', app: 'acropora-stage-api', action: 'deploy', sha: S, requester: 'acrobot' })
+    cool.running.stageapi0001 = MAIN[3]!
+    await refused({ rec, out: ex.executeByRule({ r: rec.r }) }, 'the running version changed since the approval')
   })
 
   it('the same R twice: the second is refused, Coolify called once', async () => {
@@ -372,6 +399,18 @@ describe('prod-auto: verified on stage, nothing frozen', () => {
     expect((await (await byRule('stage', 'acropora-stage-api')).out).status).toBe('used')
   })
 
+  it('a workflow file to prod is refused as well', async () => {
+    await verifiedOnStage()
+    rules.files = [{ path: '.github/workflows/test.yml', previousPath: null }]
+    await refused(await byRule('prod', 'acropora-api'), 'changes the CI file .github/workflows/test.yml')
+  })
+
+  it('prod needs the required run on the merge commit too (the branch CI may lag a fresh merge)', async () => {
+    await verifiedOnStage()
+    rules.runs[S] = []
+    await refused(await byRule('prod', 'acropora-api'), `CI on the merge commit ${S.slice(0, 8)}: the required check verify is missing`)
+  })
+
   it('a frozen repository to prod refuses, whatever its files', async () => {
     await refused(await byRule('prod', 'commerce-api'), 'the repository KratoBal/acropora-commerce is frozen')
   })
@@ -409,6 +448,17 @@ describe('the settings of the rule path', () => {
     extra.rules.allowAll = true
     expect(() => parseExecutorConfig(extra)).toThrow(/unknown key/)
   })
+
+  it('an App bot login is refused as a reviewer: every agent acts as the fleet App (barracuda #267, 2)', () => {
+    const bot = base()
+    bot.rules.reviewerLogins = ['acroveliq-fleet[bot]']
+    expect(() => parseExecutorConfig(bot)).toThrow(/reviewerLogins\[0\]/)
+  })
+
+  it('.github/ is always a CI path, and the configured ones come after it', () => {
+    const c = parseExecutorConfig({ ...base(), rules: { ...defaultRules(), ciPaths: ['(^|/)scripts/ci/'] } })
+    expect(c.rules!.ciPaths.map((r) => r.source)).toEqual(['^\\.github\\/', '(^|\\/)scripts\\/ci\\/'])
+  })
 })
 
 describe('the example settings', () => {
@@ -418,6 +468,7 @@ describe('the example settings', () => {
     const prodOs = example.apps.filter((a) => a.env === 'prod' && a.repo === 'KratoBal/acropora-os')
     expect(prodOs.length).toBeGreaterThan(0)
     expect(prodOs.every((a) => a.stageApp === 'acropora-stage-api')).toBe(true)
+    expect(example.apps.filter((a) => a.repo === 'KratoBal/acropora-os').every((a) => (a.requiredChecks ?? []).includes('verify'))).toBe(true)
     // the freeze patterns catch the real commerce paths of acropora-os (measured 2026-10-19), and not a service path
     const frozen = (p: string) => example.rules!.frozenPaths.some((re) => re.test(p))
     for (const p of ['apps/api/src/integrations/medusa/x.ts', 'apps/api/src/imports/unas/x.ts', 'apps/api/src/orders/webshop-orders/x.ts', 'apps/web/src/components/webshop/x.tsx', 'packages/database/prisma/migrations/20261007220000_webshop_slug/migration.sql']) {

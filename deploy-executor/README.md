@@ -69,9 +69,13 @@ GitHub (`src/deploy-executor/rules.ts`), every time:
 |---|---|---|
 | the commit | the merge commit of exactly one merged PR into the app's branch, and on that branch | the same |
 | the review | the LATEST decisive review of a `rules.reviewerLogins` login on that PR is APPROVED, for exactly the PR's head | the same |
-| the CI | the head: at least one check run, all completed, none failed; the merge commit: none failed or unfinished | the same |
+| the CI | the head: every check run in the app's `requiredChecks` there by name, completed and `success` (skipped or neutral is not); no other run failed or unfinished; the merge commit: none failed or unfinished | the same, and the required runs green on the merge commit too |
+| the CI files | the PR changes nothing under `.github/` or a `rules.ciPaths` path (old or new path): a PR that rewrites what green means is the owner's | the same |
 | the stage | | this executor deployed the same commit to the app's `stageApp` and saw `finished_verified` |
 | the freeze | | the repo is not in `rules.frozenRepos`, and no changed file (old or new path) matches `rules.frozenPaths`; else 403 naming the file |
+
+An app without `requiredChecks` is never approved by rule. `frozenPaths` is a backstop, not the freeze itself: the
+freeze is about the subject (CLAUDE.md), the list about file names, so extending it is Balázs's list to keep.
 
 Never by rule: a fleet_ro grant (a permission change, the owner's own), and a step back, a fork or an unmeasured
 running version (the Discord line shows those to the owner; a rule has no one to show them to). The audit log has a
@@ -85,12 +89,20 @@ verdict in that record, bound to that head (`docs/fleet-github.md`). **Until tha
 path refuses there** (`no review by <login>`), and the Discord path is the way: on 2026-10-19 the machine account could
 not yet write reviews on caparium-napplo and acropora-os (barracuda: HTTP 404/403, the G2 step).
 
+**THE INVARIANT THE WHOLE RULE STANDS ON: the reviewer login is a separate machine account, and its only token is in
+`fleet-approve`'s root file; it lives nowhere else.** An APPROVE by that login is worth something only because nothing
+but `fleet-approve`, reading the root record, can write it. The config refuses a `name[bot]` login (the fleet's GitHub
+App is what every agent acts as through the broker), but it cannot see where a user account's token lives: Balázs makes
+the account at the G2 step with exactly this in mind, and no agent ever gets its token.
+
 ### Install (the owner, on the host, as root; one block)
 
 ```
 cd /opt/vegrehajto/src && git fetch origin && git checkout <the merged commit of this PR>
-# config.json, from config.example.json: a "rules" block (reviewerLogins: the GitHub login fleet-approve posts its
-#   reviews with; frozenPaths; frozenRepos), and "stageApp" on each prod app that has a stage counterpart
+# config.json, from config.example.json: a "rules" block (reviewerLogins: the separate machine account fleet-approve
+#   posts its reviews with, never a [bot] login; frozenPaths; frozenRepos; ciPaths), "requiredChecks" on each app
+#   (the CI job names that must be green; without them the rule path refuses the app), and "stageApp" on each prod
+#   app that has a stage counterpart
 # the github-olvaso token: besides contents:read, also "Pull requests: read" and "Checks: read" on the same repos
 cd /opt/vegrehajto && docker compose build && docker compose up -d
 docker compose logs vegrehajto | grep '"event":"listening"'     # the line ends with "rules":true

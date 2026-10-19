@@ -42,6 +42,12 @@ export interface AppEntry {
    * teszten átment", Balázs 2026-10-19). Absent: prod by rule is refused, the Discord path remains.
    */
   stageApp?: string
+  /**
+   * The check runs (GitHub job names) that must be on the reviewed head, completed and `success` (not skipped, not
+   * neutral), for the rule path to approve this app (barracuda, #267 review 1a: "at least one green run" would let a PR
+   * that switched its own test off through on a harmless one). Absent or empty: the rule path refuses this app.
+   */
+  requiredChecks?: readonly string[]
 }
 
 /**
@@ -55,7 +61,15 @@ export interface RuleConfig {
   frozenPaths: readonly RegExp[]
   /** prod only: these repositories are frozen as a whole (the commerce freeze stands on Balázs's word) */
   frozenRepos: readonly string[]
+  /**
+   * Stage and prod: a PR that changes a file on one of these paths is never approved by rule: it could rewrite what
+   * "green" means (barracuda, #267 review 1b). `.github/` is always on it; these are extra CI paths.
+   */
+  ciPaths: readonly RegExp[]
 }
+
+/** Always a CI path: the workflows, the actions and everything else GitHub runs from the repository. */
+export const BUILTIN_CI_PATH = /^\.github\//
 
 /** A database whose fleet_ro grants this executor may apply, on the gate's host. */
 export interface GrantEntry {
@@ -123,8 +137,11 @@ const GATE_HOST = /^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/
 const GATE_USER = /^[a-z_][a-z0-9_-]{0,31}$/
 const GATE_KEY = /^[a-z0-9]{8,64}$/
 const DATABASE = /^[a-z][a-z0-9_]{0,62}$/
-// a GitHub login, or an App's bot login (`name[bot]`)
-const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$/
+// a GitHub user login. NOT an App's `name[bot]`: the fleet's App is what every agent acts as through the broker, so
+// its review proves nothing (barracuda, #267 review 2); the reviewer is a separate machine account
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/
+// a check run's name as GitHub shows it (a job name may carry spaces, commas and brackets), printable, bounded
+const CHECK_NAME = /^[^\u0000-\u001f]{1,200}$/
 
 class ConfigError extends Error {}
 
@@ -213,7 +230,9 @@ export function parseExecutorConfig(raw: unknown): ExecutorConfig {
   const seenUuid = new Set<string>()
   const apps: AppEntry[] = appsRaw.map((v, i) => {
     const p = `apps[${i}]`
-    const a = obj(v, p, ['env', 'name', 'coolifyHost', 'coolifyUuid', 'repo', 'branch', 'actions', 'approvalMinutes'], ['healthUrl', 'stageApp'])
+    const a = obj(v, p, ['env', 'name', 'coolifyHost', 'coolifyUuid', 'repo', 'branch', 'actions', 'approvalMinutes'], ['healthUrl', 'stageApp', 'requiredChecks'])
+    const checks = a['requiredChecks']
+    if (checks !== undefined && !Array.isArray(checks)) fail(`${p}.requiredChecks`, 'must be an array')
     const env = str(a['env'], `${p}.env`, NAME)
     const name = str(a['name'], `${p}.name`, NAME)
     const coolifyHost = str(a['coolifyHost'], `${p}.coolifyHost`, NAME)
@@ -244,6 +263,7 @@ export function parseExecutorConfig(raw: unknown): ExecutorConfig {
       approvalMinutes: minutes,
       ...('healthUrl' in a ? { healthUrl: healthUrl(a['healthUrl'], `${p}.healthUrl`) } : {}),
       ...('stageApp' in a ? { stageApp: str(a['stageApp'], `${p}.stageApp`, NAME) } : {}),
+      ...(Array.isArray(checks) ? { requiredChecks: checks.map((x, j) => str(x, `${p}.requiredChecks[${j}]`, CHECK_NAME)) } : {}),
     }
   })
   // a stageApp names a real stage app of the same code: otherwise "verified on stage" would prove another repository
@@ -257,24 +277,29 @@ export function parseExecutorConfig(raw: unknown): ExecutorConfig {
 
   let rules: RuleConfig | null = null
   if ('rules' in top) {
-    const r = obj(top['rules'], 'rules', ['reviewerLogins', 'frozenPaths', 'frozenRepos'])
+    const r = obj(top['rules'], 'rules', ['reviewerLogins', 'frozenPaths', 'frozenRepos'], ['ciPaths'])
     const logins = r['reviewerLogins']
     if (!Array.isArray(logins) || logins.length === 0) fail('rules.reviewerLogins', 'must be a non-empty array')
     const paths = r['frozenPaths']
     if (!Array.isArray(paths)) fail('rules.frozenPaths', 'must be an array')
     const repos = r['frozenRepos']
     if (!Array.isArray(repos)) fail('rules.frozenRepos', 'must be an array')
-    rules = {
-      reviewerLogins: logins.map((x, i) => str(x, `rules.reviewerLogins[${i}]`, GITHUB_LOGIN)),
-      frozenPaths: paths.map((x, i) => {
-        const src = str(x, `rules.frozenPaths[${i}]`)
+    const ci = r['ciPaths'] ?? []
+    if (!Array.isArray(ci)) fail('rules.ciPaths', 'must be an array')
+    const patterns = (list: unknown[], key: string) =>
+      list.map((x, i) => {
+        const src = str(x, `rules.${key}[${i}]`)
         try {
           return new RegExp(src, 'i')
         } catch {
-          fail(`rules.frozenPaths[${i}]`, 'not a regular expression')
+          fail(`rules.${key}[${i}]`, 'not a regular expression')
         }
-      }),
+      })
+    rules = {
+      reviewerLogins: logins.map((x, i) => str(x, `rules.reviewerLogins[${i}]`, GITHUB_LOGIN)),
+      frozenPaths: patterns(paths, 'frozenPaths'),
       frozenRepos: repos.map((x, i) => str(x, `rules.frozenRepos[${i}]`, REPO)),
+      ciPaths: [BUILTIN_CI_PATH, ...patterns(ci, 'ciPaths')],
     }
   }
 

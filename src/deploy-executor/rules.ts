@@ -4,13 +4,17 @@
 //   stage-auto  a deploy R to a stage app is approved when its commit S
 //                 - is the merge commit of exactly one merged pull request into the app's branch (on the branch is
 //                   measured by the executor itself, as on the Discord path);
-//                 - that pull request's head H has a green CI: at least one check run, every one completed, none
-//                   failed; and S itself has no failed or unfinished check run (the push run on the branch);
+//                 - that pull request's head H has a green CI: every check run the app names as required is there,
+//                   completed and `success`, and no other run failed or is unfinished; S itself has no failed or
+//                   unfinished check run (the push run on the branch);
+//                 - the pull request changes no CI file (`.github/` and the configured CI paths, old or new path):
+//                   a PR that rewrites what green means is the owner's;
 //                 - the LATEST decisive review of a configured reviewer login on that pull request is APPROVED,
 //                   for exactly H. That review is what `fleet-approve approve` posts, and it posts it only for a
 //                   verdict in its root record for that head (D4): the executor cannot read the record, it reads
 //                   what only the record lets out.
 //   prod-auto   the same, and
+//                 - the required check runs are green on S as well;
 //                 - the app names its stage counterpart, and this executor deployed S there and saw
 //                   `finished_verified` ("ami a teszten átment");
 //                 - the repository is not frozen, and no file the pull request changes (old or new path) matches a
@@ -36,9 +40,10 @@ export interface RuleEvidence {
   /** the check runs on the head, all green, and how many runs the merge commit had */
   checksHead: number
   checksMerge: number
-  /** prod: the stage R that verified this commit, and how many changed paths were matched against the freeze */
+  /** how many changed files were matched against the CI paths (and, for prod, the freeze) */
+  filesChecked: number
+  /** prod: the stage R that verified this commit */
   stageR?: string
-  filesChecked?: number
 }
 
 export type RuleVerdict = { ok: true; evidence: RuleEvidence } | { ok: false; reason: string; rule: RuleName | null }
@@ -64,6 +69,8 @@ export async function judgeByRule(input: {
     return no(`the running version is ${rec.relation.kind} of this commit: only the owner may approve that`)
   }
   if (rule === 'prod-auto' && rules.frozenRepos.includes(app.repo)) return no(`the repository ${app.repo} is frozen: prod needs the owner's word`)
+  const required = app.requiredChecks ?? []
+  if (required.length === 0) return no(`${app.name} names no required check runs: the rule path cannot tell what green means`)
 
   const sha = rec.sha
   const merged = (await github.pullsForCommit(app.repo, sha)).filter((p) => p.merged && p.mergeCommitSha === sha && p.baseRef === app.branch)
@@ -84,33 +91,64 @@ export async function judgeByRule(input: {
     return no(`the approval on #${pr.number} is for ${short(latest.commitId)}, not for the merged head ${short(head)}`)
   }
 
+  // the named runs first: each on the head, completed and success; a PR cannot pass by switching its own test off
   const headRuns = await github.checkRuns(app.repo, head)
+  const headMissing = requiredProblem(headRuns, required)
+  if (headMissing) return no(`CI on the head ${short(head)}: ${headMissing}`)
   const headProblem = notGreen(headRuns, true)
   if (headProblem) return no(`CI on the head ${short(head)}: ${headProblem}`)
   const mergeRuns = await github.checkRuns(app.repo, sha)
   const mergeProblem = notGreen(mergeRuns, false)
   if (mergeProblem) return no(`CI on the merge commit ${short(sha)}: ${mergeProblem}`)
+  // prod: the branch's own CI on the merged commit too (right after a merge the push run may not exist yet; stage
+  // may run ahead of it, prod may not; barracuda, #267 review, a note)
+  if (rule === 'prod-auto') {
+    const mergeMissing = requiredProblem(mergeRuns, required)
+    if (mergeMissing) return no(`CI on the merge commit ${short(sha)}: ${mergeMissing}`)
+  }
 
-  const evidence: RuleEvidence = { rule, pr: pr.number, head, reviewer: latest.login, checksHead: headRuns.length, checksMerge: mergeRuns.length }
-  if (rule === 'stage-auto') return { ok: true, evidence }
-
-  if (!app.stageApp) return no(`${app.name} names no stage app: prod by rule needs a verified stage deployment`)
-  const onStage = records.find((r) => r.env === 'stage' && r.app === app.stageApp && r.sha === sha && r.outcome === 'finished_verified')
-  if (!onStage) return no(`${short(sha)} is not verified on ${app.stageApp} (no finished_verified stage deployment of it here)`)
+  // the changed files, stage and prod alike: a PR that touches what CI runs could redefine green
   let files: { path: string; previousPath: string | null }[]
   try {
     files = await github.pullFiles(app.repo, pr.number)
   } catch {
     return no(`the file list of #${pr.number} could not be read whole`)
   }
-  for (const f of files) {
-    for (const path of [f.path, f.previousPath]) {
-      if (path === null) continue
-      const hit = rules.frozenPaths.find((re) => re.test(path))
-      if (hit) return no(`#${pr.number} changes the frozen file ${path} (matches ${hit.source}): prod needs the owner's word`)
-    }
+  for (const path of files.flatMap((f) => (f.previousPath === null ? [f.path] : [f.path, f.previousPath]))) {
+    const ci = rules.ciPaths.find((re) => re.test(path))
+    if (ci) return no(`#${pr.number} changes the CI file ${path} (matches ${ci.source}): only the owner may approve that`)
   }
-  return { ok: true, evidence: { ...evidence, stageR: onStage.id, filesChecked: files.length } }
+
+  const evidence: RuleEvidence = {
+    rule,
+    pr: pr.number,
+    head,
+    reviewer: latest.login,
+    checksHead: headRuns.length,
+    checksMerge: mergeRuns.length,
+    filesChecked: files.length,
+  }
+  if (rule === 'stage-auto') return { ok: true, evidence }
+
+  if (!app.stageApp) return no(`${app.name} names no stage app: prod by rule needs a verified stage deployment`)
+  const onStage = records.find((r) => r.env === 'stage' && r.app === app.stageApp && r.sha === sha && r.outcome === 'finished_verified')
+  if (!onStage) return no(`${short(sha)} is not verified on ${app.stageApp} (no finished_verified stage deployment of it here)`)
+  for (const path of files.flatMap((f) => (f.previousPath === null ? [f.path] : [f.path, f.previousPath]))) {
+    const hit = rules.frozenPaths.find((re) => re.test(path))
+    if (hit) return no(`#${pr.number} changes the frozen file ${path} (matches ${hit.source}): prod needs the owner's word`)
+  }
+  return { ok: true, evidence: { ...evidence, stageR: onStage.id } }
+}
+
+/** Which required run is missing or not `success` (skipped and neutral are not green for a required run), or null. */
+function requiredProblem(runs: readonly CheckRunInfo[], required: readonly string[]): string | null {
+  for (const name of required) {
+    const mine = runs.filter((r) => r.name === name)
+    if (mine.length === 0) return `the required check ${name} is missing`
+    const bad = mine.find((r) => r.status !== 'completed' || r.conclusion !== 'success')
+    if (bad) return `the required check ${name} is ${bad.status === 'completed' ? bad.conclusion ?? 'without a conclusion' : bad.status}`
+  }
+  return null
 }
 
 /** Why a set of check runs is not green, or null. `required`: an empty set is not green either. */
