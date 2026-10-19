@@ -19,13 +19,20 @@ WHAT IT REPLACES (a match becomes `[TITOK]`; the line stays, so the log still re
     forms, AKIA, AIza, a JWT (eyJ..eyJ..);
   - a PEM private-key block: the BEGIN line, and everything after it up to its END line (to the end of the input if there is none);
   - any run of 32 or more hex digits or base64-like characters.
-THE EXEMPTIONS, and the hole they leave, said aloud: a UUID (8-4-4-4-12), a 40-digit LOWER-case hex word (a git commit sha) and a
-token that starts with `/` (an absolute path) are kept, because a log without commit ids, request ids and paths is of no use.
-**The hole: several services issue API keys that are exactly 40 hex digits, and one of those with no name in front of it passes**
-(with a name it is caught by the name rule). It is not made narrower here: the quarantine reader is the second layer.
+THE EXEMPTIONS, and the holes they leave, said aloud: a UUID (8-4-4-4-12) and a 40-digit LOWER-case hex word (a git commit sha) are
+kept, and so is each SHORT part of a path, because a log without commit ids, request ids and paths is of no use. A run that
+starts with `/` is read as a path and cut at its `/`s: every part is judged on its own, so `/app/node_modules/pino/lib` stays
+(every part is short) and `/password-reset/<a long token>` becomes `/password-reset/[TITOK]` (barracuda, point G review 2). A
+`/`-led run that holds a `+` or an `=` is not a path but base64 and goes whole.
+**Holes: several services issue API keys that are exactly 40 hex digits, and one of those with no name in front of it passes (with
+a name it is caught by the name rule); a base64 value that starts with `/` and has `/`s inside it so that every part is under 32
+characters passes too (about one random base64 value in sixty-four starts with `/`, and then it must also split that way).**
+They are not made narrower here: the quarantine reader is the second layer.
 
 FAIL CLOSED: output is written only when the whole input was filtered. An error, an input over the limit, anything unexpected:
-exit 3, nothing on stdout. A line is cut at 2000 characters (`[...]`), the output at 256 KiB (a last line says so). The last
+exit 3, nothing on stdout. A line is cut at 16 KiB BEFORE any pattern runs (the cost of the patterns must not depend on how long an outsider's line is), and at
+2000 characters after (`[...]`), the output at 256 KiB (a last line says so). The name pattern is bounded (64 characters before and
+after the keyword): an unbounded prefix made a long run of name characters cost the square of its length. The last
 line of the output is `# szurve: <N> elem` (how many replacements it made), so a reader sees whether there was anything.
 
 Exit: 0 filtered; 3 failed (nothing on stdout). Python 3, stdlib only.
@@ -37,9 +44,10 @@ REPL = '[TITOK]'
 MAX_INPUT = 4 * 1024 * 1024
 MAX_OUTPUT = 256 * 1024
 MAX_LINE = 2000
+PRE_CUT = 16 * 1024
 
 _Q = r'(?:\\+["\']|["\'])'  # a quote, plain or escaped any number of times (a JSON object inside a JSON string)
-_NAME = r'[A-Za-z0-9_.-]*(?:key|secret|token|passw(?:or)?d|passwd|pass|credential|dsn|cookie|session|auth|signature)[A-Za-z0-9_.-]*'
+_NAME = r'[A-Za-z0-9_.-]{0,64}(?:key|secret|token|passw(?:or)?d|passwd|pass|credential|dsn|cookie|session|auth|signature)[A-Za-z0-9_.-]{0,64}'
 
 # an Authorization header: the rest of the value up to a quote that closes it, or the end of the line
 HEADER = re.compile(r'(?i)((?:proxy-)?authorization' + _Q + r'?\s*[:=]\s*' + _Q + r'?)([^"\'\\\n]+)')
@@ -63,9 +71,20 @@ class Failed(Exception):
     pass
 
 
+def _long_part(part, counter):
+    """One run or one part of a path: kept if short, a UUID or a commit sha; otherwise replaced."""
+    if len(part) < 32 or UUID.match(part) or SHA40.match(part):
+        return part
+    counter[0] += 1
+    return REPL
+
+
 def _long_run(m, counter):
     run = m.group(0)
-    if UUID.match(run) or SHA40.match(run) or run.startswith('/'):
+    # a run led by `/` is a path unless it holds a character only base64 has: cut at the `/`s, judge each part on its own
+    if run.startswith('/') and '+' not in run and '=' not in run:
+        return '/'.join(_long_part(part, counter) for part in run.split('/'))
+    if UUID.match(run) or SHA40.match(run):
         return run
     counter[0] += 1
     return REPL
@@ -105,6 +124,8 @@ def filter_text(text):
             out_line = PEM_BEGIN.split(raw)[0] + REPL
             in_pem = not PEM_END.search(raw)
         else:
+            if len(raw) > PRE_CUT:
+                raw = raw[:PRE_CUT] + '[...]'
             out_line = filter_line(raw, counter)
         if len(out_line) > MAX_LINE:
             out_line = out_line[:MAX_LINE] + '[...]'

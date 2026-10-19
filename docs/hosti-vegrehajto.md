@@ -66,7 +66,7 @@ git -C /opt/hosti-vegrehajto/src checkout --detach <a beolvadt commit 40 jegye>
 test "$(git -C /opt/hosti-vegrehajto/src rev-parse HEAD)" = "<ugyanaz a 40 jegy>" && test -z "$(git -C /opt/hosti-vegrehajto/src status --porcelain)"
 cd /opt/hosti-vegrehajto/src && echo '83c926e34eefeafa5f7f235f9567ef0eac362a50ef4cd29ba4cdf1b408091caa  scripts/host/hosti-vegrehajto.py' | sha256sum -c
 echo 'dcb806aef527a6a7905b0bc5a1c6b2cc2d61477911da488d3a466ed41c37e03d  scripts/host/hosti-kliens.py' | sha256sum -c
-echo '7c59736f511aa2ea069a1e428e0d20c22e4e970bf20211d9de06db29f307f7e7  scripts/host/naplo-szuro.py' | sha256sum -c
+echo '0508545f523d15461b0e9224fcc626f4ad51c09d3a127f2bdd042f6ad0752caa  scripts/host/naplo-szuro.py' | sha256sum -c
 echo 'bd799c10cabc0c619a13476af4e808c0fc37c3492264c6c9cb8046675c2fe664  scripts/host/hosti-vegrehajto.socket' | sha256sum -c
 echo 'b2f1f4e8cf3dc883dc31837db35b7d41eab207ce04881d7d29ee67eac82d13ec  scripts/host/hosti-vegrehajto@.service' | sha256sum -c
 install -o root -g root -m 0755 scripts/host/hosti-vegrehajto.py /usr/local/sbin/hosti-vegrehajto

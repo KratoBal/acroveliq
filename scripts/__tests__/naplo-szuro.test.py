@@ -14,6 +14,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROGRAM = os.path.join(HERE, '..', 'host', 'naplo-szuro.py')
@@ -113,6 +114,38 @@ try:
     bare = 'cafe0123' * 5
     check('a bare 40-digit lower-case hex word is kept', True, bare in run('x ' + bare + ' y')[0])
     check('the same word with a name in front of it is caught by the name rule', True, gone(bare, 'api_key=' + bare))
+
+    print('a path with a token in it is not a path (barracuda, point G review 2, point 1)')
+    tok = tail(44, 'Qw3Zk9')
+    for label, text in (('a password-reset URL path', f'GET /password-reset/{tok} 200'), ('an invite path', f'POST /invite/{tok}'),
+                        ('a webhook path', f'POST /webhook/{tok} 204'), ('a signed-URL path', f'GET /files/signed/{tok}?x=1')):
+        body, n = run(text)
+        check(label + ': the token goes, the route stays', True, tok not in body and '[TITOK]' in body and n >= 1)
+    check('the route text itself stays', 'GET /password-reset/[TITOK] 200', run(f'GET /password-reset/{tok} 200')[0])
+    b64 = '/' + tail(43, 'aB9x')
+    check('a base64 value that starts with / and has no / inside', True, gone(b64[1:], 'blob ' + b64 + ' end'))
+    b64p = '/' + tail(30, 'aB9x') + '+' + tail(14, 'Zk')
+    check('a /-led run with a plus is base64, not a path: it goes whole', True, gone(tail(30, 'aB9x'), 'blob ' + b64p + ' end'))
+    check('a long absolute path of short parts stays', 'at /app/node_modules/some-package/lib/deeply/nested/module/file loaded',
+          run('at /app/node_modules/some-package/lib/deeply/nested/module/file loaded')[0])
+    check('a path part that IS long (32+) goes, its short neighbours stay', 'GET /api/[TITOK]/items', run('GET /api/' + tail(40, 'Mn4pQ') + '/items')[0])
+    print('the hole, said aloud: a /-led base64 value split by / into parts under 32 characters passes (and so would a path of such parts)')
+    split_b64 = '/' + tail(20, 'Aa1Bb2') + '/' + tail(22, 'Cc3Dd4')
+    check('such a value stays (about one random base64 value in 64 starts with /, and it must also split this way)', True, split_b64 in run('v ' + split_b64 + ' e')[0])
+
+    print('a long line costs a bounded time (barracuda, point G review 2, point 2)')
+    for label, line in (('1 MiB of token=\" pieces', 'token="' * 150000), ('1 MiB of escaped name pieces', '"key\\":\\"' * 116000),
+                        ('1 MiB of one name character', 'a' * (1 << 20)), ('1 MiB of ab- pieces', 'ab-' * 350000), ('1 MiB of /a pieces', '/a' * 500000)):
+        started = time.monotonic()
+        body, n = run(line)
+        elapsed = time.monotonic() - started
+        check(label + ' is filtered in under 3 s (measured: see the run), and cut', [True, True], [elapsed < 3.0, len(body) <= 2005])
+    started = time.monotonic()
+    ns.filter_text('x' * (ns.MAX_INPUT - 10))
+    check('a 4 MiB line of one name character, the input limit, is filtered in under 3 s', True, time.monotonic() - started < 3.0)
+    check('the line is cut at 16 KiB before the patterns', True, ns.PRE_CUT == 16 * 1024)
+    # a secret that sits within the first 16 KiB of a very long line is still caught
+    check('a secret near the start of a 1 MiB line is still caught', True, gone(tail(20, 'Ss9'), 'password=' + tail(20, 'Ss9') + ' ' + 'z ' * 500000))
 
     print('limits, counts and failing closed')
     long_line = 'ab ' * 2000  # words: a 5000-character run would itself be a long-run replacement
