@@ -329,7 +329,7 @@ D4_SUDOERS=/etc/sudoers.d/fleet-github
 D4_SBIN=/usr/local/sbin
 # source-in-scripts/root:installed-name:sha256
 D4_SCRIPTS="fleet-github.py:fleet-github:a742cc58966fb0488bb5701f7c53f621c1bb7a71e9241f95167fdde69dbdf2c7
-fleet-approve.py:fleet-approve:8dffc50c436ef6bb9ead39d71b3bf30ed4f31ab39f9a42433e2965eb6107aa95"
+fleet-approve.py:fleet-approve:f8d423dd51362d548bc616346904ed01c00764d0844e3591e7fe2761af6a8cbe"
 D4_RC=0
 D4_DEPLOYED=0
 as_root() { if (( AS_ROOT )); then run "$@"; else run sudo -n "$@"; fi }

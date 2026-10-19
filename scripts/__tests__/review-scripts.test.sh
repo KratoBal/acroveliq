@@ -400,7 +400,7 @@ check '... and no sudo line anywhere in the retry hint' 0 "$(grep -c 'Ujra.*sudo
 rm "$T/approve-failed"
 touch "$T/approve-norights"
 check 'approve answers 14 (the approver token is refused by GitHub) -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
-check '... says the token rights are missing and that no retry helps, with the exit code' 1 "$(grep -c 'GitHub-review NEM jott letre (kilepes 14, a gepi fiok TOKENJENEK jogkore hianyzik (GitHub 401/403): ez nem atmeneti, ujraproba nem segit)' "$T/out")"
+check '... says the token rights are missing and that no retry helps, with the exit code' 1 "$(grep -c 'GitHub-review NEM jott letre (kilepes 14, a gepi fiok TOKENJENEK jogkore hianyzik (GitHub 401/403, vagy 404 a PR olvasasanal): ez nem atmeneti, ujraproba nem segit)' "$T/out")"
 check '... passes the approver own words on' 1 "$(grep -c 'Resource not accessible by personal access token' "$T/out")"
 check '... names the owner step' 1 "$(grep -c '^  Balazs lepese kell: a gepi fiok tokenjen a Pull requests: write jog' "$T/out")"
 check '... and prints NO retry line (a retry cannot fix a token)' 0 "$(grep -c 'Ujra, a verdict esemeny ismetlese nelkul' "$T/out")"

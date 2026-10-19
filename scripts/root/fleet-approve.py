@@ -55,9 +55,10 @@ WHAT THIS DOES NOT DO:
 
 Exit codes: 0 approved or recorded; 2 usage; 10 refused (nothing posted, nothing recorded); 13 the record
 file or GitHub failed (a retry may help: a timeout, a 5xx, a rate limit); 14 GitHub refused the approver's
-TOKEN (HTTP 401, or 403 that is not a rate limit: "Resource not accessible by personal access token"): the
-token lacks the right (Pull requests: write on the repository) and no retry helps, someone must change the
-token (barracuda's first real run, 2026-10-19 18:34, the #259 head, task b25-gepi-review).
+TOKEN (HTTP 401, or 403 that is not a rate limit: "Resource not accessible by personal access token"; also a 404
+on the READ of the PR the verdict names, which GitHub gives a token that cannot see the repository): the token
+lacks the right (Pull requests: write on the repository, or the repository in its scope) and no retry helps,
+someone must change the token (barracuda's first real run, 2026-10-19 18:34, the #259 head, task b25-gepi-review).
 """
 import fcntl
 import json
@@ -100,13 +101,18 @@ class NoRights(Exception):
     """GitHub refused the approver's token itself: a retry cannot help."""
 
 
-def github_failure(what, code, d):
+def github_failure(what, code, d, not_found_is_rights=False):
     """The exception for a GitHub answer that is not the one wanted. 401, and 403 that is not a rate limit (GitHub
-    answers a secondary rate limit with a 403 too), say the TOKEN is not allowed: NoRights, exit 14."""
+    answers a secondary rate limit with a 403 too), say the TOKEN is not allowed: NoRights, exit 14.
+    `not_found_is_rights` is for a read of something the record already proved to exist (the PR the verdict names):
+    GitHub answers 404, not 403, for a private repository a token cannot see, so there a 404 means the token does not
+    see the repository or the PR (barracuda, #261 review). A 404 on the review POST stays a plain failure."""
     msg = str((d or {}).get('message', ''))[:160]
     text = f'{what} HTTP {code}' + (f': {msg}' if msg else '')
     if code == 401 or (code == 403 and 'rate limit' not in msg.lower()):
         return NoRights(text)
+    if code == 404 and not_found_is_rights:
+        return NoRights(text + ' (the token cannot see the repository or the PR)')
     return Failed(text)
 
 
@@ -341,7 +347,7 @@ def real_env():
     def get_pr(owner, repo, pr):
         code, d = http('GET', f'{API}/repos/{owner}/{repo}/pulls/{pr}', read_secret(APPROVER_TOKEN_FILE))
         if code != 200:
-            raise github_failure('GitHub PR', code, d)
+            raise github_failure('GitHub PR', code, d, not_found_is_rights=True)
         return d
 
     def post_review(owner, repo, pr, body):

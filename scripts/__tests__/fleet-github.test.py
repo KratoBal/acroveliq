@@ -289,7 +289,13 @@ try:
     check("429: a Failed", "Failed", kind(429, {"message": "slow down"}))
     check("500: a Failed", "Failed", kind(500, {}))
     check("502 with no body at all: a Failed", "Failed", kind(502, None))
-    check("404: a Failed (not claimed to be a rights problem)", "Failed", kind(404, {"message": "Not Found"}))
+    check("404 by default: a Failed (only a read of a proven PR may call it a rights problem)", "Failed", kind(404, {"message": "Not Found"}))
+    check("404 on the read of the PR the record names: NoRights", "NoRights",
+          type(ap.github_failure("GitHub PR", 404, {"message": "Not Found"}, not_found_is_rights=True)).__name__)
+    check("... and says the token cannot see the repository or the PR", True,
+          "the token cannot see the repository or the PR" in str(ap.github_failure("GitHub PR", 404, {"message": "Not Found"}, not_found_is_rights=True)))
+    check("a 500 on that read is still a Failed", "Failed",
+          type(ap.github_failure("GitHub PR", 500, {}, not_found_is_rights=True)).__name__)
     check("the text names the call, the status and GitHub's own words", "GitHub review HTTP 403: Resource not accessible by personal access token",
           str(ap.github_failure("GitHub review", 403, forbidden)))
     check("no message from GitHub: just the status", "GitHub PR HTTP 500", str(ap.github_failure("GitHub PR", 500, {})))
@@ -320,6 +326,16 @@ try:
                 except Exception as e:  # the class decides the exit code
                     got = type(e).__name__
                 check(f"real {what}, HTTP {code_}: {want}", want, got)
+        # a 404 is a rights problem only on the PR READ; on the review POST it stays a plain failure
+        ap.http = lambda *a, **k: (404, {"message": "Not Found"})
+        for what, call, want in (("PR read", lambda e: e["get_pr"]("KratoBal", "acroveliq", 198), "NoRights"),
+                                 ("review", lambda e: e["post_review"]("KratoBal", "acroveliq", 198, {"event": "APPROVE"}), "Failed")):
+            try:
+                call(ap.real_env())
+                got = "returned"
+            except Exception as e:
+                got = type(e).__name__
+            check(f"real {what}, HTTP 404: {want}", want, got)
     finally:
         ap.http, ap.read_secret = real_http, real_secret
 
