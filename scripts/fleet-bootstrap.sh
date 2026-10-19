@@ -499,7 +499,7 @@ step "4d. the root installer: its pinned script, its sudo rule, then the approve
 RT_BIN=/usr/local/sbin/root-telepito
 RT_SUDOERS=/etc/sudoers.d/root-telepito
 RT_STORE=/var/lib/root-telepito
-RT_PIN=377c5c1eee122c18b6af4b8dd04eae44f362eb6be613b8b06352c6f6e26eab0c
+RT_PIN=5b436c1eaf59afc2e810fde36b85445eb0f40e3d35723a1f6f12c40591a44aca
 RT_RC=0
 RT_DEPLOYED=0
 rt_tmpdir="$(mktemp -d)"

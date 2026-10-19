@@ -80,6 +80,7 @@ os.chmod(visudo, 0o755)
 rt.VISUDO = visudo
 rt.SUDOERS_D = SUDOERS_D
 rt.SUDOERS_OWNER = (ME, MYGROUP)
+rt.SUDOERS_COMMAND_DIR = BIN
 os.environ['SUDO_UID'] = str(os.getuid())
 
 BOT, OWNER, CHANNEL = '111111111111111111', '222222222222222222', '333333333333333333'
@@ -89,6 +90,12 @@ BROKER = os.path.join(BIN, 'fleet-pane')
 for name in ('fleet-pane', 'bash', 'python3'):
     open(os.path.join(BIN, name), 'w').write('#!/bin/sh\n')
     os.chmod(os.path.join(BIN, name), 0o755)
+# owned like root here, in a directory as safe as BIN: only the allow-list by place can refuse these
+BIN2 = os.path.join(T, 'bin2')
+os.makedirs(BIN2, mode=0o755)
+for name in ('tee', 'find'):
+    open(os.path.join(BIN2, name), 'w').write('#!/bin/sh\n')
+    os.chmod(os.path.join(BIN2, name), 0o755)
 
 
 def write_conf(entries, cfg=CFG):
@@ -271,6 +278,10 @@ try:
     r2 = kerj('fleet-pane', C2)
     rec2 = rt.load_r(r2['r'])
     check('the line says it replaces v1', True, ('CSERE, most ' + rt.sha256(v1)[:16]) in r2['canonicalLine'])
+    os.chmod(TGT, 0o777)
+    check('a target directory that became writable after the request', 'Refused', refused(run, r2, approve(rec2)))
+    check('the R is not spent by that refusal', 'nyitott', rt.load_r(r2['r'])['status'])
+    os.chmod(TGT, 0o755)
     open(fp, 'wb').write(b'changed by hand\n')
     check('a target changed since the request', 'Refused', refused(run, r2, approve(rec2)))
     open(fp, 'wb').write(v1)
@@ -320,6 +331,11 @@ try:
         'an unknown user': 'nincsilyenfelhasznalo ALL=(root) NOPASSWD: %s\n' % BROKER,
         'visudo refuses it': '# VISUDO-NEM\n%s ALL=(root) NOPASSWD: %s\n' % (ME, BROKER),
         'no rule at all': '# csak megjegyzes\n',
+        # barracuda, #242 review B: a command outside the brokers' directory is refused by place
+        'tee outside the brokers directory': '%s ALL=(root) NOPASSWD: %s/tee /etc/sudoers.d/x\n' % (ME, BIN2),
+        'find outside the brokers directory': '%s ALL=(root) NOPASSWD: %s/find *\n' % (ME, BIN2),
+        'the real /usr/bin/tee': '%s ALL=(root) NOPASSWD: /usr/bin/tee *\n' % ME,
+        'the real /usr/bin/find': '%s ALL=(root) NOPASSWD: /usr/bin/find\n' % ME,
     }.items():
         check('refused: ' + name, 'Refused', sudoers_kerj(text, commit()))
     os.chmod(BIN, 0o777)
@@ -336,6 +352,16 @@ try:
           ('SZABALYOK: %s futtathatja root jogon, jelszo nelkul: %s send [barmi]' % (ME, BROKER)) in rs['canonicalLine'])
     out = run(rs, approve(rt.load_r(rs['r'])))
     check('installed 0440', 0o440, stat.S_IMODE(os.stat(sud).st_mode))
+
+    print('a command with no arguments is ANY arguments for sudo, and the line says so (barracuda #242 A)')
+    for words, text in (('[barmilyen argumentummal]', '%s ALL=(root) NOPASSWD: %s\n' % (ME, BROKER)),
+                        ('(argumentum nelkul)', '%s ALL=(root) NOPASSWD: %s ""\n' % (ME, BROKER))):
+        c = commit()
+        FILES[('templates/sudoers/fleet-pane', c)] = text.encode()
+        FILES[('templates/sudoers/fleet-pane', 'main')] = text.encode()
+        ON_MAIN[c] = True
+        line = kerj('fleet-pane-sudoers', c)['canonicalLine']
+        check('the line says ' + words, True, line.endswith('jelszo nelkul: %s %s' % (BROKER, words)))
     check('visudo checked the staged copy, the file before the rename and the whole configuration', True,
           sum(1 for line in open(VISUDO_LOG) if line.strip()) >= 3)
 

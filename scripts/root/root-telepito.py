@@ -106,13 +106,18 @@ KINDS = ('fajl', 'sudoers')
 # files that define who is root (a list mistake must not reach them)
 NEVER_TARGETS = (SELF, SELF_SUDOERS, '/etc/sudoers', '/etc/passwd', '/etc/shadow', '/etc/group', '/etc/gshadow')
 NEVER_UNDER = ('/etc/root-telepito', STORE)
-# a sudo rule that hands out one of these hands out root: refused, not shown
+# A SUDO RULE MAY NAME ONLY A COMMAND IN THIS DIRECTORY (barracuda, #242 review B): the fleet's own,
+# root-owned brokers live here, put there by this installer or by the bootstrap. A list of forbidden names
+# cannot close: tee, cp, dd, find -exec, sed w, git, docker, systemctl and dozens more hand out root as
+# surely as a shell. So the rule is an allow-list by place; the names below are only a second guard.
+SUDOERS_COMMAND_DIR = '/usr/local/sbin'
+# a sudo rule that hands out one of these hands out root: refused, not shown (the second guard)
 ESCALATING_COMMANDS = {'sh', 'bash', 'dash', 'zsh', 'ksh', 'csh', 'tcsh', 'fish', 'su', 'sudo', 'env', 'python',
                        'python3', 'perl', 'ruby', 'node', 'lua', 'php', 'vi', 'vim', 'nano', 'less', 'more',
                        'visudo', 'sudoedit', 'root-telepito'}
 SUDOERS_RULE_RX = re.compile(
     r'^(?P<user>[a-z_][a-z0-9_-]{0,31}) ALL=\((?P<runas>[a-z_][a-z0-9_-]{0,31})\) NOPASSWD: '
-    r'(?P<cmd>/[A-Za-z0-9._/-]+)(?P<args>( [A-Za-z0-9._/@:+*-]+)*)$')
+    r'(?P<cmd>/[A-Za-z0-9._/-]+)(?P<args>( [A-Za-z0-9._/@:+*-]+)*| "")$')
 USAGE = ('usage: root-telepito kerj <kulcs> <commit40> <kero>\n'
          '       root-telepito kerj-vissza <kulcs> <verzio> <kero>\n'
          '       root-telepito vegrehajt <R> <discord-uzenet-id>\n'
@@ -330,12 +335,19 @@ def parse_sudoers(text):
         if not m:
             raise Refused(f'sudoers {n}. sor: nem az ertelmezheto alak (felhasznalo ALL=(kinek) NOPASSWD: /parancs [argumentumok])')
         user, runas, cmd = m['user'], m['runas'], m['cmd']
+        # sudo reads a command with no arguments as ANY arguments, and "" as none (barracuda, #242 review A):
+        # the rule keeps which of the two it is, so the line the owner reads can say it
         args = m['args'].split()
+        if args == ['""']:
+            args = None
         for who in (user, runas):
             try:
                 pwd.getpwnam(who)
             except KeyError:
                 raise Refused(f'sudoers {n}. sor: nincs ilyen felhasznalo: {who}')
+        if os.path.normpath(cmd) != cmd or os.path.dirname(cmd) != SUDOERS_COMMAND_DIR:
+            raise Refused(f'sudoers {n}. sor: a parancs ({cmd}) nem a {SUDOERS_COMMAND_DIR} alatt all; sudo-szabaly '
+                          'csak a flotta sajat, root-tulajdonu kozvetitoire szolhat')
         if os.path.basename(cmd) in ESCALATING_COMMANDS or cmd.startswith(SELF):
             raise Refused(f'sudoers {n}. sor: a parancs ({cmd}) root-ot adna, nem telepitheto')
         if os.path.normpath(cmd) != cmd:
@@ -350,9 +362,14 @@ def parse_sudoers(text):
 
 
 def rule_text(rule):
-    args = ' '.join('[barmi]' if a == '*' else a for a in rule['args'])
     # words, not an arrow: #33 blanks out '>' in the line the owner reads
-    return f"{rule['user']} futtathatja {rule['runas']} jogon, jelszo nelkul: {rule['cmd']}{' ' + args if args else ''}"
+    head = f"{rule['user']} futtathatja {rule['runas']} jogon, jelszo nelkul: {rule['cmd']}"
+    if rule['args'] is None:
+        return head + ' (argumentum nelkul)'
+    if not rule['args']:
+        # what sudo does with a bare command, said in the line: it is not "exactly this command"
+        return head + ' [barmilyen argumentummal]'
+    return head + ' ' + ' '.join('[barmi]' if a == '*' else a for a in rule['args'])
 
 
 def visudo_check(path):
@@ -767,6 +784,9 @@ def cmd_vegrehajt(args, now_ms=None):
         data = open(r['staged'], 'rb').read()
         if sha256(data) != r['sha']:
             raise Refused('a tarolt masolat lenyomata elter az R-etol')
+        # the target's path checked BEFORE the R is spent: a directory that became writable since the request
+        # refuses here, with the approval still usable once it is fixed
+        safe_ancestors(r['cel'])
         current = read_target(r['cel'])
         if (sha256(current) if current is not None else '') != r['prev']:
             raise Refused('a cel azota megvaltozott; uj kerest kell inditani')
@@ -783,6 +803,13 @@ def cmd_vegrehajt(args, now_ms=None):
             r['status'] = 'visszaallitva'
             save_r(r)
             log({'event': 'visszaallitva', 'r': rid, 'reason': str(e)})
+            raise
+        except Refused as e:
+            # the R is spent (the safe direction), and the log must say that nothing was installed with it
+            # (barracuda, #242 review note)
+            r['status'] = 'elhasznalt, nem telepult'
+            save_r(r)
+            log({'event': 'nem-telepult', 'r': rid, 'reason': str(e)})
             raise
         r['status'] = 'telepitve'
         save_r(r)
