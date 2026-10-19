@@ -265,6 +265,15 @@ describe('--check: is the installed hook the one this script would write', () =>
     expect(r.out).toContain('prod-tree-guard.conf')
   })
 
+  it.skipIf(process.getuid?.() === 0)('an agent user (no .env) with the conf missing: still exit 1, the .env comparison cannot stand in for the conf check', () => {
+    const s = setup()
+    rmSync(join(s.hooks, 'prod-tree-guard.conf'))
+    chmodSync(join(s.repo, '.env'), 0o000)
+    const r = installerOut(s.repo, ['--check'])
+    expect(r.code).toBe(1)
+    expect(r.out).toContain('prod-tree-guard.conf')
+  })
+
   it('a conf that disagrees with .env (the main agent was renamed): exit 1 where .env can be read', () => {
     const s = setup()
     writeFileSync(join(s.repo, '.env'), 'MAIN_AGENT_ID=masik\n')

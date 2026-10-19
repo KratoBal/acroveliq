@@ -278,6 +278,51 @@ try:
     check("run: an unreadable record, exit 13", 13, ap.run(["approve", "KratoBal/acroveliq", "198", "t-x"],
           {**aenv, "get_records": broken})[0])
 
+    print("the approver: what GitHub's refusal of the token means (exit 14), what is only a failure (13)")
+    forbidden = {"message": "Resource not accessible by personal access token"}
+    def kind(code, d):
+        return type(ap.github_failure("GitHub review", code, d)).__name__
+    check("403 'Resource not accessible by personal access token': NoRights", "NoRights", kind(403, forbidden))
+    check("401 bad credentials: NoRights", "NoRights", kind(401, {"message": "Bad credentials"}))
+    check("403 secondary rate limit: only a Failed (a retry may help)", "Failed", kind(403, {"message": "You have exceeded a secondary rate limit."}))
+    check("403 rate limit, any case: only a Failed", "Failed", kind(403, {"message": "API RATE LIMIT exceeded"}))
+    check("429: a Failed", "Failed", kind(429, {"message": "slow down"}))
+    check("500: a Failed", "Failed", kind(500, {}))
+    check("502 with no body at all: a Failed", "Failed", kind(502, None))
+    check("404: a Failed (not claimed to be a rights problem)", "Failed", kind(404, {"message": "Not Found"}))
+    check("the text names the call, the status and GitHub's own words", "GitHub review HTTP 403: Resource not accessible by personal access token",
+          str(ap.github_failure("GitHub review", 403, forbidden)))
+    check("no message from GitHub: just the status", "GitHub PR HTTP 500", str(ap.github_failure("GitHub PR", 500, {})))
+    def raiser(exc):
+        def f(*a):
+            raise exc
+        return f
+    def run14(**over):
+        return ap.run(["approve", "KratoBal/acroveliq", "198", "t-x"], {**aenv, **over})
+    store.append({"ts": 1, "actor": "barracuda", "owner": "KratoBal", "repo": "acroveliq", "pr": 198, "task": "t-x", "verdict": "APPROVE", "head": H})
+    code, text = run14(post_review=raiser(ap.NoRights("GitHub review HTTP 403: Resource not accessible by personal access token")))
+    check("run: the review call refused for the token: exit 14", 14, code)
+    check("... and the text says the token rights are missing", True, text.startswith("fleet-approve: token rights missing: GitHub review HTTP 403"))
+    check("run: the PR read refused for the token: exit 14", 14, run14(get_pr=raiser(ap.NoRights("GitHub PR HTTP 403")))[0])
+    check("run: the review call failed otherwise: exit 13", 13, run14(post_review=raiser(ap.Failed("GitHub review HTTP 502")))[0])
+    check("the log says no_rights for the 14", True, '"result": "no_rights"' in open(aenv["log_file"]).read())
+    # the real environment's calls go through github_failure: the HTTP layer and the secret read stood in for
+    real_http, real_secret = ap.http, ap.read_secret
+    try:
+        ap.read_secret = lambda path, getstat=None: "not-a-token"
+        for what, call in (("review", lambda e: e["post_review"]("KratoBal", "acroveliq", 198, {"event": "APPROVE"})),
+                           ("PR read", lambda e: e["get_pr"]("KratoBal", "acroveliq", 198))):
+            for code_, want in ((403, "NoRights"), (401, "NoRights"), (502, "Failed")):
+                ap.http = lambda *a, _c=code_, **k: (_c, forbidden if _c == 403 else {})
+                try:
+                    call(ap.real_env())
+                    got = "returned"
+                except Exception as e:  # the class decides the exit code
+                    got = type(e).__name__
+                check(f"real {what}, HTTP {code_}: {want}", want, got)
+    finally:
+        ap.http, ap.read_secret = real_http, real_secret
+
     print("the credential helper")
     helper = os.path.join(T, "git-credential-fleet-github")
     fake_broker = os.path.join(T, "broker")

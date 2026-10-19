@@ -113,6 +113,15 @@ describe('the AI machine: a deliberate refusal is said as one', () => {
     expect(seen.filter((q) => q.path === '/api/health')).toEqual([])
   })
 
+  it('without the AI token file the probe still asks the applications list (not /api/health) and says the same', async () => {
+    rmSync(join(dir, 'store', '.coolify-token-ai'))
+    aiRoutes = { '/api/v1/applications': { code: 403, type: 'text/plain', body: 'Forbidden' } }
+    const r = await run()
+    expect(aiSection(r.out)).toContain('SZANDEKOSAN NEM LATHATO INNEN (HTTP 403)')
+    expect(seen.filter((q) => q.path === '/api/health')).toEqual([])
+    expect(seen.some((q) => q.path === '/api/v1/applications')).toBe(true)
+  })
+
   it('the probe is asked ONLY when the answer is a 200: the API list then prints', async () => {
     aiRoutes = {
       '/api/v1/applications': { code: 200, body: apps(['acropora-stage-api']) },

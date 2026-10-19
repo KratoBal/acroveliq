@@ -54,7 +54,10 @@ WHAT THIS DOES NOT DO:
     separate change); until it is in, step 11 waits.
 
 Exit codes: 0 approved or recorded; 2 usage; 10 refused (nothing posted, nothing recorded); 13 the record
-file or GitHub failed.
+file or GitHub failed (a retry may help: a timeout, a 5xx, a rate limit); 14 GitHub refused the approver's
+TOKEN (HTTP 401, or 403 that is not a rate limit: "Resource not accessible by personal access token"): the
+token lacks the right (Pull requests: write on the repository) and no retry helps, someone must change the
+token (barracuda's first real run, 2026-10-19 18:34, the #259 head, task b25-gepi-review).
 """
 import fcntl
 import json
@@ -91,6 +94,20 @@ class Refused(Exception):
 
 class Failed(Exception):
     pass
+
+
+class NoRights(Exception):
+    """GitHub refused the approver's token itself: a retry cannot help."""
+
+
+def github_failure(what, code, d):
+    """The exception for a GitHub answer that is not the one wanted. 401, and 403 that is not a rate limit (GitHub
+    answers a secondary rate limit with a 403 too), say the TOKEN is not allowed: NoRights, exit 14."""
+    msg = str((d or {}).get('message', ''))[:160]
+    text = f'{what} HTTP {code}' + (f': {msg}' if msg else '')
+    if code == 401 or (code == 403 and 'rate limit' not in msg.lower()):
+        return NoRights(text)
+    return Failed(text)
 
 
 def root_file(path, getstat=os.lstat, secret=False):
@@ -307,6 +324,9 @@ def run(argv, env):
     except Refused as e:
         log(env['log_file'], {**entry, 'result': 'refused', 'why': str(e)})
         return 10, f'fleet-approve: refused: {e}'
+    except NoRights as e:
+        log(env['log_file'], {**entry, 'result': 'no_rights', 'why': str(e)[:200]})
+        return 14, f'fleet-approve: token rights missing: {e}'
     except (Failed, ValueError, OSError) as e:
         log(env['log_file'], {**entry, 'result': 'failed', 'why': f'{e.__class__.__name__}: {e}'[:200]})
         return 13, f'fleet-approve: failed: {e}'
@@ -321,13 +341,13 @@ def real_env():
     def get_pr(owner, repo, pr):
         code, d = http('GET', f'{API}/repos/{owner}/{repo}/pulls/{pr}', read_secret(APPROVER_TOKEN_FILE))
         if code != 200:
-            raise Failed(f'GitHub PR HTTP {code}')
+            raise github_failure('GitHub PR', code, d)
         return d
 
     def post_review(owner, repo, pr, body):
         code, d = http('POST', f'{API}/repos/{owner}/{repo}/pulls/{pr}/reviews', read_secret(APPROVER_TOKEN_FILE), body)
         if code != 200 or d.get('state') != 'APPROVED':
-            raise Failed(f'GitHub review HTTP {code}: {str(d.get("message", ""))[:160]}')
+            raise github_failure('GitHub review', code, d)
 
     uid = os.environ.get('SUDO_UID')
     try:
