@@ -90,7 +90,7 @@ open(blanket, 'w').close()
 
 print('2. without the mount nothing is planned, and the tmux line stays')
 out, err = run(root, blanket=blanket)
-s = section(out, '4c.', '4b.')
+s = section(out, '4c.', '4d.')
 check('step 4c ran', bool(s), out[-400:])
 check('says not deployed', 'is not mounted, the broker is not deployed here' in s, s)
 check('plans no install', 'DRY:' not in s, s)
@@ -102,7 +102,7 @@ check('step 4 does not say retired', 'retired:' not in s4, s4)
 print('3. with the mount and the pinned source: broker, start dir and the rule are planned')
 conf = tempfile.mkdtemp(prefix='fleet-pane-conf-')
 out, err = run(root, conf=conf, blanket=blanket)
-s = section(out, '4c.', '4b.')
+s = section(out, '4c.', '4d.')
 check('source recognised as pinned', 'ok: scripts/root/fleet-pane.py is the pinned version' in s, s)
 # Where the broker is already installed (a deployed container), 'ok: ... pinned' is the right answer.
 check('plans the broker', re.search(r'DRY: (sudo -n )?install -o root -g root -m 0755 \S+ /usr/local/sbin/fleet-pane$', s, re.M) is not None
@@ -120,7 +120,7 @@ print('4. a changed source or a symlink is not planned')
 for kind, kw in (('changed', {'alter': True}), ('symlink', {'link': True})):
     bad = fake_root(**kw)
     out, err = run(bad, conf=conf, blanket=blanket)
-    s = section(out, '4c.', '4b.')
+    s = section(out, '4c.', '4d.')
     check(f'{kind}: says so on stderr', ('MISMATCH: scripts/root/fleet-pane.py' in err) if kind == 'changed'
           else ('is a symlink; not reading or installing it' in err), err[-600:])
     check(f'{kind}: not installed', 'NOT INSTALLED: the broker is deployed' in err and '/usr/local/sbin/fleet-pane' not in s, s)
@@ -135,7 +135,7 @@ s4 = section(out, '4.', '4a.')
 check('step 4 says retired', 'retired: the tmux line' in s4, s4)
 check('step 4 builds no tmux line', not TMUX_RULE.findall(s4), TMUX_RULE.findall(s4))
 check('the other rules are still built', 'queued: token-read check rule for agent-murena' in s4, s4[-600:])
-check('the broker is still planned', 'DRY: install /etc/sudoers.d/fleet-pane (0440) with:' in section(out, '4c.', '4b.'))
+check('the broker is still planned', 'DRY: install /etc/sudoers.d/fleet-pane (0440) with:' in section(out, '4c.', '4d.'))
 out, err = run(root, conf=os.path.join(root, 'no-such-mount'), blanket=blanket)
 # A dry run stands a directory in for the mount, so this only shows that the marker is looked for
 # INSIDE the conf directory; that a real run asks mountpoint -q is read from the script, not run.

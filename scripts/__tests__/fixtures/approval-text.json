@@ -1,0 +1,67 @@
+{
+  "comment": "Generated from src/web/approval-discord-core.ts; scripts/root/root-telepito.py must render the same (root-telepito.test.py) and approval-text-fixture.test.ts keeps the TS side equal.",
+  "expiry": [
+    {
+      "t": 1791886537,
+      "text": "2026. 10. 13. 12:15:37"
+    },
+    {
+      "t": 1767225600,
+      "text": "2026. 01. 01. 1:00:00"
+    },
+    {
+      "t": 1767229199,
+      "text": "2026. 01. 01. 1:59:59"
+    },
+    {
+      "t": 1774746000,
+      "text": "2026. 03. 29. 3:00:00"
+    },
+    {
+      "t": 1774749600,
+      "text": "2026. 03. 29. 4:00:00"
+    },
+    {
+      "t": 1792371600,
+      "text": "2026. 10. 19. 3:00:00"
+    },
+    {
+      "t": 1792375200,
+      "text": "2026. 10. 19. 4:00:00"
+    },
+    {
+      "t": 1736032405,
+      "text": "2025. 01. 05. 0:13:25"
+    },
+    {
+      "t": 1800000000,
+      "text": "2027. 01. 15. 9:00:00"
+    },
+    {
+      "t": 1798761599,
+      "text": "2027. 01. 01. 0:59:59"
+    }
+  ],
+  "text": [
+    {
+      "agent_id": "murena",
+      "category": "root_telepites",
+      "description": "ROOT-TELEPITO R=0a1b2c3d / fleet-pane / /usr/local/sbin/fleet-pane / commit 2807dde5a1b2 / sha256 cd78b99161218695 / ELSO TELEPITES",
+      "timeout_at": 1792375200,
+      "code": "K7MP",
+      "want": "**JÓVÁHAGYÁS KELL, kód: K7MP**\nErre az üzenetre válaszolva: `igen K7MP` vagy `nem K7MP` (csak ez a két alak dönt). Lejárat: 2026. 10. 19. 4:00:00\nKérő: murena | root_telepites\n> ROOT-TELEPITO R=0a1b2c3d / fleet-pane / /usr/local/sbin/fleet-pane / commit 2807dde5a1b2 / sha256 cd78b99161218695 / ELSO TELEPITES"
+    },
+    {
+      "agent_id": "acrobot",
+      "category": "root_telepites",
+      "description": "ROOT-TELEPITO R=deadbeef / fleet-pane-sudoers / /etc/sudoers.d/fleet-pane / commit 0123456789ab / sha256 0011223344556677 / SZABALYOK: marveen futtathatja root jogon, jelszo nelkul: /usr/local/sbin/fleet-pane send [barmi]",
+      "timeout_at": 1767229199,
+      "code": "Z2Q9",
+      "want": "**JÓVÁHAGYÁS KELL, kód: Z2Q9**\nErre az üzenetre válaszolva: `igen Z2Q9` vagy `nem Z2Q9` (csak ez a két alak dönt). Lejárat: 2026. 01. 01. 1:59:59\nKérő: acrobot | root_telepites\n> ROOT-TELEPITO R=deadbeef / fleet-pane-sudoers / /etc/sudoers.d/fleet-pane / commit 0123456789ab / sha256 0011223344556677 / SZABALYOK: marveen futtathatja root jogon, jelszo nelkul: /usr/local/sbin/fleet-pane send [barmi]"
+    }
+  ],
+  "neutral": {
+    "in": "a `b` > c # d * e _ f ~ g | h   i",
+    "want": "> a b c d e f g h i"
+  }
+}
