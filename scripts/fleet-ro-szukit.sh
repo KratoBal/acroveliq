@@ -29,16 +29,18 @@ OUT="$(timeout 120 ssh -i "$KEY" -o BatchMode=yes -o ConnectTimeout=15 -- "$HOST
 RC=$?
 
 if [ "$RC" -ne 0 ]; then
-  FIRST="$(printf '%s\n' "$OUT" | grep -m1 . | cut -c1-200)"
+  FIRST="$(grep -m1 . <<< "$OUT" | cut -c1-200)"
   echo "SZUKIT HIBA rc=${RC}: ${FIRST}"
   exit 1
 fi
-if printf '%s\n' "$OUT" | grep -qE 'nincs lej[^ ]*rt sor|nincs alkalmazott lista'; then
+# a here-string, not `printf | grep -q`: under pipefail the grep exits at its first match, a big output makes printf die of
+# SIGPIPE (141), the pipeline is non-zero and the nothing-to-do branch is skipped (barracuda, #253 review, note 3)
+if grep -qE 'nincs lej[^ ]*rt sor|nincs alkalmazott lista' <<< "$OUT"; then
   echo "SZUKIT nincs-teendo"
-  printf '%s\n' "$OUT" | cut -c1-200
+  cut -c1-200 <<< "$OUT"
   exit 0
 fi
-N="$(printf '%s\n' "$OUT" | grep -c 'REVOKE SELECT' || true)"
+N="$(grep -c 'REVOKE SELECT' <<< "$OUT" || true)"
 echo "SZUKIT visszavett ${N}"
-printf '%s\n' "$OUT" | cut -c1-200
+cut -c1-200 <<< "$OUT"
 exit 0
