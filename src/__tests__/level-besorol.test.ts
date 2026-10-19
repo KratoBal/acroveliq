@@ -660,6 +660,14 @@ describe('the sorter through the real relay: the shapes are the relay\'s', () =>
     expect(googleCalls.filter((c) => c.method === 'POST')).toEqual([])
   })
 
+  it('a caller the relay does not know: the stop carries the relay\'s own fixed reason (403 caller), and no mail was touched', async () => {
+    writeFileSync(join(root, 'ismeretlen-token'), 'masik-token\n', { mode: 0o600 })
+    const stranger = scriptRelay(process.cwd(), { PATH: process.env['PATH'] ?? '', HOME: root, LVK_URL: url, LVK_TOKEN_FILE: join(root, 'ismeretlen-token') })
+    const report = await runSorting({ relay: stranger, classify: reader(() => null).classify, state: memoryState(), now: () => NOW }, opts)
+    expect(report.fatal).toContain('403 caller')
+    expect(modifies).toEqual([])
+  })
+
   it('the relay refusing the caller is a stop with the relay\'s own reason, and no mail was touched', async () => {
     const bad = scriptRelay(process.cwd(), { PATH: process.env['PATH'] ?? '', HOME: root, LVK_URL: url, LVK_TOKEN_FILE: join(root, 'nincs-token') })
     const report = await runSorting({ relay: bad, classify: reader(() => null).classify, state: memoryState(), now: () => NOW }, opts)
