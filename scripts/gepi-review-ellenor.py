@@ -14,11 +14,21 @@
 # GitHubon sem). Egy APPROVED egy REGI fejen nem fedi a mait: a push utan a review nem szol az
 # uj kodrol, ezt kulon kimondja.
 #
-# Hatokor: CSAK a flotta repoi (FLOTTA_REPOK, egyezzen a fleet-approve konfigjanak `repos`
-# listajaval). A tobbi repora nincs gepi review, ott a kapu nem vonatkozik: 0, kimondva.
+# EGY HELYEN AL A LISTA: scripts/gepi-review.json (a `owner` es a `repos` ugyanazzal az alakkal, mint a
+# fleet-approve konfigja, az /etc/fleet-github/app.json; a `reviewers` a gepi jovahagyo fiok(ok) GitHub
+# loginja). A kapu CSAK ezeknek a loginoknak az APPROVED-jet szamolja: a ruleset minden irasi jogu felhasznalo
+# jovahagyasat szamolja, a kapu ertelme viszont az, hogy a fejen barracuda atnezese alljon. Egy idegen login
+# APPROVED-je a fejen NEM eleg (barracuda, #258 review 2. pont). URES `reviewers` listan a kapu nem tudhatja,
+# melyik APPROVED a gepi fioke: ezt kimondja, es kiirja, kik tettek APPROVED-et (az elso valos meres ebbol
+# tolti ki a listat). A fleet-approve konfigja root-tulajdonu mappaban all (agens nem olvassa), ezert a
+# ket lista nem azonos fajl: a `--osszevet <app.json>` mod root-tol futtatva osszeveti oket (a telepitesi lepes),
+# es a tesztek a konfig repo-beli mintajat (scripts/root/fleet-github-app.example.json) vetik ossze.
+#
+# Hatokor: CSAK a flotta repoi (a konfig `repos` listaja); a tobbi repora nincs gepi review, ott a kapu nem
+# vonatkozik: 0, kimondva.
 #
 # Kilepes: 0 van review a fejen (vagy a repo nem flotta repo), 1 NINCS (az okkal), 3 nem
-# tudtam megkerdezni (a GitHub nem valaszolt, a kulcs nem olvashato): ez NEM "nincs review".
+# tudtam megkerdezni (a GitHub nem valaszolt, a kulcs vagy a lista nem olvashato): ez NEM "nincs review".
 #
 # A GitHub API cime tesztekhez atallithato (GITHUB_API_URL), de csak api.github.com vagy helyi
 # cim lehet: a kulcs maskulonben egy idegen gepre menne. Az explicit GITHUB_TOKEN_FILE (a
@@ -31,7 +41,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-FLOTTA_REPOK = ('KratoBal/acroveliq', 'KratoBal/marveen')
+HERE = os.path.dirname(os.path.abspath(__file__))
+CONFIG = os.path.join(HERE, 'gepi-review.json')
 REPO_RE = re.compile(r'^(?!.*\.\.)[\w.-]+/[\w.-]+$')
 SHA_RE = re.compile(r'^[0-9a-f]{40}$')
 PER_PAGE = 100
@@ -44,7 +55,42 @@ def say(code, msg):
     sys.exit(code)
 
 
+def load_config(path=CONFIG):
+    """(owner, [owner/repo ...], [reviewer login, lower case]) from the one list; exit 3 if it cannot be read."""
+    try:
+        cfg = json.load(open(path, encoding='utf-8'))
+        owner = cfg['owner']
+        # a string would iterate as characters: the lists must be lists of strings
+        if not (isinstance(owner, str) and isinstance(cfg['repos'], list) and isinstance(cfg['reviewers'], list)
+                and all(isinstance(x, str) for x in cfg['repos'] + cfg['reviewers'])):
+            raise ValueError('shape')
+        repos = [f'{owner}/{r}' for r in cfg['repos']]
+        reviewers = [x.lower() for x in cfg['reviewers']]
+        if not all(REPO_RE.match(r) for r in repos):
+            raise ValueError('shape')
+        return owner, repos, reviewers
+    except (OSError, ValueError, KeyError, TypeError):
+        say(3, f'NEM TUDOM MEGKERDEZNI: a {os.path.basename(path)} nem olvashato vagy hibas alaku')
+
+
+def compare(app_json):
+    """--osszevet <fleet-approve config>: do the owner and the repos agree? exit 0 or 1; the install step."""
+    owner, repos, _ = load_config()
+    try:
+        cfg = json.load(open(app_json, encoding='utf-8'))
+        theirs = sorted(f'{cfg["owner"]}/{r}' for r in cfg['repos'])
+    except (OSError, ValueError, KeyError, TypeError):
+        say(3, f'NEM TUDOM MEGKERDEZNI: a(z) {app_json} nem olvashato vagy hibas alaku')
+    ours = sorted(repos)
+    if theirs == ours:
+        say(0, f'osszevetve: a fleet-approve konfigja es a gepi review lista egyezik ({len(ours)} repo)')
+    say(1, 'ELTER a fleet-approve konfigjatol: csak a konfigban: ' + (', '.join(sorted(set(theirs) - set(ours))) or '-')
+        + '; csak a gepi review listaban: ' + (', '.join(sorted(set(ours) - set(theirs))) or '-'))
+
+
 def parse(argv):
+    if len(argv) == 2 and argv[0] == '--osszevet':
+        compare(argv[1])
     a = {}
     i = 0
     while i < len(argv):
@@ -113,8 +159,8 @@ def reviews(repo, pr, tok):
     say(3, f'NEM TUDOM MEGKERDEZNI: a PR-nek tobb mint {PER_PAGE * MAX_PAGES} reviewja van')
 
 
-def judge(rows, head):
-    """(ok, text). The latest deciding review of each user counts."""
+def judge(rows, head, reviewers):
+    """(ok, text). The latest deciding review of each user counts; only the listed reviewers' APPROVED approves."""
     latest = {}
     for r in rows:
         state = r.get('state')
@@ -122,9 +168,11 @@ def judge(rows, head):
             continue
         user = (r.get('user') or {}).get('login') or '?'
         latest[user] = (state, r.get('commit_id') or '')
-    approved_here = sorted(u for u, (s, c) in latest.items() if s == 'APPROVED' and c == head)
+    mine = {u: v for u, v in latest.items() if u.lower() in reviewers}
     changes = sorted(u for u, (s, _c) in latest.items() if s == 'CHANGES_REQUESTED')
-    approved_old = sorted((u, c) for u, (s, c) in latest.items() if s == 'APPROVED' and c != head)
+    approved_here = sorted(u for u, (s, c) in mine.items() if s == 'APPROVED' and c == head)
+    approved_old = sorted((u, c) for u, (s, c) in mine.items() if s == 'APPROVED' and c != head)
+    strangers = sorted(u for u, (s, c) in latest.items() if u.lower() not in reviewers and s == 'APPROVED' and c == head)
     if changes:
         return False, 'NINCS GEPI REVIEW A FEJEN: valaki CHANGES_REQUESTED allapotban van: ' + ', '.join(changes)
     if approved_here:
@@ -133,15 +181,22 @@ def judge(rows, head):
         u, c = approved_old[0]
         return False, (f'NINCS GEPI REVIEW A FEJEN: {u} APPROVED reviewja a(z) {c[:12]} fejre szol, a PR feje {head[:12]}: '
                        'a push utan a review nem fedi az uj kodot')
-    return False, 'NINCS GEPI REVIEW A FEJEN: a PR-on nincs APPROVED review'
+    if not reviewers:
+        return False, ('NEM ELLENORIZHETO: a gepi jovahagyok listaja ures (scripts/gepi-review.json, reviewers), nem tudom, '
+                       'melyik APPROVED a gepi fioke; a fejen APPROVED: ' + (', '.join(strangers) or 'senki'))
+    if strangers:
+        return False, ('NINCS GEPI REVIEW A FEJEN: a fejen csak nem jovahagyo login APPROVED-je all (' + ', '.join(strangers)
+                       + '); a gepi jovahagyok: ' + ', '.join(reviewers))
+    return False, 'NINCS GEPI REVIEW A FEJEN: a PR-on nincs a gepi jovahagyotol APPROVED review'
 
 
 def main(argv):
     a = parse(argv)
-    if a['repo'] not in FLOTTA_REPOK:
+    _owner, repos, reviewers = load_config()
+    if a['repo'] not in repos:
         say(0, f'gepi review: a(z) {a["repo"]} nem flotta repo, ott nincs gepi review, a kapu nem vonatkozik ra')
     rows = reviews(a['repo'], a['pr'], token(a['repo']))
-    ok, text = judge(rows, a['head'])
+    ok, text = judge(rows, a['head'], reviewers)
     say(0 if ok else 1, text)
 
 
