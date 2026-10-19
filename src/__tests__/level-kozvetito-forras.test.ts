@@ -128,4 +128,13 @@ describe('the relay\'s source', () => {
     expect(imports).toEqual(expect.arrayContaining(['./relay.js', './modify.js', 'node:crypto']))
     expect(imports.filter((i) => !i.startsWith('.') && !i.startsWith('node:'))).toEqual([])
   })
+
+  it('only the entry points import relay.js: the leaf modules take Refusal and LogFields from errors.js (no import cycle)', () => {
+    const importers = sources()
+      .filter(([, s]) => /from\s+'\.\/relay\.js'/.test(stripComments(s)))
+      .map(([name]) => name)
+      .sort()
+    // the control: the scan finds the three that legitimately do
+    expect(importers).toEqual(['http.ts', 'main.ts'])
+  })
 })
