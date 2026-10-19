@@ -251,3 +251,10 @@ root-egyenértékű a NOPASSWD sorral), hanem az ellen, hogy egy át nem nézett
   flottának ekkor nincs adminisztrációs joga).
 - **Vészhelyzetben:** az App telepítésének eltávolítása azonnal megállít minden flotta-írást a GitHubon.
 - **Kulcs-kompromittálódásnál:** új kulcs előállítása, utána a régi törlése; a kiadott tokenek egy órán belül lejárnak.
+
+## The `root` caller (CI changes, PR B of `ci-modositas-jovahagyassal`)
+
+`root-telepito` (root, not through sudo) asks this broker for two roles during a CI change: `olvas`, to read the PR and the
+workflow file when a change is requested and again right before it is written, and `ci`, at the moment of the write only.
+`ci` needs no `app.json` entry (it is code: root only, no `SUDO_*`). `olvas` does: add a caller `root` with `olvas` on the
+repositories of `ci.json` (`docs/root-telepito.md`, "CI changes", owner's step 2). Nothing else changes for other callers.

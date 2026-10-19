@@ -16,6 +16,15 @@
 #       then sudo root-telepito vegrehajt <R> <message id>
 #   root-telepito.sh allapot
 #
+# CI changes (a workflow file; docs/root-telepito.md, "CI changes"): the agent that wants one hands the new file to
+# root, the reviewer marks the exact bytes he read, and ONE daily approval carries every marked item.
+#   root-telepito.sh ci-kerj <agent> <owner/repo> <branch> <.github/workflows/name.yml> <file>
+#       the file is read by root from STDIN of this call; prints the item's id and the sha256 of the bytes ROOT keeps
+#       (the review packet's README must name this sha256: the reviewer compares it before he marks)
+#   root-telepito.sh ci-athnezve <item> <sha256>        (the reviewer; root takes WHO from sudo, never from here)
+#   root-telepito.sh ci-nap <agent>                      (once a day) one R for every marked item, put up as #33
+#       then, as above: vegrehajt <R> <approval_id> after the owner's reply
+#
 # Exit: 0 done; 1 FAIL; 2 usage; 3 no decision yet; 4 rejected or timed out; 5 root refused.
 set -uo pipefail
 
@@ -27,7 +36,7 @@ CATEGORY='root_telepites'
 MARGIN_SECONDS=60
 
 usage() {
-  echo "hasznalat: root-telepito.sh kerj <agent> <kulcs> <commit40> | kerj-vissza <agent> <kulcs> <verzio> | vegrehajt <R> <approval_id> | allapot" >&2
+  echo "hasznalat: root-telepito.sh kerj <agent> <kulcs> <commit40> | kerj-vissza <agent> <kulcs> <verzio> | vegrehajt <R> <approval_id> | allapot | ci-kerj <agent> <repo> <ag> <ut> <fajl> | ci-athnezve <tetel> <sha256> | ci-nap <agent>" >&2
   exit 2
 }
 
@@ -71,6 +80,12 @@ request() {
   [[ "$agent" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]] || fail "agent alakja hibas: ${agent}"
   root_call "$verb" "$key" "$ref" "$agent"
   case "$RC" in 0) ;; 2) usage ;; *) echo "ROOT ELUTASITOTTA (kod ${RC})"; exit 5 ;; esac
+  put_up "$agent"
+}
+
+# puts the R in $OUT up as a #33 approval; <agent> is the dashboard token's owner
+put_up() {
+  local agent="$1"
   R="$(json_field "$OUT" r)"; LINE="$(json_field "$OUT" canonicalLine)"; EXPIRES="$(json_field "$OUT" expiresAt)"
   [ -n "$R" ] && [ -n "$LINE" ] && [[ "$EXPIRES" =~ ^[0-9]+$ ]] || fail "a root valasza hianyos: $(printf '%s' "$OUT" | head -c 200)"
   TIMEOUT=$(( EXPIRES - $(date +%s) - MARGIN_SECONDS ))
@@ -102,6 +117,34 @@ case "$CMD" in
   kerj-vissza)
     [ $# -eq 3 ] || usage
     request kerj-vissza "$1" "$2" "$3"
+    ;;
+  ci-kerj)
+    [ $# -eq 5 ] || usage
+    agent="$1"; repo="$2"; branch="$3"; path="$4"; file="$5"
+    [[ "$agent" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]] || fail "agent alakja hibas: ${agent}"
+    [[ "$repo" =~ ^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$ ]] || fail "repo alakja hibas: ${repo}"
+    [[ "$branch" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$ ]] || fail "ag alakja hibas: ${branch}"
+    [[ "$path" =~ ^\.github/workflows/[A-Za-z0-9][A-Za-z0-9._-]{0,60}\.ya?ml$ ]] || fail "az ut .github/workflows/<nev>.yml legyen: ${path}"
+    [ -f "$file" ] && [ ! -L "$file" ] && [ -r "$file" ] || fail "a fajl nem olvashato sima fajl: ${file}"
+    OUT="$(sudo -n "$RT" ci-kerj "$repo" "$branch" "$path" "$agent" < "$file")"; RC=$?
+    case "$RC" in 0) ;; 2) usage ;; *) echo "ROOT ELUTASITOTTA (kod ${RC})"; exit 5 ;; esac
+    echo "$OUT"
+    echo "a tetel sha256-jat a review-csomag README-je irja ki; a reviewer ezt veti ossze, mielott: bash ${BASE}/scripts/root-telepito.sh ci-athnezve <tetel> <sha256>"
+    ;;
+  ci-athnezve)
+    [ $# -eq 2 ] || usage
+    [[ "$1" =~ ^[0-9a-f]{8}$ ]] || fail "a tetel azonositoja 8 kisbetus hexa jegy: ${1}"
+    [[ "$2" =~ ^[0-9a-f]{64}$ ]] || fail "a sha256 64 kisbetus hexa jegy: ${2}"
+    root_call ci-athnezve "$1" "$2"
+    case "$RC" in 0) echo "$OUT" ;; 2) usage ;; *) echo "ROOT ELUTASITOTTA (kod ${RC})"; exit 5 ;; esac
+    ;;
+  ci-nap)
+    [ $# -eq 1 ] || usage
+    [[ "$1" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]] || fail "agent alakja hibas: ${1}"
+    root_call ci-nap "$1"
+    case "$RC" in 0) ;; 2) usage ;; *) echo "ROOT ELUTASITOTTA (kod ${RC})"; exit 5 ;; esac
+    if [ "$(json_field "$OUT" tetelek)" = 0 ]; then echo "nincs atnezett tetel: nem kerek jovahagyast"; exit 0; fi
+    put_up "$1"
     ;;
   vegrehajt)
     [ $# -eq 2 ] || usage
