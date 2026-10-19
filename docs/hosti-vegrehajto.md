@@ -21,7 +21,7 @@ Code: `scripts/host/hosti-vegrehajto.py` (root, Python 3), `scripts/host/hosti-k
 | **Verbs** | `telepit <projekt> <commit>` (the clone is set to the commit, the image is built, the project is brought up), `up <projekt>` (`docker compose up -d` with the image that is there), `visszaallit <projekt>` (the previous image becomes the live one), `allapot [R]` (read only). A project and a verb must also be on the root-owned project list. Image inspect, logs and the proxy are separate slices. |
 | **Approval** | the same chain as the root installer and the deploy executor: a #33 approval, category `hosti_vegrehajt`, the canonical line as the whole description; the program reads the request message and the replies **from Discord itself** with its own read-only bot token, and the whole message must be exactly what #33 makes of this R (author, channel, edits, text, code, expiry). One use: the R is spent, durably, **before the first docker call**. |
 | **The canonical line** | `HOSTI R=<id> / <projekt> / <ige> / <commit 40 \| jelenlegi \| elozo> / elo <image id 12> / elozo <image id 12>`. It survives #33's neutraliser unchanged (no `_`, `*`, `~`, `|`, `>`, `#`, backtick), and the execution measures the same ids again. |
-| **Measure, then change** | every MEASUREMENT comes before the R is spent, every CHANGE after: the project is on the list, the verb is allowed, the project lock is free, the resolved config hash matches, the commit is on the branch (GitHub `compare`), the clone is checked out, `HEAD` is the commit and the tree is clean, the live image id is the approved one. A refusal leaves the R open. |
+| **Measure, then change** | every MEASUREMENT comes before the R is spent, every CHANGE after: the project is on the list, the verb is allowed, the project lock is free, the resolved config hash matches, the commit is on the branch (GitHub `compare`), the clone is checked out, `HEAD` is the commit and the tree is clean, the live image id is the approved one. A refusal leaves the R open. **The one exception is the clone's setup** (`git fetch`, `checkout --detach`): it changes the clone's work tree before the R is spent, but that tree is only the build's source and never touches the live container. |
 | **Locks** | always in this order: the project's lock (`flock`, non-blocking: a busy project answers `foglalt` and the R stays open), then the R lock for the `open` to `used` change, so two `vegrehajt` on one R cannot both read `open`. |
 | **The config hash** | the project list pins the sha256 of the **resolved** compose configuration (`docker compose config`, a clean environment): the `.env`, `env_file`, `include` and `extends` are inside it, so a value cannot change under an unchanged compose file. The output is hashed, never printed or logged (it may hold secrets). A Docker or Compose upgrade can change the output's shape: the consequence is a refusal, not a silent run, and the cure is the same step: `hosti-vegrehajto lenyomat <projekt>` (root, not on the socket) prints the current hash for the list. |
 | **The environment** | built in the program for every external call: a fixed `PATH`, `HOME` and `DOCKER_CONFIG` inside the state directory (an empty docker config: no credential helper), `LANG=C`, and fixed git variables. No `COMPOSE_*` or `DOCKER_*` variable and nothing from the gate's environment passes. The git calls carry the protection of `scripts/git-olvas.sh` (no hooks, no fsmonitor, no external diff, no pager). |
@@ -30,6 +30,7 @@ Code: `scripts/host/hosti-vegrehajto.py` (root, Python 3), `scripts/host/hosti-k
 | **Audit** | `/var/lib/hosti-vegrehajto/audit.log` (append-only, root 0600): R, project, verb, commit, the image ids, the Discord message ids, every step's exit code. Never an output, a value or the resolved config. |
 
 What it does not do, said aloud:
+- **the requester's name is not authenticated:** `kero` comes from the caller, so any fleet key can write any name that is on the `requesters` list, and the owner reads it as `Kérő:` in the approval text (the same as at the deploy executor); the owner's own answer on Discord is what decides;
 - it does not judge the commit: an approved Dockerfile builds as written, as root, on the host's Docker (the protection is the review and the approval);
 - it trusts GitHub for the bytes at a commit and Discord for the author of a message;
 - it runs no verb off the list and no project off the list; no `docker run`, `exec`, `cp`, `rm`, `system`, `volume`, `--force-recreate`, `--build`, `-V` or `--remove-orphans`; no privileged or host-network build;
@@ -63,8 +64,8 @@ git clone https://github.com/KratoBal/acroveliq.git /opt/hosti-vegrehajto/src
 git -C /opt/hosti-vegrehajto/src fetch origin
 git -C /opt/hosti-vegrehajto/src checkout --detach <a beolvadt commit 40 jegye>
 test "$(git -C /opt/hosti-vegrehajto/src rev-parse HEAD)" = "<ugyanaz a 40 jegy>" && test -z "$(git -C /opt/hosti-vegrehajto/src status --porcelain)"
-cd /opt/hosti-vegrehajto/src && echo '93ca2e815ecfded0a191fe51dbbe8c33373d923803d0542d37c0ebf1102e5dfa  scripts/host/hosti-vegrehajto.py' | sha256sum -c
-echo '875144d376497a01134268cc4c9b2334f336194ca04b1688d9b199fd1f42af4d  scripts/host/hosti-kliens.py' | sha256sum -c
+cd /opt/hosti-vegrehajto/src && echo '72d0bcc4762b7278846c4328afa0c7e5515e549992a28f91b19bf54fffc20b12  scripts/host/hosti-vegrehajto.py' | sha256sum -c
+echo '24d691ea6a72dd6de12299949e3f122952f87aca74961af9b413c9b3ac3fcb6a  scripts/host/hosti-kliens.py' | sha256sum -c
 echo 'bd799c10cabc0c619a13476af4e808c0fc37c3492264c6c9cb8046675c2fe664  scripts/host/hosti-vegrehajto.socket' | sha256sum -c
 echo 'b2f1f4e8cf3dc883dc31837db35b7d41eab207ce04881d7d29ee67eac82d13ec  scripts/host/hosti-vegrehajto@.service' | sha256sum -c
 install -o root -g root -m 0755 scripts/host/hosti-vegrehajto.py /usr/local/sbin/hosti-vegrehajto
@@ -74,6 +75,8 @@ install -o root -g root -m 0644 scripts/host/hosti-vegrehajto.socket /etc/system
 install -o root -g root -m 0644 'scripts/host/hosti-vegrehajto@.service' /etc/systemd/system/hosti-vegrehajto@.service
 install -d -o root -g root -m 0700 /var/lib/hosti-vegrehajto /etc/hosti-vegrehajto
 ```
+
+**Új projekt a listán egységmódosítást is kér:** a `hosti-vegrehajto@.service` `ReadWritePaths` sora a projektek `src` könyvtárát név szerint sorolja (ma `levelkozvetito`, `vegrehajto`), egy új projekt `src`-je nélküle `EROFS`-sel bukna; a sort a lista bővítésével együtt kell bővíteni (és újra `daemon-reload`).
 
 A `src/` klón root-tulajdonú, és a `fleet-gate`, a program és a klón NEM projektek a listán.
 

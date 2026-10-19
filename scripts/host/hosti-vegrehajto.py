@@ -818,16 +818,45 @@ def writer(sock_out):
     return write
 
 
-def serve(stdin=None, stdout=None, uid_of_peer=None):
+def serve(stdin=None, stdout=None, uid_of_peer=None, conn=None):
     """One connection (systemd passes the socket as stdin and stdout): the peer's uid, one request, the answer; for a
-    vegrehajt the answer `elfogadva` goes at once and the connection is closed, and the work goes on in this process."""
-    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+    vegrehajt the answer `elfogadva` goes at once and the connection is CLOSED, and the work goes on in this process.
+
+    The connection is ONE socket, seen as fd 0, as fd 1 and as the dup this function takes for SO_PEERCRED. Closing only
+    stdout leaves the others open, the client reads to the end of the build and times out on a run that was accepted
+    (barracuda, #256 review): so the acceptance shuts the socket down for every holder at once, then closes them all."""
+    try:
+        signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+    except ValueError:
+        pass  # not the main thread (a test); Python ignores SIGPIPE at start anyway, and a write error is caught below
     stdin = stdin or sys.stdin.buffer
     stdout = stdout or sys.stdout.buffer
     write = writer(stdout)
+    own_conn = False
+    if conn is None and uid_of_peer is None:
+        conn = socket.socket(fileno=os.dup(0))
+        own_conn = True
+
+    def hang_up():
+        if conn is not None:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        for stream in (stdout, stdin):
+            try:
+                stream.close()
+            except (OSError, ValueError):
+                pass
+        if conn is not None:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
     try:
         cfg = load_config()
-        uid = uid_of_peer() if uid_of_peer else peer_uid(socket.socket(fileno=os.dup(0)))
+        uid = uid_of_peer() if uid_of_peer else peer_uid(conn)
         # by UID, not by group: the socket's 0660 root:fleet only allows the open
         if uid != cfg['fleetUid']:
             log({'esemeny': 'elutasitva', 'ok': 'idegen-uid', 'uid': uid})
@@ -842,11 +871,8 @@ def serve(stdin=None, stdout=None, uid_of_peer=None):
         if op == 'vegrehajt':
             def accepted(obj):
                 write(dict(obj, ok=True))
-                # the client may go: the work does not need it
-                try:
-                    stdout.close()
-                except OSError:
-                    pass
+                # the client may go: the work does not need it, and it must not wait for the end of the build
+                hang_up()
 
             result = cmd_vegrehajt(args, accepted=accepted)
             log({'esemeny': 'vege', 'r': result['r'], 'outcome': result['outcome']})
@@ -868,6 +894,12 @@ def serve(stdin=None, stdout=None, uid_of_peer=None):
     except Failed as e:
         write({'ok': False, 'hiba': str(e)})
         return 13
+    finally:
+        if own_conn and conn is not None:
+            try:
+                conn.close()
+            except OSError:
+                pass
 
 
 USAGE = ('usage: hosti-vegrehajto serve                     (the systemd socket instance)\n'

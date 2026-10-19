@@ -26,6 +26,7 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, '..', '..')
@@ -666,6 +667,97 @@ try:
           client(['vegrehajt', 'deadbeef', '1559919876543210987'], [{'ok': True, 'allapot': 'elfogadva'}])[0])
     check('a socket that is not there is 14', 14, kl.main(['hosti-kliens', 'allapot'], path=os.path.join(T, 'nincs-sock')))
     check('a verb off the list is usage, not a connection', 2, kl.main(['hosti-kliens', 'lenyomat'], path=os.path.join(T, 'nincs-sock')))
+    print('the connection CLOSES at the acceptance, and the client returns then (barracuda, #256)')
+    srvpath = os.path.join(T, 'srv.sock')
+
+    def real_serve_thread(served):
+        srv = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        srv.bind(srvpath)
+        srv.listen(1)
+
+        def run_server():
+            conn, _ = srv.accept()
+            try:
+                served['code'] = hv.serve(stdin=conn.makefile('rb'), stdout=conn.makefile('wb'),
+                                          uid_of_peer=lambda: FLEET_UID, conn=conn)
+            finally:
+                srv.close()
+                os.unlink(srvpath)
+
+        th = threading.Thread(target=run_server)
+        th.start()
+        return th
+
+    fresh()
+    out = ask()
+    r = hv.load_r(out['r'])
+    msg, at = put_up_and_answer(r, 'igen')
+    FAKE.hooks.append(lambda argv: time.sleep(3) if (argv[0] == hv.DOCKER and argv[1] == 'compose' and argv[argv.index('-f') + 2] == 'build') else None)
+    served = {}
+    real_now = hv.time.time
+    hv.time.time = lambda: at / 1000
+    try:
+        th = real_serve_thread(served)
+        buf = io.StringIO()
+        real_out, sys.stdout = sys.stdout, buf
+        started = time.monotonic()
+        try:
+            code = kl.main(['hosti-kliens', 'vegrehajt', out['r'], msg], path=srvpath)
+        finally:
+            sys.stdout = real_out
+        elapsed = time.monotonic() - started
+        mutating_when_client_returned = list(FAKE.mutating())
+        th.join(30)
+    finally:
+        hv.time.time = real_now
+    check('the client returns 0 with the accepted line, long before the 3 s build ends', [0, True, True],
+          [code, 'elfogadva' in buf.getvalue(), elapsed < 1.5])
+    check('the build had not finished when the client was already gone', True, 'up' not in mutating_when_client_returned)
+    check('the work ran to the end after the client left', ['kesz_igazolt', ['tag', 'build', 'up'], 0],
+          [hv.load_r(out['r'])['outcome'], FAKE.mutating(), served.get('code')])
+
+    print('the client stops at the first reply line, and keeps what it read')
+    held = {}
+
+    def line_then_hold(reply, hold_seconds):
+        srv = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        srv.bind(srvpath)
+        srv.listen(1)
+
+        def run_server():
+            conn, _ = srv.accept()
+            conn.recv(4096)
+            if reply is not None:
+                conn.sendall((json.dumps(reply) + '\n').encode())
+            time.sleep(hold_seconds)
+            conn.close()
+            srv.close()
+            os.unlink(srvpath)
+
+        th = threading.Thread(target=run_server)
+        th.start()
+        return th
+
+    th = line_then_hold({'ok': True, 'allapot': 'elfogadva'}, 2)
+    started = time.monotonic()
+    real_out, sys.stdout = sys.stdout, io.StringIO()
+    try:
+        code = kl.main(['hosti-kliens', 'vegrehajt', 'deadbeef', '1559919876543210987'], path=srvpath)
+    finally:
+        sys.stdout = real_out
+    check('a server that sends the line and holds the connection open does not hold the client', [0, True], [code, time.monotonic() - started < 1.0])
+    th.join(10)
+    real_timeout = kl.TIMEOUT
+    kl.TIMEOUT = 0.5
+    th = line_then_hold(None, 1.5)
+    real_out, sys.stdout = sys.stdout, io.StringIO()
+    try:
+        code = kl.main(['hosti-kliens', 'allapot'], path=srvpath)
+    finally:
+        sys.stdout = real_out
+        kl.TIMEOUT = real_timeout
+    check('no line at all before the timeout is unreachable (14)', 14, code)
+    th.join(10)
 finally:
     import shutil
     shutil.rmtree(T, ignore_errors=True)

@@ -25,12 +25,14 @@ def main(argv, path=None):
     request = (json.dumps({'ige': argv[1], 'args': list(argv[2:])}) + '\n').encode('utf-8')
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(TIMEOUT)
+    data = b''
     try:
         s.connect(path or SOCKET)
         s.sendall(request)
         s.shutdown(socket.SHUT_WR)
-        data = b''
-        while True:
+        # ONE reply line is the whole answer: stop at the first complete line, do not wait for the end of the connection (a
+        # vegrehajt is accepted at once and the build goes on behind it; waiting for EOF would wait for the build)
+        while b'\n' not in data:
             chunk = s.recv(65536)
             if not chunk:
                 break
@@ -38,8 +40,10 @@ def main(argv, path=None):
             if len(data) > 1_000_000:
                 break
     except OSError:
-        print('hosti-kliens: a hosti vegrehajto nem erheto el', file=sys.stderr)
-        return 14
+        # what was read before the error is still the executor's word (a timeout after a line is not "unreachable")
+        if b'\n' not in data:
+            print('hosti-kliens: a hosti vegrehajto nem erheto el', file=sys.stderr)
+            return 14
     finally:
         s.close()
     last = {}
