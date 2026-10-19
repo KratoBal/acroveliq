@@ -115,6 +115,11 @@ its OWN store. Nobody runs a command: the value never goes through a shell, a ch
   removed by the next write or close. **A damaged or foreign pointer stops the target** (the relay does not start with it), it never falls back to the compose secret.
 - **Rotation:** after `ir` the previous value stays (`rotacio-nyitva`) until `lezar` (deletes every non-active version) or `visszaall` (swaps back; `lezar` then
   leaves one version file). The real close is the revocation at Google; **the old value stays in the host's `titkok/oauth-client-secret` until the owner empties it.**
+- **Who can write, stated plainly (measured by acrobot from the marveen account, 2026-10-19 15:5x):** whoever runs under the marveen uid can read the panel's token file
+  and call the door directly, without the session gate: the control panel (`node dist/index.js`), the main agent's own session, **two more `claude` processes in the
+  `acrobot-worker` tmux session (pids 1104 and 1118), both started with `--dangerously-skip-permissions`, so they read the token file and call the door without a permission
+  prompt**, and the four `bun` channel plugins. It is not one agent. The bound is the same for all of them and is in the code: the pre-flight and the fixed target list; the worst
+  case is the mail branch stopping, and `visszaall` undoes it. The session gate is the owner's hand at the button, not the protection.
 - **Log:** `titok_ir`, `titok_lezar`, `titok_visszaall`, `titok_elutasitva` with caller, target, length, version, result or the fixed reason. Never the value, a hash of it or a body.
 
 Install (the owner's host step, once, after the image is rebuilt from the merged commit):
@@ -123,10 +128,19 @@ Install (the owner's host step, once, after the image is rebuilt from the merged
 mkdir /opt/levelkozvetito/titkok-ver && chown 10003:10003 /opt/levelkozvetito/titkok-ver && chmod 700 /opt/levelkozvetito/titkok-ver
 ```
 
+**The writer token is a ROOT step.** `store/tokens` is `root:root drwx--x--x` and `levelkozvetito-vezerlopult.token` does not exist yet, so root creates the file on the host, owned by marveen, mode 0400 (the panel's client refuses any mode with a group or other bit), and the hash command must not print the token's value to the terminal or a log:
+
+```
+cd /opt/marveen-docker && docker compose exec -u root marveen sh -c 'umask 277 && head -c 32 /dev/urandom | od -An -tx1 | tr -d "[:space:]" > /home/marveen/marveen/store/tokens/levelkozvetito-vezerlopult.token && chown marveen:marveen /home/marveen/marveen/store/tokens/levelkozvetito-vezerlopult.token && chmod 0400 /home/marveen/marveen/store/tokens/levelkozvetito-vezerlopult.token && wc -c < /home/marveen/marveen/store/tokens/levelkozvetito-vezerlopult.token'
+cd /opt/marveen-docker && docker compose exec -u root marveen sh -c 'tr -d "\n" < /home/marveen/marveen/store/tokens/levelkozvetito-vezerlopult.token | sha256sum | cut -d" " -f1'
+```
+
+The first prints the length (64), the second only the hash, which goes into `config.json` as the writer's `tokenSha256`. The first real try is a dummy value that must be refused, the pointer untouched
+and the mail branch still answering (contract, section 2.11).
+
 then the new `compose.yaml` (two mounts of that directory: read-write for the relay, READ-ONLY for the `oauth` service), and in `config.json` the two keys
 `"secretStoreDir": "/var/lib/levelkozvetito/titkok-ver"` and `"secretWriters": [{ "name": "vezerlopult", "tokenSha256": "<sha256 of the panel's token>" }]`
-(both or neither; one without the other refuses to start). The panel's token is its own file `store/tokens/levelkozvetito-vezerlopult.token`, mode 0400,
-the hash `printf %s "$(cat tokenfile)" | sha256sum`. Without the keys the door does not exist.
+(both or neither; one without the other refuses to start). The panel's token is its own file `store/tokens/levelkozvetito-vezerlopult.token` (0400, marveen), created and hashed by the root commands above, never typed or printed. Without the keys the door does not exist.
 
 ## Consent (Balázs's click, once per account; an agent cannot do it)
 
