@@ -197,9 +197,10 @@ describe('takeOverParkedDelivery (the decisions, with the broker injected)', () 
     expect([x.r.outcome, x.r.presses, x.full.map((f) => f.args)]).toEqual(['landed', 1, ['submit proba --expect', 'submit proba', 'submit proba']])
   })
 
-  it('an OLD broker on a not-in-box reason: LEFT (no plain clear: it would not compare the content)', async () => {
+  it('an OLD broker on a not-in-box reason: LEFT, named as such (no plain clear: it would not compare the content)', async () => {
     const x = await run('not-in-box', [], [OLD_BROKER])
-    expect([x.r.outcome, x.log]).toEqual(['unknown', ['clear']])
+    expect([x.r.outcome, x.log]).toEqual(['left', ['clear']])
+    expect(x.r.note).toContain('old broker')
   })
 
   it.each(['not-in-box', 'placeholder', 'box-changed', 'placeholder-stuck'])('%s: the content-gated clear: our text in the box is emptied (CLEARED, the message goes again)', async (reason) => {

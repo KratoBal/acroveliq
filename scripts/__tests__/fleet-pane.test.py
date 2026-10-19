@@ -910,6 +910,29 @@ res = tui_run(p, ['deliver', 'proba'], TEXT.encode())
 check('T13 somebody else\'s draft lands mid-typing: not-in-box, nothing emptied (no Ctrl-C, no Delete, no Enter)',
       (res, [k for k in p.keys if k in ('C-c', 'C-k', 'Delete', 'Enter')], p.real().startswith('valaki mas piszkozata ')), ((11, 'not-in-box'), [], True))
 
+# T17: the entry point reads stdin only where the text comes from it. A hand `submit` / `clear` without --expect gets a stdin that is
+# never written and never closed (a terminal): it must return, not wait for an EOF.
+BROKER = os.path.join(SCRIPTS, 'root', 'fleet-pane.py')
+for verb in ('submit', 'clear'):
+    proc = subprocess.Popen([sys.executable, '-I', BROKER, verb, 'proba'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        proc.wait(timeout=15)
+        returned = True
+    except subprocess.TimeoutExpired:
+        returned = False
+        proc.kill()
+        proc.wait()
+    check('T17 `%s proba` without --expect returns with a stdin that never closes' % verb, returned, True)
+proc = subprocess.Popen([sys.executable, '-I', BROKER, 'submit', 'proba', '--expect'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    proc.wait(timeout=1.5)
+    waits = False
+except subprocess.TimeoutExpired:
+    waits = True
+proc.stdin.close()
+proc.wait(timeout=15)
+check('T17b `submit proba --expect` DOES read its stdin (waits for the text, returns once it is closed)', waits, True)
+
 check('T14 the deadline constants: broker 40 s + 2.2 s per piece', (fp.DELIVER_BASE, fp.DELIVER_PER_PIECE), (40.0, 2.2))
 
 print('\n%d FAIL' % len(FAILS) if FAILS else '\nall pass')

@@ -1120,7 +1120,10 @@ if __name__ == '__main__':
     os.umask(0o077)
     uid = os.environ.get('SUDO_UID')
     verb = sys.argv[1] if len(sys.argv) > 1 else ''
-    data = sys.stdin.buffer.read(MAX_TEXT * 4 + 1) if verb in ('deliver', 'submit', 'clear') else b''
+    # stdin only where the text comes from it: a manual `submit` or `clear` (the emergency hand form) must not wait for an EOF that never
+    # comes (barracuda, #265 review)
+    wants_text = verb == 'deliver' or (verb in ('submit', 'clear') and '--expect' in sys.argv[2:])
+    data = sys.stdin.buffer.read(MAX_TEXT * 4 + 1) if wants_text else b''
     code, out = run(sys.argv[1:], {'agents_file': AGENTS_FILE, 'log_file': LOG_FILE, 'run': real_run,
                                    'values_file': VALUES_FILE, 'pace_file': PACE_FILE, 'start_dir': START_DIR, 'getpw': pwd.getpwnam,
                                    'caller_uid': int(uid) if uid and uid.isdigit() else os.getuid()}, data)

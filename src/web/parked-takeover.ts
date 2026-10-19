@@ -81,6 +81,7 @@ async function clearOurs(agent: string, reason: string, presses: number, deps: T
   if (look === 'not-ours') return done('left', presses, `${reason}: the box does not hold our text; nothing pressed, nothing cleared`)
   if (look === 'running') return done('left', presses, `${reason}: a turn is running; nothing cleared`)
   if (look === 'dialog') return done('left', presses, `${reason}: a dialog appeared; nothing more pressed`)
+  if (look === 'old-broker') return done('left', presses, `${reason}: old broker (no --expect): nothing pressed, nothing cleared`)
   return done('unknown', presses, `${reason}: the box could not be emptied`)
 }
 
