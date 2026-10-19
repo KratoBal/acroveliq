@@ -91,8 +91,8 @@ class World:
         return {'user': {'login': login}, 'state': state, 'commit_id': commit}
 
     @staticmethod
-    def run(name, id_, status='completed', conclusion='success'):
-        return {'name': name, 'id': id_, 'status': status, 'conclusion': conclusion}
+    def run(name, id_, status='completed', conclusion='success', app='github-actions'):
+        return {'name': name, 'id': id_, 'status': status, 'conclusion': conclusion, 'app': {'slug': app}}
 
     def tree(self, ref, path, sha):
         self.set('git/trees/%s:%s' % (ref, path), 200, {'sha': sha, 'tree': []})
@@ -211,12 +211,14 @@ for name, files, want in (
     ('a workflow moved OUT by a rename', [{'filename': 'docs/x.yml', 'previous_filename': '.github/workflows/test.yml'}], ('ember', 'ci-utvonal:.github/workflows/test.yml')),
     ('a configured CI path (a directory)', [{'filename': 'scripts/ci/run.sh'}], ('ember', 'ci-utvonal:scripts/ci/run.sh')),
     ('a configured CI path (the directory name itself)', [{'filename': 'scripts/ci'}], ('ember', 'ci-utvonal:scripts/ci')),
+    ('a local composite action under .github/actions/', [{'filename': '.github/actions/x/action.yml'}], ('ember', 'ci-utvonal:.github/actions/x/action.yml')),
+    ('a file directly under .github/', [{'filename': '.github/CODEOWNERS'}], ('ember', 'ci-utvonal:.github/CODEOWNERS')),
 ):
     w = World()
     w.set('pulls/%d/files?per_page=100&page=1' % PR, 200, files)
     check('K9 %s: ember' % name, verdict(w=w), want)
 w = World()
-w.set('pulls/%d/files?per_page=100&page=1' % PR, 200, [{'filename': 'scripts/cinema.py'}, {'filename': '.github/workflows-notes.md'}])
+w.set('pulls/%d/files?per_page=100&page=1' % PR, 200, [{'filename': 'scripts/cinema.py'}, {'filename': '.githubx/notes.md'}, {'filename': 'docs/.github/readme.md'}])
 check('K9 a name that only STARTS like a CI path is not one: dont', verdict(w=w)[0], 'dont')
 w = World()
 w.set('pulls/%d/files?per_page=100&page=1' % PR, 200, [{'filename': 'a/%d' % i} for i in range(100)])
@@ -283,6 +285,9 @@ check('K5 a failed run: elutasit', cv([Rn('test', 1), Rn('scan', 2, conclusion='
 check('K5 skipped or cancelled is not success: elutasit', cv([Rn('test', 1, conclusion='skipped'), Rn('scan', 2)]), ('elutasit', 'ci-bukott:test'))
 check('K5 an older failure under a NEWER success (a re-run): dont', cv([Rn('test', 1, conclusion='failure'), Rn('test', 5), Rn('scan', 2)])[0], 'dont')
 check('K5 an older success under a NEWER failure: elutasit', cv([Rn('test', 7, conclusion='failure'), Rn('test', 5), Rn('scan', 2)]), ('elutasit', 'ci-bukott:test'))
+check('K5 a run of the right name from ANOTHER GitHub App is ignored (a missing run)', cv([Rn('test', 1, app='evil-app'), Rn('scan', 2)]), ('elutasit', 'ci-hianyzik:test'))
+check('K5 a later green run of another app does not hide a failed run of the CI app', cv([Rn('test', 1, conclusion='failure'), Rn('test', 9, app='evil-app'), Rn('scan', 2)]), ('elutasit', 'ci-bukott:test'))
+check('K5 a run with no app at all is ignored', cv([{'name': 'test', 'id': 1, 'status': 'completed', 'conclusion': 'success'}, Rn('scan', 2)]), ('elutasit', 'ci-hianyzik:test'))
 check('K5 a name that only contains the configured one does not count', cv([Rn('test-extra', 1), Rn('scan', 2)]), ('elutasit', 'ci-hianyzik:test'))
 check('K5 no configured names: elutasit', verdict(checks=[]), ('elutasit', 'rossz-beallitas'))
 check('K5 a bad name in the setting: elutasit', verdict(checks=['te;st']), ('elutasit', 'rossz-beallitas'))

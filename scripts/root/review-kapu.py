@@ -12,10 +12,11 @@ THE FACTS (plan section 3):
   K10 the requester is not the approver (the requester name is not authenticated; this is the only thing it is used for)
   K1  the commit is on the branch (compare commit...branch: behind_by 0)
   K2  the commit is the result of exactly one merged PR of THIS repository into the branch; H = that PR's head
-  K9  the PR changes nothing under .github/workflows/ or a configured CI path (a changed test's green is about the changed test)
+  K9  the PR changes nothing under .github/ or a configured CI path (a changed test's green is about the changed test)
   K3  the approver's LATEST verdict on that PR is APPROVE on exactly H, read from root's record (the container's programs) or from
       the machine account's GitHub review (the host's programs). It is read as UNCONDITIONAL: a condition is given with CHANGES
-  K5  every configured check run is `success` on the commit (the latest run of that name; running or missing: not yet)
+  K5  every configured check run is `success` on the commit (the latest run of that name FROM THE CI APP, `github-actions`: any GitHub App with
+      checks:write can create a check run of any name, so a run of another app is ignored; running or missing: not yet)
   K4  the reviewed bytes are the installed bytes: every path (or the fenced block) has the same git id at the commit and at H
 The order is the cheap and the decisive first; K4 last (it costs the most requests). A call budget bounds one decision.
 
@@ -46,7 +47,10 @@ def good_path(path):
 
 
 NAME_RX = re.compile(r'^[A-Za-z0-9._ -]{1,100}$')
-WORKFLOWS = '.github/workflows/'
+# the WHOLE .github/ tree, not only workflows/: a workflow calls local composite actions under .github/actions/, and other files there
+# shape the CI or the repository's rules (barracuda 33245, who asked for the same on the executor, BUILTIN_CI_PATH = ^\.github\/)
+CI_ROOT = '.github/'
+CI_APP = 'github-actions'
 MAX_PAGES = 10
 DEFAULT_BUDGET = 40
 
@@ -184,7 +188,7 @@ class ReviewKapu:
         return pr['number'], h
 
     def k9_ci_paths(self, repo, pr):
-        prefixes = [WORKFLOWS] + [p for p in self.cfg.get('ci_utak', []) if isinstance(p, str)]
+        prefixes = [CI_ROOT] + [p for p in self.cfg.get('ci_utak', []) if isinstance(p, str)]
         for f in self.pages(repo, 'pulls/%d/files' % pr, 'files'):
             if not isinstance(f, dict):
                 raise Elutasit('github-forma:files')
@@ -267,7 +271,8 @@ class ReviewKapu:
             raise Elutasit('tul-sok:check-runs')
         result = {}
         for name in names:
-            same = [r for r in runs if isinstance(r, dict) and r.get('name') == name and isinstance(r.get('id'), int)]
+            same = [r for r in runs if isinstance(r, dict) and r.get('name') == name and isinstance(r.get('id'), int)
+                    and isinstance(r.get('app'), dict) and r['app'].get('slug') == self.cfg.get('ci_app', CI_APP)]
             if not same:
                 raise Elutasit('ci-hianyzik:%s' % name)
             latest = max(same, key=lambda r: r['id'])
