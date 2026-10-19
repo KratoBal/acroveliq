@@ -42,7 +42,8 @@ export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown' | 'error'
 // "· ↓ to manage" tail after the shell count, rather than just the
 // bare "· N shell(s)" prefix. Two reasons:
 //   (a) one of these tails is always what Claude Code actually renders,
-//       so insisting on either rejects malformed or mid-render frames;
+//       so insisting on either rejects malformed or mid-render frames
+//       (no longer true since 2026-10-17: see A SHELL COUNT below);
 //   (b) it disambiguates the footer from scrollback content that
 //       happens to contain "bypass permissions on · 1 shell" verbatim
 //       (an echoed log line, a quoted message, etc.) which would
@@ -84,7 +85,14 @@ export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown' | 'error'
 // tail is accepted: a `·`-separated tail that ENDS (end of line) in the `…`
 // truncation mark. It still needs the mode glyph (⏵/⏸) in front of the mode
 // words, which is UI chrome prose does not carry.
-const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))|[⏵⏸]+ (?:[A-Za-z][\w-]* ){1,3}on · [^\n]*…[ \t]*(?=\n|$)|\? for shortcuts/
+//
+// A SHELL COUNT CAN BE THE LAST THING ON THE LINE. Measured 2026-10-17 14:0x:
+// barracuda's footer read `⏵⏵ accept edits on · install gh for PR status · 1
+// shell`, with no idle action and no `…` after it, so the pane read as not idle
+// and a message sat unsubmitted in its input line (card 06e0f4ab). A fourth tail
+// is accepted: a `·`-separated tail that ends in `N shell(s)` or `N monitor(s)`,
+// again only behind the mode glyph.
+const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))|[⏵⏸]+ (?:[A-Za-z][\w-]* ){1,3}on · [^\n]*…[ \t]*(?=\n|$)|[⏵⏸]+ (?:[A-Za-z][\w-]* ){1,3}on · [^\n]*\b\d+ (?:shells?|monitors?)[ \t]*(?=\n|$)|\? for shortcuts/
 
 // Positive busy signals. ANY match anywhere in the pane means the turn
 // is mid-flight, even if the footer looks idle for a frame.

@@ -532,14 +532,24 @@ describe('detectPaneState', () => {
     // The fixture is deliberately minimal: no other idle markers
     // (no "(shift+tab to cycle)", no "? for shortcuts") so the
     // assertion isolates the truncated-shells path specifically.
+    //
+    // CHANGED 2026-10-19 (card 06e0f4ab): a COMPLETE `· 1 shell` at the end of
+    // the line is now idle, because reason 1 assumed a tail always follows the
+    // count, and a live footer measured 2026-10-17 had none (`⏵⏵ accept edits
+    // on · install gh for PR status · 1 shell`; the shared sample
+    // idle-shell-count-tail). What this test still pins: a count cut mid-word
+    // is a partial frame, and the same text without the mode glyph is prose
+    // (sample not-idle-shell-count-without-glyph).
     const truncated = [
       '',
       SEP,
       '❯ ',
       SEP,
-      '  ⏵⏵ bypass permissions on · 1 shell',
+      '  ⏵⏵ bypass permissions on · 1 sh',
     ].join('\n')
     expect(detectPaneState(truncated)).toBe('unknown')
+    const complete = truncated.replace('· 1 sh', '· 1 shell')
+    expect(detectPaneState(complete)).toBe('idle')
   })
 
   it('detects busy when "esc to interrupt" footer marker is present', () => {

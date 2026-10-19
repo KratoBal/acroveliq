@@ -20,6 +20,18 @@
    "queued": false
   },
   {
+   "name": "idle-shell-count-tail",
+   "pane": "● Kesz a meres.\n  ⎿  … tool output …\n\n────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────\n  Opus 5 · ctx 40%\n  ⏵⏵ accept edits on · install gh for PR status · 1 shell",
+   "idle": true,
+   "queued": false
+  },
+  {
+   "name": "not-idle-shell-count-without-glyph",
+   "pane": "● Kesz a meres.\n  ⎿  … tool output …\n\n────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────\n  Opus 5 · ctx 40%\n  accept edits on · install gh for PR status · 1 shell",
+   "idle": false,
+   "queued": false
+  },
+  {
    "name": "busy-spinner",
    "pane": "● Kesz a meres.\n  ⎿  … tool output …\n\n✳ Forming… (3m 7s · ↓ 6.1k tokens)\n\n────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────\n  Opus 5 · ctx 40%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents",
    "idle": false,

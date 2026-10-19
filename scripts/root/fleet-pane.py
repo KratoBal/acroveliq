@@ -75,6 +75,8 @@ SUBMIT_RETRIES = 3
 IDLE_FOOTER_RX = re.compile(
     r'(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))'
     r'|[⏵⏸]+ (?:[A-Za-z][\w-]* ){1,3}on · [^\n]*…[ \t]*(?=\n|$)'
+    # a tail that ends in the shell or monitor count (2026-10-17, card 06e0f4ab)
+    r'|[⏵⏸]+ (?:[A-Za-z][\w-]* ){1,3}on · [^\n]*\b\d+ (?:shells?|monitors?)[ \t]*(?=\n|$)'
     r'|\? for shortcuts')
 BUSY_RXS = [
     re.compile(r'\(\s*(?:\d+h\s*)?(?:\d+m\s*)?\d+s\s*·\s*↓\s*\d'),
