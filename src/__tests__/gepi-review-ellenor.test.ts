@@ -229,9 +229,11 @@ describe('pr-beolvaszt.sh: where the gate stands and what it does', () => {
   const end = src.indexOf('def _feladat_esemeny(extra):')
   const block = src.slice(start, end)
 
+  const argvFile = join(root, 'helper-argv.txt')
+
   function gate(helperCode: number, helperSays: string, mode: { kenyszerit: boolean; ok?: string }): Promise<Result> {
     const fake = join(root, `fake-${Math.random().toString(36).slice(2)}.py`)
-    writeFileSync(fake, `import sys\nprint(${JSON.stringify(helperSays)})\nsys.exit(${helperCode})\n`)
+    writeFileSync(fake, `import sys\nopen(${JSON.stringify(argvFile)}, 'w').write(' '.join(sys.argv[1:]))\nprint(${JSON.stringify(helperSays)})\nsys.exit(${helperCode})\n`)
     const prog = [
       'import subprocess, sys',
       `repo, pr, sha = 'KratoBal/acroveliq', 257, '${HEAD}'`,
@@ -251,6 +253,11 @@ describe('pr-beolvaszt.sh: where the gate stands and what it does', () => {
       expect(r.out).toContain('gepi review rendben: proba')
       expect(r.out).toContain('A KAPU ELENGEDTE')
     }
+  })
+
+  it('the helper is asked about exactly this repository, this PR and this head', async () => {
+    await gate(0, 'rendben', { kenyszerit: false })
+    expect(readFileSync(argvFile, 'utf8')).toBe(`--repo KratoBal/acroveliq --pr 257 --head ${HEAD}`)
   })
 
   it.each([
