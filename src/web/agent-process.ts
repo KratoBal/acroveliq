@@ -2675,6 +2675,14 @@ async function sendPromptViaBroker(
   const emit = async (): Promise<'sent' | 'not-landed' | 'aborted-busy'> => {
     if (!opts.busyTarget) recordInjectedPrompt(session, line)
     let r = await callBroker(['deliver', agent, ...(opts.busyTarget ? ['--queued'] : [])], line, timeoutMs)
+    if (!opts.busyTarget && r.code === 10 && r.out === 'box-not-free') {
+      // A text of THIS message may sit in the box from an earlier attempt (a slow TUI drew it after the broker stopped waiting, or a
+      // takeover could not settle it): the broker's clear gate compares the content, so only OUR text goes, anything else is left
+      // alone. Cleared: the message is typed once more, here, in the same lane.
+      const c = await callBroker(['clear', agent, '--expect'], line)
+      logger.info({ session, code: c.code, why: c.out }, 'sendPromptToSession: box not free; tried to empty an earlier copy of this message')
+      if (c.code === 0) r = await callBroker(['deliver', agent], line, timeoutMs)
+    }
     // a caller that does not wait for idle (forceSend, the wake-ups) relied on Claude Code
     // queueing into a running turn: the broker's queued path, with its own looks
     if (!opts.busyTarget && opts.waitForIdle === false && r.code === 10 && /^busy/.test(r.out)) {
@@ -2686,7 +2694,7 @@ async function sendPromptViaBroker(
     // delivery); anything else leaves the box emptied and the reason in the diagnostic row.
     let takeoverNote: string | null = null
     if (!opts.busyTarget && outcome === 'not-landed' && r.code === 11) {
-      const t = await takeOverParkedDelivery(agent, r.out, { broker: (verb) => callBroker(verb), delay })
+      const t = await takeOverParkedDelivery(agent, r.out, { broker: (verb, input) => callBroker(verb, input), delay, text: line })
       takeoverNote = t.note
       if (t.outcome === 'landed') outcome = 'sent'
       logger[t.outcome === 'landed' ? 'info' : 'warn']({ session, why: r.out, takeover: t.note }, 'sendPromptToSession: typed but not landed; took the pane over')

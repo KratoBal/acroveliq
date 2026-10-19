@@ -70,6 +70,24 @@ MAX_TEXT = 32000
 MAX_LINES = 2000
 CHUNK = 80
 SUBMIT_RETRIES = 3
+# Typing pace (task broker-beillesztes-helyorzo, 2026-10-19). Measured on the live pane (acrobot 33100): the Claude TUI folds a
+# run of quickly arriving pieces into a `[Pasted text #N]` stub and shows the rest verbatim beside it, and the box can still LOOK
+# EMPTY for a moment after the last piece (the TUI gathers fast input until a gap). Hence: a pause between pieces longer than that
+# gap, the previous piece's echo awaited before the next goes, the box awaited to settle before it is judged, and a pause before
+# the Enter. The thresholds themselves are NOT measured on the real TUI (see docs/fleet-pane.md).
+PIECE_PAUSE = 0.12
+ECHO_POLL = 0.04
+SETTLE_POLL = 0.15
+SETTLE_MAX_POLLS = 14
+PRE_ENTER_PAUSE = 0.15
+ECHO_TAIL = 16
+STUB_MIN_RUN = 8
+ECHO_WAIT = 0.6
+# the broker's own deadline for one deliver, from the worst case (two passes, the slower pause, the longer echo wait); the router's
+# is 30 s longer (src/web/fleet-pane.ts), and a test ties the two numbers together
+DELIVER_BASE = 40.0
+DELIVER_PER_PIECE = 2.2
+PACE_FILE = '/etc/fleet-pane/conf/deliver-pace.json'
 
 # --- the pane rules (a conservative copy of src/pane-state.ts) -----------------------------
 IDLE_FOOTER_RX = re.compile(
@@ -95,6 +113,7 @@ MENU_ESC_RX = re.compile(r'\besc to (?:cancel|exit|close|go back|quit)\b', re.I)
 BOX_SEP_RX = re.compile(r'^─{10,}')
 QUEUE_HINT_RX = re.compile(r'Press up to edit queued messages')
 PASTE_RX = re.compile(r'\[Pasted text\s*#\s*\d')
+STUB_RX = re.compile(r'\[Pasted text[^\]\n]*\]')   # the stub, however it is numbered (measured shape: `[Pasted text #1]`)
 BYPASS_RX = re.compile(r'bypass permissions on')
 SURVEY_RX = re.compile(r'How is Claude doing this session')
 RESUME_RX = re.compile(r'Resume from summary')
@@ -240,6 +259,37 @@ def box_holds_only(plain, text):
     return bool(pieces) and any(len(p) >= 16 for p in pieces) and all(p in whole for p in pieces)
 
 
+def nospace(s):
+    return re.sub(r'\s+', '', s)
+
+
+def box_state(plain, text):
+    """What the live input box holds, against the text WE typed: ('empty'|'ours'|'stub-ours'|'other', longest verbatim run).
+
+    ours:      every visible row is a piece of our text (box_holds_only).
+    stub-ours: a `[Pasted text ...]` stub is there, and whatever stands beside it is a piece of our text (the TUI folded a run of
+               our pieces into the stub: measured shape `...b[Pasted text #1]` and `[Pasted text #2]tta tortenetkent...`).
+               The verbatim run is returned: a stub with NO verbatim run is indistinguishable from somebody else's paste.
+    other:     anything else (the box holds something that is not, or not only, our text)."""
+    rows = box_rows(plain)
+    if rows is None:
+        return 'other', 0
+    pieces = [collapse(re.sub(r'^\s*❯', '', r)) for r in rows]
+    pieces = [p for p in pieces if p]
+    if not pieces:
+        return 'empty', 0
+    whole = collapse(text)
+    if any(STUB_RX.search(p) for p in pieces):
+        runs = []
+        for p in pieces:
+            runs.extend(x.strip() for x in STUB_RX.split(p))
+        runs = [x for x in runs if x]
+        if all(x in whole for x in runs):
+            return 'stub-ours', max([len(x) for x in runs] or [0])
+        return 'other', 0
+    return ('ours', max(len(p) for p in pieces)) if box_holds_only(plain, text) else ('other', 0)
+
+
 def ready_refusal(look, queued):
     """Why the pane may NOT take a message now, or None."""
     plain = look['plain']
@@ -289,6 +339,10 @@ def chunks(line):
     return out
 
 
+def typed_text(piece):
+    return ';' if piece == SEMICOLON else piece
+
+
 def typed(pieces):
     """What tmux types for these pieces (the inverse of chunks)."""
     return ''.join(';' if p == SEMICOLON else p for p in pieces)
@@ -307,6 +361,19 @@ class Broker:
         self.user = cfg['agents'][agent]['user']
         self.session = 'agent-' + agent
         self.sleep = cfg.get('sleep', time.sleep)
+        self.clock = cfg.get('clock', time.monotonic)
+        self.vt = 0.0
+
+    def nap(self, secs):
+        self.vt += secs
+        self.sleep(secs)
+
+    def mark(self):
+        return self.vt, self.clock()
+
+    def since(self, m):
+        # the longer of the slept time and the wall time: a test that sleeps nothing still advances, a slow tmux still counts
+        return max(self.vt - m[0], self.clock() - m[1])
 
     def tmux(self, *args, check=True):
         r = self.cfg['run']([RUNUSER, '-u', self.user, '--', TMUX, *args])
@@ -367,10 +434,10 @@ class Broker:
             if i and dialog(self.look()['plain']) != want:
                 raise Refused(11, 'dialog-changed')
             self.key(k)
-            self.sleep(0.15)
+            self.nap(0.15)
         if kind == 'feedback-draft':
             # "0" closed the draft; the offer to turn drafting off is answered Esc (keep)
-            self.sleep(0.3)
+            self.nap(0.3)
             if dialog(self.look()['plain']) == 'feedback-optout':
                 self.key('Escape')
         return 0, 'ok'
@@ -385,33 +452,141 @@ class Broker:
             return 'box-empty'
         return None
 
-    def clear(self):
+    def clear(self, expect=None):
         look = self.look()
         why = self.parked_ok(look)
         if why:
             raise Refused(12, why)
-        if PASTE_RX.search('\n'.join(box_rows(look['plain']))):
-            # Ctrl-C empties a placeholder; on an EMPTY box it would quit: look before each press
+        if expect is not None:
+            # content gate (barracuda, #264 review): only a box that holds OUR text, or our text folded around a stub with a verbatim
+            # run of it beside the stub, is emptied; a stub with nothing of ours beside it is indistinguishable from someone's paste
+            st, run = box_state(look['plain'], expect)
+            if not (st == 'ours' or (st == 'stub-ours' and run >= STUB_MIN_RUN)):
+                raise Refused(12, 'not-ours')
+        if STUB_RX.search('\n'.join(box_rows(look['plain']))):
+            # Ctrl-C empties a placeholder; on an EMPTY box it would start the exit (a second one quits the session). So before
+            # EVERY press a STABLE look (two identical looks in a row) that still shows the stub; an empty stable look ends it, and
+            # an unstable one never gets a press (barracuda, plan review 33104)
             for _ in range(3):
-                self.key('C-c')
-                self.sleep(0.45)
-                look = self.look()
-                if self.parked_ok(look) or not PASTE_RX.search('\n'.join(box_rows(look['plain']) or [])):
+                look, stable = self.stable_look()
+                if not stable or self.parked_ok(look) or not STUB_RX.search('\n'.join(box_rows(look['plain']) or [])):
                     break
+                self.key('C-c')
+                self.nap(0.45)
         else:
             rows = len([r for r in box_rows(look['plain']) if r.strip().lstrip('❯').strip()])
             # fixed key names, so ONE tmux call (up to 481 keys), not a process per key (barracuda, #182)
             self.tmux('send-keys', '-t', self.session, 'C-a', *(['C-k', 'Delete'] * min(240, max(12, rows * 4))))
-            self.sleep(0.1)
-        return (0, 'ok') if box_free(self.look()) else (11, 'not-empty')
+            self.nap(0.1)
+        return (0, 'ok') if box_free(self.stable_look()[0]) else (11, 'not-empty')
 
-    def submit(self):
+    def stable_look(self):
+        """(look, stable): stable when two looks in a row show the same dialog and the same box rows."""
+        prev = None
+        look = self.look()
+        for _ in range(SETTLE_MAX_POLLS):
+            rows = box_rows(look['plain'])
+            sig = (dialog(look['plain']), None if rows is None else '\n'.join(rows))
+            if sig == prev:
+                return look, True
+            prev = sig
+            self.nap(SETTLE_POLL)
+            look = self.look()
+        return look, False
+
+    def submit(self, expect=None):
         look = self.look()
         why = self.parked_ok(look)
         if why:
             raise Refused(12, why)
+        if expect is not None:
+            # content gate: an Enter only on a box that holds exactly our text; a stub is not submitted by an Enter (it only unfolds)
+            st, _ = box_state(look['plain'], expect)
+            if st != 'ours':
+                raise Refused(12, 'placeholder' if st == 'stub-ours' else 'not-ours')
         self.key('Enter')
         return 0, 'ok'
+
+    def echo_ok(self, look, typed):
+        """The tail of what we typed so far is the tail of the box (the TUI drew it)."""
+        tail = nospace(typed)[-ECHO_TAIL:]
+        rows = box_rows(look['plain'])
+        return bool(tail) and rows is not None and nospace(''.join(rows)).endswith(tail)
+
+    def box_is_prefix_of(self, look, typed):
+        """The box holds exactly a (possibly empty) beginning of what this call typed, whitespace aside: the only box a failed
+        deliver may empty on its own authority. Anything else in it (an earlier draft, someone's paste) stays."""
+        rows = box_rows(look['plain'])
+        if rows is None:
+            return False
+        have = nospace(''.join(re.sub(r'^\s*❯', '', r) for r in rows))
+        return nospace(typed).startswith(have)
+
+    def type_pieces(self, line, pause, echo_wait, over):
+        """Type the pieces, the next one only after the previous one is drawn. (text typed so far, 'ok' | 'stub' | 'no-echo' | 'timeout').
+
+        'stub': the TUI folded something into a `[Pasted text #N]` stub: stop typing, the caller recovers. 'no-echo': the piece was
+        not drawn within the wait: stop too (a blind continuation is what coalesces). echo_wait 0 is the old tempo: no echo awaited.
+        The echo is the last ECHO_TAIL non-space characters typed so far against the box with every whitespace gone on BOTH sides
+        (a wrap, the continuation indent and the pad are not part of the text)."""
+        typed = ''
+        for c in chunks(line):
+            if over():
+                return typed, 'timeout'
+            self.tmux('send-keys', '-t', self.session, '-l', '--', c)
+            typed += typed_text(c)
+            self.nap(pause)
+            if echo_wait <= 0:
+                continue
+            m = self.mark()
+            while True:
+                look = self.look()
+                d = dialog(look['plain'])
+                if d:
+                    raise Refused(11, 'dialog-while-typing:' + d)
+                rows = box_rows(look['plain'])
+                if rows is not None and any(STUB_RX.search(r) for r in rows):
+                    return typed, 'stub'
+                if self.echo_ok(look, typed):
+                    break
+                if self.since(m) >= echo_wait:
+                    return typed, 'no-echo'
+                self.nap(ECHO_POLL)
+        return typed, 'ok'
+
+    def settle(self, line):
+        """Look until the box is the same in two looks in a row and not empty: the TUI may still be gathering fast input and
+        draw it late (measured: the box looked EMPTY right after the last piece). (look, state, verbatim run, complete)."""
+        prev = None
+        look, st, run = None, 'empty', 0
+        for _ in range(SETTLE_MAX_POLLS):
+            look = self.look()
+            d = dialog(look['plain'])
+            if d:
+                raise Refused(11, 'dialog-before-enter:' + d)
+            st, run = box_state(look['plain'], line)
+            sig = (st, '\n'.join(box_rows(look['plain']) or []))
+            complete = st != 'ours' or self.echo_ok(look, line)
+            if st != 'empty' and sig == prev and complete:
+                return look, st, run, True
+            prev = sig
+            self.nap(SETTLE_POLL)
+        return look, st, run, st != 'ours' or self.echo_ok(look, line)
+
+    def clear_typed(self):
+        """Empty a box this very call typed into (so its origin is known); True when the box is empty afterwards."""
+        try:
+            code, _ = self.clear()
+        except Refused as r:
+            return r.code == 12 and r.reason == 'box-empty'
+        return code == 0
+
+    def drop_typed(self, typed, look=None):
+        """Empty the box after a failed typing, but ONLY when it holds a beginning of what this call typed."""
+        look = look or self.look()
+        if self.box_is_prefix_of(look, typed) and not box_free(look):
+            if not self.clear_typed():
+                raise Refused(11, 'placeholder-stuck')
 
     def deliver(self, text, queued):
         line = clean_text(text)
@@ -425,25 +600,57 @@ class Broker:
         first = ready_refusal(self.look(), queued)
         if first:
             raise Refused(10, first)
-        self.sleep(0.25)
+        self.nap(0.25)
         second = ready_refusal(self.look(), queued)
         if second:
             raise Refused(10, second + '@confirm')
-        for c in chunks(line):
-            d = dialog(self.look()['plain'])
-            if d:
-                raise Refused(11, 'dialog-while-typing:' + d)
-            self.tmux('send-keys', '-t', self.session, '-l', '--', c)
-            self.sleep(0.03)
+        pace = load_pace(self.cfg.get('pace_file', PACE_FILE), self.cfg.get('trusted_uid', 0))
+        start = self.mark()
+        limit = DELIVER_BASE + DELIVER_PER_PIECE * len(chunks(line))
+        over = lambda: self.since(start) > limit
+        # Two passes at most: the second is slower (twice the pause and the echo wait). A stub on the second pass leaves the box
+        # EMPTY and refuses.
+        for attempt in range(2):
+            typed, how = self.type_pieces(line, pace['piece'] * (1 if attempt == 0 else 2), pace['echo'] * (1 if attempt == 0 else 2), over)
+            if how == 'timeout':
+                self.drop_typed(typed)
+                raise Refused(11, 'deliver-timeout')
+            look, st, run, complete = self.settle(line)
+            if st == 'ours' and how == 'ok' and complete:
+                break
+            if st == 'empty':
+                raise Refused(11, 'no-echo')
+            if st == 'stub-ours':
+                # a stub of OUR OWN pieces: this call typed into a box looked at twice and empty, so the origin is known
+                if not self.clear_typed():
+                    raise Refused(11, 'placeholder-stuck')
+                if attempt == 1 or over():
+                    raise Refused(11, 'placeholder-cleared' if attempt == 1 else 'deliver-timeout')
+                continue
+            if st == 'ours':
+                # only a part of our text is drawn (the typing stopped early, or the end is not drawn): never an Enter on a part
+                self.drop_typed(typed, look)
+                raise Refused(11, 'no-echo')
+            raise Refused(11, 'not-in-box')
+        self.nap(PRE_ENTER_PAUSE)
         before = self.look()
         d = dialog(before['plain'])
         if d:
             raise Refused(11, 'dialog-before-enter:' + d)
+        if over():
+            self.drop_typed(line, before)
+            raise Refused(11, 'deliver-timeout')
+        if box_state(before['plain'], line)[0] == 'stub-ours':
+            # the TUI folded our text AFTER the settle (a late fold): it is ours (this call typed into a box seen empty), so empty it
+            # now rather than leave a stub parked for a takeover to puzzle over
+            if not self.clear_typed():
+                raise Refused(11, 'placeholder-stuck')
+            raise Refused(11, 'placeholder-cleared')
         if not box_holds_only(before['plain'], line):
             raise Refused(11, 'placeholder' if PASTE_RX.search(before['plain']) else 'not-in-box')
         for attempt in range(SUBMIT_RETRIES + 1):
             self.key('Enter')
-            self.sleep(0.4)
+            self.nap(0.4)
             after = self.look()
             d = dialog(after['plain'])
             if d:
@@ -507,6 +714,26 @@ def trusted_file(path, trusted_uid):
         if st.st_mode & 0o022:
             return 'writable-by-others'
     return None
+
+
+def load_pace(path, trusted_uid):
+    """The root-owned typing pace: {'piece': pause between pieces, 'echo': echo wait} in seconds. Missing, untrusted or out of range
+    means the built-in values (never a refusal): the file is only the owner's way to slow the typing down or, with echoWait 0 and a
+    short piecePause, back to the old tempo without a new broker version."""
+    pace = {'piece': PIECE_PAUSE, 'echo': ECHO_WAIT}
+    if not path or trusted_file(path, trusted_uid):
+        return pace
+    try:
+        with open(path, 'rb') as f:
+            v = json.loads(f.read(2048).decode('utf-8'))
+    except (OSError, ValueError):
+        return pace
+    ok = (isinstance(v, dict) and all(isinstance(v.get(k), (int, float)) and not isinstance(v.get(k), bool)
+                                      for k in ('echoWait', 'piecePause'))
+          and 0 <= v['echoWait'] <= 2 and 0.01 <= v['piecePause'] <= 1)
+    if ok:
+        pace = {'piece': float(v['piecePause']), 'echo': float(v['echoWait'])}
+    return pace
 
 
 def check_root_dirs(path, trusted_uid):
@@ -796,7 +1023,7 @@ def parse(argv):
     if not NAME_RX.match(agent):
         raise Refused(2, 'bad-agent')
     opts = {}
-    allowed = {'status': {'--created'}, 'capture': {'--ansi', '--lines'}, 'deliver': {'--queued'}, 'dismiss': set()}.get(verb, set())
+    allowed = {'status': {'--created'}, 'capture': {'--ansi', '--lines'}, 'deliver': {'--queued'}, 'submit': {'--expect'}, 'clear': {'--expect'}, 'dismiss': set()}.get(verb, set())
     i = 0
     if verb == 'dismiss':
         if len(rest) != 1 or rest[0] not in DISMISS_KINDS:
@@ -845,10 +1072,14 @@ def run(argv, cfg, stdin_bytes=b''):
         elif verb == 'dismiss':
             code, out = b.dismiss(opts['kind'])
             entry['kind'] = opts['kind']
-        elif verb == 'clear':
-            code, out = b.clear()
-        elif verb == 'submit':
-            code, out = b.submit()
+        elif verb in ('clear', 'submit'):
+            expect = None
+            if opts.get('expect'):
+                # the text we expect the box to hold comes on stdin; nothing is pressed or cleared unless the box holds it
+                expect = clean_text(stdin_bytes.decode('utf-8', errors='replace'))
+                if not expect.strip() or len(expect) > MAX_TEXT:
+                    raise Refused(2, 'bad-expect')
+            code, out = b.clear(expect) if verb == 'clear' else b.submit(expect)
         elif verb == 'generate':
             code, out = generate(b.cfg, agent)
         elif verb == 'start':
@@ -889,9 +1120,12 @@ if __name__ == '__main__':
     os.umask(0o077)
     uid = os.environ.get('SUDO_UID')
     verb = sys.argv[1] if len(sys.argv) > 1 else ''
-    data = sys.stdin.buffer.read(MAX_TEXT * 4 + 1) if verb == 'deliver' else b''
+    # stdin only where the text comes from it: a manual `submit` or `clear` (the emergency hand form) must not wait for an EOF that never
+    # comes (barracuda, #265 review)
+    wants_text = verb == 'deliver' or (verb in ('submit', 'clear') and '--expect' in sys.argv[2:])
+    data = sys.stdin.buffer.read(MAX_TEXT * 4 + 1) if wants_text else b''
     code, out = run(sys.argv[1:], {'agents_file': AGENTS_FILE, 'log_file': LOG_FILE, 'run': real_run,
-                                   'values_file': VALUES_FILE, 'start_dir': START_DIR, 'getpw': pwd.getpwnam,
+                                   'values_file': VALUES_FILE, 'pace_file': PACE_FILE, 'start_dir': START_DIR, 'getpw': pwd.getpwnam,
                                    'caller_uid': int(uid) if uid and uid.isdigit() else os.getuid()}, data)
     if out:
         sys.stdout.write(out if out.endswith('\n') or verb == 'capture' else out + '\n')

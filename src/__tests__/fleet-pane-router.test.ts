@@ -161,10 +161,17 @@ describe('with the switch ON', () => {
       logged.filter((m) => /\/name/.test(m))]).toEqual([false, false, true, []])
   })
 
-  it('FP-TIMEOUT: the deliver limit grows with the text (250 ms a piece over 30 s), and the max matches the broker', async () => {
+  it('FP-TIMEOUT: the deliver limit is the broker\'s own deadline (read from its source) plus 30 s, grows with the text, and the max matches the broker', async () => {
     await sendPromptToSession(S, 'A' + 'x'.repeat(7999), null)
     const py = readFileSync(join(__dirname, '..', '..', 'scripts', 'root', 'fleet-pane.py'), 'utf8')
-    expect([calls.find((c) => c.args[2] === 'deliver')!.timeout, deliverTimeoutMs(DELIVER_MAX_CHARS), Number(/^MAX_TEXT = (\d+)$/m.exec(py)?.[1])]).toEqual([55_000, 130_000, DELIVER_MAX_CHARS])
+    const base = Number(/^DELIVER_BASE = ([\d.]+)$/m.exec(py)?.[1])
+    const perPiece = Number(/^DELIVER_PER_PIECE = ([\d.]+)$/m.exec(py)?.[1])
+    const chunk = Number(/^CHUNK = (\d+)$/m.exec(py)?.[1])
+    const expectMs = (chars: number) => Math.round((base + 30 + perPiece * Math.ceil(chars / chunk)) * 1000)
+    expect([calls.find((c) => c.args[2] === 'deliver')!.timeout, deliverTimeoutMs(DELIVER_MAX_CHARS), Number(/^MAX_TEXT = (\d+)$/m.exec(py)?.[1])]).toEqual([
+      expectMs(8000), expectMs(DELIVER_MAX_CHARS), DELIVER_MAX_CHARS,
+    ])
+    expect([calls.find((c) => c.args[2] === 'deliver')!.timeout, deliverTimeoutMs(DELIVER_MAX_CHARS)]).toEqual([290_000, 950_000])
   })
 
   it('FP-DELIVER: the message goes to `deliver proba` on STDIN, nowhere in argv; no raw key, no sudo -u', async () => {

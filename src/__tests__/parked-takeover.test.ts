@@ -82,6 +82,10 @@ const OK = { code: 0, out: 'ok' }
 const EMPTY = { code: 12, out: 'box-empty' }
 const RUNNING = { code: 12, out: 'not-idle' }
 const DIALOG = { code: 12, out: 'dialog:permission' }
+const NOT_OURS = { code: 12, out: 'not-ours' }
+const PLACEHOLDER = { code: 12, out: 'placeholder' }
+const OLD_BROKER = { code: 2, out: 'bad-option' }
+const TEXT = 'Hello broker'
 
 beforeEach(() => {
   calls.length = 0
@@ -95,18 +99,21 @@ afterEach(() => _setFleetPaneBrokerForTest(null))
 describe('takeOverParkedDelivery (the decisions, with the broker injected)', () => {
   function run(reason: string, submit: { code: number; out: string }[], clear: { code: number; out: string }[] = []) {
     const log: string[] = []
+    const full: { args: string; input?: string }[] = []
     const delays: number[] = []
     const s = [...submit]
     const c = [...clear]
     const deps: TakeoverDeps = {
-      broker: async (v) => {
+      broker: async (v, input) => {
         log.push(v[0]!)
+        full.push({ args: v.join(' '), input })
         if (v[0] === 'submit') return s.length > 1 ? s.shift()! : (s[0] ?? EMPTY)
         return c.length > 1 ? c.shift()! : (c[0] ?? OK)
       },
       delay: async (ms) => void delays.push(ms),
+      text: TEXT,
     }
-    return takeOverParkedDelivery('proba', reason, deps).then((r) => ({ r, log, delays }))
+    return takeOverParkedDelivery('proba', reason, deps).then((r) => ({ r, log, delays, full }))
   }
 
   it('parked, the box is empty BEFORE any Enter of ours: UNKNOWN, not landed (somebody else may have emptied it), nothing pressed', async () => {
@@ -159,8 +166,68 @@ describe('takeOverParkedDelivery (the decisions, with the broker injected)', () 
     }
   })
 
-  it.each(['not-in-box', 'placeholder', 'box-changed', 'something-new'])('%s: the box does not hold exactly our text: NOTHING pressed, NOTHING cleared, LEFT (no broker call at all)', async (reason) => {
+  it('every submit and clear of the takeover carries `--expect` and the typed text on STDIN (the content gate), nothing in argv', async () => {
+    const x = await run('parked', [OK], [OK])
+    expect(x.full.every((f) => f.args.endsWith('--expect') && f.input === TEXT)).toBe(true)
+    expect(x.full.map((f) => f.args)).toEqual([...Array(TAKEOVER_MAX_PRESSES).fill('submit proba --expect'), 'clear proba --expect'])
+    expect(JSON.stringify(x.full.map((f) => f.args))).not.toContain('Hello')
+  })
+
+  it('parked, the box no longer holds exactly our text before any Enter: LEFT, nothing pressed; after our Enter: UNKNOWN', async () => {
+    const a = await run('parked', [NOT_OURS])
+    expect([a.r.outcome, a.r.presses, a.log]).toEqual(['left', 0, ['submit']])
+    const b = await run('parked', [OK, NOT_OURS])
+    expect([b.r.outcome, b.r.presses]).toEqual(['unknown', 1])
+  })
+
+  it('parked, the TUI folded our text into a stub since the broker looked: the content-gated clear, never a second Enter', async () => {
+    const a = await run('parked', [PLACEHOLDER], [OK])
+    expect([a.r.outcome, a.log]).toEqual(['cleared', ['submit', 'clear']])
+    const b = await run('parked', [PLACEHOLDER], [NOT_OURS])
+    expect([b.r.outcome, b.log]).toEqual(['left', ['submit', 'clear']])
+  })
+
+  it('parked, still parked after the presses and the clear gate says not-ours: UNKNOWN, nothing cleared', async () => {
+    const x = await run('parked', [OK], [NOT_OURS])
+    expect(x.r.outcome).toBe('unknown')
+  })
+
+  it('an OLD broker (no --expect, answers bad-option): the parked branch falls back to its plain verbs once, then stays plain', async () => {
+    const x = await run('parked', [OLD_BROKER, OK, EMPTY])
+    expect([x.r.outcome, x.r.presses, x.full.map((f) => f.args)]).toEqual(['landed', 1, ['submit proba --expect', 'submit proba', 'submit proba']])
+  })
+
+  it('an OLD broker on a not-in-box reason: LEFT, named as such (no plain clear: it would not compare the content)', async () => {
+    const x = await run('not-in-box', [], [OLD_BROKER])
+    expect([x.r.outcome, x.log]).toEqual(['left', ['clear']])
+    expect(x.r.note).toContain('old broker')
+  })
+
+  it.each(['not-in-box', 'placeholder', 'box-changed', 'placeholder-stuck'])('%s: the content-gated clear: our text in the box is emptied (CLEARED, the message goes again)', async (reason) => {
     const x = await run(reason, [OK], [OK])
+    expect([x.r.outcome, x.r.presses, x.log, x.full[0]!.args, x.full[0]!.input]).toEqual(['cleared', 0, ['clear'], 'clear proba --expect', TEXT])
+  })
+
+  it.each(['not-in-box', 'placeholder', 'box-changed'])('%s: a box that does NOT hold our text (not-ours): LEFT, nothing pressed, nothing cleared', async (reason) => {
+    const x = await run(reason, [OK], [NOT_OURS])
+    expect([x.r.outcome, x.r.presses, x.log]).toEqual(['left', 0, ['clear']])
+    expect(x.r.note).toContain('nothing cleared')
+  })
+
+  it('a clearable reason, the clear answers empty / running / dialog / not-empty: CLEARED / LEFT / LEFT / UNKNOWN', async () => {
+    expect((await run('not-in-box', [], [EMPTY])).r.outcome).toBe('cleared')
+    expect((await run('not-in-box', [], [RUNNING])).r.outcome).toBe('left')
+    expect((await run('not-in-box', [], [DIALOG])).r.outcome).toBe('left')
+    expect((await run('not-in-box', [], [{ code: 11, out: 'not-empty' }])).r.outcome).toBe('unknown')
+  })
+
+  it.each(['no-echo', 'placeholder-cleared', 'deliver-timeout'])('%s: the broker emptied what it typed: CLEARED, no broker call at all', async (reason) => {
+    const x = await run(reason, [OK], [OK])
+    expect([x.r.outcome, x.r.presses, x.log]).toEqual(['cleared', 0, []])
+  })
+
+  it('a reason this router does not know: LEFT, no broker call at all', async () => {
+    const x = await run('something-new', [OK], [OK])
     expect([x.r.outcome, x.r.presses, x.log]).toEqual(['left', 0, []])
     expect(x.r.note).toContain('nothing cleared')
   })
@@ -211,12 +278,29 @@ describe('sendPromptToSession through the broker: the takeover on the IDLE path'
     expect(reports[0]!.reason).toContain('fleet-pane:parked; takeover:cleared')
   })
 
-  it.each(['not-in-box', 'placeholder', 'box-changed'])('typed but %s: no Enter and NO clear, NOT-LANDED, the takeover says LEFT', async (why) => {
+  it.each(['not-in-box', 'placeholder', 'box-changed'])('typed but %s: no Enter, ONE content-gated clear with the text on stdin: NOT-LANDED, the takeover says CLEARED', async (why) => {
     script({ code: 11, out: why }, [OK], [OK])
     const { result, reports } = await send()
     expect(result).toBe('not-landed')
-    expect(brokerVerbs()).toEqual(['deliver'])
+    expect(brokerVerbs()).toEqual(['deliver', 'clear'])
+    const clear = calls.find((c) => c.args[2] === 'clear')!
+    expect([clear.args.slice(2), clear.input]).toEqual([['clear', 'proba', '--expect'], 'Hello broker'])
+    expect(reports[0]!.reason).toContain(`fleet-pane:${why}; takeover:cleared`)
+  })
+
+  it.each(['not-in-box', 'placeholder', 'box-changed'])('typed but %s and the box holds something that is not ours: the clear gate says not-ours, NOT-LANDED, the takeover says LEFT', async (why) => {
+    script({ code: 11, out: why }, [OK], [NOT_OURS])
+    const { result, reports } = await send()
+    expect(result).toBe('not-landed')
+    expect(brokerVerbs()).toEqual(['deliver', 'clear'])
     expect(reports[0]!.reason).toContain(`fleet-pane:${why}; takeover:left`)
+  })
+
+  it.each(['no-echo', 'placeholder-cleared', 'deliver-timeout'])('typed but %s: the broker emptied it itself: no further call, NOT-LANDED, the takeover says CLEARED', async (why) => {
+    script({ code: 11, out: why }, [OK], [OK])
+    const { result, reports } = await send()
+    expect([result, brokerVerbs()]).toEqual(['not-landed', ['deliver']])
+    expect(reports[0]!.reason).toContain(`fleet-pane:${why}; takeover:cleared`)
   })
 
   it('a dialog after the Enter: nothing is touched, NOT-LANDED, the takeover says LEFT', async () => {
@@ -227,15 +311,27 @@ describe('sendPromptToSession through the broker: the takeover on the IDLE path'
     expect(reports[0]!.reason).toContain('takeover:left')
   })
 
-  it('a refusal BEFORE typing (code 10: busy, box-not-free) is not a typed-not-landed: no takeover', async () => {
-    script({ code: 10, out: 'box-not-free' })
+  it('box-not-free: an earlier copy of THIS message may sit in the box: one content-gated clear; ours is emptied and the message typed once more', async () => {
+    const answers = [{ code: 10, out: 'box-not-free' }, { code: 0, out: 'landed' }]
+    brokerAnswer = (a) => (a[0] === 'deliver' ? answers.shift()! : { code: 0, out: 'ok' })
+    const { result, reports } = await send()
+    expect([result, brokerVerbs(), reports]).toEqual(['sent', ['deliver', 'clear', 'deliver'], []])
+    const clear = calls.find((c) => c.args[2] === 'clear')!
+    expect([clear.args.slice(2), clear.input]).toEqual([['clear', 'proba', '--expect'], 'Hello broker'])
+  })
+
+  it('box-not-free and the box holds something that is not our text: the gate says not-ours, nothing is typed again, NOT-LANDED, the reason alone in the report', async () => {
+    script({ code: 10, out: 'box-not-free' }, [], [NOT_OURS])
     const { result, reports } = await send()
     expect(result).toBe('not-landed')
-    expect(brokerVerbs()).toEqual(['deliver'])
-    // the reason alone, no takeover note: nothing was typed
+    expect(brokerVerbs()).toEqual(['deliver', 'clear'])
     expect(reports.map((r) => r.reason)).toEqual(['fleet-pane:box-not-free'])
+  })
+
+  it('a refusal BEFORE typing (code 10: busy) is not a typed-not-landed: no takeover', async () => {
     script({ code: 10, out: 'busy' })
     calls.length = 0
+    brokerAnswer = (a) => (a[0] === 'deliver' ? { code: 10, out: 'busy' } : { code: 0, out: 'ok' })
     // a caller that does not wait for idle retries the queued path once (existing behaviour): still no submit or clear
     expect((await send({ onBusyTimeout: 'abort', waitForIdle: false })).result).toBe('aborted-busy')
     expect(brokerVerbs()).toEqual(['deliver', 'deliver'])

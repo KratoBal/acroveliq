@@ -634,5 +634,306 @@ src = open(os.path.join(SCRIPTS, 'root', 'fleet-pane.py'), encoding='utf-8').rea
 check('the entry runs isolated (-I), with the fixed paths', (src.split('\n')[0], "AGENTS_FILE = '/etc/fleet-pane/conf/agents.json'" in src,
       "TMUX = '/usr/bin/tmux'" in src, "RUNUSER = '/usr/sbin/runuser'" in src), ('#!/usr/bin/python3 -I', True, True, True))
 
+# --- the TUI model (task broker-beillesztes-helyorzo, 2026-10-19) ------------------------------------
+# WHAT TURNS THIS RED:
+#   T1  a long message (2000 chars) typed at the broker's pace lands in ONE Enter, no stub, no Ctrl-C;
+#   T2  the OLD tempo (echoWait 0, piecePause 0.03) is refused, the box left EMPTY, no Enter pressed (positive control: the
+#       model does reproduce the measured folding, so T1 is not green by accident);
+#   T4/T5  a TUI that draws late: the broker refuses `no-echo` and never presses Enter on a part; text that appears only
+#       after the wait is emptiable by `clear --expect` (the router's net), never by the broker's own authority beyond a prefix;
+#   T6-T8  `clear --expect` / `submit --expect` act ONLY on a box that holds our text; a stub with nothing of ours beside it,
+#       or another text, is refused and no key is sent;
+#   T7  Ctrl-C goes only after a STABLE look that still shows the stub: an empty stable look ends the loop (a second Ctrl-C on an
+#       empty box starts the exit: `exit_presses` stays 0);
+#   T9  the broker's own deadline: the typing stops, the typed beginning is emptied, `deliver-timeout`;
+#   T10 the pace file: only a trusted, in-range file changes the tempo;
+#   T13 somebody else's draft in the box is never emptied by a failed deliver (`not-in-box`, no Ctrl-C, no Delete, no Enter).
+# THE MODEL IS NOT MEASURED ON THE REAL TUI (the claude binary is not available to the author). Its parameters come from the
+# live pane capture in acrobot 33100: pieces closer than GAP are gathered and, past FOLD_AT chars, the first piece stays verbatim
+# and the rest folds into `[Pasted text #N]`; an Enter on a stub only unfolds it; Ctrl-C on an empty box starts the exit.
+class Tui(Pane):
+    GAP = 0.10
+    FOLD_AT = 700
+
+    def __init__(self, late=0.0, redraw_delay=0.3, intrude=None, fold_over=None, fold_later=None, cc_ignore=0, **kw):
+        super().__init__(**kw)
+        self.fold_over, self.fold_later, self.cc_ignore, self.cc_ignored, self.fold_due = fold_over, fold_later, cc_ignore, 0, None
+        self.intrude = intrude
+        self.T = 0.0
+        self.buf, self.burst, self.last, self.stub_content = '', [], None, ''
+        self.late, self.redraw_delay = late, redraw_delay
+        self.shown, self.queue = '', []
+        self.exit_presses, self.submitted, self.stubs = 0, [], 0
+
+    def preset(self, text):
+        self.buf = self.shown = text
+
+    def advance(self, secs):
+        self.T += secs
+
+    def real(self):
+        return self.buf + ''.join(self.burst)
+
+    def fold(self):
+        self.stubs += 1
+        self.stub_content = self.buf[80:]
+        self.buf = self.buf[:80] + '[Pasted text #%d]' % self.stubs
+
+    def flush(self, force=False):
+        if self.fold_due is not None and self.T >= self.fold_due and '[Pasted text' not in self.buf:
+            self.fold()
+            self.shown, self.queue, self.fold_due = self.buf, [], None
+        if self.burst and (force or self.T - self.last >= self.GAP):
+            if len(self.burst) >= 2 and sum(len(x) for x in self.burst) > self.FOLD_AT:
+                self.stubs += 1
+                self.buf += self.burst[0] + '[Pasted text #%d]' % self.stubs
+                self.stub_content += ''.join(self.burst[1:])
+            else:
+                self.buf += ''.join(self.burst)
+            self.burst = []
+            due = (self.T if force else self.last + self.GAP)
+            if '[Pasted text' not in self.buf:
+                if self.fold_over and len(self.buf) > self.fold_over:
+                    self.fold()
+                elif self.fold_later is not None and len(self.buf) > self.FOLD_AT:
+                    self.fold_due = due + self.fold_later
+            self.queue.append((((self.T if force else self.last + self.GAP)) + self.late, self.buf))
+
+    def visible(self):
+        self.flush()
+        for due, txt in sorted(self.queue, key=lambda q: q[0]):
+            if due <= self.T:
+                self.shown = txt
+        self.queue = [q for q in self.queue if q[0] > self.T]
+        return self.shown
+
+    def on_text(self, text):
+        if self.intrude:
+            # somebody else's text lands in the box just before our first piece
+            self.buf, self.shown, self.intrude = self.intrude, self.intrude, None
+        if self.burst and self.T - self.last >= self.GAP:
+            self.flush()
+        self.burst.append(text)
+        self.last = self.T
+
+    def on_key(self, k):
+        self.flush()
+        if k == 'C-c':
+            if not self.real():
+                self.exit_presses += 1
+            elif self.cc_ignored < self.cc_ignore:
+                self.cc_ignored += 1
+            else:
+                self.buf, self.burst, self.stub_content = '', [], ''
+                self.queue = [(self.T + self.redraw_delay, '')]
+        elif k == 'Enter':
+            self.flush(force=True)
+            if '[Pasted text' in self.buf:
+                self.buf = re.sub(r'\[Pasted text #\d+\]', lambda m: self.stub_content, self.buf, count=1)
+                self.stub_content, self.queue, self.shown = '', [], self.buf
+            elif self.buf:
+                self.submitted.append(self.buf)
+                self.buf, self.shown, self.queue, self.busy = '', '', [], True
+        elif k in ('C-k', 'Delete') and '[Pasted text' not in self.real():
+            self.buf, self.burst = '', []
+            self.queue = [(self.T, '')]
+
+    def __call__(self, cmd):
+        a = cmd[5:]
+        if a[0] == 'capture-pane':
+            self.calls.append(a)
+            self.n_looks += 1
+            self.box = self.visible()
+            return 0, self.render()
+        if a[0] == 'send-keys':
+            self.calls.append(a)
+            if a[3] == '-l':
+                m = re.match(r'^(.*?)(\\*);$', a[5], re.S)
+                text = a[5] if not m else m.group(1) + (';' if m.group(2) else '')
+                self.keys.append('TEXT:' + text)
+                self.on_text(text)
+                return 0, ''
+            for k in a[3:]:
+                self.keys.append(k)
+                self.on_key(k)
+            return 0, ''
+        return super().__call__(cmd)
+
+
+TENV = Env()
+PDIR = tempfile.mkdtemp(prefix='fleet-pane-pace-teszt-', dir=os.path.expanduser('~'))
+os.chmod(PDIR, 0o755)
+atexit.register(shutil.rmtree, PDIR, True)
+
+
+def pace_file(name, content, mode=0o644):
+    path = os.path.join(PDIR, name)
+    with open(path, 'w') as f:
+        f.write(content if isinstance(content, str) else json.dumps(content))
+    os.chmod(path, mode)
+    return path
+
+
+def tui_run(pane, argv, stdin=b'', pace=None):
+    cfg = {'agents_file': TENV.agents, 'log_file': TENV.log, 'run': pane, 'sleep': pane.advance, 'caller_uid': 1000,
+           'require_root': False}
+    if pace:
+        cfg.update(pace_file=pace, trusted_uid=os.getuid())
+    return fp.run(argv, cfg, stdin)
+
+
+def tui_state(p):
+    return (p.submitted, p.real(), p.exit_presses)
+
+
+LONG = ('Az elso sor a teszt uzenet, nem vegleges. ' * 60)[:2000]
+OLD_PACE = pace_file('old.json', {'echoWait': 0, 'piecePause': 0.03})
+
+p = Tui()
+check('T1 a 2000 char message at the default pace: one Enter, the whole text, no stub, no Ctrl-C',
+      (tui_run(p, ['deliver', 'proba'], LONG.encode()), p.submitted == [LONG], p.stubs, p.exit_presses, 'C-c' in p.keys),
+      ((0, 'landed'), True, 0, 0, False))
+
+p = Tui()
+check('T2 the OLD tempo folds into a stub: refused placeholder-cleared, box EMPTY, no Enter, no exit',
+      (tui_run(p, ['deliver', 'proba'], LONG.encode(), OLD_PACE), tui_state(p), p.stubs >= 2), ((11, 'placeholder-cleared'), ([], '', 0), True))
+
+p = Tui()
+check('T3 a short message at the old tempo is not folded (no more than the fold limit): lands',
+      (tui_run(p, ['deliver', 'proba'], TEXT.encode(), OLD_PACE), p.submitted == [TEXT], p.stubs), ((0, 'landed'), True, 0))
+
+p = Tui()
+check('T4 an echo wait shorter than the gather gap: refused no-echo, the typed beginning emptied, no Enter',
+      (tui_run(p, ['deliver', 'proba'], LONG.encode(), pace_file('short.json', {'echoWait': 0.05, 'piecePause': 0.01})),
+       tui_state(p)), ((11, 'no-echo'), ([], '', 0)))
+
+p = Tui(late=5.0)
+code = tui_run(p, ['deliver', 'proba'], LONG.encode())
+text_left = p.real()
+p.advance(10)
+check('T5 a TUI that draws 5 s late: refused no-echo, no Enter; our text is in the box UNSEEN, and `clear --expect` empties it',
+      (code, p.submitted, text_left.startswith(LONG[:80]), tui_run(p, ['clear', 'proba', '--expect'], LONG.encode()), p.real(), p.exit_presses),
+      ((11, 'no-echo'), [], True, (0, 'ok'), '', 0))
+
+p = Tui(redraw_delay=0.3)
+p.preset(LONG[:80] + '[Pasted text #1]')
+p.stub_content = LONG[80:]
+check('T6 clear --expect on a stub with a verbatim run of OUR text: one Ctrl-C, empty, no exit',
+      (tui_run(p, ['clear', 'proba', '--expect'], LONG.encode()), p.keys.count('C-c'), tui_state(p)), ((0, 'ok'), 1, ([], '', 0)))
+p = Tui()
+p.preset(LONG[:80] + '[Pasted text #1]')
+check('T6b clear --expect with another expected text: refused not-ours, no key at all',
+      (tui_run(p, ['clear', 'proba', '--expect'], b'Teljesen mas szoveg, amit nem mi irtunk be.'), p.keys), ((12, 'not-ours'), []))
+p = Tui()
+p.preset('[Pasted text #1]')
+check('T6c clear --expect on a bare stub (nothing of ours beside it): refused not-ours, no key',
+      (tui_run(p, ['clear', 'proba', '--expect'], LONG.encode()), p.keys), ((12, 'not-ours'), []))
+
+p = Tui(redraw_delay=0.3)
+p.preset(LONG[:80] + '[Pasted text #1]')
+tui_run(p, ['clear', 'proba'])
+check('T7 the stub vanishes 0.3 s after the Ctrl-C: ONE Ctrl-C, never a second on the empty box',
+      (p.keys.count('C-c'), p.exit_presses, p.real()), (1, 0, ''))
+p = Tui(redraw_delay=0.55)
+p.preset(LONG[:80] + '[Pasted text #1]')
+tui_run(p, ['clear', 'proba'])
+check('T7c the stub still shows at the first look after the Ctrl-C and is gone at the next: the looks differ, so NO second Ctrl-C',
+      (p.keys.count('C-c'), p.exit_presses, p.real()), (1, 0, ''))
+p = Tui(redraw_delay=0.1, cc_ignore=1)
+p.preset(LONG[:80] + '[Pasted text #1]')
+check('T6d the first Ctrl-C has no effect: a second one after another stable look, then empty, still no exit',
+      (tui_run(p, ['clear', 'proba', '--expect'], LONG.encode()), p.keys.count('C-c'), tui_state(p)), ((0, 'ok'), 2, ([], '', 0)))
+p = Tui()
+check('T7b clear on an empty box: refused box-empty, no Ctrl-C', (tui_run(p, ['clear', 'proba']), p.keys), ((12, 'box-empty'), []))
+
+p = Tui()
+p.preset(TEXT)
+check('T8 submit --expect on our text: one Enter, submitted', (tui_run(p, ['submit', 'proba', '--expect'], TEXT.encode()), p.submitted), ((0, 'ok'), [TEXT]))
+p = Tui()
+p.preset(TEXT[:60] + '[Pasted text #1]')
+check('T8b submit --expect on a stub of our text: refused placeholder, no Enter', (tui_run(p, ['submit', 'proba', '--expect'], TEXT.encode()), p.keys), ((12, 'placeholder'), []))
+p = Tui()
+p.preset('valaki mas piszkozata')
+check('T8c submit --expect on another text: refused not-ours, no Enter', (tui_run(p, ['submit', 'proba', '--expect'], TEXT.encode()), p.keys), ((12, 'not-ours'), []))
+p = Tui()
+p.preset(TEXT)
+check('T8d submit without --expect keeps the old behaviour (Enter)', (tui_run(p, ['submit', 'proba']), p.submitted), ((0, 'ok'), [TEXT]))
+p = Tui()
+check('T8e an empty --expect text is a bad option value', tui_run(p, ['submit', 'proba', '--expect'], b'  '), (2, 'bad-expect'))
+
+saved = (fp.DELIVER_BASE, fp.DELIVER_PER_PIECE)
+fp.DELIVER_BASE, fp.DELIVER_PER_PIECE = 0.3, 0.0
+try:
+    p = Tui()
+    res = tui_run(p, ['deliver', 'proba'], LONG.encode())
+finally:
+    fp.DELIVER_BASE, fp.DELIVER_PER_PIECE = saved
+check('T9 the broker deadline: typing stops, the typed beginning is emptied, deliver-timeout, no Enter',
+      (res, tui_state(p), len([k for k in p.keys if k.startswith('TEXT:')]) < 25), ((11, 'deliver-timeout'), ([], '', 0), True))
+
+p = Tui(intrude='valaki mas piszkozata ')
+fp.DELIVER_BASE, fp.DELIVER_PER_PIECE = 0.3, 0.0
+try:
+    res = tui_run(p, ['deliver', 'proba'], LONG.encode())
+finally:
+    fp.DELIVER_BASE, fp.DELIVER_PER_PIECE = saved
+check('T9b the deadline hits while somebody else\'s draft is in the box: deliver-timeout, the draft stays (no Ctrl-C, no Delete)',
+      (res, [k for k in p.keys if k in ('C-c', 'C-k', 'Delete', 'Enter')], p.real().startswith('valaki mas piszkozata ')), ((11, 'deliver-timeout'), [], True))
+
+p = Tui(fold_later=0.25)
+check('T15 the TUI folds our text 0.25 s AFTER the settle, before the Enter: emptied (placeholder-cleared), never left parked, no Enter',
+      (tui_run(p, ['deliver', 'proba'], LONG.encode()), tui_state(p)), ((11, 'placeholder-cleared'), ([], '', 0)))
+
+p = Tui(fold_over=300)
+res = tui_run(p, ['deliver', 'proba'], LONG.encode())
+check('T16 the TUI folds even paced text past 300 chars: typing STOPS at the stub (a few pieces per pass), emptied, refused',
+      (res, tui_state(p), len([k for k in p.keys if k.startswith('TEXT:')]) < 14), ((11, 'placeholder-cleared'), ([], '', 0), True))
+
+PD = fp.load_pace
+check('T10 no pace file: the built-in values', PD(os.path.join(PDIR, 'nincs.json'), os.getuid()), {'piece': fp.PIECE_PAUSE, 'echo': fp.ECHO_WAIT})
+check('T10 a valid trusted file: its values', PD(pace_file('ok.json', {'echoWait': 1.5, 'piecePause': 0.2}), os.getuid()), {'piece': 0.2, 'echo': 1.5})
+for name, content, mode in (('hi.json', {'echoWait': 3, 'piecePause': 0.1}, 0o644), ('lo.json', {'echoWait': 0.5, 'piecePause': 0}, 0o644),
+                            ('neg.json', {'echoWait': -1, 'piecePause': 0.1}, 0o644), ('bool.json', {'echoWait': True, 'piecePause': 0.1}, 0o644),
+                            ('str.json', {'echoWait': '1', 'piecePause': 0.1}, 0o644), ('half.json', {'echoWait': 1}, 0o644),
+                            ('junk.json', 'nem json', 0o644), ('list.json', [1, 2], 0o644),
+                            ('gw.json', {'echoWait': 1.5, 'piecePause': 0.2}, 0o664)):
+    check('T10 %s: the built-in values' % name, PD(pace_file(name, content, mode), os.getuid()), {'piece': fp.PIECE_PAUSE, 'echo': fp.ECHO_WAIT})
+os.symlink(os.path.join(PDIR, 'ok.json'), os.path.join(PDIR, 'link.json'))
+check('T10 a symlink: the built-in values', PD(os.path.join(PDIR, 'link.json'), os.getuid()), {'piece': fp.PIECE_PAUSE, 'echo': fp.ECHO_WAIT})
+
+p = Tui()
+p.preset('valaki mas piszkozata ')
+res = tui_run(p, ['deliver', 'proba'], TEXT.encode())
+check('T13a a draft already in the box: refused box-not-free, no key at all', (res, p.keys), ((10, 'box-not-free'), []))
+p = Tui(intrude='valaki mas piszkozata ')
+res = tui_run(p, ['deliver', 'proba'], TEXT.encode())
+check('T13 somebody else\'s draft lands mid-typing: not-in-box, nothing emptied (no Ctrl-C, no Delete, no Enter)',
+      (res, [k for k in p.keys if k in ('C-c', 'C-k', 'Delete', 'Enter')], p.real().startswith('valaki mas piszkozata ')), ((11, 'not-in-box'), [], True))
+
+# T17: the entry point reads stdin only where the text comes from it. A hand `submit` / `clear` without --expect gets a stdin that is
+# never written and never closed (a terminal): it must return, not wait for an EOF.
+BROKER = os.path.join(SCRIPTS, 'root', 'fleet-pane.py')
+for verb in ('submit', 'clear'):
+    proc = subprocess.Popen([sys.executable, '-I', BROKER, verb, 'proba'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        proc.wait(timeout=15)
+        returned = True
+    except subprocess.TimeoutExpired:
+        returned = False
+        proc.kill()
+        proc.wait()
+    check('T17 `%s proba` without --expect returns with a stdin that never closes' % verb, returned, True)
+proc = subprocess.Popen([sys.executable, '-I', BROKER, 'submit', 'proba', '--expect'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    proc.wait(timeout=1.5)
+    waits = False
+except subprocess.TimeoutExpired:
+    waits = True
+proc.stdin.close()
+proc.wait(timeout=15)
+check('T17b `submit proba --expect` DOES read its stdin (waits for the text, returns once it is closed)', waits, True)
+
+check('T14 the deadline constants: broker 40 s + 2.2 s per piece', (fp.DELIVER_BASE, fp.DELIVER_PER_PIECE), (40.0, 2.2))
+
 print('\n%d FAIL' % len(FAILS) if FAILS else '\nall pass')
 sys.exit(1 if FAILS else 0)
