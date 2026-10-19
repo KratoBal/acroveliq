@@ -298,6 +298,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'ANY', path: '/lang/*', module: 'static', class: 'NYILVANOS' },
   { method: 'ANY', path: '/avatars/*', module: 'static', class: 'NYILVANOS' },
   { method: 'ANY', path: '/icons/*', module: 'static', class: 'NYILVANOS' },
+  { method: 'GET', path: '/api/measurements/b29-arnyek', module: 'measurements', class: 'OLVASO', note: 'B29 2. lépés: a fő ágens árnyék-hookjának napi számai (becslés), parancs nélkül' },
   { method: 'GET', path: '/api/measurements/runs', module: 'measurements', class: 'OLVASO' },
   { method: 'GET', path: '/api/measurements/tasks', module: 'measurements', class: 'OLVASO' },
   { method: 'GET', path: '/api/measurements/usage', module: 'measurements', class: 'OLVASO' },

@@ -1,6 +1,7 @@
 import http from 'node:http'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { readEnvFile } from './env.js'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
@@ -20,7 +21,7 @@ import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-o
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureReadonlyCommandGate, ensurePermissionApprovalHook, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureReadonlyCommandGate, ensurePermissionApprovalHook, ensureB29ShadowHook, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -628,6 +629,10 @@ export function startWebServer(port = 3420): http.Server {
         if (ensureEgressGate(agentName)) egressPatched.push(agentName)
         if (ensureReadonlyCommandGate(agentName)) readonlyPatched.push(agentName)
         if (ensurePermissionApprovalHook(agentName)) approvalPatched.push(agentName)
+        // B29 step 2: the main agent's shadow hook, wired while B29_ARNYEK_HOOK=1, removed otherwise
+        if (ensureB29ShadowHook(agentName, readEnvFile(['B29_ARNYEK_HOOK']).B29_ARNYEK_HOOK === '1')) {
+          logger.info({ agent: agentName }, 'B29 shadow hook (PreToolUse) wiring changed in agent settings.json')
+        }
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
         ensureQuarantineReader(agentName)
       }
