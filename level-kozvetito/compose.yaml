@@ -70,7 +70,14 @@ services:
     profiles: ["oauth"]
     image: levelkozvetito:local
     entrypoint: ["node", "/app/level-kozvetito/oauth-main.js"]
-    # root only to write the token file into the secrets directory and hand it to uid 10003; no capability but CHOWN
+    # root, with exactly two capabilities (task level-kozvetito-oauth-cap, 2026-10-19, measured by acrobot on the host (33175, 33176): without them the
+    # consent stopped at `open /run/secrets/oauth-client-id: permission denied`):
+    #   DAC_READ_SEARCH  READ the files of uid 10003: the client id and secret (titkok, 0400), the versioned client-secret store
+    #                    (titkok-ver, 10003 0700). A read-only bypass: it writes, deletes and opens for writing nothing.
+    #   CHOWN            hand the new token file to uid 10003.
+    # NOT DAC_OVERRIDE (it would also bypass WRITE checks everywhere in the container). Nothing here writes where root is not the
+    # owner: the consent `state` and the new token file are created, renamed and deleted in the secrets directory, which is root's
+    # (0700), by a temp file and a rename (src/level-kozvetito/token-file.ts). The relay's state volume is not mounted here at all.
     user: "0:0"
     read_only: true
     tmpfs:
@@ -79,6 +86,7 @@ services:
       - ALL
     cap_add:
       - CHOWN
+      - DAC_READ_SEARCH
     security_opt:
       - no-new-privileges:true
     environment:
@@ -89,9 +97,6 @@ services:
         source: /opt/levelkozvetito/config.json
         target: /etc/levelkozvetito/config.json
         read_only: true
-      - type: volume
-        source: allapot
-        target: /var/lib/levelkozvetito
       # the directory the refresh tokens are written to (the settings name /run/secrets/*-refresh-token)
       - type: bind
         source: /opt/levelkozvetito/titkok
