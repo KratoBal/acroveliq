@@ -45,6 +45,9 @@ const SEED: readonly Project[] = [
   // as would_reject (murena, task reefclub-szelet-1). A ReefClub PR to Commerce still waits for the
   // K-35 guard in the Commerce CI (exchange/acroveliq/projekt-iranyitopult-atadas-terv-v7-2026-10-15.md).
   { id: 'reefclub', name: 'ReefClub', repos: ['KratoBal/acropora-commerce', 'KratoBal/acropora-os'], aliases: [], legacyMixed: false },
+  // the first customer project of AcrovelIQ (Balázs 2026-10-19, Caparium thread msg 1561675800812462201:
+  // its own repo, its own database, costs measured per project); none of the Acropora repos
+  { id: 'caparium', name: 'Cápárium nAPPló', repos: ['KratoBal/caparium-napplo'], aliases: [], legacyMixed: false },
 ]
 
 /**
@@ -53,6 +56,13 @@ const SEED: readonly Project[] = [
  * task records and review refs written before the rename name the old one.
  */
 const FLEET_REPOS = ['KratoBal/acroveliq', 'KratoBal/marveen', 'KratoBal/acropora-ai-agent', 'KratoBal/Acrobot']
+
+/**
+ * Customer projects: their repos are NOT part of the wide project. A fleet or Acropora task that
+ * names a customer repo is someone else's work (Balázs 2026-10-19: the Caparium project keeps its
+ * files, access and secrets apart from Acropora's).
+ */
+const CUSTOMER_PROJECTS = new Set(['caparium'])
 
 export function ensureProjectsSchema(db: Database.Database): void {
   db.exec(`
@@ -133,7 +143,7 @@ export function projectRepos(db: Database.Database, id: string): string[] {
   const p = all.find((x) => x.id === id)
   if (!p) return []
   if (!p.repos.includes('*')) return p.repos
-  return [...new Set([...FLEET_REPOS, ...all.flatMap((x) => x.repos.filter((r) => r !== '*'))])]
+  return [...new Set([...FLEET_REPOS, ...all.filter((x) => !CUSTOMER_PROJECTS.has(x.id)).flatMap((x) => x.repos.filter((r) => r !== '*'))])]
 }
 
 /**

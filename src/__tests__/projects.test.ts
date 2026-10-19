@@ -61,13 +61,16 @@ describe('the registry', () => {
   it('four starting projects, seeded once; today\'s seven free values all resolve; acropora covers every registered repo', () => {
     ensureProjectsSchema(getDb())
     expect(listProjects(getDb()).map((p) => [p.id, p.name, p.legacyMixed])).toEqual([
-      ['acropora', 'Flotta és közös', true], ['os', 'Acropora OS', false], ['commerce', 'Acropora Commerce', false], ['reefclub', 'ReefClub', false],
+      ['acropora', 'Flotta és közös', true], ['os', 'Acropora OS', false], ['commerce', 'Acropora Commerce', false], ['reefclub', 'ReefClub', false], ['caparium', 'Cápárium nAPPló', false],
     ])
     // acrobot's measurement: acropora 101, marveen 11, seo 6, seo-p1 2, acroveliq 1, acropora-os 1, token-proba 1
     expect(['acropora', 'marveen', 'seo', 'seo-p1', 'acroveliq', 'acropora-os', 'token-proba', 'nincs-ilyen', ''].map((v) => resolveProject(getDb(), v)))
       .toEqual(['acropora', 'acropora', 'acropora', 'acropora', 'acropora', 'os', 'acropora', null, null])
     // the fleet repo was renamed KratoBal/marveen -> KratoBal/acroveliq (2026-10-15): both names, old records keep the old
     expect(projectRepos(getDb(), 'acropora').sort()).toEqual(['KratoBal/Acrobot', 'KratoBal/acropora-ai-agent', 'KratoBal/acropora-commerce', 'KratoBal/acropora-os', 'KratoBal/acroveliq', 'KratoBal/marveen'])
+    // a customer project's repo is not the wide project's (Caparium, 2026-10-19), and is its own project's
+    expect([projectRepos(getDb(), 'caparium'), repoFits(getDb(), 'acropora', 'KratoBal/caparium-napplo') !== null, repoFits(getDb(), 'caparium', 'KratoBal/acropora-os') !== null])
+      .toEqual([['KratoBal/caparium-napplo'], true, true])
     expect([repoFits(getDb(), 'acropora', 'KratoBal/acroveliq'), repoFits(getDb(), 'acropora', 'KratoBal/marveen'), repoFits(getDb(), 'os', 'KratoBal/acroveliq') !== null])
       .toEqual([null, null, true])
     expect([projectRepos(getDb(), 'reefclub'), repoFits(getDb(), 'os', 'KratoBal/marveen') !== null, repoFits(getDb(), 'acropora-os', 'KratoBal/acropora-os')])
@@ -76,7 +79,7 @@ describe('the registry', () => {
 
   it('GET /api/projects: the four, repos expanded; the AcrovelIQ host reads it, and the change route is not on it', async () => {
     const r = await call(tryHandleTaskUsage, 'GET', '/api/projects', undefined, SESSION)
-    expect([r.status, r.body.map((p: { id: string }) => p.id), r.body[0].legacy_mixed, r.body[0].repos.length]).toEqual([200, ['acropora', 'os', 'commerce', 'reefclub'], true, 6])
+    expect([r.status, r.body.map((p: { id: string }) => p.id), r.body[0].legacy_mixed, r.body[0].repos.length]).toEqual([200, ['acropora', 'os', 'commerce', 'reefclub', 'caparium'], true, 6])
     expect([acroveliqAllows('GET', '/api/projects'), acroveliqAllows('POST', '/api/tasks/x/project')]).toEqual([true, false])
   })
 })

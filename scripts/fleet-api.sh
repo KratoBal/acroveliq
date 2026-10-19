@@ -184,7 +184,7 @@ proj_need_if_new() {
     | python3 -c 'import json,sys
 try: print("|".join(p["id"] for p in json.load(sys.stdin)))
 except Exception: pass' 2>/dev/null)"
-  echo "FAIL 4: uj feladathoz projekt kell (Projektek V1): ${ids:-acropora|os|commerce|reefclub}. JSON alakban \"project\": \"os\", a poziciosban a masodik argumentum." >&2
+  echo "FAIL 4: uj feladathoz projekt kell (Projektek V1): ${ids:-acropora|os|commerce|reefclub|caparium}. JSON alakban \"project\": \"os\", a poziciosban a masodik argumentum." >&2
   return 4
 }
 # a szerver project_warning-ja a stderr-re (naplo modban ez a jelzes, a kilepes 0 marad)
@@ -428,7 +428,7 @@ if ig:
     # PROJEKTEK V1: egy feladat projektjenek EGYETLEN cserelesi utja (a task-new nem irja at, tartos).
     # A fo agens sajat tokenjevel megy; a szerver project_changed esemenyt ir mellé. Csak nyilvantartott id.
     argc_max 3 "$#" "fleet-api.sh task-project <task_id> <projekt> [indok]"
-    TASK="${1:?task id required}"; PROJ="${2:?projekt kell (acropora|os|commerce|reefclub)}"
+    TASK="${1:?task id required}"; PROJ="${2:?projekt kell (acropora|os|commerce|reefclub|caparium)}"
     TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
     post "/tasks/${TASK_URL}/project" "$(json_obj project "$PROJ" reason "${3:-}")"
     ;;
