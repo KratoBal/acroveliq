@@ -124,8 +124,9 @@ try:
     check('the route text itself stays', 'GET /password-reset/[TITOK] 200', run(f'GET /password-reset/{tok} 200')[0])
     b64 = '/' + tail(43, 'aB9x')
     check('a base64 value that starts with / and has no / inside', True, gone(b64[1:], 'blob ' + b64 + ' end'))
-    b64p = '/' + tail(30, 'aB9x') + '+' + tail(14, 'Zk')
-    check('a /-led run with a plus is base64, not a path: it goes whole', True, gone(tail(30, 'aB9x'), 'blob ' + b64p + ' end'))
+    # split by the / into parts under 32 characters: as a path it would stay, the + says it is base64
+    b64p = '/' + tail(14, 'aB9x') + '/' + tail(10, 'Zk') + '+' + tail(15, 'Mq')
+    check('a /-led run with a plus is base64, not a path: it goes whole even when its parts are short', True, gone(tail(14, 'aB9x'), 'blob ' + b64p + ' end'))
     check('a long absolute path of short parts stays', 'at /app/node_modules/some-package/lib/deeply/nested/module/file loaded',
           run('at /app/node_modules/some-package/lib/deeply/nested/module/file loaded')[0])
     check('a path part that IS long (32+) goes, its short neighbours stay', 'GET /api/[TITOK]/items', run('GET /api/' + tail(40, 'Mn4pQ') + '/items')[0])
