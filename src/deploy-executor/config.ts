@@ -9,6 +9,9 @@
 export const ACTIONS = ['deploy'] as const
 export type ExecutorAction = (typeof ACTIONS)[number]
 
+/** The other kind of R: a fleet_ro grant, applied on the host through the B8 gate (task parancssor-a-fleet-ro-grant). */
+export const GRANT_ACTION = 'fleet-ro-grant'
+
 export interface AppEntry {
   /** the label in the canonical line and its approval (prod, stage) */
   env: string
@@ -27,6 +30,31 @@ export interface AppEntry {
   actions: readonly ExecutorAction[]
   /** how long an R stays usable, in minutes */
   approvalMinutes: number
+}
+
+/** A database whose fleet_ro grants this executor may apply, on the gate's host. */
+export interface GrantEntry {
+  /** the label in the canonical line and its approval (prod) */
+  env: string
+  /** the name in the canonical line (the request's `app`) */
+  name: string
+  /** owner/name on GitHub: the repository whose main holds the list the gate reads */
+  repo: string
+  /** the branch a commit must be part of */
+  branch: string
+  /** the gate's container key (the start of the container's name) and database, fixed here, never from a request */
+  gateKey: string
+  database: string
+  approvalMinutes: number
+}
+
+/** The SSH door to the gate: one host, one user, one key (a compose secret), a pinned host key. */
+export interface GateConfig {
+  host: string
+  port: number
+  user: string
+  keyFile: string
+  knownHostsFile: string
 }
 
 export interface CoolifyHostEntry {
@@ -50,6 +78,9 @@ export interface ExecutorConfig {
   github: { tokenFile: string }
   coolifyHosts: Readonly<Record<string, CoolifyHostEntry>>
   apps: readonly AppEntry[]
+  /** both absent: the executor does no grants at all; one without the other refuses to start */
+  gate: GateConfig | null
+  grants: readonly GrantEntry[]
 }
 
 export const MAX_APPROVAL_MINUTES = 60
@@ -60,6 +91,11 @@ const COOLIFY_UUID = /^[a-z0-9]{8,64}$/
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 const BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/
 const WORD = /^[a-záéíóöőúüű]{1,16}$/
+// a host must not start with a hyphen (an option for ssh), a user is a plain account name
+const GATE_HOST = /^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/
+const GATE_USER = /^[a-z_][a-z0-9_-]{0,31}$/
+const GATE_KEY = /^[a-z0-9]{8,64}$/
+const DATABASE = /^[a-z][a-z0-9_]{0,62}$/
 
 class ConfigError extends Error {}
 
@@ -67,10 +103,10 @@ function fail(path: string, why: string): never {
   throw new ConfigError(`executor config ${path}: ${why}`)
 }
 
-function obj(v: unknown, path: string, keys: readonly string[]): Record<string, unknown> {
+function obj(v: unknown, path: string, keys: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) fail(path, 'must be an object')
   const o = v as Record<string, unknown>
-  for (const k of Object.keys(o)) if (!keys.includes(k)) fail(`${path}.${k}`, 'unknown key')
+  for (const k of Object.keys(o)) if (!keys.includes(k) && !optional.includes(k)) fail(`${path}.${k}`, 'unknown key')
   for (const k of keys) if (!(k in o)) fail(`${path}.${k}`, 'missing')
   return o
 }
@@ -101,7 +137,7 @@ function apiUrl(v: unknown, path: string): string {
 }
 
 export function parseExecutorConfig(raw: unknown): ExecutorConfig {
-  const top = obj(raw, '', ['stateDir', 'discord', 'github', 'coolifyHosts', 'apps'])
+  const top = obj(raw, '', ['stateDir', 'discord', 'github', 'coolifyHosts', 'apps'], ['gate', 'grants'])
   const d = obj(top['discord'], 'discord', ['channelId', 'requestBotUserId', 'deciderUserIds', 'yes', 'no', 'tokenFile'])
   const deciders = d['deciderUserIds']
   if (!Array.isArray(deciders) || deciders.length === 0) fail('discord.deciderUserIds', 'must be a non-empty array')
@@ -166,6 +202,48 @@ export function parseExecutorConfig(raw: unknown): ExecutorConfig {
     }
   })
 
+  const hasGate = 'gate' in top
+  const hasGrants = 'grants' in top
+  if (hasGate !== hasGrants) fail(hasGate ? 'grants' : 'gate', 'missing: the grant door needs both keys or neither')
+  let gate: GateConfig | null = null
+  const grants: GrantEntry[] = []
+  if (hasGate) {
+    const gv = obj(top['gate'], 'gate', ['host', 'port', 'user', 'keyFile', 'knownHostsFile'])
+    const port = gv['port']
+    if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) fail('gate.port', 'must be an integer 1..65535')
+    gate = {
+      host: str(gv['host'], 'gate.host', GATE_HOST),
+      port,
+      user: str(gv['user'], 'gate.user', GATE_USER),
+      keyFile: absPath(gv['keyFile'], 'gate.keyFile'),
+      knownHostsFile: absPath(gv['knownHostsFile'], 'gate.knownHostsFile'),
+    }
+    const grantsRaw = top['grants']
+    if (!Array.isArray(grantsRaw) || grantsRaw.length === 0) fail('grants', 'must be a non-empty array')
+    const seenGrant = new Set<string>()
+    grantsRaw.forEach((v, i) => {
+      const p = `grants[${i}]`
+      const e = obj(v, p, ['env', 'name', 'repo', 'branch', 'gateKey', 'database', 'approvalMinutes'])
+      const env = str(e['env'], `${p}.env`, NAME)
+      const name = str(e['name'], `${p}.name`, NAME)
+      if (seenGrant.has(`${env}/${name}`)) fail(p, 'duplicate env/name')
+      seenGrant.add(`${env}/${name}`)
+      const minutes = e['approvalMinutes']
+      if (typeof minutes !== 'number' || !Number.isInteger(minutes) || minutes < 1 || minutes > MAX_APPROVAL_MINUTES) {
+        fail(`${p}.approvalMinutes`, `must be an integer 1..${MAX_APPROVAL_MINUTES}`)
+      }
+      grants.push({
+        env,
+        name,
+        repo: str(e['repo'], `${p}.repo`, REPO),
+        branch: str(e['branch'], `${p}.branch`, BRANCH),
+        gateKey: str(e['gateKey'], `${p}.gateKey`, GATE_KEY),
+        database: str(e['database'], `${p}.database`, DATABASE),
+        approvalMinutes: minutes,
+      })
+    })
+  }
+
   return {
     stateDir: absPath(top['stateDir'], 'stateDir'),
     discord: {
@@ -179,7 +257,13 @@ export function parseExecutorConfig(raw: unknown): ExecutorConfig {
     github: { tokenFile: absPath(g['tokenFile'], 'github.tokenFile') },
     coolifyHosts,
     apps,
+    gate,
+    grants,
   }
+}
+
+export function findGrant(cfg: ExecutorConfig, env: string, name: string): GrantEntry | undefined {
+  return cfg.grants.find((g) => g.env === env && g.name === name)
 }
 
 export function findApp(cfg: ExecutorConfig, env: string, name: string): AppEntry | undefined {

@@ -16,10 +16,11 @@
 import { randomInt } from 'node:crypto'
 
 import { CODE_ALPHABET, snowflakeAt } from '../web/approval-discord-core.js'
-import { canonicalLine, sameRelation } from './canonical.js'
-import { findApp, type ExecutorConfig } from './config.js'
+import { canonicalLine, GRANT_APPROVAL_CATEGORY, grantCanonicalLine, GrantLineError, sameRelation } from './canonical.js'
+import { findApp, findGrant, GRANT_ACTION, type ExecutorConfig, type GrantEntry } from './config.js'
+import { parseGateOutput, planText, type GatePlan } from './grant-plan.js'
 import type { RequestRecord, RequestStore, Relation } from './store.js'
-import type { CoolifyClient, DiscordReader, GitHubReader } from './transports.js'
+import type { CoolifyClient, DiscordReader, GateClient, GitHubReader } from './transports.js'
 import { verifyDiscordApproval, type ChannelMessage } from './verify-approval.js'
 
 export class Refusal extends Error {
@@ -51,6 +52,8 @@ export interface ExecutorDeps {
   discord: DiscordReader
   github: GitHubReader
   coolify: CoolifyClient
+  /** the SSH door to the B8 gate; absent when the settings name no grants */
+  gate?: GateClient
   now?: () => number
   sleep?: (ms: number) => Promise<void>
   pickInt?: (n: number) => number
@@ -176,7 +179,14 @@ export class DeployExecutor {
     const claimed = new Set(store.ids().map((id) => store.get(id)!.deploymentUuid).filter((u): u is string => Boolean(u)))
     for (const id of store.ids()) {
       const rec = store.get(id)!
-      if (rec.outcome === 'calling') {
+      if (rec.outcome === 'calling' && rec.grant) {
+        // a grant R spent while the gate's `alkalmaz` was in flight: whether it ran is not known here, and there is no
+        // Coolify list to match; the gate's own log and a `terv` run say (the plan is empty once it has been applied)
+        rec.outcome = 'interrupted'
+        store.put(rec)
+        store.audit('interrupted', { r: id, reason: 'grant apply was in flight when the executor stopped' })
+        interrupted.push(id)
+      } else if (rec.outcome === 'calling') {
         const found = await this.findLostDeployment(rec, claimed)
         if (found.uuid) {
           rec.outcome = 'queued'
@@ -254,6 +264,7 @@ export class DeployExecutor {
     if (typeof env !== 'string' || typeof app !== 'string' || typeof action !== 'string') throw new Refusal('env, app and action are required')
     if (typeof sha !== 'string' || !SHA.test(sha)) throw new Refusal('sha must be a full 40-character lowercase commit')
     if (typeof requester !== 'string' || !REQUESTER.test(requester)) throw new Refusal('requester must be an agent name')
+    if (action === GRANT_ACTION) return this.doGrantRequest(env, app, sha, requester)
     const entry = findApp(config, env, app)
     if (!entry) throw new Refusal('application is not on the allowlist for this environment')
     if (!(entry.actions as readonly string[]).includes(action)) throw new Refusal('action is not allowed for this application')
@@ -307,6 +318,8 @@ export class DeployExecutor {
     const verdict = verifyDiscordApproval({ r: rec, request, later, discord: config.discord, nowMs: this.now() })
     if (!verdict.ok) return refuse(verdict.reason)
 
+    if (rec.grant) return this.executeGrant(rec, verdict, requestMessageId, refuse)
+
     // the world may have moved since the request: measure both claims again
     const entry = findApp(config, rec.env, rec.app)
     if (!entry || entry.coolifyHost !== rec.coolifyHost || entry.coolifyUuid !== rec.coolifyUuid || !(entry.actions as readonly string[]).includes(rec.action)) {
@@ -341,6 +354,133 @@ export class DeployExecutor {
     store.put(rec)
     store.audit('queued', { r, deploymentUuid, sha: rec.sha })
     this.startFollow(rec.id)
+    return publicView(rec)
+  }
+
+  /**
+   * The gate's `terv` for a commit, read as a plan. A refusal of the gate, an output that is not exactly a plan, or a plan
+   * for another commit refuses; a transport failure (no ssh, a timeout) is thrown as it is and answers 502.
+   */
+  private async gatePlan(entry: GrantEntry, mode: 'terv' | 'alkalmaz', sha: string): Promise<GatePlan> {
+    const gate = this.deps.gate
+    if (!gate) throw new Refusal('the grant door is not configured')
+    const run = await gate.run(mode, entry.gateKey, entry.database, sha)
+    if (run.code !== 0) {
+      this.deps.store.audit('gate_refused', { mode, sha, code: run.code, head: visible(run.output) })
+      throw new Refusal(`the gate refused the ${mode} (exit ${run.code}): ${visible(run.output).slice(0, 160)}`)
+    }
+    try {
+      return parseGateOutput(run.output, { mode, commit: sha })
+    } catch (err) {
+      this.deps.store.audit('plan_unreadable', { mode, sha, why: err instanceof Error ? err.message : 'unknown', head: visible(run.output) })
+      throw new Refusal('the gate output could not be read as a plan')
+    }
+  }
+
+  private async doGrantRequest(env: string, app: string, sha: string, requester: string): Promise<PublicRecord> {
+    const { config, store } = this.deps
+    const entry = findGrant(config, env, app)
+    if (!entry) throw new Refusal('grant target is not on the allowlist for this environment')
+    if (!this.deps.gate || !config.gate) throw new Refusal('the grant door is not configured')
+    await this.requireOnBranch(entry.repo, entry.branch, sha)
+    const plan = await this.gatePlan(entry, 'terv', sha)
+    // an empty plan has nothing to approve; the owner is not asked to answer for nothing
+    if (plan.ops.length === 0) throw new Refusal('the plan is empty: nothing to approve')
+
+    let id = ''
+    do id = Array.from({ length: R_LENGTH }, () => CODE_ALPHABET[this.pickInt(CODE_ALPHABET.length)]).join('')
+    while (store.has(id))
+    let line: string
+    try {
+      line = grantCanonicalLine({ id, env: entry.env, app: entry.name, sha, listSha256: plan.listSha256, planSha256: plan.planSha256, planText: planText(plan.ops) })
+    } catch (err) {
+      if (err instanceof GrantLineError) throw new Refusal(`terv-nem-fer-a-gombra: ${err.length} characters, split the list into two commits`)
+      throw err
+    }
+    const createdAt = Math.floor(this.now() / 1000)
+    const rec: RequestRecord = {
+      id,
+      env: entry.env,
+      app: entry.name,
+      coolifyHost: '',
+      coolifyUuid: '',
+      action: GRANT_ACTION,
+      category: GRANT_APPROVAL_CATEGORY,
+      grant: {
+        gateKey: entry.gateKey,
+        database: entry.database,
+        listSha256: plan.listSha256,
+        planSha256: plan.planSha256,
+        ops: plan.ops.map((o) => `${o.sign} ${o.table} ${o.column}`),
+      },
+      sha,
+      requester,
+      relation: { kind: 'unmeasured' },
+      canonicalLine: line,
+      createdAt,
+      expiresAt: createdAt + entry.approvalMinutes * 60,
+      status: 'open',
+    }
+    store.put(rec)
+    store.audit('request', { r: id, env: rec.env, app: rec.app, action: rec.action, sha, requester, planSha256: plan.planSha256, ops: plan.ops.length })
+    return publicView(rec)
+  }
+
+  /**
+   * The approved grant, applied. The Discord answer is already verified. Order, all of it: the allowlist and the branch
+   * again; a SECOND `terv`, whose plan must be the approved one in all 64 digits of its digest; the R spent; the gate's
+   * `alkalmaz`; and a THIRD `terv` that must show no change, or the outcome says so.
+   */
+  private async executeGrant(
+    rec: RequestRecord,
+    verdict: Extract<ReturnType<typeof verifyDiscordApproval>, { ok: true }>,
+    requestMessageId: string,
+    refuse: (reason: string) => never,
+  ): Promise<PublicRecord> {
+    const { config, store } = this.deps
+    const grant = rec.grant!
+    const entry = findGrant(config, rec.env, rec.app)
+    if (!entry || !this.deps.gate || entry.gateKey !== grant.gateKey || entry.database !== grant.database) {
+      return refuse('grant target is no longer on the allowlist')
+    }
+    await this.requireOnBranch(entry.repo, entry.branch, rec.sha).catch((e: unknown) => refuse(e instanceof Refusal ? e.reason : 'branch check failed'))
+    let plan: GatePlan
+    try {
+      plan = await this.gatePlan(entry, 'terv', rec.sha)
+    } catch (e) {
+      return refuse(e instanceof Refusal ? e.reason : 'plan check failed')
+    }
+    // the whole digest of the record, not the 16 digits the line shows
+    if (plan.planSha256 !== grant.planSha256) return refuse('the plan changed since the approval')
+
+    rec.status = 'used'
+    rec.outcome = 'calling'
+    rec.usedAt = Math.floor(this.now() / 1000)
+    rec.approval = { requestMessageId, decisionMessageId: verdict.decisionMessageId, deciderId: verdict.deciderId, code: verdict.code }
+    store.put(rec)
+    store.audit('approved', { r: rec.id, requestMessageId, decisionMessageId: verdict.decisionMessageId, deciderId: verdict.deciderId })
+
+    let applied: { code: number; output: string } | null = null
+    try {
+      applied = await this.deps.gate.run('alkalmaz', entry.gateKey, entry.database, rec.sha)
+    } catch (err) {
+      store.audit('apply_call_failed', { r: rec.id, error: err instanceof Error ? err.message : 'unknown' })
+    }
+    if (!applied || applied.code !== 0) {
+      rec.outcome = 'alkalmaz_hiba'
+      store.put(rec)
+      store.audit('alkalmaz_hiba', { r: rec.id, code: applied ? applied.code : -1, head: applied ? visible(applied.output) : '' })
+      return publicView(rec)
+    }
+    store.audit('applied', { r: rec.id, sha: rec.sha, planSha256: grant.planSha256 })
+    try {
+      const after = await this.gatePlan(entry, 'terv', rec.sha)
+      rec.outcome = after.ops.length === 0 ? 'finished_verified' : 'terv_nem_ures'
+    } catch {
+      rec.outcome = 'utomeres_nem_olvashato'
+    }
+    store.put(rec)
+    store.audit(rec.outcome, { r: rec.id, sha: rec.sha })
     return publicView(rec)
   }
 
@@ -431,4 +571,10 @@ export class DeployExecutor {
       }
     }
   }
+}
+
+/** A gate's output as one short printable line for the audit trail and a refusal text: ASCII only, no secrets in it by construction. */
+function visible(output: string): string {
+  const first = output.split('\n').find((l) => l.trim() !== '') ?? ''
+  return first.replace(/[^\x20-\x7e]/g, '?').slice(0, 200)
 }

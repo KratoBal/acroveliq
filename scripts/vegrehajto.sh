@@ -12,6 +12,10 @@
 #          default is 1440 minutes, and an approval that shows a later expiry
 #          than the R's own is refused by the executor)
 #       prints: R=<r> approval=<id> lejar=<epoch>, then the canonical line
+#   vegrehajto.sh fleet-ro-kerj <agent> <env> <cel> <commit40>
+#       the same two steps for a fleet_ro GRANT (task parancssor-a-fleet-ro-grant): the executor asks the B8 gate for
+#       its plan at that commit, and the approval, category fleet_ro_grant, carries the exact plan (the tables and
+#       columns, the commit) as the owner reads it. The `vegrehajt` and `allapot` below are the same for both.
 #   vegrehajto.sh vegrehajt <R> <approval_id>
 #       the approval must be approved, carry the Discord message id, and describe
 #       this very R; then POST $VEGREHAJTO_URL/executions
@@ -34,7 +38,7 @@ CATEGORY='coolify_deploy'
 MARGIN_SECONDS=60
 
 usage() {
-  echo "hasznalat: vegrehajto.sh kerj <agent> <env> <app> <sha40> | vegrehajt <R> <approval_id> | allapot <R>" >&2
+  echo "hasznalat: vegrehajto.sh kerj <agent> <env> <app> <sha40> | fleet-ro-kerj <agent> <env> <cel> <commit40> | vegrehajt <R> <approval_id> | allapot <R>" >&2
   exit 2
 }
 
@@ -88,15 +92,16 @@ executor_fail() {
 
 CMD="${1-}"; [ $# -gt 0 ] && shift
 case "$CMD" in
-  kerj)
+  kerj|fleet-ro-kerj)
     [ $# -eq 4 ] || usage
+    if [ "$CMD" = fleet-ro-kerj ]; then ACTION='fleet-ro-grant'; CATEGORY='fleet_ro_grant'; else ACTION='deploy'; fi
     AGENT="$1"; ENV_NAME="$2"; APP="$3"; SHA="$4"
     # the executor accepts only the full lowercase sha; a short one is refused there
     # anyway, here it is refused before an R is spent on it
     [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || fail "a sha 40 jegyu kisbetus commit legyen (git rev-parse), kapott: ${SHA}"
-    REQ="$(AGENT="$AGENT" ENV_NAME="$ENV_NAME" APP="$APP" SHA="$SHA" python3 -c '
+    REQ="$(AGENT="$AGENT" ENV_NAME="$ENV_NAME" APP="$APP" SHA="$SHA" ACTION="$ACTION" python3 -c '
 import json, os
-print(json.dumps({"env": os.environ["ENV_NAME"], "app": os.environ["APP"], "action": "deploy",
+print(json.dumps({"env": os.environ["ENV_NAME"], "app": os.environ["APP"], "action": os.environ["ACTION"],
                   "sha": os.environ["SHA"], "requester": os.environ["AGENT"]}))')"
     call POST "${EXEC_URL}/requests" "$REQ"
     [ "$CODE" = 201 ] || executor_fail "R kerese"
@@ -141,10 +146,15 @@ print(json.dumps({"agent_id": os.environ["AGENT"], "category": os.environ["CATEG
     # an approval decided on Telegram or the dashboard page has no Discord message:
     # the executor reads only Discord, so there is nothing it could verify
     [ -n "$MSG_ID" ] || fail "a jovahagyasnak nincs Discord-uzenete (APPROVAL_DISCORD ki, vagy nem Discordon dontottek): a vegrehajto csak a Discord-valaszt fogadja el"
-    [ "$ROW_CAT" = "$CATEGORY" ] || fail "a jovahagyas kategoriaja ${ROW_CAT}, nem ${CATEGORY}"
     call GET "${EXEC_URL}/requests/${R}"
     [ "$CODE" = 200 ] || executor_fail "R lekerdezese"
     LINE="$(json_field "$BODY" canonicalLine)"
+    # the category follows the kind of R the executor holds: a grant's approval is fleet_ro_grant, a deploy's coolify_deploy
+    case "$(json_field "$BODY" action)" in
+      fleet-ro-grant) CATEGORY='fleet_ro_grant' ;;
+      *) CATEGORY='coolify_deploy' ;;
+    esac
+    [ "$ROW_CAT" = "$CATEGORY" ] || fail "a jovahagyas kategoriaja ${ROW_CAT}, nem ${CATEGORY}"
     # two Rs open at once: the approval must be the one this R was put up with
     [ "$ROW_DESC" = "$LINE" ] || fail "a jovahagyas (${APR_ID}) nem ezt az R-t irja le (${R})"
     EXE="$(R="$R" MSG_ID="$MSG_ID" python3 -c '

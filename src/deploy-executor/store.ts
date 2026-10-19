@@ -8,7 +8,7 @@
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 
-import type { ExecutorAction } from './config.js'
+import type { ExecutorAction, GRANT_ACTION } from './config.js'
 
 export type Relation =
   | { kind: 'forward'; runningSha: string }
@@ -30,14 +30,36 @@ export type DeploymentOutcome =
   | 'commit_mismatch'
   | 'failed'
   | 'unverified_timeout'
+  /** a grant R: the gate's `alkalmaz` did not answer 0 (spent; the gate's own log says why) */
+  | 'alkalmaz_hiba'
+  /** a grant R: applied, but the plan run afterwards still shows changes */
+  | 'terv_nem_ures'
+  /** a grant R: applied, but the plan run afterwards could not be read */
+  | 'utomeres_nem_olvashato'
+
+/** What a grant R carries beyond the common fields; its presence is what makes the R a grant. */
+export interface GrantRecord {
+  /** the gate's container key and database, copied from the allowlist entry at request time */
+  gateKey: string
+  database: string
+  listSha256: string
+  /** the FULL plan digest the approval was given for; the execution compares all 64 digits */
+  planSha256: string
+  /** the plan, canonical order, `<+|-> <table> <column>` */
+  ops: string[]
+}
 
 export interface RequestRecord {
   id: string
   env: string
   app: string
+  /** a grant R has no Coolify: both are empty strings and `grant` is set */
   coolifyHost: string
   coolifyUuid: string
-  action: ExecutorAction
+  action: ExecutorAction | typeof GRANT_ACTION
+  /** the approval category the request text is built with; absent means coolify_deploy (the records before the grants) */
+  category?: string
+  grant?: GrantRecord
   sha: string
   requester: string
   relation: Relation

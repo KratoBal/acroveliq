@@ -14,8 +14,10 @@
 //            {message, deployment_uuid} (or {message} alone when the queue skipped it);
 //            :155 GET /deployments/{uuid} and :157 GET /deployments/applications/{uuid}?skip&take
 //            with the read ability, newest first (Application::deployments).
+import { execFile } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 
+import type { GateConfig } from './config.js'
 import type { ChannelMessage } from './verify-approval.js'
 
 export interface DiscordReader {
@@ -164,6 +166,77 @@ export function coolifyRest(
         deployments?: unknown[]
       }
       return Array.isArray(body.deployments) ? body.deployments.map(toDeployment) : []
+    },
+  }
+}
+
+/** What the gate answered: its exit code and everything it printed (stdout and stderr together). */
+export interface GateRun {
+  code: number
+  output: string
+}
+
+/**
+ * The B8 gate on the host (scripts/host/fleet-gate.sh), reached by SSH with the executor's own key. One shape only:
+ * `fleet-ro-grant <key> <database> <commit> terv|alkalmaz`. The key and database come from the allowlist, the commit is
+ * checked as 40 hex digits by the caller, the mode is one of two words: nothing a request says reaches the command line
+ * in any other way.
+ */
+export interface GateClient {
+  run(mode: 'terv' | 'alkalmaz', gateKey: string, database: string, commit: string): Promise<GateRun>
+}
+
+const GATE_TIMEOUT_MS = 90_000
+const GATE_MAX_OUTPUT = 256 * 1024
+const COMMIT = /^[0-9a-f]{40}$/
+const GATE_KEY_WORD = /^[a-z0-9]{8,64}$/
+const DATABASE_WORD = /^[a-z][a-z0-9_]{0,62}$/
+
+/** The argument list of the one ssh call. Exported so the test reads it as the code builds it. */
+export function gateSshArgs(gate: GateConfig, mode: 'terv' | 'alkalmaz', gateKey: string, database: string, commit: string): string[] {
+  if (mode !== 'terv' && mode !== 'alkalmaz') throw new Error('gate mode must be terv or alkalmaz')
+  if (!GATE_KEY_WORD.test(gateKey) || !DATABASE_WORD.test(database) || !COMMIT.test(commit)) throw new Error('gate arguments have a bad shape')
+  return [
+    // no user or system config, no agent, no terminal, no prompt, no forwarding, no fallback to other keys
+    '-F', '/dev/null',
+    '-o', 'BatchMode=yes',
+    '-o', 'StrictHostKeyChecking=yes',
+    '-o', `UserKnownHostsFile=${gate.knownHostsFile}`,
+    '-o', 'GlobalKnownHostsFile=/dev/null',
+    '-o', 'IdentitiesOnly=yes',
+    '-o', 'IdentityAgent=none',
+    '-o', 'ForwardAgent=no',
+    '-o', 'ForwardX11=no',
+    '-o', 'RequestTTY=no',
+    '-o', 'ConnectTimeout=15',
+    '-i', gate.keyFile,
+    '-p', String(gate.port),
+    '--',
+    `${gate.user}@${gate.host}`,
+    `fleet-ro-grant ${gateKey} ${database} ${commit} ${mode}`,
+  ]
+}
+
+export function gateSsh(gate: GateConfig, sshPath = '/usr/bin/ssh'): GateClient {
+  return {
+    run(mode, gateKey, database, commit) {
+      const args = gateSshArgs(gate, mode, gateKey, database, commit)
+      return new Promise<GateRun>((resolve, reject) => {
+        execFile(
+          sshPath,
+          args,
+          // a clean environment: nothing of the process's own (no SSH_AUTH_SOCK, no proxy) reaches ssh
+          { timeout: GATE_TIMEOUT_MS, maxBuffer: GATE_MAX_OUTPUT, env: { PATH: '/usr/bin:/bin', HOME: '/nonexistent', LANG: 'C' } },
+          (err, stdout, stderr) => {
+            const output = `${stdout}\n${stderr}`
+            if (!err) return resolve({ code: 0, output })
+            const e = err as NodeJS.ErrnoException & { killed?: boolean }
+            // an exit code is the gate's answer; anything else (no ssh, a timeout, a full buffer) is no answer at all
+            if (typeof e.code === 'number') return resolve({ code: e.code, output })
+            reject(new Error(e.killed ? 'gate call timed out' : 'gate call did not run'))
+          },
+        )
+      })
     },
   }
 }

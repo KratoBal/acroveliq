@@ -2,7 +2,7 @@
 // The executor builds it from its own record, it goes out as the whole
 // description of the #33 request, and at execution the executor rebuilds the
 // whole Discord message from it and compares letter for letter.
-import { neutralDescription } from '../web/approval-discord-core.js'
+import { descriptionMaxFor, neutralDescription } from '../web/approval-discord-core.js'
 import type { Relation } from './store.js'
 
 export const APPROVAL_CATEGORY = 'coolify_deploy'
@@ -20,6 +20,27 @@ export function relationSuffix(rel: Relation): string {
       return ` / ELAGAZAS ${rel.runningSha.slice(0, 8)}`
     case 'unmeasured':
       return ' / VISZONY NEM MERT'
+  }
+}
+
+export const GRANT_APPROVAL_CATEGORY = 'fleet_ro_grant'
+
+/**
+ * The line of a grant R: the same head as a deploy's, then the commit, the first 16 digits of the list's and the plan's
+ * sha256 (for the eye; the execution compares all 64 digits from the record), then the plan text itself. The owner sees
+ * the table and column names. A line longer than the category allows is refused, not cut: a cut line would approve
+ * what the owner did not read.
+ */
+export function grantCanonicalLine(r: { id: string; env: string; app: string; sha: string; listSha256: string; planSha256: string; planText: string }): string {
+  const line = `VEGREHAJTO R=${r.id} / ${r.env} / ${r.app} / fleet-ro-grant / ${r.sha} / lista ${r.listSha256.slice(0, 16)} / terv ${r.planSha256.slice(0, 16)} / ${r.planText}`
+  if (neutralDescription(line, descriptionMaxFor(GRANT_APPROVAL_CATEGORY)) !== `> ${line}`) throw new GrantLineError(line.length)
+  return line
+}
+
+/** The grant line does not fit the approval text, or the neutraliser would change it. */
+export class GrantLineError extends Error {
+  constructor(readonly length: number) {
+    super(`grant line of ${length} characters does not fit the approval text`)
   }
 }
 

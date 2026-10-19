@@ -121,10 +121,12 @@ export const DESCRIPTION_MAX = 500
  * leaves a margin. Every other category, the deploy executor's `coolify_deploy` included, keeps 500: the
  * executor compares the whole message letter for letter, and its lines are far shorter.
  *
- * `scripts/root/root-telepito.py` keeps the same table (DESCRIPTION_MAX_BY_CATEGORY); the fixture
+ * `scripts/root/root-telepito.py` keeps the entries of the categories IT reads (DESCRIPTION_MAX_BY_CATEGORY); the fixture
  * `scripts/__tests__/fixtures/approval-text.json` ties the two, with a long description in each category.
+ * `fleet_ro_grant` is the deploy executor's (task parancssor-a-fleet-ro-grant): the grant plan, in a compact text of
+ * about 1100 characters on today's list; the root installer never reads that category, so it has no copy of it.
  */
-export const DESCRIPTION_MAX_BY_CATEGORY: Readonly<Record<string, number>> = { root_telepites: 1500 }
+export const DESCRIPTION_MAX_BY_CATEGORY: Readonly<Record<string, number>> = { root_telepites: 1500, fleet_ro_grant: 1500 }
 
 /** The longest description the request of this category may show (the category as the message prints it). */
 export function descriptionMaxFor(category: string): number {

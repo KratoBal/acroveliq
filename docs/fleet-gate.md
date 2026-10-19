@@ -138,8 +138,12 @@ tulajdonos `acropora`) adta jogokat visszavenni. Ez utóbbiakat a 4. lépés egy
    ```
 
 3. **A végrehajtó kulcs-sora** (a gomb PR-ja után; addig az `alkalmaz` senkinek nem fut): a `/etc/ssh/authorized_keys/fleet`
-   fájlba egy második sor, a végrehajtó kulcsával, `restrict,from="<a végrehajtó címe>",command="/usr/local/sbin/fleet-gate vegrehajto" ssh-ed25519 ...`.
-   A `sshd-match` ezt a két alakot fogadja el, mást nem.
+   fájlba egy második sor, a végrehajtó kulcsával, `restrict,from="<a végrehajtó forráscíme>",command="/usr/local/sbin/fleet-gate vegrehajto" ssh-ed25519 ...`.
+   A `restrict` kikapcsolja a pty-t, az agent- és port-továbbítást, az X11-et és a user rc-t; a `sshd-match` ezt a két alakot
+   fogadja el, mást nem. A kulcs generálása (rootként, a hoston), a `known_hosts` sor a host SAJÁT kulcsfájljából, a `config.json`
+   `gate` és `grants` kulcsa és az egész gomb-folyamat a `deploy-executor/README.md` "The fleet_ro grant button" szakaszában áll.
+   **A kulcs ellopója számára a "Balázs jóváhagyása" lépés kiesik** (a main mostani, reviewolt listáját jóváhagyás nélkül
+   alkalmazhatja, mást nem), tehát a lista-változás egyetlen kapuja a PR review-ja és beolvasztása.
 
 4. **Az első gombnyomás után, egyszer:** a mai, a tulajdonos adta `fleet_ro` jogok visszavétele. A tulajdonos REVOKE-ja
    csak a saját adását veszi el. ELŐTTE ellenőrizni kell, hogy a grantor minden ilyen oszlopot megadott (barracuda, #238:

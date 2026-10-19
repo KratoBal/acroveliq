@@ -11,7 +11,7 @@ import { parseExecutorConfig } from './config.js'
 import { DeployExecutor } from './executor.js'
 import { createExecutorServer } from './http.js'
 import { RequestStore } from './store.js'
-import { coolifyRest, discordRest, githubRest, readSecretFile } from './transports.js'
+import { coolifyRest, discordRest, gateSsh, githubRest, readSecretFile } from './transports.js'
 import { assertHungarianDates } from './verify-approval.js'
 
 async function main(): Promise<void> {
@@ -26,13 +26,14 @@ async function main(): Promise<void> {
     discord: discordRest(readSecretFile(config.discord.tokenFile)),
     github: githubRest(readSecretFile(config.github.tokenFile)),
     coolify: coolifyRest(hosts),
+    gate: config.gate ? gateSsh(config.gate) : undefined,
   })
   const recovered = await executor.recover()
   const pruned = executor.prune().length
   process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), event: 'recovered', ...recovered, pruned })}\n`)
   const port = Number(process.env['VEGREHAJTO_PORT'] ?? '8787')
   createExecutorServer(executor).listen(port, '0.0.0.0', () => {
-    process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), event: 'listening', port, apps: config.apps.length })}\n`)
+    process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), event: 'listening', port, apps: config.apps.length, grants: config.grants.length })}\n`)
   })
 }
 

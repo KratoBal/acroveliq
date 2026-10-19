@@ -85,7 +85,7 @@ export function verifyDiscordApproval(input: {
   if (displayedExpiry === null) return no('request expiry is not within the R window')
 
   const expected = buildDiscordApprovalText(
-    { agent_id: r.requester, category: APPROVAL_CATEGORY, action_description: r.canonicalLine, timeout_at: displayedExpiry },
+    { agent_id: r.requester, category: r.category ?? APPROVAL_CATEGORY, action_description: r.canonicalLine, timeout_at: displayedExpiry },
     code,
     { yes: discord.yes, no: discord.no, requireReply: true },
   )
