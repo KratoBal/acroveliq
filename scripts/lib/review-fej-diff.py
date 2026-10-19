@@ -10,7 +10,11 @@ read the developer's diff: this asks GitHub for the diff OF THAT HEAD, by its fu
 with the packet's patch file by file.
 
 Where it comes from: GitHub's own compare (`<base>...<head>`, the diff from the merge base to the head),
-anonymously. The four fleet repositories are public; no token is held or asked for here, and nothing
+anonymously for the public fleet repositories. A PRIVATE repository (PRIVATE_REPOS, today the first
+customer project, KratoBal/caparium-napplo) answers 404 to an anonymous call, so for it, and only for
+it, a one-hour READ token is asked from the root broker (`fleet-github token <repo> olvas`; Balázs
+2026-10-19 10:49 UTC, Eldöntendő msg 1561692771733999658: barracuda reads that one repository, writes
+none). The token goes into the request header only: it is never printed, logged or written. Nothing
 is written outside the reviewer's own output directory. Before the diff, the PR's CURRENT head must be
 the packet's head: a push after packaging is said, not reviewed silently.
 
@@ -25,6 +29,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -38,9 +43,35 @@ class Stop(Exception):
     pass
 
 
-def get(url, accept):
-    req = urllib.request.Request(url, headers={'Accept': accept, 'User-Agent': 'review-fej-diff',
-                                               'X-GitHub-Api-Version': '2022-11-28'})
+# Private repositories: read with the broker's one-hour READ token (see the docstring). A repository
+# not named here is read anonymously, as before.
+PRIVATE_REPOS = frozenset({'KratoBal/caparium-napplo'})
+BROKER = ('sudo', '-n', '/usr/local/sbin/fleet-github', 'token')
+TOKEN_RX = re.compile(r'^[A-Za-z0-9_.-]{20,255}$')
+
+
+def broker_token(repo, api):
+    """The broker's READ token for a private repo, or Stop. A test (an api on 127.0.0.1 only) may name
+    its own helper in REVIEW_FEJ_BROKER; against the real GitHub the root broker is the only source."""
+    cmd = list(BROKER)
+    if api.startswith('http://127.0.0.1:') and os.environ.get('REVIEW_FEJ_BROKER'):
+        cmd = [os.environ['REVIEW_FEJ_BROKER']]
+    try:
+        r = subprocess.run(cmd + [repo, 'olvas'], capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise Stop(f'a broker nem adott olvaso tokent ({repo}): {e.__class__.__name__}')
+    tok = r.stdout.strip()
+    if r.returncode != 0 or not TOKEN_RX.match(tok):
+        # the broker's own refusal text names no secret; the token itself is never echoed
+        raise Stop(f'a broker nem adott olvaso tokent ({repo}): kilepes {r.returncode}, {r.stderr.strip()[:200]}')
+    return tok
+
+
+def get(url, accept, token=None):
+    headers = {'Accept': accept, 'User-Agent': 'review-fej-diff', 'X-GitHub-Api-Version': '2022-11-28'}
+    if token:
+        headers['Authorization'] = f'Bearer {token}'
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             body = r.read(MAX_BYTES + 1)
@@ -157,14 +188,15 @@ def run(argv):
     except FileNotFoundError:
         pass
     lines = []
-    p = json.loads(get(f'{api}/repos/{repo}/pulls/{pr}', 'application/vnd.github+json').decode() or '{}')
+    token = broker_token(repo, api) if repo in PRIVATE_REPOS else None
+    p = json.loads(get(f'{api}/repos/{repo}/pulls/{pr}', 'application/vnd.github+json', token).decode() or '{}')
     now = (p.get('head') or {}).get('sha') or ''
     base = (p.get('base') or {}).get('ref') or ''
     if now != head:
         raise Stop(f'a PR mai feje {now or "?"}, a csomage {head}: a csomagolas utan push jott, ez a csomag elavult')
     if not re.match(r'^[A-Za-z0-9._/-]{1,200}$', base):
         raise Stop(f'a PR alapja nem olvashato: {base!r}')
-    diff = get(f'{api}/repos/{repo}/compare/{base}...{head}', 'application/vnd.github.diff')
+    diff = get(f'{api}/repos/{repo}/compare/{base}...{head}', 'application/vnd.github.diff', token)
     path = write_private(out_dir, base_name + '.patch', diff)
     hs = parse_diff(diff.decode('utf-8', 'replace'))
     lines.append(f'== a fejbol eloallitott diff (GitHub compare {base}...{head}): {path}')

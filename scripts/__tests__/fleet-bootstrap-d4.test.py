@@ -104,8 +104,9 @@ expected = [
     'agent-murena ALL=(root) NOPASSWD: /usr/local/sbin/fleet-github token *',
     'agent-barracuda ALL=(root) NOPASSWD: /usr/local/sbin/fleet-approve approve *',
     'agent-barracuda ALL=(root) NOPASSWD: /usr/local/sbin/fleet-approve record *',
+    'agent-barracuda ALL=(root) NOPASSWD: /usr/local/sbin/fleet-github token KratoBal/caparium-napplo olvas',
 ]
-check('the five rules, as docs/fleet-github.md step 8', [r for r in rules if not r.startswith('#')] == expected, rules)
+check('the six rules, as docs/fleet-github.md step 8', [r for r in rules if not r.startswith('#')] == expected, rules)
 check('step 4b still runs', '== 4b.' in out)
 
 print('4. a changed source or a symlink is not planned')
