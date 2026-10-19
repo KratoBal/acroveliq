@@ -77,6 +77,11 @@ git init -q "$T/airepo"; git -C "$T/airepo" remote add origin https://github.com
 check 'ai -> KratoBal/acropora-ai-agent#N in pr-ai<N>' 1 "$(g "$T/airepo" ai 116 | grep -c 'pr-ai116 pr: KratoBal/acropora-ai-agent#116 umask=')"
 check 'ai with a clone of another repo -> refuse' 1 "$(g "$T/repo" ai 117 >/dev/null; echo $?)"
 
+echo 'the first customer project (acrobot 32393): pr-cap<N> is KratoBal/caparium-napplo#N'
+git init -q "$T/caprepo"; git -C "$T/caprepo" remote add origin https://github.com/KratoBal/caparium-napplo.git
+check 'cap -> KratoBal/caparium-napplo#N in pr-cap<N>' 1 "$(g "$T/caprepo" cap 3 | grep -c 'pr-cap3 pr: KratoBal/caparium-napplo#3 umask=')"
+check 'cap with a clone of another repo -> refuse' 1 "$(g "$T/repo" cap 4 >/dev/null; echo $?)"
+
 echo 'a document packet (task review-docs-verdict): a copy and its sha256, nothing private'
 R="$T/root"; mkdir -p "$R/exchange/acroveliq" "$R/store" "$R/agents/x/.claude" "$R/elo"
 printf 'terv\n' > "$R/exchange/acroveliq/terv.md"

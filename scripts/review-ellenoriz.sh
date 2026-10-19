@@ -2,7 +2,7 @@
 # ANSWERS: Hogyan rogziti a reviewer az iteletet ugy, hogy CSAK azt az egyet irhassa?
 #
 # review-ellenoriz.sh <csomag> <task_id> <APPROVE|CHANGES>
-#   csomag: a review-csomag neve a pr- utan (1650, c512, marveen68, ai37), VAGY egy dokumentum-
+#   csomag: a review-csomag neve a pr- utan (1650, c512, marveen68, ai37, cap3), VAGY egy dokumentum-
 #      csomag teljes neve (doc-<task_id>, review-csomag.sh docs)
 #   -> egy `verdict` esemeny a feladaton, a szereplo a HIVO (az OS-felhasznalobol), a
 #      hivatkozas "<ITELET> <owner/repo>#<N> pr-<csomag> fej <sha>", dokumentumnal
@@ -82,16 +82,17 @@ C="$1"; TASK="$2"; V="$3"
 DOCS=0
 if [[ "$C" =~ ^doc-[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then
   DOCS=1; DIRNAME="$C"; PRREF=""
-elif [[ "$C" =~ ^(c|marveen|ai)?([1-9][0-9]{0,5})$ ]]; then
+elif [[ "$C" =~ ^(cap|c|marveen|ai)?([1-9][0-9]{0,5})$ ]]; then
   DIRNAME="pr-$C"
   case "${BASH_REMATCH[1]}" in
     c) PRREF="KratoBal/acropora-commerce#${BASH_REMATCH[2]}" ;;
     marveen) PRREF="KratoBal/acroveliq#${BASH_REMATCH[2]}"; PRREF_OLD="KratoBal/marveen#${BASH_REMATCH[2]}" ;;
     ai) PRREF="KratoBal/acropora-ai-agent#${BASH_REMATCH[2]}" ;;
+    cap) PRREF="KratoBal/caparium-napplo#${BASH_REMATCH[2]}" ;;
     *) PRREF="KratoBal/acropora-os#${BASH_REMATCH[2]}" ;;
   esac
 else
-  echo "FAIL: a csomag neve szam, c<szam>, marveen<szam>, ai<szam> vagy doc-<task_id>: '$C'" >&2; exit 2
+  echo "FAIL: a csomag neve szam, c<szam>, marveen<szam>, ai<szam>, cap<szam> vagy doc-<task_id>: '$C'" >&2; exit 2
 fi
 # the repo the approver knows: the current name, also for a packet made before the rename
 PRREF_ROOT="$PRREF"
