@@ -93,6 +93,26 @@ fp_mounted() {
 }
 TMUX_RETIRED=0
 if fp_mounted && test -f "$FP_CONF/no-tmux-line"; then TMUX_RETIRED=1; fi
+# The root installer (docs/root-telepito.md). Its config and its fixed list come from the owner's host
+# directory, read-only, like the fleet-pane broker's. ONE OWNER PER TARGET: a path its list names is the
+# installer's, and the pinned steps below (4c) leave it alone, or a recreate would put the old pinned copy
+# back over an approved newer one and then report the approved one as a mismatch.
+RT_CONF=/etc/root-telepito/conf
+if (( DRY )) && [[ -n "${ROOT_TELEPITO_CONF_DRYRUN:-}" ]]; then RT_CONF="$ROOT_TELEPITO_CONF_DRYRUN"; fi
+rt_mounted() {
+  if (( DRY )) && [[ -n "${ROOT_TELEPITO_CONF_DRYRUN:-}" ]]; then test -d "$RT_CONF"; else mountpoint -q -- "$RT_CONF"; fi
+}
+# rt_manages <path>: the installer's list names this target (exit 0), or not (1). Read only.
+rt_manages() {
+  rt_mounted || return 1
+  python3 -I -c '
+import json, sys
+try:
+    targets = {e.get("cel") for e in json.load(open(sys.argv[1], encoding="utf-8"))["celok"]}
+except Exception:
+    sys.exit(1)
+sys.exit(0 if sys.argv[2] in targets else 1)' "$RT_CONF/lista.json" "$1"
+}
 
 run() { if (( DRY )); then echo "DRY: $*"; else "$@"; fi }
 step() { echo; echo "== $*"; }
@@ -433,7 +453,9 @@ elif (( ! DRY && ! AS_ROOT )) && ! test -f "$BLANKET"; then
   echo "ok: not root and no blanket line: nothing can be written from here; step 7 checks the installed copy"
 else
   FP_DEPLOYED=1
-  if [[ "$(sha256sum < "$FP_BIN" 2>/dev/null | cut -d' ' -f1)" == "$FP_PIN" ]]; then
+  if rt_manages "$FP_BIN"; then
+    echo "skip: $FP_BIN is root-telepito's (its list names it): step 4d puts the approved version back"
+  elif [[ "$(sha256sum < "$FP_BIN" 2>/dev/null | cut -d' ' -f1)" == "$FP_PIN" ]]; then
     echo "ok: $FP_BIN is the pinned version"
   elif as_root install -o root -g root -m 0755 "$fp_tmpdir/fleet-pane" "$FP_BIN"; then
     echo "installed: $FP_BIN"
@@ -453,7 +475,9 @@ else
   echo "$ROUTER_USER ALL=(root) NOPASSWD: $FP_BIN" >> "$fp_tmpdir/sudoers"
   if (( AS_ROOT )); then cat -- "$FP_SUDOERS" > "$fp_tmpdir/current" 2>/dev/null || : > "$fp_tmpdir/current"
   else sudo -n cat -- "$FP_SUDOERS" > "$fp_tmpdir/current" 2>/dev/null || : > "$fp_tmpdir/current"; fi
-  if cmp -s "$fp_tmpdir/sudoers" "$fp_tmpdir/current"; then
+  if rt_manages "$FP_SUDOERS"; then
+    echo "skip: $FP_SUDOERS is root-telepito's (its list names it): step 4d puts the approved version back"
+  elif cmp -s "$fp_tmpdir/sudoers" "$fp_tmpdir/current"; then
     echo "ok: $FP_SUDOERS is exactly the generated content"
   elif (( DRY )); then
     echo "DRY: install $FP_SUDOERS (0440) with:"; sed 's/^/DRY:   /' "$fp_tmpdir/sudoers"
@@ -466,6 +490,84 @@ else
   fi
 fi
 rm -rf -- "$fp_tmpdir"
+
+step "4d. the root installer: its pinned script, its sudo rule, then the approved state back (docs/root-telepito.md)"
+# The no-command-line plan, point B. The same shape as 4c: ONLY WHERE IT IS DEPLOYED (the conf mount is
+# there), and the script only from the PINNED hash: the installer is not its own target, a new version of it
+# is a new pin here, which reaches the container with the owner's next bootstrap run.
+# scripts/__tests__/fleet-bootstrap-root-telepito.test.py fails while the pin differs from the source.
+# After the install, `helyreallit` puts every approved file back that a recreate reset to the image. It
+# installs nothing that was not approved; without the durable store mount it refuses, and that is reported.
+# NEVER `fail` HERE: step 4b must always run. Problems are counted (RT_RC), step 7 reports them.
+RT_BIN=/usr/local/sbin/root-telepito
+RT_SUDOERS=/etc/sudoers.d/root-telepito
+RT_STORE=/var/lib/root-telepito
+RT_PIN=5b436c1eaf59afc2e810fde36b85445eb0f40e3d35723a1f6f12c40591a44aca
+RT_RC=0
+RT_DEPLOYED=0
+rt_tmpdir="$(mktemp -d)"
+rt_src_ok=1
+rt_path="$ROOT/scripts/root/root-telepito.py"
+if [[ -L "$rt_path" ]]; then
+  echo "REFUSED: $rt_path is a symlink; not reading or installing it" >&2; rt_src_ok=0
+elif ! cat -- "$rt_path" > "$rt_tmpdir/root-telepito" 2>/dev/null; then
+  echo "MISSING: $rt_path (the live tree is not on the main branch?)" >&2; rt_src_ok=0
+elif [[ "$(sha256sum < "$rt_tmpdir/root-telepito" | cut -d' ' -f1)" != "$RT_PIN" ]]; then
+  echo "MISMATCH: scripts/root/root-telepito.py sha256 $(sha256sum < "$rt_tmpdir/root-telepito" | cut -d' ' -f1), pinned $RT_PIN: not installing it" >&2; rt_src_ok=0
+else
+  echo "ok: scripts/root/root-telepito.py is the pinned version"
+fi
+rt_sudoers_content() {
+  echo "# The root installer (docs/root-telepito.md). Written by fleet-bootstrap.sh 4d."
+  # the arguments are the installer's to check; allapot and helyreallit take none
+  echo "$ROUTER_USER ALL=(root) NOPASSWD: $RT_BIN kerj *"
+  echo "$ROUTER_USER ALL=(root) NOPASSWD: $RT_BIN kerj-vissza *"
+  echo "$ROUTER_USER ALL=(root) NOPASSWD: $RT_BIN vegrehajt *"
+  echo "$ROUTER_USER ALL=(root) NOPASSWD: $RT_BIN allapot"
+  echo "$ROUTER_USER ALL=(root) NOPASSWD: $RT_BIN helyreallit"
+}
+if ! rt_mounted; then
+  echo "skip: $RT_CONF is not mounted, the installer is not deployed here: nothing installed"
+elif (( ! rt_src_ok )); then
+  RT_DEPLOYED=1; RT_RC=1
+  echo "NOT INSTALLED: the installer is deployed ($RT_CONF is there), but its source is not the pinned version" >&2
+elif (( ! DRY && ! AS_ROOT )) && ! test -f "$BLANKET"; then
+  RT_DEPLOYED=1
+  echo "ok: not root and no blanket line: nothing can be written from here; step 7 checks the installed copy"
+else
+  RT_DEPLOYED=1
+  if [[ "$(sha256sum < "$RT_BIN" 2>/dev/null | cut -d' ' -f1)" == "$RT_PIN" ]]; then
+    echo "ok: $RT_BIN is the pinned version"
+  elif as_root install -o root -g root -m 0755 "$rt_tmpdir/root-telepito" "$RT_BIN"; then
+    echo "installed: $RT_BIN"
+  else
+    echo "FAILED: could not install $RT_BIN" >&2; RT_RC=1
+  fi
+  rt_sudoers_content > "$rt_tmpdir/sudoers"
+  if (( AS_ROOT )); then cat -- "$RT_SUDOERS" > "$rt_tmpdir/current" 2>/dev/null || : > "$rt_tmpdir/current"
+  else sudo -n cat -- "$RT_SUDOERS" > "$rt_tmpdir/current" 2>/dev/null || : > "$rt_tmpdir/current"; fi
+  if cmp -s "$rt_tmpdir/sudoers" "$rt_tmpdir/current"; then
+    echo "ok: $RT_SUDOERS is exactly the generated content"
+  elif (( DRY )); then
+    echo "DRY: install $RT_SUDOERS (0440) with:"; sed 's/^/DRY:   /' "$rt_tmpdir/sudoers"
+  elif ! as_root visudo -c -f "$rt_tmpdir/sudoers" >/dev/null; then
+    echo "FAILED: the generated $RT_SUDOERS does not parse; nothing installed" >&2; RT_RC=1
+  elif as_root install -o root -g root -m 0440 "$rt_tmpdir/sudoers" "$RT_SUDOERS"; then
+    echo "installed: $RT_SUDOERS"
+  else
+    echo "FAILED: could not install $RT_SUDOERS" >&2; RT_RC=1
+  fi
+  if (( DRY )); then
+    echo "DRY: $RT_BIN helyreallit (puts the approved files back)"
+  elif ! mountpoint -q -- "$RT_STORE"; then
+    echo "NOTE: $RT_STORE is not a mount: the installer refuses every install until it is (docs/root-telepito.md, step 2)" >&2
+  elif rt_out="$(as_root "$RT_BIN" helyreallit 2>&1)"; then
+    echo "ok: root-telepito helyreallit: $rt_out"
+  else
+    echo "FAILED: root-telepito helyreallit: $rt_out" >&2; RT_RC=1
+  fi
+fi
+rm -rf -- "$rt_tmpdir"
 
 step "4b. the dev-database sudo rule, and the removal of the blanket line"
 # 2026-08-24, Balazs approved on Discord at 16:13 ("Kivezetheted ha jonak latod").
@@ -627,7 +729,9 @@ fi
 # the start directory is root's and the router's line is there (asked of the policy, runs nothing).
 if (( FP_RC )); then echo "FLEET-PANE: step 4c reported a problem above" >&2; rc=1; fi
 if (( FP_DEPLOYED && ! DRY )); then
-  if [[ "$(sha256sum < "$FP_BIN" 2>/dev/null | cut -d' ' -f1)" == "$FP_PIN" ]]; then
+  if rt_manages "$FP_BIN"; then
+    echo "ok: $FP_BIN is root-telepito's; its state is checked in the 4d line below"
+  elif [[ "$(sha256sum < "$FP_BIN" 2>/dev/null | cut -d' ' -f1)" == "$FP_PIN" ]]; then
     echo "ok: $FP_BIN is the pinned version"
   else
     echo "MISSING: $FP_BIN is absent or not the pinned version" >&2; rc=1
@@ -636,6 +740,18 @@ if (( FP_DEPLOYED && ! DRY )); then
     || { echo "MISSING: $FP_START is absent or not root:root 0755" >&2; rc=1; }
   sudo -n -l -U "$ROUTER_USER" "$FP_BIN" status probe >/dev/null 2>&1 \
     || { echo "MISSING: $ROUTER_USER cannot run $FP_BIN" >&2; rc=1; }
+fi
+# root-telepito (step 4d): where it is deployed, the installed copy is the pinned version and the
+# router's lines are there (asked of the policy, runs nothing).
+if (( RT_RC )); then echo "ROOT-TELEPITO: step 4d reported a problem above" >&2; rc=1; fi
+if (( RT_DEPLOYED && ! DRY )); then
+  if [[ "$(sha256sum < "$RT_BIN" 2>/dev/null | cut -d' ' -f1)" == "$RT_PIN" ]]; then
+    echo "ok: $RT_BIN is the pinned version"
+  else
+    echo "MISSING: $RT_BIN is absent or not the pinned version" >&2; rc=1
+  fi
+  sudo -n -l -U "$ROUTER_USER" "$RT_BIN" allapot >/dev/null 2>&1 \
+    || { echo "MISSING: $ROUTER_USER cannot run $RT_BIN allapot" >&2; rc=1; }
 fi
 # B45 B2-4: the last daily write check (scripts/b45-jogellenorzo-napi.py, as marveen). A
 # JELZES fails this step: a recreate is exactly when a lost ACL or a wrong owner comes back.
