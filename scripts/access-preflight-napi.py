@@ -17,6 +17,13 @@ Verdict:
             run failed: a timeout, an exit code the preflight does not define, or no readable
             JSON. A check that could not run is never reported as clean.
 
+Window (task preflight-ablak, 2026-10-19): every run reads from the START of the previous run in which
+both modes were evaluated (store/access-preflight/napi.since, written only then), not a calendar day.
+With `--napok 1` the 07:30 run read today only, and the previous day's rows after 07:30 reached no
+report (acrobot's two would-deny rows of 10-16 12:43 and 14:14). A failed run leaves napi.since as it
+was, so its window is read again by the next one. With no usable napi.since (the first run, an unreadable
+file, a time in the future) the window is the last two calendar days, and the report says so.
+
 Output (the dashboard is where it is read):
   every run   one daily-log entry for acrobot, and one line in store/access-preflight/napi.last
   JELZES      also one inter-agent message to acrobot
@@ -55,6 +62,7 @@ def paths(root):
     return {
         'dir': d,
         'last': os.path.join(d, 'napi.last'),
+        'since': os.path.join(d, 'napi.since'),
         'lock': os.path.join(d, '.lock'),
     }
 
@@ -67,9 +75,22 @@ def adat(s, limit=200):
     return q if len(q) <= limit else q[:limit] + '..."(csonkitva)'
 
 
-def run_mode(args, mode, out):
+def window_of(since_file, now):
+    """(preflight arguments, report words): from the previous good run's start, or two calendar days."""
+    try:
+        with open(since_file) as fh:
+            ts = int(fh.read().strip())
+    except (OSError, ValueError):
+        ts = None
+    if ts is not None and 0 < ts <= now:
+        when = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M')
+        return ['--since-ts', str(ts)], f'az elozo jo futas ({when}) ota'
+    return ['--napok', '2'], 'az elmult 2 naptari nap (nincs hasznalhato elozo futas)'
+
+
+def run_mode(args, mode, out, window=('--napok', '2')):
     """One preflight run. Returns (rows, error): rows is the list, error a sentence or None."""
-    cmd = [args.tsx, args.preflight, '--mode', mode, '--napok', '1', '--json']
+    cmd = [args.tsx, args.preflight, '--mode', mode, *window, '--json']
     out.write(f'$ {" ".join(cmd)}\n')
     out.flush()
     try:
@@ -134,14 +155,14 @@ def previous_legacy(last_file):
     return int(m.group(1)) if m else None
 
 
-def report_text(verdict, facts, errors, out_txt, previous=None, newest=None):
+def report_text(verdict, facts, errors, out_txt, previous=None, newest=None, window='az elmult 2 naptari nap'):
     if errors:
         lines = ['JELZES: a hozzaferesi preflight nem ertekelheto:'] + [f'  {e}' for e in errors]
         lines.append(f'Kimenet: {out_txt}')
         return '\n'.join(lines)
     lines = [
         f"{verdict}: kikenyszerit {facts['kikenyszerit']} sor, ebbol nevvel {len(facts['nevvel'])}, "
-        f"legacy {facts['legacy_maradek']}; legacy-szukitett {facts['legacy_szukitett']} sor (elmult 1 nap); "
+        f"legacy {facts['legacy_maradek']}; legacy-szukitett {facts['legacy_szukitett']} sor ({window}); "
         f"elozo futas legacy: {'-' if previous is None else previous}."
     ]
     lines.append('A legfrissebb naplozott tiltas: ' + (
@@ -199,9 +220,10 @@ def futtat(args):
     stamp = datetime.datetime.fromtimestamp(now).strftime('%Y-%m-%d-%H%M%S')
     out_txt = os.path.join(p['dir'], f'futas-{stamp}.txt')
     results, errors = {}, []
+    window, window_words = window_of(p['since'], now)
     with open(out_txt, 'w') as out:
         for mode in MODES:
-            rows, err = run_mode(args, mode, out)
+            rows, err = run_mode(args, mode, out, window)
             if err:
                 errors.append(err)
             else:
@@ -211,7 +233,12 @@ def futtat(args):
         verdict = 'JELZES'
     else:
         verdict, facts = classify(results)
-    text = report_text(verdict, facts, errors, out_txt, previous_legacy(p['last']), getattr(args, 'newest', None))
+    text = report_text(verdict, facts, errors, out_txt, previous_legacy(p['last']), getattr(args, 'newest', None), window_words)
+    if not errors:
+        # the next window starts here: only a run whose both modes were evaluated moves it
+        with open(p['since'] + '.tmp', 'w') as fh:
+            fh.write(f'{int(now)}\n')
+        os.replace(p['since'] + '.tmp', p['since'])
     first = text.splitlines()[0]
     # .last: epoch first, so a shell can read it with `read` and nothing else
     with open(p['last'] + '.tmp', 'w') as fh:

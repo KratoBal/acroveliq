@@ -6,6 +6,14 @@
 //   npx tsx scripts/access-preflight.ts --db /utvonal/masik.db           # another database (tests)
 //   npx tsx scripts/access-preflight.ts --json                            # one JSON line, for a machine
 //                                                                         # (scripts/access-preflight-napi.py)
+//   npx tsx scripts/access-preflight.ts --since-ts 1792300000             # every row seen at or after this
+//                                                                         # epoch second, whatever its day
+//
+// --since-ts IS THE DAILY RUN'S WINDOW (task preflight-ablak, 2026-10-19): --napok counts calendar days,
+// so the 07:30 run with --napok 1 read today only, and the previous day's rows after 07:30 reached no
+// report (acrobot's two `:ismeretlen` would-deny rows of 10-16 12:43 and 14:14). The daily run now passes
+// the start of its previous good run: a row is in the window when its last_seen is, so a row seen again
+// after the previous run is reported, and one the previous run already reported in full is not.
 //
 // The access check logs every denial, enforced or not, in access_decisions
 // (src/web/access-enforcement.ts). This lists the logged-only ones
@@ -27,21 +35,28 @@ function arg(name: string, fallback: string): string {
 
 const mode = arg('--mode', 'kikenyszerit')
 const days = Number(arg('--napok', '1'))
-if (!['kikenyszerit', 'legacy-szukitett'].includes(mode) || !Number.isInteger(days) || days < 1) {
-  process.stderr.write('Használat: access-preflight.ts [--mode kikenyszerit|legacy-szukitett] [--napok N]\n')
+const sinceTsArg = arg('--since-ts', '')
+const sinceTs = sinceTsArg === '' ? null : Number(sinceTsArg)
+if (!['kikenyszerit', 'legacy-szukitett'].includes(mode) || !Number.isInteger(days) || days < 1
+    || (sinceTs !== null && (!Number.isInteger(sinceTs) || sinceTs < 1))
+    || (sinceTs !== null && process.argv.includes('--napok'))) {
+  process.stderr.write('Használat: access-preflight.ts [--mode kikenyszerit|legacy-szukitett] [--napok N | --since-ts <epoch mp>]\n')
   process.exit(2)
 }
 
 const dbPath = arg('--db', '')
 initDatabase(dbPath || undefined)
-const since = localDay(Math.floor(Date.now() / 1000) - (days - 1) * 86400)
+// the window: a calendar day (a person's --napok), or every row last seen at or after an epoch second
+const since = sinceTs !== null
+  ? new Date(sinceTs * 1000).toISOString()
+  : localDay(Math.floor(Date.now() / 1000) - (days - 1) * 86400)
 const rows = getDb()
   .prepare(
     `SELECT day, actor, method, path, reason, SUM(count) AS count FROM access_decisions
-     WHERE day >= ? AND outcome = 'would-deny' AND actor NOT LIKE 'session:%' ${mode === 'legacy-szukitett' ? "AND actor = 'legacy'" : ''}
+     WHERE ${sinceTs !== null ? 'last_seen >= ?' : 'day >= ?'} AND outcome = 'would-deny' AND actor NOT LIKE 'session:%' ${mode === 'legacy-szukitett' ? "AND actor = 'legacy'" : ''}
      GROUP BY actor, method, path ORDER BY actor, path, method`,
   )
-  .all(since) as Row[]
+  .all(sinceTs !== null ? sinceTs : since) as Row[]
 
 // The daily run reads this, not the text: a text format is for a person and may change.
 // `database` and `newest` are the heartbeat (barracuda, #102): access_decisions holds only
@@ -49,7 +64,7 @@ const rows = getDb()
 // check off, or another database: a missing file is created empty by the open).
 if (process.argv.includes('--json')) {
   const newest = (getDb().prepare('SELECT MAX(last_seen) AS t FROM access_decisions').get() as { t: number | null }).t
-  console.log(JSON.stringify({ mode, since, rows, database: getDb().name, newest }))
+  console.log(JSON.stringify({ mode, since, since_ts: sinceTs, rows, database: getDb().name, newest }))
   process.exit(rows.length === 0 ? 0 : 1)
 }
 if (rows.length === 0) {
