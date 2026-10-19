@@ -661,22 +661,23 @@ describe('finished_verified means the public address is healthy too (nautilus, C
   it('503 for a while, then 200: verified only after the 200, two seconds apart, and the 200 is recorded', async () => {
     withHealthUrl()
     health.script = [503, 503, 200]
-    const { r } = await deployFinished()
+    const { r, t0 } = await deployFinished()
     await Promise.all(ex.following)
     expect(ex.status(r)!.outcome).toBe('finished_verified')
     expect(health.calls).toEqual([HEALTH_URL, HEALTH_URL, HEALTH_URL])
+    // the follow's own 10 s step, then two waits of 2 s between three looks
+    expect(clock - t0).toBe(10_000 + 2 * 2_000)
     expect(store.get(r)!.observed).toEqual({ commit: MAIN[4], status: 'finished', health: 200 })
   })
 
   it('a 200 at once: one look and no extra wait', async () => {
     withHealthUrl()
     const { r, t0 } = await deployFinished()
-    const before = clock
     await Promise.all(ex.following)
     expect(ex.status(r)!.outcome).toBe('finished_verified')
     expect(health.calls).toHaveLength(1)
-    expect(clock - before).toBeLessThan(11_000)
-    expect(t0).toBeLessThanOrEqual(before)
+    // only the follow's own 10 s step: the first look is made before any health wait
+    expect(clock - t0).toBe(10_000)
   })
 
   it.each([
@@ -692,10 +693,9 @@ describe('finished_verified means the public address is healthy too (nautilus, C
     await Promise.all(ex.following)
     expect(ex.status(r)!.outcome).toBe('finished_unhealthy')
     expect(store.get(r)!.observed!.health).toBe(last)
-    // 2 s apart for 120 s: 61 looks, and the clock moved by about the window (the follow's own 10 s step included)
-    expect(health.calls.length).toBeGreaterThanOrEqual(60)
-    expect(health.calls.length).toBeLessThanOrEqual(62)
-    expect(clock - t0).toBeGreaterThanOrEqual(120_000)
+    // 2 s apart for 120 s: looks at 0, 2, ... 120 s = 61 looks, and the clock moved by the follow's 10 s step plus the window
+    expect(health.calls).toHaveLength(61)
+    expect(clock - t0).toBe(10_000 + 120_000)
   })
 
   it('a probe that throws counts as no answer: the next look is made, and a later 200 verifies', async () => {
