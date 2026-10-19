@@ -17,11 +17,12 @@ Verdict:
             run failed: a timeout, an exit code the preflight does not define, or no readable
             JSON. A check that could not run is never reported as clean.
 
-Window (task preflight-ablak, 2026-10-19): every run reads from the START of the previous run in which
-both modes were evaluated (store/access-preflight/napi.since, written only then), not a calendar day.
+Window (task preflight-ablak, 2026-10-19): every run reads from the START of the previous run whose
+window was delivered: both modes evaluated, the daily-log entry sent, and on JELZES the message too
+(store/access-preflight/napi.since, written only then), not a calendar day.
 With `--napok 1` the 07:30 run read today only, and the previous day's rows after 07:30 reached no
-report (acrobot's two would-deny rows of 10-16 12:43 and 14:14). A failed run leaves napi.since as it
-was, so its window is read again by the next one. With no usable napi.since (the first run, an unreadable
+report (acrobot's two would-deny rows of 10-16 12:43 and 14:14). A failed or undelivered run leaves
+napi.since as it was, so its window is read again by the next one. With no usable napi.since (the first run, an unreadable
 file, a time in the future) the window is the last two calendar days, and the report says so.
 
 Output (the dashboard is where it is read):
@@ -234,11 +235,6 @@ def futtat(args):
     else:
         verdict, facts = classify(results)
     text = report_text(verdict, facts, errors, out_txt, previous_legacy(p['last']), getattr(args, 'newest', None), window_words)
-    if not errors:
-        # the next window starts here: only a run whose both modes were evaluated moves it
-        with open(p['since'] + '.tmp', 'w') as fh:
-            fh.write(f'{int(now)}\n')
-        os.replace(p['since'] + '.tmp', p['since'])
     first = text.splitlines()[0]
     # .last: epoch first, so a shell can read it with `read` and nothing else
     with open(p['last'] + '.tmp', 'w') as fh:
@@ -249,11 +245,19 @@ def futtat(args):
     ok, resp = send(['bash', args.naplo_cmd, 'acrobot', 'Hozzaferesi preflight (napi, P0-1 L4)', '-'], text, p['dir'])
     if not ok:
         print(f'FAIL: a naplo-bejegyzes nem ment el: {resp}', file=sys.stderr)
+    ok2 = True
     if verdict == 'JELZES':
         msg = '[P0-1-L4-JELZES] A napi hozzaferesi preflight jelez.\n' + text
         ok2, resp2 = send(['bash', args.uzenet_cmd, 'acrobot', 'acrobot', '-'], msg, p['dir'])
         if not ok2:
             print(f'FAIL: az uzenet nem ment el: {resp2}', file=sys.stderr)
+    # the next window starts here, and only when this run's window has been delivered: both modes
+    # evaluated, the daily-log entry sent, and on JELZES the message too (barracuda, #235 review: a
+    # JELZES whose message did not go must be read again, or it never reaches acrobot)
+    if not errors and ok and ok2:
+        with open(p['since'] + '.tmp', 'w') as fh:
+            fh.write(f'{int(now)}\n')
+        os.replace(p['since'] + '.tmp', p['since'])
     if errors:
         return 3
     return 1 if verdict == 'JELZES' else 0

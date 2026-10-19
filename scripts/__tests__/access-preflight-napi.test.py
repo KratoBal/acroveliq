@@ -170,6 +170,21 @@ t3 = int(time.time())
 e.run(good)
 check('so the run after the failure still starts at the last good one', windows() == ['--since-ts %d' % since1] * 2)
 check('and only now does napi.since move on, to this run\'s start', int(open(e.p['since']).read()) >= t3 > since1)
+# barracuda, #235 review: a JELZES whose message does not go must not move the window, nor a run whose
+# daily-log entry does not go
+jelzes = {'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [row('murena')])}
+for which, name in (('uzenet', 'a JELZES whose message fails'), ('naplo', 'a run whose daily-log entry fails')):
+    before = int(open(e.p['since']).read())
+    keep = open(os.path.join(e.bin, which + '.sh')).read()
+    open(os.path.join(e.bin, which + '.sh'), 'w').write('#!/usr/bin/env bash\ncat >/dev/null; echo "FAIL: nem ment" >&2; exit 1\n')
+    time.sleep(1.1)
+    open(argv_log, 'w').close()
+    e.run(jelzes if which == 'uzenet' else good)
+    check(name + ': napi.since does not move', int(open(e.p['since']).read()) == before)
+    open(os.path.join(e.bin, which + '.sh'), 'w').write(keep)
+    open(argv_log, 'w').close()
+    e.run(good)
+    check('... so the next run reads that window again', windows() == ['--since-ts %d' % before] * 2)
 for bad, name in (('holnap', 'an unreadable napi.since'), (str(int(time.time()) + 86400), 'a napi.since in the future')):
     open(e.p['since'], 'w').write(bad + '\n')
     open(argv_log, 'w').close()
