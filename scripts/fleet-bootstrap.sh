@@ -328,7 +328,7 @@ if (( DRY )) && [[ -n "${FLEET_D4_MOUNT_DRYRUN:-}" ]]; then D4_MOUNT="$FLEET_D4_
 D4_SUDOERS=/etc/sudoers.d/fleet-github
 D4_SBIN=/usr/local/sbin
 # source-in-scripts/root:installed-name:sha256
-D4_SCRIPTS="fleet-github.py:fleet-github:9c1e090aea5401d649f5174bfc93759459d62a435fa5e28eb525f1955857457e
+D4_SCRIPTS="fleet-github.py:fleet-github:a742cc58966fb0488bb5701f7c53f621c1bb7a71e9241f95167fdde69dbdf2c7
 fleet-approve.py:fleet-approve:3566a92d136ba219fe45ae31b677e4e3915f97fa27e9a4a38eeb48f76e8fbcac"
 D4_RC=0
 D4_DEPLOYED=0
@@ -502,7 +502,7 @@ step "4d. the root installer: its pinned script, its sudo rule, then the approve
 RT_BIN=/usr/local/sbin/root-telepito
 RT_SUDOERS=/etc/sudoers.d/root-telepito
 RT_STORE=/var/lib/root-telepito
-RT_PIN=5b436c1eaf59afc2e810fde36b85445eb0f40e3d35723a1f6f12c40591a44aca
+RT_PIN=e42638d7584aab7140c3115ebd5f0f8987d8dda140639d5b0c6bee57cf068bbf
 RT_RC=0
 RT_DEPLOYED=0
 rt_tmpdir="$(mktemp -d)"

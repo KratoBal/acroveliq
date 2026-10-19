@@ -8,7 +8,13 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { buildDiscordApprovalText, formatApprovalExpiry, neutralDescription } from '../web/approval-discord-core.js'
+import {
+  buildDiscordApprovalText,
+  DESCRIPTION_MAX,
+  descriptionMaxFor,
+  formatApprovalExpiry,
+  neutralDescription,
+} from '../web/approval-discord-core.js'
 
 interface Fixture {
   expiry: { t: number; text: string }[]
@@ -38,6 +44,27 @@ describe('the #33 text fixture shared with root-telepito.py', () => {
         { yes: 'igen', no: 'nem', requireReply: true },
       ),
     ).toBe(c.want)
+  })
+
+  it('allows the installer\'s category a longer description and every other category 500', () => {
+    expect([
+      descriptionMaxFor('root_telepites'),
+      descriptionMaxFor('coolify_deploy'),
+      descriptionMaxFor('anything_else'),
+      // the category as the message prints it decides, so a look-alike spelling gets no extra room
+      descriptionMaxFor('root-telepites!'),
+    ]).toEqual([1500, DESCRIPTION_MAX, DESCRIPTION_MAX, DESCRIPTION_MAX])
+  })
+
+  it('keeps even the longest allowed request under Discord\'s 2000 characters', () => {
+    const text = buildDiscordApprovalText(
+      // the longest agent id the dashboard accepts is far shorter than this; the margin is the point
+      { agent_id: 'a'.repeat(40), category: 'root_telepites', action_description: 'x '.repeat(2000), timeout_at: 1792375200 },
+      'K7MP',
+      { yes: 'igen', no: 'nem', requireReply: true },
+    )
+    expect(text.length).toBeLessThan(2000)
+    expect(text.endsWith('...')).toBe(true)
   })
 
   it('neutralises a description as the fixture says', () => {

@@ -91,6 +91,9 @@ CATEGORY = 'root_telepites'
 CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
 CODE_LENGTH = 4
 DESCRIPTION_MAX = 500
+# approval-discord-core.ts DESCRIPTION_MAX_BY_CATEGORY: this installer's category shows a reviewed list, so it
+# gets 1500 characters; every other category keeps 500 (the fixture ties the two files)
+DESCRIPTION_MAX_BY_CATEGORY = {'root_telepites': 1500}
 MAX_FILE_BYTES = 1_000_000
 R_RX = re.compile(r'^[0-9a-f]{8}$')
 KEY_RX = re.compile(r'^[a-z0-9][a-z0-9-]{0,40}$')
@@ -442,10 +445,15 @@ def source_at_commit(cfg, entry, commit):
 
 # ---------------------------------------------------------------- the #33 text, letter for letter
 
-def neutral_description(text):
+def description_max(category):
+    """approval-discord-core.ts descriptionMaxFor: the category as the message prints it."""
+    return DESCRIPTION_MAX_BY_CATEGORY.get(re.sub(r'[^A-Za-z0-9_.-]', '', category), DESCRIPTION_MAX)
+
+
+def neutral_description(text, limit=DESCRIPTION_MAX):
     """approval-discord-core.ts neutralDescription, in Python (tied by the shared fixture)."""
     flat = re.sub(r'\s+', ' ', re.sub(r'[`>#*_~|]', ' ', text)).strip()
-    cut = flat[:DESCRIPTION_MAX] + '...' if len(flat) > DESCRIPTION_MAX else flat
+    cut = flat[:limit] + '...' if len(flat) > limit else flat
     return '> ' + cut
 
 
@@ -463,7 +471,7 @@ def approval_text(agent_id, category, description, timeout_at, code, yes, no):
         f'Erre az üzenetre válaszolva: `{yes} {code}` vagy `{no} {code}` (csak ez a két alak dönt). '
         f'Lejárat: {format_expiry(timeout_at)}',
         f"Kérő: {agent_id} | {re.sub(r'[^A-Za-z0-9_.-]', '', category)}",
-        neutral_description(description),
+        neutral_description(description, description_max(category)),
     ])
 
 
@@ -629,7 +637,7 @@ def canonical(r):
     if r.get('rules'):
         body += ' / SZABALYOK: ' + '; '.join(rule_text(x) for x in r['rules'])
     line = head + body
-    if neutral_description(line) != "> " + line:
+    if neutral_description(line, description_max(CATEGORY)) != "> " + line:
         raise Refused('a jovahagyasi sor nem irhato ki valtozatlanul (#33 semlegesitese vagy hossza): '
                       'jeloles- vagy alahuzas-karakter van a celban vagy a szabalyban, vagy tul hosszu')
     return line
