@@ -81,6 +81,8 @@ describe('generated prod-tree post-checkout hook: honest alert delivery', () => 
     execFileSync('git', ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'])
     cpSync(join(ROOT, 'scripts', 'install-prod-tree-guard-hook.sh'), join(repo, 'scripts', 'install-prod-tree-guard-hook.sh'))
     writeFileSync(join(repo, 'store', '.dashboard-token'), 'test-token\n')
+    // the installer reads the main agent's id from .env: the hook's alert has no other recipient
+    writeFileSync(join(repo, '.env'), 'MAIN_AGENT_ID=probamain\n')
     // git-common-dir returns a RELATIVE .git from inside the repo, so the
     // installer must run with the repo root as cwd (it does in production).
     const r = spawnSync('/bin/bash', [join(repo, 'scripts', 'install-prod-tree-guard-hook.sh')], { cwd: repo, encoding: 'utf-8', timeout: 20000 })

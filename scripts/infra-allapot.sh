@@ -39,14 +39,18 @@ show() {
   local endpoint
   for endpoint in applications databases services; do
     echo "  --- $endpoint ---"
-    curl -s -m 20 -H @<(printf 'Authorization: Bearer %s\n' "$token") "$host/api/v1/$endpoint" \
-      | AC_EP="$endpoint" python3 -c '
+    # the code goes with the body: "not JSON" alone does not say a refusal from an answer that is broken
+    local resp code body
+    resp="$(curl -s -m 20 -w $'\n%{http_code}' -H @<(printf 'Authorization: Bearer %s\n' "$token") "$host/api/v1/$endpoint")"
+    code="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+    printf '%s' "$body" | AC_EP="$endpoint" AC_CODE="$code" python3 -c '
 import json, os, sys
 ep = os.environ["AC_EP"]
+raw = sys.stdin.read()
 try:
-    data = json.load(sys.stdin)
+    data = json.loads(raw)
 except Exception:
-    print("      a valasz nem JSON -- a felulet elerheto egyaltalan?")
+    print("      HTTP %s, a valasz nem JSON: %s" % (os.environ["AC_CODE"], " ".join(raw.split())[:80] or "(ures)"))
     sys.exit(0)
 if isinstance(data, dict):
     print("      %s" % str(data)[:120])
@@ -68,19 +72,35 @@ for item in data:
 # so it reaches Coolify on the gateway. A fixed constant: a secret's target is not env-settable.
 COOLIFY_PROD_URL="http://10.0.1.1:8000"
 show "ELES GEP" "$COOLIFY_PROD_URL" "$INSTALL_DIR/store/.coolify-token-prod"
-# B20b (2026-10-16): the AI machine's Coolify (coolify2) is closed to the public, only its
-# /webhooks/ path stays; on the tailnet the fleet (tag:prod) may not reach its :8000. So the
-# public name is asked once, and a refusal is said in words, not as an empty or broken section.
+# B20b (2026-10-16), then Balazs's decision A of 10-16 (memory 2374): the AI machine's Coolify (coolify2) is NOT
+# reachable from outside, from the fleet only the executor reaches it (its own tailnet identity). The old probe
+# asked /api/health, a path the sections below never use: where that answered 200 and the API refused, the section
+# printed "a valasz nem JSON" for an answer that was a deliberate 403 (task flotta-or-es-infra-javitas, 2026-10-19).
+# So the probe asks what the sections ask: the applications list, with the token. Only a 200 is "reachable".
 AI_COOLIFY_URL="https://coolify2.acropora.hu"
+AI_KOD=""
 ai_coolify_elerheto() {
-  [[ "$(/usr/bin/curl -s -o /dev/null -m 10 -w '%{http_code}' "$AI_COOLIFY_URL/api/health")" == 200 ]]
+  local tok="$INSTALL_DIR/store/.coolify-token-ai"
+  if [[ -r "$tok" ]]; then
+    AI_KOD="$(/usr/bin/curl -s -o /dev/null -m 10 -w '%{http_code}' -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$tok")") "$AI_COOLIFY_URL/api/v1/applications")"
+  else
+    AI_KOD="$(/usr/bin/curl -s -o /dev/null -m 10 -w '%{http_code}' "$AI_COOLIFY_URL/api/v1/applications")"
+  fi
+  [[ "$AI_KOD" == 200 ]]
 }
-AI_ZART="  a coolify2 a flottabol nem erheto el (B20b: csak a tailneten, a 8000 a flottanak tiltott).
-  Az AI gep alkalmazasait Balazs a tailnetrol latja; telepites a vegrehajton at: scripts/vegrehajto.sh"
+ai_zart() {
+  case "$AI_KOD" in
+    403) echo "  SZANDEKOSAN NEM LATHATO INNEN (HTTP 403): a coolify2 kivulrol zart, a flottabol csak a vegrehajto eri el (Balazs 10-16-i A dontese)." ;;
+    000|"") echo "  A coolify2 nem valaszol (nincs kapcsolat): ez NEM a szandekos zaras, nezd meg a halozatot." ;;
+    *) echo "  A coolify2 a lekerdezesre HTTP ${AI_KOD}-t adott, nem 200-at: ez nem a szandekos zaras (az 403 lenne)." ;;
+  esac
+  echo "  Az AI gep (stage) allapota innen: a vegrehajton at, egy telepites R-jenek allapota: bash /home/marveen/marveen/scripts/vegrehajto.sh allapot <R>"
+  echo "  (telepiteshez is ott: scripts/vegrehajto.sh); a teljes listat Balazs a tailnetrol latja."
+}
 if ai_coolify_elerheto; then
   show "AI GEP -- ITT VAN A VALODI STAGING" "$AI_COOLIFY_URL" "$INSTALL_DIR/store/.coolify-token-ai"
 else
-  echo; echo "===== AI GEP ($AI_COOLIFY_URL) ====="; echo "$AI_ZART"
+  echo; echo "===== AI GEP ($AI_COOLIFY_URL) ====="; ai_zart
 fi
 
 echo
@@ -131,7 +151,7 @@ mod "ELES GEP" "$COOLIFY_PROD_URL" "$INSTALL_DIR/store/.coolify-token-prod"
 if ai_coolify_elerheto; then
   mod "AI GEP (teszt)" "$AI_COOLIFY_URL" "$INSTALL_DIR/store/.coolify-token-ai"
 else
-  echo " --- AI GEP (teszt) ---"; echo "$AI_ZART"
+  echo " --- AI GEP (teszt) ---"; ai_zart
 fi
 echo
 echo " AMIT EZ A LEKERDEZES NEM MER: a GitHub App tovabbra is az ELES gep"
@@ -139,6 +159,23 @@ echo " Coolify-jara mutat, tehat a kapcsolat adott. Az 'AUTOMATIKUS' sor azt"
 echo " jelenti, hogy azon az alkalmazason egy beolvasztas a fo agba KIMEGY az"
 echo " elesre, jovahagyas nelkul."
 echo "=========================================================================="
+echo
+# The prod tree's git hook (task flotta-or-es-infra-javitas, 2026-10-19): the branch-switch alert goes through the
+# INSTALLED hook, which is written only by the installer, and a stale copy sat unseen for five days. --check
+# changes nothing; an installer that does not know it yet is not run (it would reinstall instead of checking).
+echo "===== PROD-FA OR (a futo fa git hookja) ====="
+GUARD_INSTALLER="$INSTALL_DIR/scripts/install-prod-tree-guard-hook.sh"
+if [[ ! -f "$GUARD_INSTALLER" ]]; then
+  echo "  nincs telepito a futo fan: $GUARD_INSTALLER"
+elif ! grep -q -- '--check' "$GUARD_INSTALLER"; then
+  echo "  (a futo fa telepitoje meg nem tud --check-et: frissitsd a futo fat, utana ez a sor mer)"
+else
+  GUARD_OUT="$(bash "$GUARD_INSTALLER" --check 2>&1)"; GUARD_RC=$?
+  echo "  ${GUARD_OUT}"
+  if [[ "$GUARD_RC" -ne 0 ]]; then
+    echo "  A branch-valtas riasztasa EZEN a hookon megy: amig ez nem 'aktualis', egy valtas riasztasa elveszhet."
+  fi
+fi
 echo
 echo "FIGYELEM: az 'exited' allapot ONMAGABAN nem hiba. Harom szolgaltatas az eles"
 echo "gepen SZANDEKOSAN all 2026-08-31 ota. Mielott barmelyikre azt mondanad, hogy"
