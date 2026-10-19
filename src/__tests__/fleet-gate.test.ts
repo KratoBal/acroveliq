@@ -795,3 +795,80 @@ describe('fleet-gate: the install step', () => {
     ).toEqual([true, true])
   })
 })
+
+describe('fleet-gate: hosti-* (the no-command-line plan, point C)', () => {
+  const COMMIT = 'c0ffee0123456789abcdef0123456789abcdef01'
+  /** A prod world with the executor's client stubbed: it logs its arguments, as the gate hands them over. */
+  function hostiWorld(withClient = true) {
+    const w = world(PROD)
+    const env = join(w.dir, 'test.env')
+    const client = join(w.dir, 'hosti-kliens')
+    if (withClient) {
+      writeFileSync(client, `#!/bin/bash\nprintf 'hosti-kliens' >> "${w.dir}/calls.log"; for a in "$@"; do printf ' [%s]' "$a" >> "${w.dir}/calls.log"; done; echo >> "${w.dir}/calls.log"\necho '{"ok":true}'\n`)
+      chmodSync(client, 0o755)
+    }
+    writeFileSync(env, readFileSync(env, 'utf-8') + `HOSTI_CLIENT=${client}\n`)
+    const run = (command: string, role?: string) => {
+      const r = spawnSync('bash', [GATE, '--test-env', env, ...(role ? [role] : [])], { env: { PATH: process.env.PATH, SSH_ORIGINAL_COMMAND: command } })
+      const log = join(w.dir, 'calls.log')
+      const calls = existsSync(log) ? readFileSync(log, 'utf-8').trim().split('\n').filter(Boolean) : []
+      writeFileSync(log, '')
+      // the logger stub also writes to this log: only what the client was handed counts here
+      return { code: r.status, out: r.stdout.toString(), err: r.stderr.toString(), calls: calls.filter((c) => c.startsWith('hosti-kliens')) }
+    }
+    return { w, run }
+  }
+
+  it('HOSTI-FORWARD: the three ops hand their checked words to the client, in a fixed first word, and nothing else runs', () => {
+    const g = hostiWorld()
+    const kerj = g.run(`hosti-kerj levelkozvetito telepit ${COMMIT} murena`)
+    expect([kerj.code, kerj.out.trim(), kerj.calls]).toEqual([0, '{"ok":true}', [`hosti-kliens [kerj] [levelkozvetito] [telepit] [${COMMIT}] [murena]`]])
+    expect(g.run('hosti-kerj vegrehajto up - acrobot').calls).toEqual(['hosti-kliens [kerj] [vegrehajto] [up] [-] [acrobot]'])
+    expect(g.run('hosti-vegrehajt 1a2b3c4d 1559919876543210987').calls).toEqual(['hosti-kliens [vegrehajt] [1a2b3c4d] [1559919876543210987]'])
+    expect(g.run('hosti-allapot').calls).toEqual(['hosti-kliens [allapot]'])
+    expect(g.run('hosti-allapot 1a2b3c4d').calls).toEqual(['hosti-kliens [allapot] [1a2b3c4d]'])
+  })
+
+  it('HOSTI-ROLES: the agents\' key and the executor\'s key both ask, and neither gets more (the owner\'s answer decides)', () => {
+    const g = hostiWorld()
+    expect(g.run(`hosti-kerj levelkozvetito telepit ${COMMIT} murena`).code).toBe(0)
+    expect(g.run(`hosti-kerj levelkozvetito telepit ${COMMIT} murena`, 'vegrehajto').code).toBe(0)
+  })
+
+  it.each([
+    ['an upper-case project', `hosti-kerj Levelkozvetito telepit ${COMMIT} murena`],
+    ['a project that starts with a digit', `hosti-kerj 1levelkozvetito telepit ${COMMIT} murena`],
+    ['an underscore in the project', `hosti-kerj level_kozvetito telepit ${COMMIT} murena`],
+    ['a verb off the list (prune)', `hosti-kerj levelkozvetito prune ${COMMIT} murena`],
+    ['a verb off the list (down)', 'hosti-kerj levelkozvetito down - murena'],
+    ['a short commit', 'hosti-kerj levelkozvetito telepit abc123 murena'],
+    ['an upper-case commit', `hosti-kerj levelkozvetito telepit ${COMMIT.toUpperCase()} murena`],
+    ['a requester with an underscore', `hosti-kerj levelkozvetito telepit ${COMMIT} mu_rena`],
+    ['no requester', `hosti-kerj levelkozvetito telepit ${COMMIT}`],
+    ['a fifth word', `hosti-kerj levelkozvetito telepit ${COMMIT} murena extra`],
+    ['a short R', 'hosti-vegrehajt 1a2b 1559919876543210987'],
+    ['an upper-case R', 'hosti-vegrehajt 1A2B3C4D 1559919876543210987'],
+    ['a message id with a letter', 'hosti-vegrehajt 1a2b3c4d 15599198765432109ab'],
+    ['one word only for vegrehajt', 'hosti-vegrehajt 1a2b3c4d'],
+    ['two arguments for allapot', 'hosti-allapot 1a2b3c4d 1a2b3c4d'],
+    ['a shell word', `hosti-kerj levelkozvetito telepit ${COMMIT} murena;id`],
+    ['a command substitution', 'hosti-allapot $(id)'],
+  ])('HOSTI-SHAPE: %s is refused and the client is never run', (_n, command) => {
+    const g = hostiWorld()
+    const r = g.run(command)
+    expect([r.code, r.calls]).toEqual([2, []])
+  })
+
+  it('HOSTI-CLIENT: without the root-installed client the op is refused (nothing falls back to anything else)', () => {
+    const g = hostiWorld(false)
+    const r = g.run(`hosti-kerj levelkozvetito telepit ${COMMIT} murena`)
+    expect([r.code, r.err.includes('hosti kliens nincs')]).toEqual([2, true])
+  })
+
+  it('HOSTI-HOSTS: only the production host has them; the stage host refuses all three', () => {
+    const w = world(STAGE)
+    expect(w.run(`hosti-kerj levelkozvetito telepit ${COMMIT} murena`).code).toBe(2)
+    expect(w.run('hosti-allapot').code).toBe(2)
+    expect(w.run('hosti-vegrehajt 1a2b3c4d 1559919876543210987').code).toBe(2)
+  })
+})

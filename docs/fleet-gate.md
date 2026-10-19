@@ -25,6 +25,7 @@ akkor az éles, ha a próba-sor (lent) minden sora zöld rajta.
 | `image-prune-2h` | `docker image prune -a -f --filter until=2h` | csak stage |
 | `psql-ro <kulcs> <adatbázis> [plain\|tuples\|tuples-pipe\|tuples-spaced-pipe]` | psql a csak olvasó `fleet_ro` szereppel (a kapu listájából, nem a hívótól), az SQL a stdin-en; backslash az SQL-ben tilos | éles: OS; stage: AI és a stage OS (`acropora_staging`) |
 | `fleet-ro-grant <kulcs> <adatbázis> <commit> terv\|alkalmaz`, `fleet-ro-grant <kulcs> <adatbázis> szukit` | a `fleet_ro` oszlopjogai a lent álló `fleet-ro-grant` listából, a `fleet_ro_grantor` szereppel; a listát a kapu maga tölti le a GitHubról, a main-en álló commitról; hívótól SQL és lista nem jön. Az `alkalmaz` csak a végrehajtó kulcsával. Lásd „fleet_ro jogok gombbal” | éles: OS |
+| `hosti-kerj <projekt> <ige> <commit\|-> <kero>`, `hosti-vegrehajt <R> <discord-uzenet-id>`, `hosti-allapot [<R>]` | a hosti végrehajtó (a parancssor-nélkül terv C pontja, `docs/hosti-vegrehajto.md`): a kapu CSAK a szavak alakját ellenőrzi, és a root-telepítésű `hosti-kliens`en át a végrehajtó socketjére írja őket; a végrehajtó (root, a socket csak a `fleet` uid-nak nyílik) mindent újra ellenőriz, a jóváhagyás a gazda Discord-válasza | csak éles |
 | `coolify-deployments <app uuid>`, `coolify-deploy-log <deployment uuid>` | a Coolify adatbázisának két rögzített olvasása (a kapu építi az SQL-t, a 24 jeles uuid az egyetlen argumentum) | stage |
 | `pg-dump <kulcs> <adatbázis> <felhasználó>` | `pg_dump -Fc` a stdout-ra | éles: OS, Commerce; stage: AI |
 | `pg-restore-list <kulcs>` | `pg_restore -l`, a dump a stdin-en | éles: OS, Commerce; stage: AI |
@@ -525,7 +526,7 @@ cd /root
 install -o root -g root -m 0755 /tmp/fleet-gate.sh /usr/local/sbin/fleet-gate
 install -d -o root -g root -m 0755 /usr/local/lib/fleet-gate
 install -o root -g root -m 0644 /tmp/quote-templates-sync.mjs /usr/local/lib/fleet-gate/quote-templates-sync.mjs
-echo '647add7ed5f38c35752d39080568d5e4094243831fb2114547b1bea1a68bd1df  /usr/local/sbin/fleet-gate' | sha256sum -c
+echo '4954168fe7570b83c58d1bde8f45f033e5770068238041e0940496cf20003ad5  /usr/local/sbin/fleet-gate' | sha256sum -c
 echo 'd958d5a4050ebbf52610ca70f3574a3e572bf349751fbd7b011411a68a322834  /usr/local/lib/fleet-gate/quote-templates-sync.mjs' | sha256sum -c
                                              # mindkettő: OK. Ha nem: állj meg, és szólj.
 ```

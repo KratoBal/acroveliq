@@ -54,6 +54,9 @@ GRANT_TO=fleet_ro
 GRANT_STATE_DIR="$(getent passwd "$(id -un)" | cut -d: -f6)/fleet-ro-grant"
 GRANT_SZUKIT_MAX=40
 GRANT_TODAY=""   # empty: today in Europe/Budapest (a test sets it)
+# hosti-*: the host executor (the no-command-line plan, point C; docs/hosti-vegrehajto.md). The gate checks only the SHAPE of the
+# words and hands them to the root-installed client, which writes them to the executor's socket; the executor checks it all again.
+HOSTI_CLIENT=/usr/local/lib/fleet-gate/hosti-kliens
 
 # Tests only. The authorized_keys line runs the gate with no arguments and an
 # SSH client cannot add any, so this is reachable only from a shell on the host.
@@ -96,7 +99,7 @@ BACKUP_PUT=""  # what this host may store from the other one
 host_config() {
   case "$HOST" in
     acropora-prod-01)
-      OPS="ps system-df df uptime reboot-required apt-check sshd-match builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-sum backup-put backup-prune quote-templates-sync app-log fleet-ro-grant"
+      OPS="ps system-df df uptime reboot-required apt-check sshd-match builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-sum backup-put backup-prune quote-templates-sync app-log fleet-ro-grant hosti-kerj hosti-vegrehajt hosti-allapot"
       # fleet-ro-grant: the fleet_ro grants of the OS database, through fleet_ro_grantor
       GRANT_TARGETS="iwm34jaqp9xmwb72qkrqkwhy:acropora"
       # psql-ro connects as fleet_ro, a read-only role with per-table, per-column
@@ -659,6 +662,40 @@ case "$OP" in
     [ -d "$BACKUP_ROOT" ] || exit 0
     find "$BACKUP_ROOT" -name '*.dump' -mtime +14 -print -delete
     find "$BACKUP_ROOT" -path '*/dokumentumok/*' -name '*.tar.gz' -mtime +7 -print -delete
+    ;;
+  hosti-kerj|hosti-vegrehajt|hosti-allapot)
+    # hosti-kerj <projekt> <ige> <commit|-> <kero> | hosti-vegrehajt <R> <discord-uzenet-id> | hosti-allapot [<R>]
+    # The gate's part is the shape of the words; the executor (root, behind a socket only the fleet uid may use) checks the
+    # project list, the verb list, the approval and everything else again. Any key may ask: the owner's Discord answer decides.
+    [ -x "$HOSTI_CLIENT" ] || deny "'$OP': a hosti kliens nincs telepitve"
+    case "$OP" in
+      hosti-kerj)
+        args 4
+        [[ "${W[1]}" =~ ^[a-z][a-z0-9-]{0,30}$ ]] || deny "'$OP': a projekt neve [a-z][a-z0-9-]"
+        case "${W[2]}" in telepit|up|visszaallit) ;; *) deny "'$OP': az ige telepit, up vagy visszaallit" ;; esac
+        [[ "${W[3]}" =~ ^[0-9a-f]{40}$ || "${W[3]}" = - ]] || deny "'$OP': a commit 40 hexa jegy, vagy -"
+        [[ "${W[4]}" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || deny "'$OP': a kero ugynok-nev"
+        allow "$OP" "${W[1]}" "${W[2]}" "${W[3]}" "${W[4]}"
+        exec "$HOSTI_CLIENT" kerj "${W[1]}" "${W[2]}" "${W[3]}" "${W[4]}"
+        ;;
+      hosti-vegrehajt)
+        args 2
+        [[ "${W[1]}" =~ ^[0-9a-f]{8}$ ]] || deny "'$OP': az R 8 kisbetus hexa jegy"
+        [[ "${W[2]}" =~ ^[0-9]{15,22}$ ]] || deny "'$OP': a Discord uzenet azonositoja szamjegyek"
+        allow "$OP" "${W[1]}" "${W[2]}"
+        exec "$HOSTI_CLIENT" vegrehajt "${W[1]}" "${W[2]}"
+        ;;
+      hosti-allapot)
+        [ "$NARGS" -le 1 ] || deny "'$OP': legfeljebb egy argumentum (R)"
+        if [ "$NARGS" -eq 1 ]; then
+          [[ "${W[1]}" =~ ^[0-9a-f]{8}$ ]] || deny "'$OP': az R 8 kisbetus hexa jegy"
+          allow "$OP" "${W[1]}"
+          exec "$HOSTI_CLIENT" allapot "${W[1]}"
+        fi
+        allow "$OP"
+        exec "$HOSTI_CLIENT" allapot
+        ;;
+    esac
     ;;
   fleet-ro-grant)
     # fleet-ro-grant <key> <database> <commit> terv|alkalmaz   (the list from GitHub at the commit)
