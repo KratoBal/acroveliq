@@ -1,0 +1,28 @@
+{
+  "stateDir": "/var/lib/levelkozvetito",
+  "quarantineDir": "/var/lib/levelkozvetito/karanten",
+  "oauthClientIdFile": "/run/secrets/oauth-client-id",
+  "oauthClientSecretFile": "/run/secrets/oauth-client-secret",
+  "callers": [
+    { "name": "acrobot", "tokenSha256": "0000000000000000000000000000000000000000000000000000000000000000" }
+  ],
+  "accounts": {
+    "info": {
+      "address": "info@acropora.hu",
+      "refreshTokenFile": "/run/secrets/info-refresh-token",
+      "calendar": true,
+      "redaction": "all-short-numbers"
+    },
+    "balazs": {
+      "address": "balazs@acropora.hu",
+      "refreshTokenFile": "/run/secrets/balazs-refresh-token",
+      "calendar": false,
+      "redaction": "all-short-numbers"
+    }
+  },
+  "excludedSenders": {
+    "domains": ["accounts.google.com", "accountprotection.microsoft.com", "appleid.apple.com", "id.apple.com", "paypal.com", "stripe.com"],
+    "addresses": []
+  },
+  "limits": { "callsPerMinute": 120, "maxAttachmentBytes": 20971520 }
+}
