@@ -20,10 +20,12 @@ import {
   coolifyRest,
   discordRest,
   githubRest,
+  healthHttp,
   type CoolifyClient,
   type CoolifyDeployment,
   type DiscordReader,
   type GitHubReader,
+  type HealthProbe,
 } from '../deploy-executor/transports.js'
 import { findDisplayedExpiry, type ChannelMessage } from '../deploy-executor/verify-approval.js'
 import * as discordModule from '../web/approval-discord.js'
@@ -134,6 +136,21 @@ function fakeCoolify() {
   return c
 }
 
+/** The public health address: each look pops the next scripted answer, the last one repeats; a function answer may throw. */
+function fakeHealth(script: (number | null | 'throw')[] = [200]) {
+  const h = {
+    calls: [] as string[],
+    script,
+    async status(url: string) {
+      h.calls.push(url)
+      const next = h.script.length > 1 ? h.script.shift()! : h.script[0]!
+      if (next === 'throw') throw new Error('probe broke')
+      return next
+    },
+  }
+  return h
+}
+
 function fakeDiscord(): DiscordReader & { messages: ChannelMessage[] } {
   const messages: ChannelMessage[] = []
   return {
@@ -153,6 +170,7 @@ let clock: number
 let gh: ReturnType<typeof fakeGitHub>
 let cool: ReturnType<typeof fakeCoolify>
 let dc: ReturnType<typeof fakeDiscord>
+let health: ReturnType<typeof fakeHealth>
 let store: RequestStore
 let ex: DeployExecutor
 
@@ -164,6 +182,7 @@ function makeExecutor() {
     discord: dc,
     github: gh,
     coolify: cool as unknown as CoolifyClient,
+    health: health as HealthProbe,
     now: () => clock,
     sleep: async (ms) => {
       clock += ms
@@ -184,6 +203,7 @@ beforeEach(() => {
   gh = fakeGitHub()
   cool = fakeCoolify()
   dc = fakeDiscord()
+  health = fakeHealth()
   makeExecutor()
 })
 afterEach(async () => {
@@ -627,6 +647,147 @@ describe('one-time use and the commit actually deployed', () => {
   })
 })
 
+const HEALTH_URL = 'https://shark.example/api/health'
+
+describe('finished_verified means the public address is healthy too (nautilus, Cápárium #16: 503 for about 15 s after finished)', () => {
+  async function deployFinished(): Promise<{ r: string; t0: number }> {
+    const { rec, msg } = await approvedRequest()
+    const out = await ex.execute({ r: rec.r, requestMessageId: msg.id })
+    cool.deployments.get(out.deploymentUuid!)!.status = 'finished'
+    return { r: rec.r, t0: clock }
+  }
+  const withHealthUrl = () => ((config.apps[0] as { healthUrl?: string }).healthUrl = HEALTH_URL)
+
+  it('503 for a while, then 200: verified only after the 200, two seconds apart, and the 200 is recorded', async () => {
+    withHealthUrl()
+    health.script = [503, 503, 200]
+    const { r } = await deployFinished()
+    await Promise.all(ex.following)
+    expect(ex.status(r)!.outcome).toBe('finished_verified')
+    expect(health.calls).toEqual([HEALTH_URL, HEALTH_URL, HEALTH_URL])
+    expect(store.get(r)!.observed).toEqual({ commit: MAIN[4], status: 'finished', health: 200 })
+  })
+
+  it('a 200 at once: one look and no extra wait', async () => {
+    withHealthUrl()
+    const { r, t0 } = await deployFinished()
+    const before = clock
+    await Promise.all(ex.following)
+    expect(ex.status(r)!.outcome).toBe('finished_verified')
+    expect(health.calls).toHaveLength(1)
+    expect(clock - before).toBeLessThan(11_000)
+    expect(t0).toBeLessThanOrEqual(before)
+  })
+
+  it.each([
+    ['a 503 that never ends', [503], 503],
+    ['no answer at all', [null], null],
+    ['a redirect (not followed, not a 200)', [307], 307],
+    ['a 500', [500], 500],
+    ['a 204', [204], 204],
+  ] as [string, (number | null)[], number | null][])('%s: finished_unhealthy after the 120 s window, the last status recorded', async (_n, script, last) => {
+    withHealthUrl()
+    health.script = script
+    const { r, t0 } = await deployFinished()
+    await Promise.all(ex.following)
+    expect(ex.status(r)!.outcome).toBe('finished_unhealthy')
+    expect(store.get(r)!.observed!.health).toBe(last)
+    // 2 s apart for 120 s: 61 looks, and the clock moved by about the window (the follow's own 10 s step included)
+    expect(health.calls.length).toBeGreaterThanOrEqual(60)
+    expect(health.calls.length).toBeLessThanOrEqual(62)
+    expect(clock - t0).toBeGreaterThanOrEqual(120_000)
+  })
+
+  it('a probe that throws counts as no answer: the next look is made, and a later 200 verifies', async () => {
+    withHealthUrl()
+    health.script = ['throw', 200]
+    const { r } = await deployFinished()
+    await Promise.all(ex.following)
+    expect(ex.status(r)!.outcome).toBe('finished_verified')
+    expect(health.calls).toHaveLength(2)
+  })
+
+  it('an app WITHOUT a healthUrl is not probed: verified as before', async () => {
+    const { r } = await deployFinished()
+    await Promise.all(ex.following)
+    expect(ex.status(r)!.outcome).toBe('finished_verified')
+    expect(health.calls).toEqual([])
+    expect(store.get(r)!.observed).toEqual({ commit: MAIN[4], status: 'finished' })
+  })
+
+  it.each([
+    ['a wrong commit', 'finished', 'x'.repeat(40), 'commit_mismatch'],
+    ['a failed deployment', 'failed', null, 'failed'],
+  ])('%s is not probed at all: only the right commit is worth waiting for', async (_n, status, commit, outcome) => {
+    withHealthUrl()
+    const { rec, msg } = await approvedRequest()
+    const out = await ex.execute({ r: rec.r, requestMessageId: msg.id })
+    const d = cool.deployments.get(out.deploymentUuid!)!
+    d.status = status
+    if (commit) d.commit = commit
+    await Promise.all(ex.following)
+    expect(ex.status(rec.r)!.outcome).toBe(outcome)
+    expect(health.calls).toEqual([])
+  })
+
+  it('a healthUrl with no probe wired in does not read as healthy (fail closed)', async () => {
+    withHealthUrl()
+    await Promise.all(ex.following)
+    const bare = new DeployExecutor({
+      config,
+      store,
+      discord: dc,
+      github: gh,
+      coolify: cool as unknown as CoolifyClient,
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms
+      },
+      followEveryMs: 10_000,
+      followForMs: 60_000,
+    })
+    ex = bare
+    const { r } = await deployFinished()
+    await Promise.all(ex.following)
+    expect(ex.status(r)!.outcome).toBe('finished_unhealthy')
+    expect(store.get(r)!.observed!.health).toBeNull()
+  })
+
+  it('the health look is in the audit line, and nothing else from the probe', async () => {
+    withHealthUrl()
+    health.script = [503, 200]
+    const { r } = await deployFinished()
+    await Promise.all(ex.following)
+    const audit = readFileSync(join(dir, 'state', 'audit.log'), 'utf8')
+    const line = audit.split('\n').filter((l) => l.includes('finished_verified')).pop()!
+    expect(line).toContain('"health":200')
+    expect(r).toBeTruthy()
+  })
+})
+
+describe('healthHttp: one look at the address, status only', () => {
+  it('returns the status, asks without following a redirect, and never reads the body', async () => {
+    let seen: { url: string; init: RequestInit | undefined } | null = null
+    let cancelled = false
+    const probe = healthHttp((async (url: string, init?: RequestInit) => {
+      seen = { url, init }
+      return { status: 503, body: { cancel: async () => void (cancelled = true) } }
+    }) as unknown as typeof fetch)
+    expect(await probe.status(HEALTH_URL)).toBe(503)
+    expect(seen!.url).toBe(HEALTH_URL)
+    expect(seen!.init!.redirect).toBe('manual')
+    expect(seen!.init!.signal).toBeDefined()
+    expect(cancelled).toBe(true)
+  })
+
+  it('a refused connection or a timeout is null, not an exception', async () => {
+    const probe = healthHttp((async () => {
+      throw new TypeError('fetch failed')
+    }) as unknown as typeof fetch)
+    expect(await probe.status(HEALTH_URL)).toBeNull()
+  })
+})
+
 describe('a flood is cut off before any outside call (barracuda, #49 review 3)', () => {
   it(`at most ${REQUESTS_PER_MINUTE} requests a minute, refused ones included, then 429-class refusals with no GitHub call`, async () => {
     for (let i = 0; i < REQUESTS_PER_MINUTE; i++) await req({ sha: i % 2 ? MAIN[4] : SIDE }).catch(() => null)
@@ -776,6 +937,16 @@ describe('nothing secret leaves the executor', () => {
   })
 })
 
+describe('the health address in the settings', () => {
+  it('an https address is kept as given on that app only; the others have none', () => {
+    const c = configRaw('/var/lib/vegrehajto')
+    Object.assign(c.apps[0]!, { healthUrl: HEALTH_URL })
+    const parsed = parseExecutorConfig(c)
+    expect(parsed.apps[0]!.healthUrl).toBe(HEALTH_URL)
+    expect(parsed.apps.slice(1).map((a) => 'healthUrl' in a)).toEqual([false, false])
+  })
+})
+
 describe('the state file and the settings fail closed', () => {
   it('a corrupt state file stops the executor instead of forgetting every used R', () => {
     writeFileSync(join(dir, 'state', 'requests.json'), '{"version":2}')
@@ -791,6 +962,13 @@ describe('the state file and the settings fail closed', () => {
     ['a relative secret path', (c: ReturnType<typeof configRaw>) => (c.github.tokenFile = 'secrets/github'), /absolute/],
     ['an app on an unknown Coolify', (c: ReturnType<typeof configRaw>) => (c.apps[0]!.coolifyHost = 'harmadik-gep'), /not in coolifyHosts/],
     ['one uuid under two names', (c: ReturnType<typeof configRaw>) => (c.apps[1]!.coolifyUuid = 'prodapi0001'), /duplicate coolifyUuid/],
+    ['a health address over plain http', (c: ReturnType<typeof configRaw>) => Object.assign(c.apps[0]!, { healthUrl: 'http://shark.example/api/health' }), /healthUrl: must be https/],
+    ['a health address with credentials', (c: ReturnType<typeof configRaw>) => Object.assign(c.apps[0]!, { healthUrl: 'https://u:p@shark.example/api/health' }), /healthUrl: no credentials/],
+    ['a health address with a query', (c: ReturnType<typeof configRaw>) => Object.assign(c.apps[0]!, { healthUrl: 'https://shark.example/api/health?x=1' }), /healthUrl: no credentials, query/],
+    ['a health address with a fragment', (c: ReturnType<typeof configRaw>) => Object.assign(c.apps[0]!, { healthUrl: 'https://shark.example/api/health#x' }), /healthUrl: no credentials, query/],
+    ['a health address that is not a URL', (c: ReturnType<typeof configRaw>) => Object.assign(c.apps[0]!, { healthUrl: 'shark.example' }), /healthUrl: not a URL/],
+    ['a health address that is not a string', (c: ReturnType<typeof configRaw>) => Object.assign(c.apps[0]!, { healthUrl: 7 }), /healthUrl: must be a non-empty string/],
+    ['an empty health address', (c: ReturnType<typeof configRaw>) => Object.assign(c.apps[0]!, { healthUrl: '' }), /healthUrl: must be a non-empty string/],
   ])('refuses %s', (_name, mutate, re) => {
     const c = configRaw('/var/lib/vegrehajto')
     mutate(c)
