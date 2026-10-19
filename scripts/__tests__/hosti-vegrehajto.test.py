@@ -475,7 +475,10 @@ try:
     real_now = hv.time.time
     hv.time.time = lambda: at / 1000
     try:
-        code = hv.serve(stdin=io.BytesIO(request), stdout=DeadClient(), uid_of_peer=lambda: FLEET_UID)
+        try:
+            code = hv.serve(stdin=io.BytesIO(request), stdout=DeadClient(), uid_of_peer=lambda: FLEET_UID)
+        except Exception as e:  # a write error that escapes serve is a failed check, not a crashed guard
+            code = 'escaped: %s' % e.__class__.__name__
     finally:
         hv.time.time = real_now
     r = hv.load_r(out['r'])
@@ -506,7 +509,7 @@ try:
     code, reply = serve_one({'ige': 'kerj', 'args': ['levelkozvetito', 'up', '-', 'murena']})
     check('the fleet uid is served', [0, True], [code, reply and reply.get('ok')])
     code, reply = serve_one({'ige': 'kerj', 'args': ['levelkozvetito', 'up', '-', 'murena']}, uid=FLEET_UID + 1)
-    check('another uid (the group is not asked) is refused', [1, False, 'idegen uid'], [code, reply['ok'], reply['hiba']])
+    check('another uid (the group is not asked) is refused', [1, False, 'idegen uid'], [code, (reply or {}).get('ok'), (reply or {}).get('hiba')])
     code, reply = serve_one({'ige': 'kerj', 'args': ['levelkozvetito', 'up', '-', 'murena']}, uid=0)
     check('not even root\'s uid is the fleet\'s', 1, code)
     check('the refused peers asked for nothing: one R only', 1, len(os.listdir(os.path.join(STATE, 'keresek'))))
