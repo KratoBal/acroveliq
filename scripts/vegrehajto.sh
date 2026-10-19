@@ -63,6 +63,14 @@ except Exception:
 print("" if v is None else v)' "$1" "$2"
 }
 
+# pa_suffix: ` terv_utana=<ures|nem-ures|nem-olvashato>` for a grant R (what the plan run after the apply showed), nothing for a deploy
+pa_suffix() {
+  local v
+  v="$(json_field "$BODY" planAfter)"
+  [ -n "$v" ] && printf ' terv_utana=%s' "$v"
+  return 0
+}
+
 # call <method> <url> [json-body] [dashboard]: sets CODE and BODY, never exits
 call() {
   local method="$1" url="$2" body="${3-}" auth="${4-}" resp
@@ -162,7 +170,7 @@ import json, os
 print(json.dumps({"r": os.environ["R"], "requestMessageId": os.environ["MSG_ID"]}))')"
     call POST "${EXEC_URL}/executions" "$EXE"
     [ "$CODE" = 200 ] || executor_fail "vegrehajtas"
-    echo "R=${R} status=$(json_field "$BODY" status) outcome=$(json_field "$BODY" outcome) deployment=$(json_field "$BODY" deploymentUuid)"
+    echo "R=${R} status=$(json_field "$BODY" status) outcome=$(json_field "$BODY" outcome) deployment=$(json_field "$BODY" deploymentUuid)$(pa_suffix)"
     echo "a telepites allapota: bash scripts/vegrehajto.sh allapot ${R}"
     ;;
   allapot)
@@ -171,7 +179,7 @@ print(json.dumps({"r": os.environ["R"], "requestMessageId": os.environ["MSG_ID"]
     [[ "$R" =~ ^[A-Z0-9]{1,16}$ ]] || fail "R alakja hibas: ${R}"
     call GET "${EXEC_URL}/requests/${R}"
     [ "$CODE" = 200 ] || executor_fail "R lekerdezese"
-    echo "R=${R} status=$(json_field "$BODY" status) outcome=$(json_field "$BODY" outcome) deployment=$(json_field "$BODY" deploymentUuid) lejar=$(json_field "$BODY" expiresAt)"
+    echo "R=${R} status=$(json_field "$BODY" status) outcome=$(json_field "$BODY" outcome) deployment=$(json_field "$BODY" deploymentUuid) lejar=$(json_field "$BODY" expiresAt)$(pa_suffix)"
     echo "$(json_field "$BODY" canonicalLine)"
     ;;
   *) usage ;;

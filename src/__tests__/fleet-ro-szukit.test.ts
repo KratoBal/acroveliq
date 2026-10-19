@@ -55,6 +55,16 @@ describe('fleet-ro-szukit.sh', () => {
     expect((await run()).out.split('\n')[0]).toBe('SZUKIT nincs-teendo')
   })
 
+  it('a BIG output does not tip the verdict: the first line decides, whatever follows (no SIGPIPE from a closed grep under pipefail)', async () => {
+    const filler = 'x'.repeat(100).concat('\n').repeat(3000)
+    fakeSsh(`fleet-ro-grant szukit: nincs lejárt sor (2026-10-19)\n${filler}`, 0)
+    const r = await run()
+    expect(r.code).toBe(0)
+    expect(r.out.split('\n')[0]).toBe('SZUKIT nincs-teendo')
+    fakeSsh(`${filler}NOTICE:  REVOKE SELECT (id) ON "BankAccount" FROM fleet_ro\n${filler}`, 0)
+    expect((await run()).out.split('\n')[0]).toBe('SZUKIT visszavett 1')
+  })
+
   it('lines taken back: the verdict counts the REVOKE lines', async () => {
     fakeSsh(
       'NOTICE:  REVOKE SELECT ("amount") ON "BankTransaction" FROM fleet_ro\nNOTICE:  REVOKE SELECT (id) ON "BankAccount" FROM fleet_ro',

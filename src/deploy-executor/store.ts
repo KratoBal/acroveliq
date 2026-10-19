@@ -47,6 +47,11 @@ export interface GrantRecord {
   planSha256: string
   /** the plan, canonical order, `<+|-> <table> <column>` */
   ops: string[]
+  /**
+   * What a `terv` run after the apply showed: `ures` (nothing left to change), `nem-ures` or `nem-olvashato`. Set whether the
+   * apply answered or not: a gate that timed out AFTER its COMMIT has applied the grants, and the outcome alone would say it failed.
+   */
+  utana?: 'ures' | 'nem-ures' | 'nem-olvashato'
 }
 
 export interface RequestRecord {
