@@ -207,6 +207,23 @@ A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker 
   újrateremtés kiüríti: utána minden jóváhagyás „no recorded verdict” alakban elutasít, amíg barracuda újra nem rögzít.
   Zárva marad, nem nyitva. **A telepítése jogosultság-változás:** barracuda új sudo-sort kap (`fleet-approve record *`),
   amit a bootstrap 4a lépése magától ír, amint az élő fa ezt a változatot hordozza.
+- **A GitHub-review és a beolvasztó kapuja (feladat `b25-gepi-review`, barracuda (b) útja).** A `review-ellenoriz.sh` egy
+  APPROVE-nál a root rekord UTÁN a `sudo -n fleet-approve approve`-ot is futtatja (sudo-sor és profil nem változik:
+  ugyanaz a sor, mint a `record`-é, a szkript hívja, nem barracuda). Ha az elbukik, az idővonal és a root rekord marad,
+  a szkript 1-gyel lép ki, és megmondja, hogy a GitHub-review hiányzik és miért. A 13-as (a GitHub nem válaszolt) után
+  a kiírt újrapróba-sor a szkript **csak-GitHub alakja**, nem a sudo-sor (azt a reviewer profilja megtagadja):
+  `review-ellenoriz.sh --csak-github-review <csomag> <task_id>`; ez a verdikt eseményt nem írja újra, és csak akkor fut,
+  ha az idővonalon a hívó LEGUTOBBI ítélete erre a PR-ra pontosan ez az APPROVE ugyanerre a fejre (a root rekordot,
+  amit csak a jóváhagyó olvas, a jóváhagyó maga ellenőrzi: kilépés 10, ha nincs rá rögzített APPROVE, vagy a PR feje
+  elmozdult). A `pr-beolvaszt.sh` a PUT előtt a `gepi-review-ellenor.py`-nal megkérdezi a GitHubot, van-e a fejen
+  APPROVED review **a jóváhagyók listájáról** (egy idegen login APPROVED-je nem elég, pedig a ruleset minden írási jogú felhasználóét számolná). Egy
+  lista van: `scripts/gepi-review.json` (`owner`, `repos` a `fleet-approve` konfigjának alakjával, és `reviewers`, a gépi
+  fiók GitHub-loginja). **Az élő konfig (`/etc/fleet-github/app.json`) root-mappában áll, agens és CI nem olvassa**, ezért
+  két ellenőrzés van: a teszt a konfig repo-beli mintájához (`scripts/root/fleet-github-app.example.json`) vet, és a
+  telepítő lépés egy mondat, rootként: `python3 scripts/gepi-review-ellenor.py --osszevet /etc/fleet-github/app.json`
+  (0: egyezik; 1: eltér, megnevezi mindkét oldal többletét). **A `reviewers` ma ÜRES:** a gépi fiók loginja nincs a
+  repóban; amíg üres, a kapu „nem ellenőrizhető”-t mond és kiírja, kik tettek APPROVED-et, az első valós mérés ebből
+  tölti ki. A beolvasztó módja egy sor (`GEPI_REVIEW_KENYSZERIT=0`, napló mód); a ruleset bekapcsolásával egy lépésben 1.
 - **A csomag és a fej kötése: ELDÖNTVE (acrobot, 31441): (b), a review-csomag diffjét a reviewer eszköze állítja elő a teljes fejből; amíg ez nincs bent, a 7. lépés vár.** A jóváhagyó azt a fejet hagyja jóvá, amit a csomag README-je
   megnevez, a README-t viszont a fejlesztő írja, barracuda pedig a `diff.patch`-et olvassa. Egy fej, amiben több áll, mint a
   diffben, ma átmenne. A választott alak a (b): a reviewer nem a fejlesztő állítását olvassa, hanem a fejből előállított diffet.

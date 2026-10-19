@@ -20,7 +20,7 @@ import { canonicalLine, GRANT_APPROVAL_CATEGORY, grantCanonicalLine, GrantLineEr
 import { findApp, findGrant, GRANT_ACTION, type ExecutorConfig, type GrantEntry } from './config.js'
 import { parseGateOutput, planText, type GatePlan } from './grant-plan.js'
 import type { RequestRecord, RequestStore, Relation } from './store.js'
-import type { CoolifyClient, DiscordReader, GateClient, GitHubReader } from './transports.js'
+import type { CoolifyClient, DiscordReader, GateClient, GitHubReader, HealthProbe } from './transports.js'
 import { verifyDiscordApproval, type ChannelMessage } from './verify-approval.js'
 
 export class Refusal extends Error {
@@ -60,7 +60,16 @@ export interface ExecutorDeps {
   /** how often and how long a queued deployment is followed */
   followEveryMs?: number
   followForMs?: number
+  /** the public health address probe; with an app's healthUrl it decides `finished_verified` (absent: no probe is made) */
+  health?: HealthProbe
+  /** how often and how long the health address is polled after Coolify says finished */
+  healthEveryMs?: number
+  healthForMs?: number
 }
+
+/** Poll the health address every 2 s, at most 120 s (nautilus measured about 15 s of 503 after `finished`, Cápárium #16) */
+export const HEALTH_EVERY_MS = 2_000
+export const HEALTH_FOR_MS = 120_000
 
 export const SHA = /^[0-9a-f]{40}$/
 const REQUESTER = /^[a-z][a-z0-9-]{0,31}$/
@@ -551,6 +560,19 @@ export class DeployExecutor {
     }
   }
 
+  /** Poll the health address until it answers 200 (2 s apart, 120 s at most by default); the last status seen is returned. */
+  private async waitHealthy(probe: HealthProbe, url: string): Promise<{ ok: boolean; last: number | null }> {
+    const every = this.deps.healthEveryMs ?? HEALTH_EVERY_MS
+    const deadline = this.now() + (this.deps.healthForMs ?? HEALTH_FOR_MS)
+    let last: number | null = null
+    for (;;) {
+      last = await probe.status(url).catch(() => null)
+      if (last === 200) return { ok: true, last }
+      if (this.now() >= deadline) return { ok: false, last }
+      await this.sleep(every)
+    }
+  }
+
   /** Follow the queued deployment until Coolify names the commit it built. */
   private async follow(r: string): Promise<void> {
     const { store, coolify } = this.deps
@@ -570,8 +592,19 @@ export class DeployExecutor {
       if (d && (d.status === 'finished' || d.status === 'failed' || (d.status ?? '').startsWith('cancelled'))) {
         rec.observed = { commit: d.commit, status: d.status }
         rec.outcome = d.status !== 'finished' ? 'failed' : d.commit === rec.sha ? 'finished_verified' : 'commit_mismatch'
+        // `finished` is Coolify's word for the build and the container start; a proxy answers 503 until the container
+        // is healthy (Cápárium #16: about 15 s after `finished`). Only the right commit is worth waiting for.
+        if (rec.outcome === 'finished_verified') {
+          const url = findApp(this.deps.config, rec.env, rec.app)?.healthUrl
+          if (url) {
+            // a configured address with no probe wired in is a wiring error: it must not read as healthy
+            const h = this.deps.health ? await this.waitHealthy(this.deps.health, url) : { ok: false, last: null }
+            rec.observed.health = h.last
+            if (!h.ok) rec.outcome = 'finished_unhealthy'
+          }
+        }
         store.put(rec)
-        store.audit(rec.outcome, { r, deploymentUuid, observedCommit: d.commit, status: d.status })
+        store.audit(rec.outcome, { r, deploymentUuid, observedCommit: d.commit, status: d.status, ...(rec.observed.health !== undefined ? { health: rec.observed.health } : {}) })
         return
       }
       if (this.now() >= deadline) {

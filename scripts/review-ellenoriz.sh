@@ -65,8 +65,27 @@
 # an APPROVE through after an ELTER). Missing: exit 1, the timeline verdict stands, and the way on is
 # a new packet from the developer. A CHANGES needs nothing: it only closes.
 #
-# Exit: 0 recorded and read back (and root-recorded where the approver is installed);
-# 1 refused, not confirmed, or not root-recorded; 2 bad argument.
+# THE GITHUB REVIEW (b25-gepi-review, barracuda's route (b), acrobot 32880/32881): after the root record
+# an APPROVE also runs `sudo -n fleet-approve approve <repo> <pr> <task_id>` (the same sudo line as the
+# record, no profile change). That posts the machine account's APPROVE review pinned to the recorded
+# head, which is what the ruleset's required approval counts. If it fails the timeline APPROVE and the
+# root record STAY (they are true: barracuda did approve), but the script exits 1 and says that the
+# GitHub review is missing and why (10 refused: the head moved or the PR is no longer open, a new
+# packet is needed; 13 GitHub did not answer: run the printed `fleet-approve approve` line again, which
+# does not repeat the verdict event). A CHANGES posts no review.
+#
+# THE GITHUB-ONLY FORM (barracuda, #258 review 1): `review-ellenoriz.sh --csak-github-review <csomag> <task_id>`
+# runs ONLY the approve step for an APPROVE that is already recorded, so a 13 is recoverable without writing the
+# verdict event twice, and without the reviewer ever calling the sudo line itself (his profile refuses it:
+# that was the point of route (b)). It needs the timeline's LATEST verdict by the caller on this PR to be
+# exactly this APPROVE on this head (anything else: refused, nothing run), and the approver to be installed
+# and allowed by sudo (here a missing approver is a FAIL, not a note: the caller asked for the review). The
+# root record, which only the approver can read, is checked by the approver: no recorded APPROVE for this
+# head, or a PR whose head moved, is its exit 10. It is the line a failed approve prints as the retry line. scripts/pr-beolvaszt.sh checks that
+# the review exists on the head before it merges (scripts/gepi-review-ellenor.py).
+#
+# Exit: 0 recorded and read back (and root-recorded, and GitHub-reviewed, where the approver is installed);
+# 1 refused, not confirmed, not root-recorded, or an APPROVE whose GitHub review failed; 2 bad argument.
 set -uo pipefail
 set -f
 
@@ -76,9 +95,15 @@ FLEET_API=/home/marveen/marveen/scripts/fleet-api.sh
 FLEET_APPROVE=/usr/local/sbin/fleet-approve
 SUDO="sudo -n"
 
-usage() { echo "usage: review-ellenoriz.sh <csomag> <task_id> <APPROVE|CHANGES>" >&2; exit 2; }
+usage() { echo "usage: review-ellenoriz.sh <csomag> <task_id> <APPROVE|CHANGES>" >&2; echo "       review-ellenoriz.sh --csak-github-review <csomag> <task_id>" >&2; exit 2; }
 [ "$#" -eq 3 ] || usage
+# the GitHub-review-only form: the verdict is already recorded, only the approve step runs (see the header)
+ONLYGH=0
+if [ "$1" = --csak-github-review ]; then
+  ONLYGH=1; shift; set -- "$1" "$2" APPROVE
+fi
 C="$1"; TASK="$2"; V="$3"
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 DOCS=0
 if [[ "$C" =~ ^doc-[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then
   DOCS=1; DIRNAME="$C"; PRREF=""
@@ -194,9 +219,51 @@ if [ "$DOCS" = 1 ]; then
 else
   REF="$V $PRREF pr-$C${HEAD7:+ fej $HEAD7}"
 fi
+
+# THE GITHUB REVIEW STEP, one place for both forms (the normal APPROVE and --csak-github-review): the approver
+# posts the machine account's APPROVE review pinned to the recorded head. Every failure keeps what is already
+# recorded and says LOUDLY that the review is missing and why.
+github_review() {
+  local args=(approve "${PRREF_ROOT%#*}" "${PRREF_ROOT##*#}" "$TASK") rc why
+  # the reviewer's own retry line: THIS script in its GitHub-only form, not the sudo line (the profile refuses that)
+  local rerun="bash $SELF --csak-github-review $C $TASK"
+  if ! $SUDO -l "$FLEET_APPROVE" "${args[@]}" > /dev/null 2>&1; then
+    echo "FAIL: az idovonalon es a root rekordban az APPROVE megvan, de a sudo az approve iget nem engedi: a GitHub-review NEM jott letre, a ruleset nem szamolja a jovahagyast" >&2
+    exit 1
+  fi
+  $SUDO "$FLEET_APPROVE" "${args[@]}" > "$T/approve" 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    case "$rc" in
+      10) why="elutasitva (nincs rogzitett APPROVE erre a fejre, a PR feje mas, mint amit atneztel, vagy a PR mar nem nyitott): a fejlesztotol uj csomag kell" ;;
+      13) why="a GitHub nem valaszolt vagy elutasitotta: ujraprobalhato" ;;
+      *) why="ismeretlen hiba" ;;
+    esac
+    echo "FAIL: az idovonalon es a root rekordban az APPROVE megvan, de a GitHub-review NEM jott letre (kilepes $rc, $why): $(head -c 300 "$T/approve")" >&2
+    [ "$rc" = 13 ] && echo "  Ujra, a verdict esemeny ismetlese nelkul: $rerun" >&2
+    exit 1
+  fi
+  echo "OK GitHub-review: $(head -c 300 "$T/approve")"
+  exit 0
+}
 verdict_refs() { grep '  esemeny  verdict ' "$1" | sed -E -e 's/^.*  esemeny  verdict +[^ ]+ +//' -e 's/ \{".*$//'; }
 count_ref() { grep -c -F -x -e "$1" < <(verdict_refs "$2") || true; }
 mine() { grep '  esemeny  verdict ' "$1" | grep -c -F " $ACTOR " || true; }
+if [ "$ONLYGH" = 1 ]; then
+  # only for a PR packet whose LATEST verdict by this caller on this PR is exactly this APPROVE (same head). The
+  # root record (which only the approver can read) is checked by the approver itself: no recorded APPROVE for
+  # this head, or a PR head that moved, is its exit 10.
+  [ "$DOCS" = 0 ] || { echo "FAIL: dokumentum-csomagnak nincs PR-ja, nincs GitHub-review" >&2; exit 1; }
+  [ "$V" = APPROVE ] || exit 1
+  LASTREF=""
+  while IFS= read -r ref; do
+    if [[ "$ref" == "APPROVE $PRREF pr-$C" || "$ref" == "APPROVE $PRREF pr-$C fej "* || "$ref" == "CHANGES $PRREF pr-$C" || "$ref" == "CHANGES $PRREF pr-$C fej "* ]]; then LASTREF="$ref"; fi
+  done < <(grep '  esemeny  verdict ' "$T/before" | grep -F " $ACTOR " | sed -E -e 's/^.*  esemeny  verdict +[^ ]+ +//' -e 's/ \{".*$//')
+  [ "$LASTREF" = "$REF" ] \
+    || { echo "FAIL: az idovonalon a(z) $TASK feladaton $ACTOR legutobbi iteleten erre a PR-ra nem ez all: '$REF' (hanem: '${LASTREF:-nincs}'): nincs mit GitHub-reviewva tenni" >&2; exit 1; }
+  [ -x "$FLEET_APPROVE" ] || { echo "FAIL: a gepi jovahagyo nincs telepitve ($FLEET_APPROVE): nincs GitHub-review" >&2; exit 1; }
+  github_review
+fi
 n0="$(count_ref "$REF" "$T/before")"; a0="$(mine "$T/before")"
 
 if ! bash "$FLEET_API" task-event "$TASK" verdict "$ACTOR" "" "$REF" > "$T/resp" 2>&1; then
@@ -246,3 +313,9 @@ if ! $SUDO "$FLEET_APPROVE" "${ROOTARGS[@]}" > "$T/root" 2>&1; then
   exit 1
 fi
 echo "OK root rekord: $(head -c 300 "$T/root")"
+
+# THE GITHUB REVIEW (b25-gepi-review): the root record is what the approver trusts, the GitHub review is
+# what the ruleset counts. An APPROVE ends with `fleet-approve approve`, which posts the machine account's
+# review pinned to the recorded head. A CHANGES posts nothing.
+[ "$V" = APPROVE ] || exit 0
+github_review

@@ -11,7 +11,7 @@ import { parseExecutorConfig } from './config.js'
 import { DeployExecutor } from './executor.js'
 import { createExecutorServer } from './http.js'
 import { RequestStore } from './store.js'
-import { coolifyRest, discordRest, gateSsh, githubRest, readSecretFile } from './transports.js'
+import { coolifyRest, discordRest, gateSsh, githubRest, healthHttp, readSecretFile } from './transports.js'
 import { assertHungarianDates } from './verify-approval.js'
 
 async function main(): Promise<void> {
@@ -26,6 +26,7 @@ async function main(): Promise<void> {
     discord: discordRest(readSecretFile(config.discord.tokenFile)),
     github: githubRest(readSecretFile(config.github.tokenFile)),
     coolify: coolifyRest(hosts),
+    health: healthHttp(),
     gate: config.gate ? gateSsh(config.gate) : undefined,
   })
   const recovered = await executor.recover()

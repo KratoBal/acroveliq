@@ -30,6 +30,8 @@ export type DeploymentOutcome =
   | 'commit_mismatch'
   | 'failed'
   | 'unverified_timeout'
+  /** the right commit was built, but the app's public health address never answered 200 within the window (healthUrl set) */
+  | 'finished_unhealthy'
   /** a grant R: the gate's `alkalmaz` did not answer 0 (spent; the gate's own log says why) */
   | 'alkalmaz_hiba'
   /** a grant R: applied, but the plan run afterwards still shows changes */
@@ -79,7 +81,7 @@ export interface RequestRecord {
   deploymentUuid?: string
   outcome?: DeploymentOutcome
   /** what Coolify reported, never more than these fields */
-  observed?: { commit: string | null; status: string | null }
+  observed?: { commit: string | null; status: string | null; /** the last HTTP status the health address gave (null: no answer), only when the app has a healthUrl */ health?: number | null }
 }
 
 interface StoreFile {
