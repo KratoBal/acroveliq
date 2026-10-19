@@ -53,7 +53,14 @@ export interface CoolifyClient {
   listAppDeployments(host: string, appUuid: string, take: number): Promise<CoolifyDeployment[]>
 }
 
+/** One look at an application's public health address. */
+export interface HealthProbe {
+  /** the HTTP status, or null when nothing answered (refused, timed out, DNS); a redirect is NOT followed and is its own status */
+  status(url: string): Promise<number | null>
+}
+
 const TIMEOUT_MS = 15_000
+const HEALTH_TIMEOUT_MS = 5_000
 
 export function readSecretFile(path: string): string {
   const v = readFileSync(path, 'utf8').trim()
@@ -72,6 +79,21 @@ async function getJson(fetchImpl: typeof fetch, service: string, url: string, he
   if (allow404 && resp.status === 404) return null
   if (!resp.ok) throw new HttpError(service, resp.status)
   return resp.json()
+}
+
+/** The probe reads the status only: no body is read, no redirect followed, no header sent but the default ones. */
+export function healthHttp(fetchImpl: typeof fetch = fetch): HealthProbe {
+  return {
+    async status(url) {
+      try {
+        const resp = await fetchImpl(url, { redirect: 'manual', signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) })
+        await resp.body?.cancel()
+        return resp.status
+      } catch {
+        return null
+      }
+    },
+  }
 }
 
 export function discordRest(token: string, fetchImpl: typeof fetch = fetch): DiscordReader {

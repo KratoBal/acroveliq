@@ -30,6 +30,12 @@ export interface AppEntry {
   actions: readonly ExecutorAction[]
   /** how long an R stays usable, in minutes */
   approvalMinutes: number
+  /**
+   * The app's PUBLIC health address (https, no credentials or query). When set, a deployment that Coolify reports
+   * finished on the right commit is `finished_verified` only after this address answers 200 (a container that is
+   * still starting answers 503 from the proxy). Absent: the check is skipped, as before.
+   */
+  healthUrl?: string
 }
 
 /** A database whose fleet_ro grants this executor may apply, on the gate's host. */
@@ -136,6 +142,20 @@ function apiUrl(v: unknown, path: string): string {
   return s.replace(/\/+$/, '')
 }
 
+/** The health address: https only (a plain http probe of a public host proves less and leaks nothing worth the risk), no credentials, query or fragment. */
+function healthUrl(v: unknown, path: string): string {
+  const s = str(v, path)
+  let u: URL
+  try {
+    u = new URL(s)
+  } catch {
+    fail(path, 'not a URL')
+  }
+  if (u.protocol !== 'https:') fail(path, 'must be https')
+  if (u.username || u.password || u.search || u.hash) fail(path, 'no credentials, query or fragment')
+  return s
+}
+
 export function parseExecutorConfig(raw: unknown): ExecutorConfig {
   const top = obj(raw, '', ['stateDir', 'discord', 'github', 'coolifyHosts', 'apps'], ['gate', 'grants'])
   const d = obj(top['discord'], 'discord', ['channelId', 'requestBotUserId', 'deciderUserIds', 'yes', 'no', 'tokenFile'])
@@ -170,7 +190,7 @@ export function parseExecutorConfig(raw: unknown): ExecutorConfig {
   const seenUuid = new Set<string>()
   const apps: AppEntry[] = appsRaw.map((v, i) => {
     const p = `apps[${i}]`
-    const a = obj(v, p, ['env', 'name', 'coolifyHost', 'coolifyUuid', 'repo', 'branch', 'actions', 'approvalMinutes'])
+    const a = obj(v, p, ['env', 'name', 'coolifyHost', 'coolifyUuid', 'repo', 'branch', 'actions', 'approvalMinutes'], ['healthUrl'])
     const env = str(a['env'], `${p}.env`, NAME)
     const name = str(a['name'], `${p}.name`, NAME)
     const coolifyHost = str(a['coolifyHost'], `${p}.coolifyHost`, NAME)
@@ -199,6 +219,7 @@ export function parseExecutorConfig(raw: unknown): ExecutorConfig {
       branch: str(a['branch'], `${p}.branch`, BRANCH),
       actions,
       approvalMinutes: minutes,
+      ...('healthUrl' in a ? { healthUrl: healthUrl(a['healthUrl'], `${p}.healthUrl`) } : {}),
     }
   })
 

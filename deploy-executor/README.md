@@ -23,7 +23,7 @@ this container's secrets.
 3. the owner answers on Discord, as a reply: "igen <code>"
 4. POST http://vegrehajto:8787/executions {"r","requestMessageId": <the #33 Discord message id>}
    -> 200 {"status":"used","outcome":"queued","deploymentUuid",...}
-5. GET http://vegrehajto:8787/requests/<r>  -> outcome: finished_verified | commit_mismatch | failed | unverified_timeout
+5. GET http://vegrehajto:8787/requests/<r>  -> outcome: finished_verified | finished_unhealthy | commit_mismatch | failed | unverified_timeout
 ```
 
 The fleet does not hand-write these calls: `scripts/vegrehajto.sh` does steps 1-2
@@ -32,6 +32,8 @@ line as its whole description and an expiry inside the R's window; the
 dashboard's default of 1440 minutes would be refused), step 4
 (`vegrehajt <R> <approval_id>`: only an approved, Discord-decided approval of
 this very R is sent on) and step 5 (`allapot <R>`).
+
+**What `finished_verified` means (task `vegrehajto-health-poll`, nautilus' measurement on the Cápárium #16 deployment: every route was 503 for about 15 s after Coolify said finished, because the proxy sends traffic only to a healthy container).** An app entry in `config.json` may carry an optional `healthUrl` (https, no credentials, query or fragment; the app's PUBLIC health address, owner's data like the rest of the file). With it, a deployment that Coolify reports finished on the approved commit is `finished_verified` only after that address answers **200**: the executor looks every 2 s, for at most 120 s, does not follow redirects, and reads only the status. If it never answers 200 the outcome is `finished_unhealthy` (the right commit was built; `observed.health` holds the last status, `null` for no answer). Without a `healthUrl` nothing changes. **What a 200 does not prove:** that it is the NEW container answering (the health address carries no version), and that the rest of the app works; it closes the window in which the verdict came before the container was ready, not more. The probe runs from the executor's container: from there the public address must be reachable (measure it before setting the line: `docker exec vegrehajto node -e "fetch('<healthUrl>').then(r=>console.log(r.status))"`).
 
 A refusal is `403 {"error": <reason>}` and leaves the R unused. Anything after
 the R is marked used spends it (also a failed Coolify call): a new request and a
