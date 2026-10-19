@@ -318,7 +318,7 @@ w.file(C, DOC, 'e1' * 20, text='nincs blokk')
 check('K4 no block at the commit: elutasit', verdict(w=w), ('elutasit', 'blokk-hianyzik:' + DOC))
 check('K4 neither paths nor a block to compare: elutasit', verdict(rule={}), ('elutasit', 'nincs-mit-osszevetni'))
 check('K4 a rule that is not an object: elutasit', verdict(rule=None), ('elutasit', 'nincs-mit-osszevetni'))
-for bad in ('../etc/passwd', '/abs', 'a b', 'a//b', ''):
+for bad in ('../etc/passwd', 'a/../b', './a', 'a/.', '/abs', 'a b', 'a//b', ''):
     check('K4 a bad path %r: elutasit, named, before any request about it' % bad, verdict(rule={'utak': [bad]}), ('elutasit', 'rossz-ut:%s' % bad))
 w = World()
 w.file(C, DOC, 'e1' * 20, text='\xe9\xff')

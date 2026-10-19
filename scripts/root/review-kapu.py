@@ -38,6 +38,13 @@ GITHUB_API = 'https://api.github.com'
 SHA_RX = re.compile(r'^[0-9a-f]{40}$')
 REPO_RX = re.compile(r'^[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}$')
 PATH_RX = re.compile(r'^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$')
+
+
+def good_path(path):
+    """A repository path of plain name characters, with no `.` or `..` component (the character class alone lets `..` through)."""
+    return bool(PATH_RX.match(path)) and all(part not in ('.', '..') for part in path.split('/'))
+
+
 NAME_RX = re.compile(r'^[A-Za-z0-9._ -]{1,100}$')
 WORKFLOWS = '.github/workflows/'
 MAX_PAGES = 10
@@ -119,7 +126,7 @@ class ReviewKapu:
     def path_id(self, repo, ref, path):
         """('tree'|'blob', git id) of `path` at `ref`, or None when it does not exist. A directory is read with the colon form of the
         trees endpoint (404: absent, 422: it is a file), a file with the contents endpoint."""
-        if not PATH_RX.match(path):
+        if not good_path(path):
             raise Elutasit('rossz-ut:%s' % path)
         status, body = self.get(repo, 'git/trees/%s:%s' % (ref, path), 'tree', soft=(404, 422))
         if status == 200:
@@ -136,7 +143,7 @@ class ReviewKapu:
         return 'blob', body['sha']
 
     def file_text(self, repo, ref, path):
-        if not PATH_RX.match(path):
+        if not good_path(path):
             raise Elutasit('rossz-ut:%s' % path)
         _, body = self.get(repo, 'contents/%s?ref=%s' % (urllib.parse.quote(path), ref), 'contents')
         if not isinstance(body, dict) or body.get('type') != 'file' or body.get('encoding') != 'base64':
