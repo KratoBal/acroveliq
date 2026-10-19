@@ -153,7 +153,12 @@ A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker 
    agent-murena ALL=(root) NOPASSWD: /usr/local/sbin/fleet-github token *
    agent-barracuda ALL=(root) NOPASSWD: /usr/local/sbin/fleet-approve approve *
    agent-barracuda ALL=(root) NOPASSWD: /usr/local/sbin/fleet-approve record *
+   agent-barracuda ALL=(root) NOPASSWD: /usr/local/sbin/fleet-github token KratoBal/caparium-napplo olvas
    ```
+
+   Az utolsó sor (2026-10-19, Balázs, Eldöntendő msg 1561692771733999658): a privát ügyfél-repón a reviewer saját
+   fej-diffje (`scripts/lib/review-fej-diff.py`) csak olvasó, egyórás tokennel. Hozzá az `app.json` `callers`
+   részébe: `"agent-barracuda": {"caparium-napplo": ["olvas"]}`.
 9. **Az ügynökök gitje** (ügynökönként, a saját felhasználójával). A git a következő helperre lép, ha egy nem ad
    jelszót, tehát egy megmaradt régi helper (rendszer-, globális vagy repó-szinten; a mai klónokban repó-szinten áll, és a
    tulajdonosi tokent adja) csendben a régi tokennel pusholna, és a 10. lépés mérése zöld maradna (barracuda, #200).

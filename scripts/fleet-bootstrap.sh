@@ -321,6 +321,9 @@ d4_sudoers_content() {
   echo "agent-barracuda ALL=(root) NOPASSWD: $D4_SBIN/fleet-approve approve *"
   # the verdict's root record (the D4 step list E3 (a)): review-ellenoriz.sh calls it, as barracuda
   echo "agent-barracuda ALL=(root) NOPASSWD: $D4_SBIN/fleet-approve record *"
+  # read, and only read, on the one private customer repo: the reviewer's own head diff (review-fej-diff.py;
+  # Balázs 2026-10-19 10:49 UTC, Eldöntendő msg 1561692771733999658). Exact arguments, no wildcard.
+  echo "agent-barracuda ALL=(root) NOPASSWD: $D4_SBIN/fleet-github token KratoBal/caparium-napplo olvas"
 }
 d4_tmpdir="$(mktemp -d)"
 d4_src_ok=1
