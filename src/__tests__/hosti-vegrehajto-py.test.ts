@@ -39,6 +39,23 @@ describe('hosti-vegrehajto.py and its guard', () => {
   }, 150_000)
 })
 
+describe('naplo-szuro.py and its guard (the no-command-line plan, point G)', () => {
+  it('the filter guard passes, with all its checks', async () => {
+    const out = await new Promise<{ code: number; text: string }>((resolve) => {
+      execFile(
+        'python3',
+        ['-B', join(root, 'scripts', '__tests__', 'naplo-szuro.test.py')],
+        { timeout: 60_000, maxBuffer: 10_000_000 },
+        (err, stdout, stderr) => resolve({ code: err ? ((err as { code?: number }).code ?? 1) : 0, text: stdout + stderr }),
+      )
+    })
+    expect(out.text.split('\n').filter((l) => l.includes('[FAIL]'))).toEqual([])
+    expect(out.text).toContain('0 failed')
+    expect((out.text.match(/\[PASS\]/g) ?? []).length).toBeGreaterThanOrEqual(70)
+    expect(out.code).toBe(0)
+  }, 90_000)
+})
+
 describe('the systemd units', () => {
   const socket = code(read('scripts', 'host', 'hosti-vegrehajto.socket'))
   const service = code(read('scripts', 'host', 'hosti-vegrehajto@.service'))
