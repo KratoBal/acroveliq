@@ -1,6 +1,6 @@
 // The mail relay's named operations (task level-kozvetito, plan v2). A closed list: what is not here is not
-// written. Slice 1 is the READ half: list, read, attachment, calendar. The balazs@ label and archive
-// verbs are slice 2 and live in their own file.
+// written. The READ verbs are here (list, read, attachment, calendar); the balazs@ label and archive
+// verbs are in `modify.ts`, the one file allowed to name a Gmail write.
 //
 // The caller is a model that reads untrusted text, so everything that leaves is shaped for that reader:
 //   - every text of the mailbox comes inside an `<untrusted>` envelope (the same wrapper the fleet uses);
@@ -14,33 +14,30 @@ import { join, sep } from 'node:path'
 
 import { cleanMessageText, wrapUntrusted } from '../prompt-safety.js'
 import { ACCOUNTS, type AccountId, type RelayConfig } from './config.js'
+import { Refusal, type LogFields } from './errors.js'
 import { GoogleError, type GoogleApi } from './google.js'
+import { memoryLedger, type ArchiveLedger } from './ledger.js'
+import { MailboxWriter } from './modify.js'
 import { excludedSender, redactBody, senderDomain } from './redact.js'
 
-/** A refusal the caller is told about: an HTTP status and a fixed reason. */
-export class Refusal extends Error {
-  constructor(
-    readonly status: number,
-    readonly reason: string,
-  ) {
-    super(reason)
-  }
-}
-
-export type LogFields = Record<string, string | number | boolean>
+export { Refusal, type LogFields }
 
 export interface RelayDeps {
   config: RelayConfig
   google: GoogleApi
   log: (fields: LogFields) => void
   nowMs?: () => number
+  /** what the relay archived and when; the daily cap and `inbox-vissza` read it (default: in memory) */
+  ledger?: ArchiveLedger
 }
 
 const READ_VERBS = ['lista', 'olvas', 'csatolmany'] as const
+/** The write verbs exist on balazs@ only, and are all in modify.ts. */
+const WRITE_VERBS = ['cimke-letrehoz', 'cimkez', 'archival', 'inbox-vissza'] as const
 /** The closed verb list per account. A verb that is not in an account's list answers 404, whoever asks. */
 export const VERBS: Readonly<Record<AccountId, readonly string[]>> = {
   info: [...READ_VERBS, 'naptar'],
-  balazs: [...READ_VERBS],
+  balazs: [...READ_VERBS, ...WRITE_VERBS],
 }
 
 const GMAIL = 'https://gmail.googleapis.com/gmail/v1/users/me'
@@ -164,10 +161,12 @@ export class MailRelay {
   private readonly byHash = new Map<string, string>()
   private readonly windows = new Map<string, { minute: number; count: number }>()
   private readonly now: () => number
+  private readonly writer: MailboxWriter
 
   constructor(private readonly deps: RelayDeps) {
     for (const c of deps.config.callers) this.byHash.set(c.tokenSha256, c.name)
     this.now = deps.nowMs ?? Date.now
+    this.writer = new MailboxWriter({ config: deps.config, google: deps.google, ledger: deps.ledger ?? memoryLedger(), nowMs: this.now })
   }
 
   /** The caller a token belongs to, or null. Compared as hashes, in constant time, against every entry. */
@@ -232,6 +231,14 @@ export class MailRelay {
         return this.csatolmany(account, body)
       case 'naptar':
         return this.naptar(account, body)
+      case 'cimke-letrehoz':
+        return this.writer.cimkeLetrehoz(account, body)
+      case 'cimkez':
+        return this.writer.cimkez(account, body)
+      case 'archival':
+        return this.writer.archival(account, body)
+      case 'inbox-vissza':
+        return this.writer.inboxVissza(account, body)
       default:
         throw new Refusal(404, 'no such verb')
     }

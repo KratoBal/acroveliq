@@ -28,7 +28,7 @@ const BASE = {
     balazs: { address: 'balazs@acropora.example', refreshTokenFile: '/run/secrets/balazs', calendar: false, redaction: 'all-short-numbers' },
   },
   excludedSenders: { domains: ['bank.example'], addresses: [] },
-  limits: { callsPerMinute: 60, maxAttachmentBytes: 1000 },
+  limits: { callsPerMinute: 60, maxAttachmentBytes: 1000, archivePerDay: 100 },
 }
 
 const clone = () => JSON.parse(JSON.stringify(BASE)) as Record<string, any>
@@ -45,7 +45,7 @@ describe('the settings are strict', () => {
   it('the example in the repository parses (the shape an installer copies)', () => {
     const example = JSON.parse(readFileSync(join(process.cwd(), 'level-kozvetito', 'config.example.json'), 'utf8'))
     const parsed = parseRelayConfig(example)
-    expect([parsed.callers.length, parsed.accounts.info.calendar, parsed.accounts.balazs.calendar, parsed.excludedSenders.domains.includes('accounts.google.com')]).toEqual([1, true, false, true])
+    expect([parsed.callers.length, parsed.accounts.info.calendar, parsed.accounts.balazs.calendar, parsed.excludedSenders.domains.includes('accounts.google.com'), parsed.limits.archivePerDay]).toEqual([1, true, false, true, 100])
   })
 
   const bad: [string, (c: Record<string, any>) => void][] = [
@@ -61,6 +61,8 @@ describe('the settings are strict', () => {
     ['an unknown redaction mode', (c) => { c['accounts'].info.redaction = 'none' }],
     ['a calendar flag that is not a boolean', (c) => { c['accounts'].info.calendar = 'igen' }],
     ['a limit out of range', (c) => { c['limits'].callsPerMinute = 0 }],
+    ['no daily archive limit', (c) => { delete c['limits'].archivePerDay }],
+    ['a daily archive limit of zero', (c) => { c['limits'].archivePerDay = 0 }],
     ['a bad excluded domain', (c) => { c['excludedSenders'].domains = ['nem domain'] }],
     ['an account address that is not an address', (c) => { c['accounts'].balazs.address = 'balazs' }],
   ]
@@ -89,7 +91,7 @@ describe('the HTTP door', () => {
         headers: { ...(init.token ? { Authorization: `Bearer ${init.token}` } : {}), ...(init.method === 'POST' ? { 'Content-Type': 'application/json' } : {}), ...(init.headers as Record<string, string>) },
       })
   }
-  const quiet: GoogleApi = { getJson: async () => ({ messages: [] }) }
+  const quiet: GoogleApi = { getJson: async () => ({ messages: [] }), postJson: async () => ({}) }
 
   it('answers healthz, and 404 elsewhere', async () => {
     const call = await start(quiet)
@@ -116,7 +118,7 @@ describe('the HTTP door', () => {
   })
 
   it('a verb that does not exist: 404 with a fixed text; a Google failure: 502 with a fixed text, not Google\'s', async () => {
-    const failing: GoogleApi = { getJson: async () => { throw new GoogleError(500, 'request') } }
+    const failing: GoogleApi = { getJson: async () => { throw new GoogleError(500, 'request') }, postJson: async () => ({}) }
     const call = await start(failing)
     const missing = await call('/info/kuld', { method: 'POST', body: '{}', token: 'token-acrobot' })
     expect([missing.status, await missing.json()]).toEqual([404, { error: 'no such verb' }])
@@ -204,6 +206,37 @@ describe('the single way to Google', () => {
     const reqFail = transport([json({ access_token: 'at', expires_in: 3600 }), json({ error: { message: 'q=titkos' } }, 403)])
     const e2 = await failure(googleRest({ ...opts, fetchImpl: reqFail.fetchImpl }).getJson('info', 'https://gmail.googleapis.com/gmail/v1/users/me/messages'))
     expect([e2.kind, e2.status, e2.message]).toEqual(['request', 403, 'google request 403'])
+  })
+
+  describe('writing', () => {
+    const SHAPES = [/^https:\/\/gmail\.googleapis\.com\/gmail\/v1\/users\/me\/labels$/]
+
+    it('cannot post at all without shapes named at construction', async () => {
+      const { calls, fetchImpl } = transport([])
+      const api = googleRest({ ...opts, fetchImpl })
+      await expect(failure(api.postJson('balazs', 'https://gmail.googleapis.com/gmail/v1/users/me/labels', { name: 'x' }))).resolves.toBeInstanceOf(GoogleError)
+      expect(calls).toEqual([])
+    })
+
+    it('posts JSON to a URL that matches a shape, and to nothing else', async () => {
+      const { calls, fetchImpl } = transport([json({ access_token: 'at', expires_in: 3600 }), json({ id: 'Label_1' })])
+      const api = googleRest({ ...opts, fetchImpl, writeShapes: SHAPES })
+      const answer = await api.postJson('balazs', 'https://gmail.googleapis.com/gmail/v1/users/me/labels', { name: 'Acrobot/Számla' })
+      expect(answer).toEqual({ id: 'Label_1' })
+      expect(calls[1]!.init.method).toBe('POST')
+      expect(calls[1]!.init.redirect).toBe('error')
+      expect(JSON.parse(String(calls[1]!.init.body))).toEqual({ name: 'Acrobot/Számla' })
+      expect((calls[1]!.init.headers as Record<string, string>)['Authorization']).toBe('Bearer at')
+      for (const url of [
+        'https://gmail.googleapis.com/gmail/v1/users/me/messages/abcdef12/send',
+        'https://gmail.googleapis.com/gmail/v1/users/me/labels/Label_1',
+        'https://gmail.googleapis.com/gmail/v1/users/me/labels?x=1',
+        'https://evil.example/gmail/v1/users/me/labels',
+      ]) {
+        await expect(failure(api.postJson('balazs', url, {}))).resolves.toBeInstanceOf(GoogleError)
+      }
+      expect(calls).toHaveLength(2)
+    })
   })
 
   it('a network failure is a GoogleError of kind network, not a raw error', async () => {

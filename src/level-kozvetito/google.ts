@@ -1,6 +1,9 @@
 // The relay's only door to Google. The URL is built by the relay from a fixed set of shapes; a caller
-// supplies ids and search text, never a URL. GET only: this file has no way to write to a mailbox, so a
-// bug above it cannot send, delete or change a mail through it (slice 2 adds ONE narrow write beside it).
+// supplies ids and search text, never a URL. READING is GET on two fixed prefixes. WRITING (`postJson`) is
+// refused unless the URL matches a shape the CALLER OF THIS MODULE named at construction: this file names
+// none, so a bug here or above it cannot send, delete or change a mail. The only shapes ever passed are
+// the two in `modify.ts` (create a label, change the labels of one message), and the source test allows the
+// words for them in that file alone.
 import type { AccountId } from './config.js'
 
 export class GoogleError extends Error {
@@ -17,6 +20,8 @@ export class GoogleError extends Error {
 /** Reads one JSON document of Google's API as the named account. */
 export interface GoogleApi {
   getJson(account: AccountId, url: string): Promise<unknown>
+  /** POSTs a JSON body to a URL that matches a shape named at construction; nothing else is ever posted. */
+  postJson(account: AccountId, url: string, body: unknown): Promise<unknown>
 }
 
 const ALLOWED_PREFIXES = [
@@ -27,6 +32,8 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const TIMEOUT_MS = 15_000
 
 export interface GoogleRestOptions {
+  /** The URL shapes a POST may go to. Empty (the default): this transport cannot write at all. */
+  writeShapes?: readonly RegExp[]
   clientId: string
   clientSecret: string
   refreshTokens: Readonly<Record<AccountId, string>>
@@ -69,7 +76,23 @@ export function googleRest(opts: GoogleRestOptions): GoogleApi {
     return body.access_token
   }
 
+  const writeShapes = opts.writeShapes ?? []
   return {
+    async postJson(account, url, body) {
+      if (!writeShapes.some((shape) => shape.test(url))) throw new GoogleError(0, 'request')
+      const token = await accessToken(account)
+      const res = await call(url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) throw new GoogleError(res.status, 'request')
+      try {
+        return await res.json()
+      } catch {
+        throw new GoogleError(res.status, 'request')
+      }
+    },
     async getJson(account, url) {
       if (!ALLOWED_PREFIXES.some((p) => url.startsWith(p))) throw new GoogleError(0, 'request')
       const token = await accessToken(account)

@@ -44,7 +44,8 @@ export interface RelayConfig {
   accounts: Readonly<Record<AccountId, AccountEntry>>
   /** senders whose mail text and attachments never come out (account-security and bank senders) */
   excludedSenders: { domains: readonly string[]; addresses: readonly string[] }
-  limits: { callsPerMinute: number; maxAttachmentBytes: number }
+  /** archivePerDay: the most mails the relay will archive on balazs@ in one Budapest day (plan v2 point A) */
+  limits: { callsPerMinute: number; maxAttachmentBytes: number; archivePerDay: number }
 }
 
 const NAME = /^[a-z][a-z0-9-]{0,31}$/
@@ -134,7 +135,7 @@ export function parseRelayConfig(raw: unknown): RelayConfig {
   }
 
   const ex = obj(top['excludedSenders'], 'excludedSenders', ['domains', 'addresses'])
-  const lim = obj(top['limits'], 'limits', ['callsPerMinute', 'maxAttachmentBytes'])
+  const lim = obj(top['limits'], 'limits', ['callsPerMinute', 'maxAttachmentBytes', 'archivePerDay'])
 
   return {
     stateDir: absPath(top['stateDir'], 'stateDir'),
@@ -150,6 +151,7 @@ export function parseRelayConfig(raw: unknown): RelayConfig {
     limits: {
       callsPerMinute: int(lim['callsPerMinute'], 'limits.callsPerMinute', 1, 600),
       maxAttachmentBytes: int(lim['maxAttachmentBytes'], 'limits.maxAttachmentBytes', 1, 50 * 1024 * 1024),
+      archivePerDay: int(lim['archivePerDay'], 'limits.archivePerDay', 1, 1000),
     },
   }
 }
