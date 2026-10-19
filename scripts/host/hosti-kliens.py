@@ -14,13 +14,13 @@ import socket
 import sys
 
 SOCKET = '/run/hosti-vegrehajto/sock'
-VERBS = ('kerj', 'vegrehajt', 'allapot')
+VERBS = ('kerj', 'vegrehajt', 'allapot', 'kep', 'naplo')
 TIMEOUT = 180
 
 
 def main(argv, path=None):
     if len(argv) < 2 or argv[1] not in VERBS:
-        print('usage: hosti-kliens <kerj|vegrehajt|allapot> [args...]', file=sys.stderr)
+        print('usage: hosti-kliens <kerj|vegrehajt|allapot|kep|naplo> [args...]', file=sys.stderr)
         return 2
     request = (json.dumps({'ige': argv[1], 'args': list(argv[2:])}) + '\n').encode('utf-8')
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

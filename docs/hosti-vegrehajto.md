@@ -18,7 +18,7 @@ Code: `scripts/host/hosti-vegrehajto.py` (root, Python 3), `scripts/host/hosti-k
 |---|---|
 | **Form** | a systemd socket-activated root unit: one process per connection, no resident daemon, no network port, no `docker.sock` in any container. The socket is `/run/hosti-vegrehajto/sock`, `0660 root:fleet`; the program decides by the peer's **UID** (SO_PEERCRED must be the `fleet` uid of the settings), never by the group. That directory is mounted into **no** container (the install check measures it). |
 | **The only door** | the B8 gate's three ops `hosti-kerj`, `hosti-vegrehajt`, `hosti-allapot`, which run as the `fleet` user and hand their shape-checked words to a root-installed client. No new SSH key, no new port. The program checks everything again; it does not trust the gate. |
-| **Verbs** | `telepit <projekt> <commit>` (the clone is set to the commit, the image is built, the project is brought up), `up <projekt>` (`docker compose up -d` with the image that is there), `visszaallit <projekt>` (the previous image becomes the live one), `allapot [R]` (read only). A project and a verb must also be on the root-owned project list. Image inspect, logs and the proxy are separate slices. |
+| **Verbs** | `telepit <projekt> <commit>` (the clone is set to the commit, the image is built, the project is brought up), `up <projekt>` (`docker compose up -d` with the image that is there), `visszaallit <projekt>` (the previous image becomes the live one), `allapot [R]`, `kep <projekt>` and `naplo <projekt> [sorok]` (read only; the last two are point G: fixed container and image fields with no environment, mounts, command, entrypoint or labels, and the service logs, stdout AND stderr, through the secret filter `naplo-szuro`, 1..1000 lines, 200 by default; no filter file, no log; a failing filter releases nothing). A project and a verb must also be on the root-owned project list. The proxy is a separate slice. |
 | **Approval** | the same chain as the root installer and the deploy executor: a #33 approval, category `hosti_vegrehajt`, the canonical line as the whole description; the program reads the request message and the replies **from Discord itself** with its own read-only bot token, and the whole message must be exactly what #33 makes of this R (author, channel, edits, text, code, expiry). One use: the R is spent, durably, **before the first docker call**. |
 | **The canonical line** | `HOSTI R=<id> / <projekt> / <ige> / <commit 40 \| jelenlegi \| elozo> / elo <image id 12> / elozo <image id 12>`. It survives #33's neutraliser unchanged (no `_`, `*`, `~`, `|`, `>`, `#`, backtick), and the execution measures the same ids again. |
 | **Measure, then change** | every MEASUREMENT comes before the R is spent, every CHANGE after: the project is on the list, the verb is allowed, the project lock is free, the resolved config hash matches, the commit is on the branch (GitHub `compare`), the clone is checked out, `HEAD` is the commit and the tree is clean, the live image id is the approved one. A refusal leaves the R open. **The one exception is the clone's setup** (`git fetch`, `checkout --detach`): it changes the clone's work tree before the R is spent, but that tree is only the build's source and never touches the live container. |
@@ -64,13 +64,15 @@ git clone https://github.com/KratoBal/acroveliq.git /opt/hosti-vegrehajto/src
 git -C /opt/hosti-vegrehajto/src fetch origin
 git -C /opt/hosti-vegrehajto/src checkout --detach <a beolvadt commit 40 jegye>
 test "$(git -C /opt/hosti-vegrehajto/src rev-parse HEAD)" = "<ugyanaz a 40 jegy>" && test -z "$(git -C /opt/hosti-vegrehajto/src status --porcelain)"
-cd /opt/hosti-vegrehajto/src && echo '72d0bcc4762b7278846c4328afa0c7e5515e549992a28f91b19bf54fffc20b12  scripts/host/hosti-vegrehajto.py' | sha256sum -c
-echo '24d691ea6a72dd6de12299949e3f122952f87aca74961af9b413c9b3ac3fcb6a  scripts/host/hosti-kliens.py' | sha256sum -c
+cd /opt/hosti-vegrehajto/src && echo '83c926e34eefeafa5f7f235f9567ef0eac362a50ef4cd29ba4cdf1b408091caa  scripts/host/hosti-vegrehajto.py' | sha256sum -c
+echo 'dcb806aef527a6a7905b0bc5a1c6b2cc2d61477911da488d3a466ed41c37e03d  scripts/host/hosti-kliens.py' | sha256sum -c
+echo '7c59736f511aa2ea069a1e428e0d20c22e4e970bf20211d9de06db29f307f7e7  scripts/host/naplo-szuro.py' | sha256sum -c
 echo 'bd799c10cabc0c619a13476af4e808c0fc37c3492264c6c9cb8046675c2fe664  scripts/host/hosti-vegrehajto.socket' | sha256sum -c
 echo 'b2f1f4e8cf3dc883dc31837db35b7d41eab207ce04881d7d29ee67eac82d13ec  scripts/host/hosti-vegrehajto@.service' | sha256sum -c
 install -o root -g root -m 0755 scripts/host/hosti-vegrehajto.py /usr/local/sbin/hosti-vegrehajto
 install -d -o root -g root -m 0755 /usr/local/lib/fleet-gate
 install -o root -g root -m 0755 scripts/host/hosti-kliens.py /usr/local/lib/fleet-gate/hosti-kliens
+install -o root -g root -m 0755 scripts/host/naplo-szuro.py /usr/local/lib/fleet-gate/naplo-szuro   # ugyanaz a szuro, mint a kapu app-logjáé
 install -o root -g root -m 0644 scripts/host/hosti-vegrehajto.socket /etc/systemd/system/hosti-vegrehajto.socket
 install -o root -g root -m 0644 'scripts/host/hosti-vegrehajto@.service' /etc/systemd/system/hosti-vegrehajto@.service
 install -d -o root -g root -m 0700 /var/lib/hosti-vegrehajto /etc/hosti-vegrehajto

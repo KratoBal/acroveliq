@@ -32,7 +32,9 @@ akkor az éles, ha a próba-sor (lent) minden sora zöld rajta.
 | `docstore-tar`, `docstore-count` | a dokumentum-tároló tar-ja, illetve a fájljainak száma | éles |
 | `env-get` | az api konténer `MEDUSA_ADMIN_URL` és `MEDUSA_PROJECTION_SCHEDULE_ENABLED` értéke, semmi más | éles |
 | `quote-templates-sync plan`, `quote-templates-sync apply` | az ajánlatsablonok és szövegrészletek JSON-ja a stdin-en; a kapuval együtt telepített, root tulajdonú program (`/usr/local/lib/fleet-gate/quote-templates-sync.mjs`) az api konténerben ellenőrzi a kép saját szerkesztő-szabályaival, és név szerint felveszi, ami hiányzik. Az `apply` ír az éles OS-be (lásd lent) | éles |
-| `app-log <kulcs> [sorok]` | `docker logs --timestamps --tail <sorok> <konténer>`, a stdout és a stderr együtt; a kulcs az éles api, web vagy partner alkalmazás (a Coolify uuid-ja), a sorok száma 1 és 5000 között, alapból 500. Követés (`--follow`) és szabad `--since` nincs. A stderr első sora és a syslog-sor megnevezi az olvasott konténert (telepítés közben a régi és az új is futhat) | éles |
+| `app-log <kulcs> [sorok]` | `docker logs --timestamps --tail <sorok> <konténer>`, a stdout és a stderr együtt, **MINDIG a `naplo-szuro`n át** (lásd lent): a nyers napló útja nincs, szűrő nélkül nincs napló, a szűrő hibájánál semmi nem megy ki (kilépés 3). A végén `# szurve: <N> elem`. A kulcs az éles api, web vagy partner alkalmazás (a Coolify uuid-ja), a sorok száma 1 és 5000 között, alapból 500. Követés (`--follow`) és szabad `--since` nincs. A stderr első sora és a syslog-sor megnevezi az olvasott konténert (telepítés közben a régi és az új is futhat) | éles |
+| `kep <kulcs>` | a futó konténer FIX mezői egy sorban: név, kép-hivatkozás (a commit-címke), kép-azonosító, létrehozás, indulás, állapot, újraindítási szám, egészség. A sablont a kapu építi; a `Config.Env`, `Mounts`, `Cmd`, `Entrypoint` és a `Labels` nincs benne. A kulcs az `app-log` listája; a stage gépen nincs lista (a stage alkalmazások nevei Balázs adatai), ott elutasítva | éles |
+| `hosti-kep <projekt>`, `hosti-naplo <projekt> [sorok]` | a hosti végrehajtó két olvasó igéje (`docs/hosti-vegrehajto.md`): a projekt kép- és konténer-mezői, illetve szolgáltatásainak naplója (1 és 1000 sor között, alapból 200) a `naplo-szuro`n át; a kapu csak az alakot ellenőrzi | éles |
 | `restore-probe` | eldobható `postgres:16-alpine` hálózat nélkül, memória-, CPU- és folyamat-korláttal, a dump a stdin-ről, egy rögzített számláló-lekérdezés, utána törlés; a képet a kapu nem tölti le | stage |
 | `backup-db <kulcs> <adatbázis> <felhasználó>` | `~/backups/<adatbázis>/<mai dátum>.dump`, utána `pg_restore --list` szám | mindkettő |
 | `backup-docstore` | `~/backups/dokumentumok/<mai dátum>.tar.gz`, a fájlszám egyezésével | éles |
@@ -507,9 +509,15 @@ cd /home/marveen/marveen && bash scripts/arajanlat-sablon-elesre.sh apply <sablo
 **Ha a kép átrendezi a `dist/quotes` fájljait**, a program importja hibával áll meg, és nem ír:
 akkor a programot kell az új helyekhez igazítani.
 
-**Telepítés az éles gépen (rootként), a kapu újratelepítésével együtt.** A két fájl a PR
+## A `naplo-szuro` (a parancssor-nélkül terv G pontja)
+
+Minden napló, ami elhagyja a hostot (`app-log`, `hosti-naplo`), a root-tulajdonú `naplo-szuro`n megy át, MIELŐTT a flotta megkapná: a konténer stdout-ja ÉS stderr-je is (a `docker logs` a konténer stderr-jét a SAJÁT stderr-jére írja, a hibaüzenetekben pedig a titok a leggyakoribb: a kapu `2>&1`-gyel csövezi be, a kilépési kódok mindkét tagját olvassa). Ami kikerül (`[TITOK]`-ra cserélve, a sor marad): az `Authorization` és `Proxy-Authorization` fejléc értéke, `Bearer` és `Basic` jel, az URL-be írt hitelesítő (`postgres://`, `redis://`, `amqp://` is), a `név=érték`, `név: érték` és JSON `"név": "érték"` alak, ha a név `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `PASSWD`, `PASS`, `CREDENTIAL`, `DSN`, `COOKIE`, `SESSION`, `AUTH` vagy `SIGNATURE` elemet tartalmaz, **az ESCAPE-elt JSON alak is** (`\"név\":\"érték\"`, ahogy a pino és társai egy JSON-t egy JSON sztringbe írnak), az ismert jel-előtagok (`ghp_`, `github_pat_`, `xox..-`, `sk-`, `sk_live_`, `AKIA`, `AIza`), a JWT, a PEM privát-kulcs blokk, és minden 32 vagy több hexa jegyű vagy base64-szerű futam.
+**Kivételek, és az általuk nyitott rés, kimondva:** egy UUID, egy 40 jegyű KISBETŰS hexa szó (a git commit sha) és a `/`-lel kezdődő token (egy abszolút út) megmarad, mert commit-azonosító, kérés-azonosító és út nélkül a napló használhatatlan. **A rés: több szolgáltatás API-kulcsa pontosan 40 hexa jegy, és egy NÉV NÉLKÜLI ilyen átmegy a szűrőn** (név mellett a névszabály fogja). Szűkebbre nem tettük: a második réteg a flotta oldali karantén-olvasó (`scripts/naplo-olvas.sh`).
+**Zárt hibára esik:** a szűrő csak akkor ír ki bármit, ha az egész bemenetet megszűrte; hiba, a határt (4 MiB) meghaladó bemenet vagy bármi váratlan: kilépés 3, üres stdout, és a kapu NEM ad nyers naplót. Egy sor legfeljebb 2000 karakter, a kimenet legfeljebb 256 KiB. **Amit nem ígér:** ismert ALAKOK listája, nem tanúsítvány; egy ismeretlen alakú titok átmegy rajta, és egy naplósor szövege támadó által befolyásolható (utasítás-szerű szöveget is hordozhat): ezt nem veszi ki, ezért a szabad szöveg a karantén-olvasón át megy, nem közvetlenül az ágens munkamenetébe.
+
+ A két fájl a PR
 beolvadása és a flotta frissítése után itt áll: `/opt/marveen-docker/data/marveen/scripts/host/`.
-Vidd át mindkettőt a gép `/tmp`-jébe úgy, mint a kaput (fent), utána:
+Vidd át őket (a `scripts/host/fleet-gate.sh`, a `quote-templates-sync.mjs` és a `naplo-szuro.py`) a gép `/tmp`-jébe úgy, mint a kaput (fent), utána:
 
 Előbb a program útjának szülőmappái: a kapu csak a fájlt és a saját mappáját nézi, és Debianon a
 `/usr/local` lehet `root:staff 2775`, ahol a `staff` tagja átnevezhetné a mappát (barracuda, #97):
@@ -526,13 +534,15 @@ cd /root
 install -o root -g root -m 0755 /tmp/fleet-gate.sh /usr/local/sbin/fleet-gate
 install -d -o root -g root -m 0755 /usr/local/lib/fleet-gate
 install -o root -g root -m 0644 /tmp/quote-templates-sync.mjs /usr/local/lib/fleet-gate/quote-templates-sync.mjs
-echo '4954168fe7570b83c58d1bde8f45f033e5770068238041e0940496cf20003ad5  /usr/local/sbin/fleet-gate' | sha256sum -c
+install -o root -g root -m 0755 /tmp/naplo-szuro.py /usr/local/lib/fleet-gate/naplo-szuro
+echo 'dd606c7d31200464a5a2d822298ed045aebb79027cb09ac8297c302cbf7397d2  /usr/local/sbin/fleet-gate' | sha256sum -c
 echo 'd958d5a4050ebbf52610ca70f3574a3e572bf349751fbd7b011411a68a322834  /usr/local/lib/fleet-gate/quote-templates-sync.mjs' | sha256sum -c
-                                             # mindkettő: OK. Ha nem: állj meg, és szólj.
+echo '7c59736f511aa2ea069a1e428e0d20c22e4e970bf20211d9de06db29f307f7e7  /usr/local/lib/fleet-gate/naplo-szuro' | sha256sum -c
+                                             # mindhárom: OK. Ha nem: állj meg, és szólj.
 ```
 
-A két lenyomat a repó fájljaié; a teszt (`GATE-INSTALL-SHA`) piros, ha valamelyik fájl úgy
-változik, hogy ez a két sor nem követi.
+A három lenyomat a repó fájljaié (a `naplo-szuro` a `scripts/host/naplo-szuro.py`); a teszt (`GATE-INSTALL-SHA`) piros, ha valamelyik fájl úgy
+változik, hogy ez a három sor nem követi.
 
 Próba a flotta konténeréből (csak olvas):
 

@@ -15,7 +15,11 @@ THE VERBS (a closed list; a project and a verb must also be on the root-owned pr
   up <projekt>                  `docker compose up -d` with the image that is there
   visszaallit <projekt>         the previous image (`elozo`) becomes the live one, `up -d`
   allapot [R]                   read only
-Read verbs (image inspect, logs) and the proxy are separate slices. It NEVER runs prune, rmi, image rm, run, exec, cp,
+  kep <projekt>                 read only: the FIXED fields of the project's image and containers (no environment, mounts,
+                                command, entrypoint or labels)
+  naplo <projekt> [sorok]       read only: the project's service logs, stdout AND stderr, through the secret filter
+                                (scripts/host/naplo-szuro.py); nothing leaves unfiltered, and a failing filter releases nothing
+The proxy is a separate slice. It NEVER runs prune, rmi, image rm, run, exec, cp,
 rm, a volume or a system command, and it does not edit a compose file.
 
 THE FLOW
@@ -41,6 +45,8 @@ LANG=C. No COMPOSE_* or DOCKER_* variable, and nothing from the gate's environme
 import datetime
 import fcntl
 import hashlib
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
@@ -59,6 +65,7 @@ import zoneinfo
 STATE = '/var/lib/hosti-vegrehajto'
 CONFIG_FILE = '/etc/hosti-vegrehajto/config.json'
 DISCORD_TOKEN_FILE = '/etc/hosti-vegrehajto/discord-olvaso'
+FILTER_FILE = '/usr/local/lib/fleet-gate/naplo-szuro'  # the secret filter the gate's app-log uses too (root-owned)
 ROOT_UID = 0
 DOCKER = '/usr/bin/docker'
 GIT = '/usr/bin/git'
@@ -89,6 +96,13 @@ NEVER_UNDER = ('/opt/marveen-docker', '/var/lib/hosti-vegrehajto', '/etc/hosti-v
                '/usr/local/lib/fleet-gate', '/opt/hosti-vegrehajto')
 NEVER_NAMES = ('marveen', 'marveen-docker', 'hosti-vegrehajto', 'fleet-gate')
 STEP_TIMEOUT = {'build': 3000, 'up': 600}
+LOG_LINES_DEFAULT = 200
+LOG_LINES_MAX = 1000
+LOG_REPLY_MAX = 600_000  # characters: the client reads one line of at most a megabyte
+HEALTH = "{{if .State.Health}}{{.State.Health.Status}}{{else}}-{{end}}"
+# the FIXED fields; Config.Env, Mounts, Cmd, Entrypoint and Labels are not here, on purpose
+CONTAINER_FORMAT = '{{.Name}}|{{.Config.Image}}|{{.Image}}|{{.Created}}|{{.State.StartedAt}}|{{.State.Status}}|{{.RestartCount}}|' + HEALTH
+IMAGE_FORMAT = '{{.Id}}|{{.Created}}'
 
 
 class Refused(Exception):
@@ -732,6 +746,89 @@ def cmd_vegrehajt(args, now_ms=None, accepted=None):
     return {'r': r['id'], 'outcome': outcome}
 
 
+def load_filter():
+    """The secret filter, loaded from its root-owned file; no filter, no log (nothing is ever returned raw)."""
+    root_file(FILTER_FILE)
+    try:
+        loader = importlib.machinery.SourceFileLoader('naplo_szuro', FILTER_FILE)
+        spec = importlib.util.spec_from_loader('naplo_szuro', loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+    except Exception:
+        raise Refused('a naplo-szuro nem toltheto be: naplot nem adok')
+    return module
+
+
+def _fields(text, count):
+    parts = text.strip().split('|')
+    if len(parts) != count or any(not re.match(r'^[\x20-\x7e]*$', x) for x in parts):
+        raise Refused('a docker valasza nem a vart alaku')
+    return parts
+
+
+def cmd_kep(args):
+    """kep <projekt>: fixed fields of the project's image and of its services' containers. Read only."""
+    if len(args) != 1:
+        raise Refused('hasznalat: kep <projekt>')
+    projects = load_projects(load_config())
+    p = projects.get(args[0])
+    if p is None:
+        raise Refused('a projekt nincs a listan')
+    out = {'projekt': p['nev'], 'kep': None, 'elozo': None, 'szolgaltatasok': []}
+    for key, ref in (('kep', p['kep']), ('elozo', previous_ref(p))):
+        rc, raw, _ = RUNNER.run([DOCKER, 'image', 'inspect', '--format', IMAGE_FORMAT, ref], timeout=60)
+        if rc == 0:
+            iid, created = _fields(raw.decode('utf-8', 'replace'), 2)
+            out[key] = {'id': iid.split(':', 1)[-1][:12], 'letrehozva': created}
+    for svc in p['szolgaltatasok']:
+        rc, raw, _ = RUNNER.run(compose_argv(p, 'ps', '-q', svc), cwd=p['dir'], timeout=60)
+        cids = [x for x in raw.decode('utf-8', 'replace').split() if re.match(r'^[0-9a-f]{12,64}$', x)] if rc == 0 else []
+        containers = []
+        for cid in cids:
+            rc, raw, _ = RUNNER.run([DOCKER, 'inspect', '--format', CONTAINER_FORMAT, cid], timeout=60)
+            if rc != 0:
+                continue
+            name, image, iid, created, started, state, restarts, health = _fields(raw.decode('utf-8', 'replace'), 8)
+            containers.append({'nev': name.lstrip('/'), 'kep': image, 'kepId': iid.split(':', 1)[-1][:12], 'letrehozva': created,
+                               'indult': started, 'allapot': state, 'ujrainditas': restarts, 'egeszseg': health})
+        out['szolgaltatasok'].append({'nev': svc, 'konteneres': containers})
+    return out
+
+
+def cmd_naplo(args):
+    """naplo <projekt> [sorok]: the services' logs, stdout and stderr together, through the secret filter. Read only. The
+    filter runs on each service's text on its own (a key block cannot swallow the next service), and on stdout AND stderr:
+    compose writes a container's stderr to ITS stderr (barracuda, point G review 1)."""
+    if len(args) not in (1, 2):
+        raise Refused('hasznalat: naplo <projekt> [sorok]')
+    lines = args[1] if len(args) == 2 else str(LOG_LINES_DEFAULT)
+    if not re.match(r'^[1-9][0-9]{0,3}$', lines) or int(lines) > LOG_LINES_MAX:
+        raise Refused(f'a sorok szama 1 es {LOG_LINES_MAX} kozotti egesz')
+    projects = load_projects(load_config())
+    p = projects.get(args[0])
+    if p is None:
+        raise Refused('a projekt nincs a listan')
+    filt = load_filter()
+    parts, removed, total = [], 0, 0
+    for svc in p['szolgaltatasok']:
+        rc, raw_out, raw_err = RUNNER.run(compose_argv(p, 'logs', '--no-color', '--timestamps', '--tail', lines, svc), cwd=p['dir'], timeout=120)
+        if rc != 0:
+            raise Refused(f'a(z) {svc} naploja nem olvashato')
+        text = raw_out.decode('utf-8', 'replace') + '\n' + raw_err.decode('utf-8', 'replace')
+        try:
+            filtered, n = filt.filter_text(text)
+        except Exception:
+            raise Refused('a szuro hibaval allt meg: naplot nem adok')
+        removed += n
+        total += len(filtered)
+        parts.append(f'# szolgaltatas: {svc}\n{filtered}')
+    body = ''.join(parts)
+    if len(body) > LOG_REPLY_MAX:
+        body = body[:LOG_REPLY_MAX] + '\n# levagva: a valasz elerte a hatart\n'
+    log({'esemeny': 'naplo', 'projekt': p['nev'], 'sorok': int(lines), 'bajt': len(body), 'szurve': removed})
+    return {'projekt': p['nev'], 'sorok': int(lines), 'szurve': removed, 'naplo': body}
+
+
 def mark_interrupted(r, projects):
     """An R still `folyamatban` whose project lock nobody holds was cut off (the unit was stopped, the machine lost power):
     its outcome becomes `megszakadt(<last step>)`. There is no process to say it, so the next look says it. The program does not
@@ -804,7 +901,7 @@ def read_request(stream):
     return req
 
 
-SOCKET_OPS = {'kerj': cmd_kerj, 'vegrehajt': cmd_vegrehajt, 'allapot': cmd_allapot}
+SOCKET_OPS = {'kerj': cmd_kerj, 'vegrehajt': cmd_vegrehajt, 'allapot': cmd_allapot, 'kep': cmd_kep, 'naplo': cmd_naplo}
 
 
 def writer(sock_out):
