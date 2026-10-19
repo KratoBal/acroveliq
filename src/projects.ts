@@ -70,6 +70,21 @@ export function ensureProjectsSchema(db: Database.Database): void {
   )
   const now = Math.floor(Date.now() / 1000)
   for (const p of SEED) insert.run(p.id, p.name, JSON.stringify(p.repos), JSON.stringify(p.aliases), p.legacyMixed ? 1 : 0, now)
+  // THE SEED IS INSERT OR IGNORE, so a changed SEED row never reaches a database that already has the
+  // row (barracuda, #237 review): the live reefclub row kept ['KratoBal/acropora-commerce']. One narrow,
+  // logged update: the reefclub row only, and only while it holds exactly the old value, so a later
+  // hand-made change is never overwritten. A project does not change unnoticed (Projektek V1): the
+  // change goes to the config-change ledger, where the dashboard's other setting changes are.
+  const reefOld = JSON.stringify(['KratoBal/acropora-commerce'])
+  const reefNew = JSON.stringify(SEED.find((p) => p.id === 'reefclub')!.repos)
+  const moved = db.prepare("UPDATE projects SET repos = ? WHERE id = 'reefclub' AND repos = ?").run(reefNew, reefOld)
+  if (moved.changes === 1) {
+    const ledger = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'config_change_log'").get()
+    if (ledger) {
+      db.prepare('INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?)')
+        .run('projects.reefclub.repos', reefOld, reefNew, 'migration:reefclub-repo-os', now)
+    }
+  }
 }
 
 const parseList = (raw: string): string[] => {

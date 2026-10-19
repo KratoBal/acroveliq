@@ -81,6 +81,28 @@ describe('the registry', () => {
   })
 })
 
+describe('the reefclub repos on an existing database (barracuda, #237 review)', () => {
+  it('REEFCLUB-OS-MIGRATION: a row with exactly the old repos gets acropora-os, once and logged; a row changed by hand is left alone', () => {
+    const db = getDb()
+    ensureProjectsSchema(db)
+    const reef = () => (db.prepare("SELECT repos FROM projects WHERE id = 'reefclub'").get() as { repos: string }).repos
+    const logged = () => (db.prepare("SELECT COUNT(*) AS n FROM config_change_log WHERE key = 'projects.reefclub.repos'").get() as { n: number }).n
+    // the live database's state before this change: the row the old SEED wrote
+    db.prepare("UPDATE projects SET repos = ? WHERE id = 'reefclub'").run(JSON.stringify(['KratoBal/acropora-commerce']))
+    const before = logged()
+    ensureProjectsSchema(db)
+    const migrated = [JSON.parse(reef()), logged() - before]
+    ensureProjectsSchema(db) // a second start: nothing more to do, nothing logged again
+    const again = logged() - before
+    const byHand = JSON.stringify(['KratoBal/acropora-commerce', 'KratoBal/valami-mas'])
+    db.prepare("UPDATE projects SET repos = ? WHERE id = 'reefclub'").run(byHand)
+    ensureProjectsSchema(db)
+    expect([migrated, again, reef(), logged() - before], 'REEFCLUB-OS-MIGRATION').toEqual([
+      [['KratoBal/acropora-commerce', 'KratoBal/acropora-os'], 1], 1, byHand, 1,
+    ])
+  })
+})
+
 describe('the project is durable', () => {
   it('an update with another project keeps it and says so; one without a project does not reset it to acropora', async () => {
     task('t1', 'os')
