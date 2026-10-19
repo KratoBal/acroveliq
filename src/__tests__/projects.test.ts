@@ -71,7 +71,7 @@ describe('the registry', () => {
     expect([repoFits(getDb(), 'acropora', 'KratoBal/acroveliq'), repoFits(getDb(), 'acropora', 'KratoBal/marveen'), repoFits(getDb(), 'os', 'KratoBal/acroveliq') !== null])
       .toEqual([null, null, true])
     expect([projectRepos(getDb(), 'reefclub'), repoFits(getDb(), 'os', 'KratoBal/marveen') !== null, repoFits(getDb(), 'acropora-os', 'KratoBal/acropora-os')])
-      .toEqual([['KratoBal/acropora-commerce'], true, null])
+      .toEqual([['KratoBal/acropora-commerce', 'KratoBal/acropora-os'], true, null])
   })
 
   it('GET /api/projects: the four, repos expanded; the AcrovelIQ host reads it, and the change route is not on it', async () => {
@@ -136,8 +136,11 @@ describe('the repo rule', () => {
     const oldTask = await event('old', 'review_requested', 'KratoBal/acropora-os#7 fej abc')
     const seoTask = await event('seo', 'merged', 'x', { repo: 'KratoBal/acropora-commerce', pr: 9, merge_sha: 'a'.repeat(40) })
     const reef = await event('rc', 'review_requested', 'KratoBal/acropora-commerce#8 fej abc')
-    expect([wrong.status, wrong.body.would_reject, right.body.would_reject, oldTask.body.would_reject, seoTask.body.would_reject, reef.body.would_reject])
-      .toEqual([201, true, undefined, undefined, undefined, undefined])
+    // the approved v6.1 plan builds ReefClub in the OS API (2026-10-19)
+    const reefOs = await event('rc', 'review_requested', 'KratoBal/acropora-os#10 fej abc')
+    const reefOther = await event('rc', 'review_requested', 'KratoBal/acroveliq#11 fej abc')
+    expect([wrong.status, wrong.body.would_reject, right.body.would_reject, oldTask.body.would_reject, seoTask.body.would_reject, reef.body.would_reject, reefOs.body.would_reject, reefOther.body.would_reject])
+      .toEqual([201, true, undefined, undefined, undefined, undefined, undefined, true])
     expect(JSON.parse(events('os1', 'review_requested')[0].data).would_reject_reason).toContain('nem a(z) os projekté')
     taskCoreSettings.projectMode = 'kenyszerit'
     // a verdict is written with the task reviewer's own token only (#200): the reviewer here is the token's agent

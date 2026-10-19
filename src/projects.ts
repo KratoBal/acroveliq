@@ -40,8 +40,11 @@ const SEED: readonly Project[] = [
   },
   { id: 'os', name: 'Acropora OS', repos: ['KratoBal/acropora-os'], aliases: ['acropora-os'], legacyMixed: false },
   { id: 'commerce', name: 'Acropora Commerce', repos: ['KratoBal/acropora-commerce'], aliases: [], legacyMixed: false },
-  // until it has a repo of its own (Balázs's approval)
-  { id: 'reefclub', name: 'ReefClub', repos: ['KratoBal/acropora-commerce'], aliases: [], legacyMixed: false },
+  // until it has a repo of its own (Balázs's approval). acropora-os since 2026-10-19: the approved
+  // v6.1 plan builds ReefClub in the OS API (apps/api, /rc/v1), and its first slice, an OS PR, read
+  // as would_reject (murena, task reefclub-szelet-1). A ReefClub PR to Commerce still waits for the
+  // K-35 guard in the Commerce CI (exchange/acroveliq/projekt-iranyitopult-atadas-terv-v7-2026-10-15.md).
+  { id: 'reefclub', name: 'ReefClub', repos: ['KratoBal/acropora-commerce', 'KratoBal/acropora-os'], aliases: [], legacyMixed: false },
 ]
 
 /**
