@@ -71,13 +71,35 @@ describe('the registry', () => {
     expect([repoFits(getDb(), 'acropora', 'KratoBal/acroveliq'), repoFits(getDb(), 'acropora', 'KratoBal/marveen'), repoFits(getDb(), 'os', 'KratoBal/acroveliq') !== null])
       .toEqual([null, null, true])
     expect([projectRepos(getDb(), 'reefclub'), repoFits(getDb(), 'os', 'KratoBal/marveen') !== null, repoFits(getDb(), 'acropora-os', 'KratoBal/acropora-os')])
-      .toEqual([['KratoBal/acropora-commerce'], true, null])
+      .toEqual([['KratoBal/acropora-commerce', 'KratoBal/acropora-os'], true, null])
   })
 
   it('GET /api/projects: the four, repos expanded; the AcrovelIQ host reads it, and the change route is not on it', async () => {
     const r = await call(tryHandleTaskUsage, 'GET', '/api/projects', undefined, SESSION)
     expect([r.status, r.body.map((p: { id: string }) => p.id), r.body[0].legacy_mixed, r.body[0].repos.length]).toEqual([200, ['acropora', 'os', 'commerce', 'reefclub'], true, 6])
     expect([acroveliqAllows('GET', '/api/projects'), acroveliqAllows('POST', '/api/tasks/x/project')]).toEqual([true, false])
+  })
+})
+
+describe('the reefclub repos on an existing database (barracuda, #237 review)', () => {
+  it('REEFCLUB-OS-MIGRATION: a row with exactly the old repos gets acropora-os, once and logged; a row changed by hand is left alone', () => {
+    const db = getDb()
+    ensureProjectsSchema(db)
+    const reef = () => (db.prepare("SELECT repos FROM projects WHERE id = 'reefclub'").get() as { repos: string }).repos
+    const logged = () => (db.prepare("SELECT COUNT(*) AS n FROM config_change_log WHERE key = 'projects.reefclub.repos'").get() as { n: number }).n
+    // the live database's state before this change: the row the old SEED wrote
+    db.prepare("UPDATE projects SET repos = ? WHERE id = 'reefclub'").run(JSON.stringify(['KratoBal/acropora-commerce']))
+    const before = logged()
+    ensureProjectsSchema(db)
+    const migrated = [JSON.parse(reef()), logged() - before]
+    ensureProjectsSchema(db) // a second start: nothing more to do, nothing logged again
+    const again = logged() - before
+    const byHand = JSON.stringify(['KratoBal/acropora-commerce', 'KratoBal/valami-mas'])
+    db.prepare("UPDATE projects SET repos = ? WHERE id = 'reefclub'").run(byHand)
+    ensureProjectsSchema(db)
+    expect([migrated, again, reef(), logged() - before], 'REEFCLUB-OS-MIGRATION').toEqual([
+      [['KratoBal/acropora-commerce', 'KratoBal/acropora-os'], 1], 1, byHand, 1,
+    ])
   })
 })
 
@@ -136,8 +158,11 @@ describe('the repo rule', () => {
     const oldTask = await event('old', 'review_requested', 'KratoBal/acropora-os#7 fej abc')
     const seoTask = await event('seo', 'merged', 'x', { repo: 'KratoBal/acropora-commerce', pr: 9, merge_sha: 'a'.repeat(40) })
     const reef = await event('rc', 'review_requested', 'KratoBal/acropora-commerce#8 fej abc')
-    expect([wrong.status, wrong.body.would_reject, right.body.would_reject, oldTask.body.would_reject, seoTask.body.would_reject, reef.body.would_reject])
-      .toEqual([201, true, undefined, undefined, undefined, undefined])
+    // the approved v6.1 plan builds ReefClub in the OS API (2026-10-19)
+    const reefOs = await event('rc', 'review_requested', 'KratoBal/acropora-os#10 fej abc')
+    const reefOther = await event('rc', 'review_requested', 'KratoBal/acroveliq#11 fej abc')
+    expect([wrong.status, wrong.body.would_reject, right.body.would_reject, oldTask.body.would_reject, seoTask.body.would_reject, reef.body.would_reject, reefOs.body.would_reject, reefOther.body.would_reject])
+      .toEqual([201, true, undefined, undefined, undefined, undefined, undefined, true])
     expect(JSON.parse(events('os1', 'review_requested')[0].data).would_reject_reason).toContain('nem a(z) os projekté')
     taskCoreSettings.projectMode = 'kenyszerit'
     // a verdict is written with the task reviewer's own token only (#200): the reviewer here is the token's agent
