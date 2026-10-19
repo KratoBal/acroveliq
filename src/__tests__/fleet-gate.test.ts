@@ -80,7 +80,8 @@ function world(host: string) {
   *" find /data/document-store -type f") find "${store}/document-store" -type f ;;
   "exec ${API}-120000 env") printf '%s\\n' MEDUSA_ADMIN_URL=https://admin.example SECRET_KEY=titkos-ertek MEDUSA_PROJECTION_SCHEDULE_ENABLED=true ;;
   *" psql -X -q "*) cat > "${sql}"; echo sor ;;
-  "logs --timestamps --tail "*) echo "2026-10-14T06:00:00Z naplo-sor"; echo "2026-10-14T06:00:01Z hiba-sor" >&2 ;;
+  "logs --timestamps --tail "*) echo "2026-10-14T06:00:00Z naplo-sor"; echo "2026-10-14T06:00:01Z hiba-sor" >&2; if [ -f "${dir}/extra-out" ]; then cat "${dir}/extra-out"; fi; if [ -f "${dir}/extra-err" ]; then cat "${dir}/extra-err" >&2; fi ;;
+  "inspect --format "*) echo "/api-1|api:abcdef0|sha256:0123456789abcdef|2026-10-14T05:00:00Z|2026-10-14T05:01:00Z|running|0|-" ;;
   "exec -i -w /app -e APPLY="?" ${API}-120000 node --input-type=module -e "*) cat > "${data}"; echo szinkron ;;
   # the initdb's temporary server answers on the socket only: there the probe
   # looks ready at once, over TCP it is down on the first ask and up on the next
@@ -110,6 +111,8 @@ esac`,
       `KEYFILE_EXPECT="${OWNER}:644"`,
       `QUOTE_SYNC_PROG=${prog}`,
       `QUOTE_SYNC_OWNER="${OWNER}"`,
+      // the secret filter every log goes through (point G): the real one, from this tree
+      `LOG_FILTER=${join(process.cwd(), 'scripts', 'host', 'naplo-szuro.py')}`,
       `export TMPDIR=${tmp}`,
     ].join('\n') + '\n',
   )
@@ -230,7 +233,7 @@ describe('fleet-gate: what passes', () => {
     const call = (r: { calls: string[] }) => r.calls.filter((c) => c.startsWith('docker')).at(-1)
     expect([def.code, def.out, call(def), web.code, call(web), def.calls.some((c) => c.startsWith('logger') && c.includes(`op=app-log ${API} 500 ${API}-120000`)), def.err, web.err], 'GATE-APP-LOG').toEqual([
       0,
-      '2026-10-14T06:00:00Z naplo-sor\n2026-10-14T06:00:01Z hiba-sor\n',
+      '2026-10-14T06:00:00Z naplo-sor\n2026-10-14T06:00:01Z hiba-sor\n# szurve: 0 elem\n',
       `docker [logs] [--timestamps] [--tail] [500] [${API}-120000]`,
       0,
       `docker [logs] [--timestamps] [--tail] [5000] [${WEB}-120100]`,
@@ -790,9 +793,10 @@ describe('fleet-gate: the install step', () => {
       [
         docs.includes(`echo '${fileSha('scripts/host/fleet-gate.sh')}  /usr/local/sbin/fleet-gate' | sha256sum -c`),
         docs.includes(`echo '${fileSha('scripts/host/quote-templates-sync.mjs')}  /usr/local/lib/fleet-gate/quote-templates-sync.mjs' | sha256sum -c`),
+        docs.includes(`echo '${fileSha('scripts/host/naplo-szuro.py')}  /usr/local/lib/fleet-gate/naplo-szuro' | sha256sum -c`),
       ],
       'GATE-INSTALL-SHA',
-    ).toEqual([true, true])
+    ).toEqual([true, true, true])
   })
 })
 
@@ -827,6 +831,9 @@ describe('fleet-gate: hosti-* (the no-command-line plan, point C)', () => {
     expect(g.run('hosti-vegrehajt 1a2b3c4d 1559919876543210987').calls).toEqual(['hosti-kliens [vegrehajt] [1a2b3c4d] [1559919876543210987]'])
     expect(g.run('hosti-allapot').calls).toEqual(['hosti-kliens [allapot]'])
     expect(g.run('hosti-allapot 1a2b3c4d').calls).toEqual(['hosti-kliens [allapot] [1a2b3c4d]'])
+    expect(g.run('hosti-kep levelkozvetito').calls).toEqual(['hosti-kliens [kep] [levelkozvetito]'])
+    expect(g.run('hosti-naplo levelkozvetito').calls).toEqual(['hosti-kliens [naplo] [levelkozvetito] [200]'])
+    expect(g.run('hosti-naplo levelkozvetito 1000').calls).toEqual(['hosti-kliens [naplo] [levelkozvetito] [1000]'])
   })
 
   it('HOSTI-ROLES: the agents\' key and the executor\'s key both ask, and neither gets more (the owner\'s answer decides)', () => {
@@ -852,6 +859,15 @@ describe('fleet-gate: hosti-* (the no-command-line plan, point C)', () => {
     ['one word only for vegrehajt', 'hosti-vegrehajt 1a2b3c4d'],
     ['two arguments for allapot', 'hosti-allapot 1a2b3c4d 1a2b3c4d'],
     ['a shell word', `hosti-kerj levelkozvetito telepit ${COMMIT} murena;id`],
+    ['kep without a project', 'hosti-kep'],
+    ['kep with an upper-case project', 'hosti-kep Levelkozvetito'],
+    ['kep with two arguments', 'hosti-kep levelkozvetito extra'],
+    ['naplo with 0 lines', 'hosti-naplo levelkozvetito 0'],
+    ['naplo with 1001 lines', 'hosti-naplo levelkozvetito 1001'],
+    ['naplo with a leading zero', 'hosti-naplo levelkozvetito 01'],
+    ['naplo with a word as the lines', 'hosti-naplo levelkozvetito sok'],
+    ['naplo with three arguments', 'hosti-naplo levelkozvetito 10 --follow'],
+    ['naplo with a flag as the project', 'hosti-naplo --follow 10'],
     ['a command substitution', 'hosti-allapot $(id)'],
   ])('HOSTI-SHAPE: %s is refused and the client is never run', (_n, command) => {
     const g = hostiWorld()
@@ -870,5 +886,74 @@ describe('fleet-gate: hosti-* (the no-command-line plan, point C)', () => {
     expect(w.run(`hosti-kerj levelkozvetito telepit ${COMMIT} murena`).code).toBe(2)
     expect(w.run('hosti-allapot').code).toBe(2)
     expect(w.run('hosti-vegrehajt 1a2b3c4d 1559919876543210987').code).toBe(2)
+    expect(w.run('hosti-kep levelkozvetito').code).toBe(2)
+    expect(w.run('hosti-naplo levelkozvetito').code).toBe(2)
+  })
+})
+
+describe('fleet-gate: the read verbs (the no-command-line plan, point G)', () => {
+  // the secrets are assembled here from short pieces: no literal credential in this file
+  const SECRET = ['Zk9', 'Qw3', 'Rt7', 'Lm2', 'Xp5'].join('')
+  const withEnv = (w: ReturnType<typeof world>, extra: string) => writeFileSync(join(w.dir, 'test.env'), readFileSync(join(w.dir, 'test.env'), 'utf-8') + extra)
+
+  it('G-LOG-FILTER: BOTH of the container\'s streams go through the filter: a secret on stderr does not leave, nor one on stdout', () => {
+    const w = world(PROD)
+    writeFileSync(join(w.dir, 'extra-out'), `2026-10-14T06:00:02Z password=${SECRET} seen\n`)
+    writeFileSync(join(w.dir, 'extra-err'), `2026-10-14T06:00:03Z Error: connect postgres://app:${SECRET}@db/x failed\n{"msg":"{\\"token\\":\\"${SECRET}\\"}"}\n`)
+    const r = w.run(`app-log ${API} 20`)
+    expect(r.code).toBe(0)
+    expect(r.out).not.toContain(SECRET)
+    expect(r.err).not.toContain(SECRET)
+    // the lines stay, the count line is last and says that something was taken out
+    expect(r.out).toContain('naplo-sor')
+    expect(r.out).toContain('hiba-sor')
+    expect(r.out).toMatch(/\[TITOK\]/)
+    expect(r.out.trimEnd().split('\n').at(-1)).toMatch(/^# szurve: [1-9]\d* elem$/)
+  })
+
+  it('G-LOG-NO-FILTER: without the filter file there is no log at all (a raw path does not exist)', () => {
+    const w = world(PROD)
+    withEnv(w, 'LOG_FILTER=/nonexistent/naplo-szuro\n')
+    const r = w.run(`app-log ${API}`)
+    expect([r.code, r.out, r.calls.filter((c) => c.startsWith('docker') && c.includes('[logs]'))]).toEqual([2, '', []])
+    expect(r.err).toContain('naplo-szuro nincs telepitve')
+  })
+
+  it('G-LOG-FILTER-FAILS: a filter that fails releases NOTHING, whatever docker printed', () => {
+    const w = world(PROD)
+    const bad = join(w.dir, 'torott-szuro')
+    writeFileSync(bad, '#!/bin/bash\ncat > /dev/null\nexit 3\n', { mode: 0o755 })
+    withEnv(w, `LOG_FILTER=${bad}\n`)
+    const r = w.run(`app-log ${API}`)
+    expect([r.code, r.out]).toEqual([3, ''])
+    expect(r.err).toContain('a naplot nem adom ki')
+  })
+
+  it('G-KEP: the fixed fields of a listed app\'s container, the template without Env, Mounts, Cmd, Entrypoint and Labels', () => {
+    const w = world(PROD)
+    const r = w.run(`kep ${API}`)
+    expect([r.code, r.out]).toEqual([0, '/api-1|api:abcdef0|sha256:0123456789abcdef|2026-10-14T05:00:00Z|2026-10-14T05:01:00Z|running|0|-\n'])
+    const call = r.calls.filter((c) => c.startsWith('docker')).at(-1)!
+    expect(call).toContain(`[inspect] [--format]`)
+    expect(call.endsWith(`[${API}-120000]`)).toBe(true)
+    for (const forbidden of ['Env', 'Mounts', '.Cmd', 'Entrypoint', 'Labels', 'HostConfig', 'Args']) expect(call, forbidden).not.toContain(forbidden)
+    expect(call).toContain('{{.Config.Image}}')
+    expect(r.calls.some((c) => c.startsWith('logger') && c.includes(`op=kep ${API}`))).toBe(true)
+  })
+
+  it.each([
+    ['no key', 'kep'],
+    ['a database container (not an app on the list)', `kep ${OS_DB}`],
+    ['coolify-db', 'kep coolify-db'],
+    ['a second word', `kep ${API} extra`],
+    ['a shell word', `kep ${API};id`],
+  ])('G-KEP-DENY: %s is refused before docker is called', (_n, command) => {
+    const r = world(PROD).run(command)
+    expect([r.code, r.calls.filter((c) => c.startsWith('docker'))]).toEqual([2, []])
+  })
+
+  it('G-KEP-STAGE: the stage host has no kep list (the stage app names are the owner\'s data): refused, nothing runs', () => {
+    const r = world(STAGE).run(`kep ${API}`)
+    expect([r.code, r.calls.filter((c) => c.startsWith('docker'))]).toEqual([2, []])
   })
 })

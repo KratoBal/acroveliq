@@ -57,6 +57,8 @@ GRANT_TODAY=""   # empty: today in Europe/Budapest (a test sets it)
 # hosti-*: the host executor (the no-command-line plan, point C; docs/hosti-vegrehajto.md). The gate checks only the SHAPE of the
 # words and hands them to the root-installed client, which writes them to the executor's socket; the executor checks it all again.
 HOSTI_CLIENT=/usr/local/lib/fleet-gate/hosti-kliens
+# the secret filter every log that leaves the host goes through (the plan's point G; docs/fleet-gate.md "naplo-szuro")
+LOG_FILTER=/usr/local/lib/fleet-gate/naplo-szuro
 
 # Tests only. The authorized_keys line runs the gate with no arguments and an
 # SSH client cannot add any, so this is reachable only from a shell on the host.
@@ -94,12 +96,13 @@ ENV_GET_NAMES=""
 QUOTE_SYNC_KEY=""
 APP_LOG_KEYS=""
 GRANT_TARGETS=""   # fleet-ro-grant: key:database
+KEP_KEYS=""        # kep: the apps whose container fields may be read; empty leaves the op refused on that host
 BACKUP_GET=""     # what this host may hand out: dump:<db> or docstore
 BACKUP_PUT=""  # what this host may store from the other one
 host_config() {
   case "$HOST" in
     acropora-prod-01)
-      OPS="ps system-df df uptime reboot-required apt-check sshd-match builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-sum backup-put backup-prune quote-templates-sync app-log fleet-ro-grant hosti-kerj hosti-vegrehajt hosti-allapot"
+      OPS="ps system-df df uptime reboot-required apt-check sshd-match builder-prune psql-ro pg-dump pg-restore-list docstore-tar docstore-count env-get backup-db backup-docstore backup-get backup-sum backup-put backup-prune quote-templates-sync app-log fleet-ro-grant hosti-kerj hosti-vegrehajt hosti-allapot hosti-kep hosti-naplo kep"
       # fleet-ro-grant: the fleet_ro grants of the OS database, through fleet_ro_grantor
       GRANT_TARGETS="iwm34jaqp9xmwb72qkrqkwhy:acropora"
       # psql-ro connects as fleet_ro, a read-only role with per-table, per-column
@@ -114,6 +117,8 @@ host_config() {
       QUOTE_SYNC_KEY="t9gxx94ecwekwruxngps5i6v"
       # app-log: api, web, partner (the Coolify app uuids, scripts/eles-verziok.sh)
       APP_LOG_KEYS="t9gxx94ecwekwruxngps5i6v dnt6jzza68wnuamvi93whn28 iknrqjk9xeyydc5fibrk5tbp"
+      # kep: the same three apps; the fields are fixed and hold no value of the environment
+      KEP_KEYS="$APP_LOG_KEYS"
       BACKUP_GET="dump:acropora dump:medusa docstore"
       BACKUP_PUT="dump:acropora_ai"
       ;;
@@ -555,13 +560,31 @@ case "$OP" in
       *) deny "'app-log': a sorok száma 1 és 5000 közötti egész" ;;
     esac
     [ "$lines" -le 5000 ] || deny "'app-log': a sorok száma 1 és 5000 közötti egész"
+    [ -x "$LOG_FILTER" ] || deny "'app-log': a naplo-szuro nincs telepitve (nyers naplot nem adok)"
     C="$(resolve "${W[1]}")" || exit 2
     # which container: during a deployment the old and the new one both run, and
     # the question is often which of them speaks (barracuda, #99). On stderr, so
     # the log itself stays the container's alone.
     allow app-log "${W[1]}" "$lines" "$C"
     echo "fleet-gate: app-log konténer: $C" >&2
-    exec "$DOCKER" logs --timestamps --tail "$lines" "$C" 2>&1
+    # BOTH of the container's streams go through the filter (barracuda, point G review 1): docker logs writes the container's
+    # stderr to ITS stderr, and a container's stderr is where error texts, and the secrets in them, are most common. Both exit
+    # codes are read: a failing filter releases nothing (it writes only after it has filtered the whole input).
+    { "$DOCKER" logs --timestamps --tail "$lines" "$C" 2>&1; } | "$LOG_FILTER"
+    rcs=("${PIPESTATUS[@]}")
+    [ "${rcs[1]}" -eq 0 ] || { echo "fleet-gate: a szuro hibaval allt meg, a naplot nem adom ki" >&2; exit 3; }
+    exit "${rcs[0]}"
+    ;;
+  kep)
+    # kep <key>: the FIXED fields of one app's running container: name, image reference (the commit tag), image id, creation,
+    # start, state, restart count, health. The template is built here. Config.Env, Mounts, Cmd, Entrypoint and Labels are not
+    # in it: an environment holds secrets, and a label or a mount names more than a deployment needs to say.
+    args 1
+    [ -n "$KEP_KEYS" ] || deny "'kep': ezen a gepen nincs kep-lista"
+    in_targets "${W[1]}" "$KEP_KEYS" || deny "'kep': ez az alkalmazás nincs a listán"
+    C="$(resolve "${W[1]}")" || exit 2
+    allow kep "${W[1]}" "$C"
+    exec "$DOCKER" inspect --format '{{.Name}}|{{.Config.Image}}|{{.Image}}|{{.Created}}|{{.State.StartedAt}}|{{.State.Status}}|{{.RestartCount}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}-{{end}}' "$C"
     ;;
   coolify-deployments|coolify-deploy-log)
     # coolify-deployments <app uuid>: the app's last five deployments
@@ -663,7 +686,7 @@ case "$OP" in
     find "$BACKUP_ROOT" -name '*.dump' -mtime +14 -print -delete
     find "$BACKUP_ROOT" -path '*/dokumentumok/*' -name '*.tar.gz' -mtime +7 -print -delete
     ;;
-  hosti-kerj|hosti-vegrehajt|hosti-allapot)
+  hosti-kerj|hosti-vegrehajt|hosti-allapot|hosti-kep|hosti-naplo)
     # hosti-kerj <projekt> <ige> <commit|-> <kero> | hosti-vegrehajt <R> <discord-uzenet-id> | hosti-allapot [<R>]
     # The gate's part is the shape of the words; the executor (root, behind a socket only the fleet uid may use) checks the
     # project list, the verb list, the approval and everything else again. Any key may ask: the owner's Discord answer decides.
@@ -684,6 +707,20 @@ case "$OP" in
         [[ "${W[2]}" =~ ^[0-9]{15,22}$ ]] || deny "'$OP': a Discord uzenet azonositoja szamjegyek"
         allow "$OP" "${W[1]}" "${W[2]}"
         exec "$HOSTI_CLIENT" vegrehajt "${W[1]}" "${W[2]}"
+        ;;
+      hosti-kep)
+        args 1
+        [[ "${W[1]}" =~ ^[a-z][a-z0-9-]{0,30}$ ]] || deny "'$OP': a projekt neve [a-z][a-z0-9-]"
+        allow "$OP" "${W[1]}"
+        exec "$HOSTI_CLIENT" kep "${W[1]}"
+        ;;
+      hosti-naplo)
+        [ "$NARGS" -eq 1 ] || [ "$NARGS" -eq 2 ] || deny "'$OP': <projekt> [sorok]"
+        [[ "${W[1]}" =~ ^[a-z][a-z0-9-]{0,30}$ ]] || deny "'$OP': a projekt neve [a-z][a-z0-9-]"
+        lines="${W[2]:-200}"
+        [[ "$lines" =~ ^[1-9][0-9]{0,3}$ ]] && [ "$lines" -le 1000 ] || deny "'$OP': a sorok szama 1 es 1000 kozotti egesz"
+        allow "$OP" "${W[1]}" "$lines"
+        exec "$HOSTI_CLIENT" naplo "${W[1]}" "$lines"
         ;;
       hosti-allapot)
         [ "$NARGS" -le 1 ] || deny "'$OP': legfeljebb egy argumentum (R)"

@@ -70,6 +70,11 @@ hv.ROOT_UID = ME  # the test is not root: "root-owned" means "owned by me" here
 hv.STATE = STATE
 hv.CONFIG_FILE = os.path.join(CONF, 'config.json')
 hv.DISCORD_TOKEN_FILE = os.path.join(CONF, 'discord-olvaso')
+FILTER_COPY = os.path.join(CONF, 'naplo-szuro')
+import shutil as _shutil
+_shutil.copyfile(os.path.join(ROOT, 'scripts/host/naplo-szuro.py'), FILTER_COPY)
+os.chmod(FILTER_COPY, 0o755)
+hv.FILTER_FILE = FILTER_COPY
 
 CHANNEL, BOT, OWNER = '1540270627926183997', '1500000000000000001', '1460000000000000001'
 FLEET_UID = 12345
@@ -127,6 +132,9 @@ class FakeRunner:
         self.up_effect = True
         self.git_checkout_rc = 0
         self.hooks = []  # callables run before the call is answered: (argv) -> None
+        self.logs_rc = 0
+        self.logs_out = b''
+        self.logs_err = b''
 
     def run(self, argv, cwd=None, timeout=120):
         self.calls.append(list(argv))
@@ -137,6 +145,8 @@ class FakeRunner:
             if a[1:3] == ['image', 'inspect']:
                 ref = a[-1]
                 found = self.images.get(ref)
+                if found and hv.IMAGE_FORMAT in a:
+                    return 0, f'{found}|2026-10-19T10:00:00Z\n'.encode(), b''
                 return (0, (found + '\n').encode(), b'') if found else (1, b'', b'no such image')
             if a[1] == 'tag':
                 src = self.images.get(a[2], a[2] if a[2].startswith('sha256:') else None)
@@ -158,7 +168,11 @@ class FakeRunner:
                     return self.up_rc, b'', b''
                 if rest[0] == 'ps':
                     return 0, (CID + '\n').encode(), b''
+                if rest[0] == 'logs':
+                    return self.logs_rc, self.logs_out, self.logs_err
             if a[1] == 'inspect':
+                if hv.CONTAINER_FORMAT in a:
+                    return 0, f'/levelkozvetito-1|levelkozvetito:local|{self.running}|2026-10-19T10:00:00Z|2026-10-19T10:05:00Z|running|0|-\n'.encode(), b''
                 return 0, f'{self.running} true\n'.encode(), b''
         if a[0] == hv.GIT:
             rest = a[a.index('-C') + 2:]
@@ -523,7 +537,71 @@ try:
     check('a request with a non-string argument is refused', 10, serve_one({'ige': 'kerj', 'args': [1]})[0])
     big = hv.serve(stdin=io.BytesIO(b'{"ige":"allapot","args":["' + b'a' * 5000 + b'"]}\n'), stdout=Capture(), uid_of_peer=lambda: FLEET_UID)
     check('a request over the size limit is refused', 10, big)
-    check('the socket verb list is exactly kerj, vegrehajt, allapot', ['allapot', 'kerj', 'vegrehajt'], sorted(hv.SOCKET_OPS))
+    check('the socket verb list is exactly kerj, vegrehajt, allapot, kep, naplo', ['allapot', 'kep', 'kerj', 'naplo', 'vegrehajt'], sorted(hv.SOCKET_OPS))
+
+    print('kep and naplo: read only, fixed fields, and nothing leaves unfiltered (point G)')
+    fresh()
+    FAKE.images['levelkozvetito:elozo'] = ID_PREV
+    k = hv.cmd_kep(['levelkozvetito'])
+    check('kep: the image, the previous image and the service container, as fixed fields',
+          [{'id': '1' * 12, 'letrehozva': '2026-10-19T10:00:00Z'}, {'id': '3' * 12, 'letrehozva': '2026-10-19T10:00:00Z'}],
+          [k['kep'], k['elozo']])
+    c = k['szolgaltatasok'][0]['konteneres'][0]
+    check('kep: the container fields', ['levelkozvetito-1', 'levelkozvetito:local', '1' * 12, 'running', '0', '-'],
+          [c['nev'], c['kep'], c['kepId'], c['allapot'], c['ujrainditas'], c['egeszseg']])
+    inspect_templates = [x for call in FAKE.calls for x in call if '{{' in x]
+    for forbidden in ('Env', 'Mounts', '.Cmd', 'Entrypoint', 'Labels', 'HostConfig', 'Args'):
+        check('kep: no docker template names ' + forbidden, [], [t for t in inspect_templates if forbidden in t])
+    check('kep: it changed nothing', [], FAKE.mutating())
+    check('kep: a project off the list', 'Refused', outcome_of(hv.cmd_kep, ['masik']))
+    check('kep: the wrong number of arguments', 'Refused', outcome_of(hv.cmd_kep, []))
+
+    fresh()
+    secret = 'S3cr3tValueAbc12345'
+    FAKE.logs_out = f'2026-10-19T10:00:00Z start ok\n2026-10-19T10:00:01Z password={secret} seen\n'.encode()
+    FAKE.logs_err = f'2026-10-19T10:00:02Z Error: connect postgres://app:{secret}@db/x failed\n{{"msg":"{{\\"token\\":\\"{secret}\\"}}"}}\n'.encode()
+    n = hv.cmd_naplo(['levelkozvetito'])
+    check('naplo: the secret is on neither stream of the container, in the reply', False, secret in json.dumps(n))
+    check('naplo: stdout lines stay, and the replacements are counted', [True, True, 3], ['start ok' in n['naplo'], '[TITOK]' in n['naplo'], n['szurve']])
+    check('naplo: a header names the service', True, n['naplo'].startswith('# szolgaltatas: levelkozvetito\n'))
+    audit = open(os.path.join(STATE, 'audit.log'), encoding='utf-8').read()
+    check('naplo: the audit has the counts and no log content', [True, False], ['"esemeny": "naplo"' in audit and '"szurve": 3' in audit, 'start ok' in audit or secret in audit])
+    logs_calls = [c for c in FAKE.calls if 'logs' in c]
+    check('naplo: the compose call is fixed: no follow, no since, the tail and the service', [hv.DOCKER, 'compose', '-p', 'levelkozvetito', '-f', project()['composeFajl'], 'logs', '--no-color', '--timestamps', '--tail', '200', 'levelkozvetito'], logs_calls[0])
+    check('naplo: a given number of lines', '50', [c for c in (hv.cmd_naplo(['levelkozvetito', '50']), ) if c][0] and [c for c in FAKE.calls if 'logs' in c][-1][-2])
+    for bad in ('0', '1001', '-5', 'abc', '10.5', '01', '99999'):
+        check('naplo: the lines value %r is refused' % bad, 'Refused', outcome_of(hv.cmd_naplo, ['levelkozvetito', bad]))
+    check('naplo: a project off the list', 'Refused', outcome_of(hv.cmd_naplo, ['masik']))
+    check('naplo: a service whose logs cannot be read refuses (no partial reply)', 'Refused', outcome_of(lambda: (setattr(FAKE, 'logs_rc', 1), hv.cmd_naplo(['levelkozvetito']))[1]))
+    FAKE.logs_rc = 0
+    real_filter = hv.FILTER_FILE
+    hv.FILTER_FILE = os.path.join(CONF, 'nincs-szuro')
+    check('naplo: NO filter file, NO log', 'Refused', outcome_of(hv.cmd_naplo, ['levelkozvetito']))
+    broken = os.path.join(CONF, 'torott-szuro')
+    with open(broken, 'w') as f:
+        f.write('def filter_text(text):\n    raise RuntimeError("boom")\n')
+    os.chmod(broken, 0o755)
+    hv.FILTER_FILE = broken
+    try:
+        reply = hv.cmd_naplo(['levelkozvetito'])
+        outcome = 'released: ' + json.dumps(reply)[:60]
+    except hv.Refused:
+        outcome = 'Refused'
+    check('naplo: a filter that fails releases NOTHING (no raw log)', 'Refused', outcome)
+    # a WORKING filter in a file others can write: loading it would succeed, so only the owner check refuses it
+    writable = os.path.join(CONF, 'irhato-szuro')
+    _shutil.copyfile(FILTER_COPY, writable)
+    os.chmod(writable, 0o777)
+    hv.FILTER_FILE = writable
+    check('naplo: a filter file others can write is not loaded', 'Refused', outcome_of(hv.cmd_naplo, ['levelkozvetito']))
+    hv.FILTER_FILE = real_filter
+    FAKE.logs_out = b'x ' * 400000
+    big = hv.cmd_naplo(['levelkozvetito'])
+    check('naplo: the reply stays under the limit the client can read', True, len(json.dumps(big)) < 1_000_000)
+    code, reply = serve_one({'ige': 'naplo', 'args': ['levelkozvetito', '5']})
+    check('kep and naplo are socket verbs, answered like the others', [0, True], [code, reply['ok']])
+    code, reply = serve_one({'ige': 'kep', 'args': ['levelkozvetito']})
+    check('kep over the socket', [0, True], [code, reply['ok']])
 
     print('visszaallit, and the failures of the work')
     fresh()
