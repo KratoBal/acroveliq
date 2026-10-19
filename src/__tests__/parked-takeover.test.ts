@@ -1,9 +1,11 @@
 // A delivery that typed the message and did not land it (task kezbesites-enter-parkol, card e406512f):
 // src/web/parked-takeover.ts and its use in sendPromptViaBroker / the router.
 //
-// WHAT TURNS THIS RED: a typed-not-landed deliver that is only logged again (the text left parked); an Enter that was only
-// late read as "send it again" (the 2026-10-19 double delivery of message 32993); a `landed` claimed without the pane saying
-// so; a submit pressed on a placeholder, a box that holds something else, or under a dialog; a clear that answers a dialog;
+// WHAT TURNS THIS RED: a typed-not-landed deliver that is only logged again (the text left parked); a parked text our own Enter
+// submitted being typed again (the 2026-10-19 double delivery of message 32993); a `landed` claimed without the pane saying so,
+// above all an EMPTY box seen BEFORE any Enter of ours (somebody else may have emptied it: a silent loss; barracuda, #264 review);
+// a submit pressed on a placeholder, a box that holds something else, or under a dialog; a CLEAR of a box that the broker said does
+// not hold exactly our text (it could wipe a panel message or a person's typing); a clear that answers a dialog;
 // more than three Enters; a takeover on the QUEUED path (it has its own recovery); the idle diagnostic row without the broker's
 // reason; a stuck takeover that is not said at once to the main agent.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -107,10 +109,10 @@ describe('takeOverParkedDelivery (the decisions, with the broker injected)', () 
     return takeOverParkedDelivery('proba', reason, deps).then((r) => ({ r, log, delays }))
   }
 
-  it('parked, the Enter was only late (the first look finds the box empty): LANDED, no Enter of ours', async () => {
+  it('parked, the box is empty BEFORE any Enter of ours: UNKNOWN, not landed (somebody else may have emptied it), nothing pressed', async () => {
     const x = await run('parked', [EMPTY])
-    expect([x.r.outcome, x.r.presses, x.log]).toEqual(['landed', 0, ['submit']])
-    expect(x.r.note).toContain('only late')
+    expect([x.r.outcome, x.r.presses, x.log]).toEqual(['unknown', 0, ['submit']])
+    expect(x.r.note).toContain('not proof of delivery')
   })
 
   it('parked, one Enter of ours and the next look finds the box empty: LANDED after 1 press, settled in between', async () => {
@@ -157,20 +159,10 @@ describe('takeOverParkedDelivery (the decisions, with the broker injected)', () 
     }
   })
 
-  it.each(['not-in-box', 'placeholder', 'box-changed', 'something-new'])('%s: NO Enter at all (the text is not safely ours to submit), the box is cleared', async (reason) => {
-    const x = await run(reason, [], [OK])
-    expect([x.r.outcome, x.r.presses, x.log]).toEqual(['cleared', 0, ['clear']])
-  })
-
-  it('a clear on an already empty box is cleared (nothing was submitted: never "landed" without our Enter)', async () => {
-    const x = await run('not-in-box', [], [EMPTY])
-    expect(x.r.outcome).toBe('cleared')
-  })
-
-  it('a clear that finds a running turn leaves the box alone: UNKNOWN; a dialog: LEFT; a failed clear: UNKNOWN', async () => {
-    expect((await run('placeholder', [], [RUNNING])).r.outcome).toBe('unknown')
-    expect((await run('placeholder', [], [DIALOG])).r.outcome).toBe('left')
-    expect((await run('placeholder', [], [{ code: 11, out: 'not-empty' }])).r.outcome).toBe('unknown')
+  it.each(['not-in-box', 'placeholder', 'box-changed', 'something-new'])('%s: the box does not hold exactly our text: NOTHING pressed, NOTHING cleared, LEFT (no broker call at all)', async (reason) => {
+    const x = await run(reason, [OK], [OK])
+    expect([x.r.outcome, x.r.presses, x.log]).toEqual(['left', 0, []])
+    expect(x.r.note).toContain('nothing cleared')
   })
 
   it.each(['dialog-while-typing:permission', 'dialog-before-enter:menu', 'dialog-after-enter:consent'])('%s: LEFT, no broker call at all (an Enter or a clear could answer it)', async (reason) => {
@@ -193,14 +185,14 @@ describe('sendPromptToSession through the broker: the takeover on the IDLE path'
     expect(reports).toEqual([])
   })
 
-  it('typed, parked, and the Enter was only late: SENT (the router will NOT type it again), reason in the report', async () => {
+  it('typed, parked, and the box is empty BEFORE any Enter of ours: NOT-LANDED (never claimed delivered), the reason in the report', async () => {
     script({ code: 11, out: 'parked' }, [EMPTY])
     const { result, reports } = await send()
-    expect(result).toBe('sent')
+    expect(result).toBe('not-landed')
     expect(brokerVerbs()).toEqual(['deliver', 'submit'])
     expect(reports).toHaveLength(1)
-    expect(reports[0]!.result).toBe('sent')
-    expect(reports[0]!.reason).toBe('fleet-pane:parked; takeover:landed(the Enter was only late)')
+    expect(reports[0]!.result).toBe('not-landed')
+    expect(reports[0]!.reason).toContain('fleet-pane:parked; takeover:unknown(the box was empty before any Enter of ours')
   })
 
   it('typed, parked, our Enter lands it: SENT after the settle', async () => {
@@ -218,12 +210,12 @@ describe('sendPromptToSession through the broker: the takeover on the IDLE path'
     expect(reports[0]!.reason).toContain('fleet-pane:parked; takeover:cleared')
   })
 
-  it.each(['not-in-box', 'placeholder'])('typed but %s: a clear and no Enter, NOT-LANDED', async (why) => {
-    script({ code: 11, out: why }, [], [OK])
+  it.each(['not-in-box', 'placeholder', 'box-changed'])('typed but %s: no Enter and NO clear, NOT-LANDED, the takeover says LEFT', async (why) => {
+    script({ code: 11, out: why }, [OK], [OK])
     const { result, reports } = await send()
     expect(result).toBe('not-landed')
-    expect(brokerVerbs()).toEqual(['deliver', 'clear'])
-    expect(reports[0]!.reason).toContain(`fleet-pane:${why}; takeover:cleared`)
+    expect(brokerVerbs()).toEqual(['deliver'])
+    expect(reports[0]!.reason).toContain(`fleet-pane:${why}; takeover:left`)
   })
 
   it('a dialog after the Enter: nothing is touched, NOT-LANDED, the takeover says LEFT', async () => {
