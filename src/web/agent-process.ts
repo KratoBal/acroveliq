@@ -58,6 +58,7 @@ import { resolveAgentSecurityProfile } from './agent-team.js'
 import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureSkillsPathTrapSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { clearAbandonedPrompt, recordAbandonedPrompt, recordInjectedPrompt } from './injected-prompt-registry.js'
+import { takeOverParkedDelivery } from './parked-takeover.js'
 import { agentOfSession, brokerArgsForTmux, brokerInvocation, brokerStartAgent, callBroker, callBrokerSync, deliverOutcome, deliverTimeoutMs, fleetPaneBrokerOn } from './fleet-pane.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
@@ -2679,7 +2680,21 @@ async function sendPromptViaBroker(
     if (!opts.busyTarget && opts.waitForIdle === false && r.code === 10 && /^busy/.test(r.out)) {
       r = await callBroker(['deliver', agent, '--queued'], line, timeoutMs)
     }
-    const outcome = deliverOutcome(r)
+    let outcome = deliverOutcome(r)
+    // IDLE path, typed but not landed (11): the text sits in the agent's box. Take the pane over inside this lane
+    // (parked-takeover.ts): an Enter that was only late means DELIVERED, not "send it again" (that was a double
+    // delivery); anything else leaves the box emptied and the reason in the diagnostic row.
+    let takeoverNote: string | null = null
+    if (!opts.busyTarget && outcome === 'not-landed' && r.code === 11) {
+      const t = await takeOverParkedDelivery(agent, r.out, { broker: (verb) => callBroker(verb), delay })
+      takeoverNote = t.note
+      if (t.outcome === 'landed') outcome = 'sent'
+      logger[t.outcome === 'landed' ? 'info' : 'warn']({ session, why: r.out, takeover: t.note }, 'sendPromptToSession: typed but not landed; took the pane over')
+    }
+    if (!opts.busyTarget && (outcome !== 'sent' || takeoverNote)) {
+      // the broker's reason in the router's diagnostic row (the idle rows had none)
+      opts.onBusyReport?.({ result: outcome === 'sent' ? 'sent' : 'not-landed', reason: `fleet-pane:${r.out || r.code}${takeoverNote ? `; ${takeoverNote}` : ''}`, chunks: 0, retries: 0 })
+    }
     if (opts.busyTarget) {
       if (outcome === 'sent') clearAbandonedPrompt(session)
       // typed but not landed into a running turn: the stuck-input recovery clears it, never submits

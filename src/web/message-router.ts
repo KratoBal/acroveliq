@@ -119,6 +119,30 @@ function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckM
   }
 }
 
+// A delivery that typed the message and could neither land nor clear it (parked-takeover.ts `left` or `unknown`): the
+// text may sit in the agent's input box right now. Said at once, not after the 10-minute stuck window (task
+// kezbesites-enter-parkol: a box parked for ten minutes was found by the stuck alert). Pure part exported for tests;
+// null when no alert may be sent (the main agent never alerts itself).
+export function formatParkedDeliveryAlert(agent: string, mainAgentId: string, session: string, messageId: number, reason: string): string | null {
+  if (agent === mainAgentId) return null
+  const why = reason.replace(/[^\x20-\x7e]/g, '?').slice(0, 200)
+  return `[delivery-parked] Message ${messageId} to '${agent}' (tmux ${session}) was typed into the pane but could not be submitted or cleared (${why}). Its text may still sit in the agent's input box: look at the pane, then \`sudo -n /usr/local/sbin/fleet-pane submit ${agent}\` or \`clear ${agent}\`. The router keeps the message and will type it again once the box is free: a text that WAS submitted would then arrive twice.`
+}
+
+const parkedAlerted = new Set<number>()
+function notifyOrchestratorOfParkedDelivery(agent: string, session: string, messageId: number, reason: string): void {
+  if (parkedAlerted.has(messageId)) return
+  try {
+    const alert = formatParkedDeliveryAlert(agent, MAIN_AGENT_ID, session, messageId, reason)
+    if (!alert) return
+    parkedAlerted.add(messageId)
+    createAgentMessage('system', MAIN_AGENT_ID, alert)
+    logger.warn({ agent, session, messageId, reason }, 'delivery-parked surfaced to orchestrator')
+  } catch (err) {
+    logger.warn({ err, agent, messageId }, 'Failed to enqueue delivery-parked notification')
+  }
+}
+
 function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): void {
   try {
     // A failed message to the main agent can't happen (pull model), but guard
@@ -816,7 +840,12 @@ export async function runMessageRouterTick(): Promise<void> {
                 report = r
               },
             })
-          : await sendPromptToSession(session, prefix + wrapped, host)
+          : await sendPromptToSession(session, prefix + wrapped, host, {
+              // the broker's reason and the takeover's note reach the diagnostic row on the idle path too
+              onBusyReport: (rep) => {
+                report = rep
+              },
+            })
         const r = report as BusyPaneReport | null
         recordDeliveryDiag({
           agent: msg.to_agent,
@@ -828,6 +857,7 @@ export async function runMessageRouterTick(): Promise<void> {
         // delivered = the keystrokes went into the pane; a send that typed nothing stays pending
         if (sent !== 'sent') {
           logger.info({ id: msg.id, to: msg.to_agent, sent }, 'Agent message not typed into the pane; stays pending')
+          if (r?.reason && /takeover:(left|unknown)/.test(r.reason)) notifyOrchestratorOfParkedDelivery(msg.to_agent, session, msg.id, r.reason)
           continue
         }
         if (!markMessageDelivered(msg.id)) {
