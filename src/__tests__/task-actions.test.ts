@@ -160,7 +160,7 @@ describe('create: a task, one event, one message; the hand-out stays acrobot\'s'
     const r = await create({ title: '', goal: 'y', priority: 'kritikus', assignee: '../etc', project: 'nincs-ilyen' })
     expect(r.status).toBe(400)
     expect(r.body.missing).toEqual([
-      'project (acropora|os|commerce|reefclub)',
+      'project (acropora|os|commerce|reefclub|caparium)',
       'title (1-200 characters)',
       'priority (low|normal|high|urgent)',
       'assignee: an agent of the fleet, or empty for "acrobot assigns"',
