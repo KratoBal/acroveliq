@@ -399,27 +399,33 @@ describe('the one list (scripts/gepi-review.json) and the fleet-approve config i
     expect(real.repos.filter((r) => !template.repos.includes(r))).toEqual(KNOWN_EXTRA)
   })
 
-  it('the reviewers are a list of strings (filled from the first real review, caparium-napplo #158)', () => {
-    expect(Array.isArray(real.reviewers)).toBe(true)
-    expect(real.reviewers.every((x) => typeof x === 'string' && x.length > 0)).toBe(true)
+  it('the machine account is the listed reviewer (Balazs 2026-10-15 16:50 UTC, Eldontendo msg 1560334076613754972, via acrobot 32949)', () => {
+    expect(real.reviewers).toEqual(['flotta-bot-acro'])
   })
 
-  it('the helper, run from the real scripts directory, reads the real list: an empty reviewers list is "not checkable"', async () => {
-    pages = [[200, [review('APPROVED', 'valaki')]]]
-    const r = await new Promise<Result>((resolve) =>
+  const runReal = (head: string) =>
+    new Promise<Result>((resolve) =>
       execFile(
         'python3',
-        ['-B', join(REPO_ROOT, 'scripts', 'gepi-review-ellenor.py'), '--repo', 'KratoBal/acroveliq', '--pr', '257', '--head', HEAD],
+        ['-B', join(REPO_ROOT, 'scripts', 'gepi-review-ellenor.py'), '--repo', 'KratoBal/acroveliq', '--pr', '257', '--head', head],
         { env: { ...process.env, GITHUB_API_URL: `http://127.0.0.1:${port}`, GITHUB_TOKEN_FILE: tokenFile } },
         finish(resolve),
       ),
     )
-    if (real.reviewers.length === 0) {
-      expect(r.code).toBe(1)
-      expect(r.out).toContain('NEM ELLENORIZHETO')
-    } else {
-      expect(r.code).not.toBe(3)
-    }
+
+  it('the helper, run from the real scripts directory, reads the real list: the machine account\'s APPROVED on the head passes', async () => {
+    pages = [[200, [review('APPROVED', 'flotta-bot-acro')]]]
+    const r = await runReal(HEAD)
+    expect(r.code).toBe(0)
+    expect(r.out).toContain('(flotta-bot-acro)')
+  })
+
+  it('... and a stranger\'s APPROVED on the head does not: 1, the stranger named', async () => {
+    pages = [[200, [review('APPROVED', 'valaki')]]]
+    const r = await runReal(HEAD)
+    expect(r.code).toBe(1)
+    expect(r.out).toContain('valaki')
+    expect(r.out).toContain('flotta-bot-acro')
   })
 })
 
