@@ -72,7 +72,9 @@
 # root record STAY (they are true: barracuda did approve), but the script exits 1 and says that the
 # GitHub review is missing and why (10 refused: the head moved or the PR is no longer open, a new
 # packet is needed; 13 GitHub did not answer: run the printed `fleet-approve approve` line again, which
-# does not repeat the verdict event). A CHANGES posts no review.
+# does not repeat the verdict event); 14 (the approver's TOKEN is refused by GitHub, HTTP 401/403: no right to
+# review pull requests) prints NO retry line, it names the owner's step: a retry cannot fix a token.
+# A CHANGES posts no review.
 #
 # THE GITHUB-ONLY FORM (barracuda, #258 review 1): `review-ellenoriz.sh --csak-github-review <csomag> <task_id>`
 # runs ONLY the approve step for an APPROVE that is already recorded, so a 13 is recoverable without writing the
@@ -236,11 +238,14 @@ github_review() {
   if [ "$rc" -ne 0 ]; then
     case "$rc" in
       10) why="elutasitva (nincs rogzitett APPROVE erre a fejre, a PR feje mas, mint amit atneztel, vagy a PR mar nem nyitott): a fejlesztotol uj csomag kell" ;;
-      13) why="a GitHub nem valaszolt vagy elutasitotta: ujraprobalhato" ;;
+      13) why="a GitHub nem valaszolt vagy hibat adott: ujraprobalhato" ;;
+      14) why="a gepi fiok TOKENJENEK jogkore hianyzik (GitHub 401/403): ez nem atmeneti, ujraproba nem segit" ;;
       *) why="ismeretlen hiba" ;;
     esac
     echo "FAIL: az idovonalon es a root rekordban az APPROVE megvan, de a GitHub-review NEM jott letre (kilepes $rc, $why): $(head -c 300 "$T/approve")" >&2
     [ "$rc" = 13 ] && echo "  Ujra, a verdict esemeny ismetlese nelkul: $rerun" >&2
+    # a token without the right is not fixed by a retry: no retry line, the owner's step is named
+    [ "$rc" = 14 ] && echo "  Balazs lepese kell: a gepi fiok tokenjen a Pull requests: write jog a flotta repoin (klasszikus token repo hatokorrel); utana a --csak-github-review alak ugyanerre a csomagra ujra futtathato." >&2
     exit 1
   fi
   echo "OK GitHub-review: $(head -c 300 "$T/approve")"

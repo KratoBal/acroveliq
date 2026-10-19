@@ -293,6 +293,7 @@ cat > "$T/fleet-approve" <<EOF
 if [ "\$1" = approve ]; then
   [ -f "$T/approve-refused" ] && { echo "fleet-approve: refused: the reviewed head is not the PR head: a push came after the review" >&2; exit 10; }
   [ -f "$T/approve-failed" ] && { echo "fleet-approve: failed: GitHub review HTTP 502" >&2; exit 13; }
+  [ -f "$T/approve-norights" ] && { echo "fleet-approve: token rights missing: GitHub review HTTP 403: Resource not accessible by personal access token" >&2; exit 14; }
   printf '%s\n' "\$*" >> "$AC"
   echo "approved \$2#\$3 at 1234"
   exit 0
@@ -397,6 +398,16 @@ check '... says missing, exit 13' 1 "$(grep -c 'GitHub-review NEM jott letre (ki
 check '... and prints the retry line: THIS script, GitHub-only form (not the sudo line the profile refuses)' 1 "$(grep -c "Ujra, a verdict esemeny ismetlese nelkul: bash $T/ell-d4.sh --csak-github-review marveen70 tsk-a\$" "$T/out")"
 check '... and no sudo line anywhere in the retry hint' 0 "$(grep -c 'Ujra.*sudo' "$T/out")"
 rm "$T/approve-failed"
+touch "$T/approve-norights"
+check 'approve answers 14 (the approver token is refused by GitHub) -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
+check '... says the token rights are missing and that no retry helps, with the exit code' 1 "$(grep -c 'GitHub-review NEM jott letre (kilepes 14, a gepi fiok TOKENJENEK jogkore hianyzik (GitHub 401/403): ez nem atmeneti, ujraproba nem segit)' "$T/out")"
+check '... passes the approver own words on' 1 "$(grep -c 'Resource not accessible by personal access token' "$T/out")"
+check '... names the owner step' 1 "$(grep -c '^  Balazs lepese kell: a gepi fiok tokenjen a Pull requests: write jog' "$T/out")"
+check '... and prints NO retry line (a retry cannot fix a token)' 0 "$(grep -c 'Ujra, a verdict esemeny ismetlese nelkul' "$T/out")"
+check 'the same in the GitHub-only form -> 1, no retry line' "1|0" "$(ell4 --csak-github-review marveen70 tsk-a)|$(grep -c 'Ujra, a verdict' "$T/out")"
+check '... and the owner step is named there too' 1 "$(grep -c '^  Balazs lepese kell' "$T/out")"
+rm "$T/approve-norights"
+check 'a 13 still prints its retry line (the 14 handling did not swallow it)' 1 "$(touch "$T/approve-failed"; ell4 marveen70 tsk-a APPROVE >/dev/null; grep -c 'Ujra, a verdict esemeny ismetlese nelkul' "$T/out"; rm "$T/approve-failed")"
 a0="$(ac)"
 touch "$T/no-approve-rule"
 check 'sudo allows record but not approve -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
