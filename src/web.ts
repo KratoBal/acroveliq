@@ -62,6 +62,7 @@ import { tryHandleKanban } from './web/routes/kanban.js'
 import { tryHandleTaskHandoffs } from './web/routes/task-handoffs.js'
 import { tryHandleOpenMatters } from './web/routes/open-matters.js'
 import { tryHandleDecisions } from './web/routes/decisions.js'
+import { tryHandleTitokUrlap } from './web/routes/titok-urlap.js'
 import { tryHandleTaskActions } from './web/routes/task-actions.js'
 import { tryHandleTaskUsage } from './web/routes/task-usage.js'
 import { tryHandleDebates } from './web/routes/debates.js'
@@ -244,6 +245,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleTaskHandoffs(routeCtx)) return
       if (await tryHandleOpenMatters(routeCtx)) return
       if (await tryHandleDecisions(routeCtx)) return
+      if (await tryHandleTitokUrlap(routeCtx)) return
       if (await tryHandleTaskActions(routeCtx)) return
       if (await tryHandleTaskUsage(routeCtx)) return
       if (await tryHandleDebates(routeCtx)) return

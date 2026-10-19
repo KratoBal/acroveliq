@@ -28,6 +28,8 @@ function main(): void {
   const store = config.secretStoreDir
     ? new SecretStore({ dir: config.secretStoreDir, legacy: { 'oauth-client-secret': config.oauthClientSecretFile } })
     : null
+  // fail fast: a damaged pointer or a missing active version keeps the relay from starting, not from answering wrongly later
+  store?.read('oauth-client-secret')
   const google = googleRest({
     clientId: secret(config.oauthClientIdFile),
     clientSecret: store ? () => store.read('oauth-client-secret') : secret(config.oauthClientSecretFile),

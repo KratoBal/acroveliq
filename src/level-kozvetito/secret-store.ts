@@ -18,6 +18,9 @@ import { join } from 'node:path'
 
 import { Refusal } from './errors.js'
 
+/** A version number above this is no version the relay wrote: the pointer is refused. */
+const MAX_VERSION = 1_000_000
+
 interface Pointer {
   aktiv: number
   elozo: number | null
@@ -104,12 +107,17 @@ export class SecretStore {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { aktiv: 0, elozo: null }
       throw err
     }
-    const p = JSON.parse(raw) as Partial<Pointer>
-    const ok =
-      typeof p.aktiv === 'number' &&
-      Number.isInteger(p.aktiv) &&
-      p.aktiv >= 0 &&
-      (p.elozo === null || (typeof p.elozo === 'number' && Number.isInteger(p.elozo) && p.elozo >= 0 && p.elozo !== p.aktiv))
+    let p: Partial<Pointer>
+    try {
+      p = JSON.parse(raw) as Partial<Pointer>
+    } catch {
+      throw new Error('secret pointer is malformed')
+    }
+    if (typeof p !== 'object' || p === null || Array.isArray(p)) throw new Error('secret pointer is malformed')
+    // a damaged or foreign pointer STOPS the target (an exception, never a fallback to the compose secret): the active value
+    // is then not known, and guessing one is how a rotated-away secret would come back to life
+    const version = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= MAX_VERSION
+    const ok = version(p.aktiv) && (p.elozo === null || (version(p.elozo) && p.elozo !== p.aktiv))
     if (!ok) throw new Error('secret pointer is malformed')
     return { aktiv: p.aktiv as number, elozo: p.elozo as number | null }
   }

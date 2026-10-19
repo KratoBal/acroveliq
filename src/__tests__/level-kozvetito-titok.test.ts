@@ -212,9 +212,39 @@ describe('the versioned store', () => {
     expect(() => newStore().read(TARGET)).toThrow(/empty or has whitespace/)
   })
 
-  it('refuses a malformed pointer rather than guessing a version', () => {
-    writeFileSync(join(storeDir, `${TARGET}.aktiv`), '{"aktiv":"1"}')
-    expect(() => newStore().read(TARGET)).toThrow(/malformed/)
+  it.each([
+    ['a version as a string', '{"aktiv":"1","elozo":null}'],
+    ['a negative version', '{"aktiv":-1,"elozo":null}'],
+    ['a fraction', '{"aktiv":1.5,"elozo":null}'],
+    ['a number that looks like a path part', '{"aktiv":1e300,"elozo":null}'],
+    ['a version above the cap', '{"aktiv":1000001,"elozo":null}'],
+    ['the previous equal to the active', '{"aktiv":1,"elozo":1}'],
+    ['a missing previous field', '{"aktiv":1}'],
+    ['an array', '[1,null]'],
+    ['null', 'null'],
+    ['not JSON', 'aktiv=1'],
+    ['an empty file', ''],
+  ])('a damaged pointer (%s) STOPS the target: no read, no write, no fallback to the compose secret', async (_n, text) => {
+    const s = newStore()
+    writeFileSync(join(storeDir, `${TARGET}.aktiv`), text)
+    expect(() => s.read(TARGET)).toThrow(/malformed/)
+    expect(() => s.state(TARGET)).toThrow(/malformed/)
+    await expect(s.write(TARGET, NEW1, accept)).rejects.toThrow(/malformed/)
+    expect(() => s.close(TARGET)).toThrow(/malformed/)
+    expect(() => s.rollBack(TARGET)).toThrow(/malformed/)
+    // nothing was written next to the damaged pointer, and the compose secret was not consulted as a stand-in
+    expect(files()).toEqual([`${TARGET}.aktiv`])
+  })
+
+  it('a pointer naming a version whose file is missing STOPS the read (no fallback), and a rollback onto a missing previous refuses before the pointer moves', () => {
+    const s = newStore()
+    writeFileSync(join(storeDir, `${TARGET}.aktiv`), '{"aktiv":5,"elozo":null}')
+    expect(() => s.read(TARGET)).toThrow()
+    writeFileSync(join(storeDir, `${TARGET}.aktiv`), '{"aktiv":0,"elozo":7}')
+    expect(s.read(TARGET)).toBe(OLD)
+    const before = readFileSync(join(storeDir, `${TARGET}.aktiv`), 'utf8')
+    expect(() => s.rollBack(TARGET)).toThrow()
+    expect(readFileSync(join(storeDir, `${TARGET}.aktiv`), 'utf8')).toBe(before)
   })
 })
 
@@ -713,6 +743,15 @@ describe('the source of the two new modules', () => {
     expect(text).not.toMatch(/writeFileSync|appendFileSync|createWriteStream|copyFileSync/)
     expect(text.match(/renameSync\(/g)).toHaveLength(1)
     expect(existsSync(join(process.cwd(), 'src', 'level-kozvetito', 'secret-store.ts'))).toBe(true)
+  })
+
+  it('the relay reads the active secret at START (a damaged pointer keeps it from starting) and builds the secret door only with a store', () => {
+    const text = code(read('main.ts'))
+    const early = text.indexOf("store?.read('oauth-client-secret')")
+    expect(early).toBeGreaterThan(-1)
+    expect(early).toBeLessThan(text.indexOf('googleRest({'))
+    expect(text).toContain('const secrets = store ? new SecretService(')
+    expect(text).toContain('clientSecret: store ? () => store.read(')
   })
 
   it('the target list is the constant, and a request name is only looked up in it', () => {

@@ -63,6 +63,7 @@ still carries `gmail.send` from its 2026-08-21 consent; the code never calls it,
   config.json                    from config.example.json, root 644 (no secret in it; the callers' token hashes, the excluded senders)
   src/                           git clone of KratoBal/acroveliq at the reviewed commit, root-owned
   karanten/                      10003:<gid of the fleet's quarantine reader> 2750 (setgid: files inherit the group)
+  titkok-ver/                    10003:10003 700 (the versioned client-secret store, see "The secret door"; empty until the first write)
   titkok/                        root:root 700
     oauth-client-id              10003:10003 400
     oauth-client-secret          10003:10003 400
@@ -97,6 +98,36 @@ host directory READ-ONLY into the fleet container for the quarantine reader (tha
 re-creation of the fleet container). Files older than 24 hours are removed by the relay's host cron (a line in the
 install, not code here).
 
+## The secret door (task parancssor-f-titok-urlap; contract: `exchange/acroveliq/parancssor-f-titok-urlap-szerzodes-2026-10-19.md`, barracuda APPROVE v2)
+
+The control panel's form (Vault page, "Közvetítő titkok") hands the relay a new `oauth-client-secret`, and the relay writes
+its OWN store. Nobody runs a command: the value never goes through a shell, a channel or `store/`.
+
+- **Door:** `POST /titok/oauth-client-secret/<ir|lezar|visszaall>`, a bearer token from `secretWriters` (a list apart from `callers`:
+  a mail caller cannot write, a writer cannot read mail). `ir` takes `{"ertek": "<8-512 visible characters>"}` and answers the
+  length, the version and the state, nothing else. The only target is the constant `SECRET_TARGETS` in `titok.ts`; the first PR has no `oauth-client-id`
+  (a new client id invalidates the refresh tokens and has no pre-flight: a separate plan, with a Discord approval).
+- **Pre-flight before anything is stored:** the candidate secret is tried at Google's token endpoint with BOTH accounts' refresh tokens; one access token
+  accepts it (and is dropped, not cached). Refused with `invalid_client`: `szolgaltato-elutasitotta`; only `invalid_grant` (a withdrawn consent, nothing
+  about the candidate): `frissito-token-hiba`; no answer: `szolgaltato-nem-elerheto`. Nothing on disk changes on a refusal.
+- **Store:** `titkok-ver/<target>.v<N>` (0400) and the pointer `<target>.aktiv` (`{"aktiv":N,"elozo":M|null}`), every change by temp file, fsync, rename, fsync of the
+  directory. Version 0 is the compose secret in `titkok/` (read-only, untouched). The state IS the pointer: a file it does not name is unreachable and is
+  removed by the next write or close. **A damaged or foreign pointer stops the target** (the relay does not start with it), it never falls back to the compose secret.
+- **Rotation:** after `ir` the previous value stays (`rotacio-nyitva`) until `lezar` (deletes every non-active version) or `visszaall` (swaps back; `lezar` then
+  leaves one version file). The real close is the revocation at Google; **the old value stays in the host's `titkok/oauth-client-secret` until the owner empties it.**
+- **Log:** `titok_ir`, `titok_lezar`, `titok_visszaall`, `titok_elutasitva` with caller, target, length, version, result or the fixed reason. Never the value, a hash of it or a body.
+
+Install (the owner's host step, once, after the image is rebuilt from the merged commit):
+
+```
+mkdir /opt/levelkozvetito/titkok-ver && chown 10003:10003 /opt/levelkozvetito/titkok-ver && chmod 700 /opt/levelkozvetito/titkok-ver
+```
+
+then the new `compose.yaml` (two mounts of that directory: read-write for the relay, READ-ONLY for the `oauth` service), and in `config.json` the two keys
+`"secretStoreDir": "/var/lib/levelkozvetito/titkok-ver"` and `"secretWriters": [{ "name": "vezerlopult", "tokenSha256": "<sha256 of the panel's token>" }]`
+(both or neither; one without the other refuses to start). The panel's token is its own file `store/tokens/levelkozvetito-vezerlopult.token`, mode 0400,
+the hash `printf %s "$(cat tokenfile)" | sha256sum`. Without the keys the door does not exist.
+
 ## Consent (Balázs's click, once per account; an agent cannot do it)
 
 The scope is fixed in code per account (`src/level-kozvetito/oauth.ts`): balazs@ `gmail.modify`; info@ mail and
@@ -122,7 +153,7 @@ Delete `pasted-address.txt` (the code is single-use, but the habit is cheap).
 
 - `docker inspect levelkozvetito`: no `docker.sock`, no `/opt/marveen-docker` path in `Mounts`; `ReadonlyRootfs=true`,
   `User` = `10003:10003`, `CapDrop=[ALL]`, `Privileged=false`. The `oauth` service is not running (profile).
-- the fleet container's `docker inspect` has no `/opt/levelkozvetito/titkok` mount; `ls /run/secrets` there is empty.
+- the fleet container's `docker inspect` has no `/opt/levelkozvetito/titkok` and no `/opt/levelkozvetito/titkok-ver` mount; `ls /run/secrets` there is empty.
 - `docker compose logs levelkozvetito` shows `"event":"listening"`.
 - from the fleet container: `curl -s http://levelkozvetito:8788/healthz` answers; a call with no or a wrong token answers 403.
 - the log (`/var/lib/levelkozvetito/naplo.jsonl`) names the caller and the verb and carries no subject, sender or text.
