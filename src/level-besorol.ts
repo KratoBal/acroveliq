@@ -26,6 +26,7 @@ import { pathToFileURL } from 'node:url'
 
 import { READER_AUTH_KEYS, READER_ENV_KEYS, loadReaderAuth, readerBinary, readerFailure } from './karanten-olvas.js'
 import { budapestDay, LABEL_NAMES, type LabelName } from './level-kozvetito/modify.js'
+import { scrubSecurityTags } from './prompt-safety.js'
 import { neutralDescription } from './web/approval-discord-core.js'
 
 /** The reader's fixed flags: no tool, no MCP server, no settings, nothing kept on disk. A change is a permission change. */
@@ -182,9 +183,17 @@ export function senderName(from: string): string {
   return at >= 0 ? addr.slice(at + 1).trim() : 'ismeretlen'
 }
 
-/** One piece of a stranger's text on the list: the #33 neutralisation (one line, no markdown characters, cut), quoted. */
+/**
+ * One piece of a stranger's text on the list, in an `<untrusted source="gmail">` envelope of its own on ONE line (the
+ * pattern of scripts/gcal.sh and src/prompt-safety.ts wrapUntrusted; barracuda, #262 review). The text is read by the main
+ * agent's session, and 60 characters are enough for an instruction, so it is data in a frame, not just tidied text:
+ * every control and line separator becomes a space first (a line break must not start a line that looks ours), then
+ * the security tags are replaced (the shared scrubber), then the #33 neutralisation (no markdown characters, cut).
+ * No `>` is left in the text, so nothing in it can close the frame.
+ */
 export function inline(text: string, max: number): string {
-  return `"${neutralDescription(text, max).replace(/^> /, '')}"`
+  const flat = text.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]+/g, ' ')
+  return `<untrusted source="gmail">${neutralDescription(scrubSecurityTags(flat), max).replace(/^> /, '')}</untrusted>`
 }
 
 export interface WaitingItem {

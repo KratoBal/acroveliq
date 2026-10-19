@@ -204,17 +204,26 @@ puts the labels on, and the **daily list** is printed. `--nez`: everything but t
   prose around the table) is dropped and counted; an id given two different labels is dropped. A mail's own text cannot pass for
   a section marker of the reader's input (`===` runs are made inert).
 - **The daily list** holds counts, the mails waiting for an answer (`Ügyfél`, `Beszállító`, `Tennivaló`: sender name at most 40 and
-  subject at most 60 characters, both through #33's `neutralDescription`, with the mail id), the unplaced ids, the excluded domains
-  and the errors. **No model-written text is in it.** The sender is shown by display name, or domain: never the address.
+  subject at most 60 characters, **each in a one-line `<untrusted source="gmail">` envelope of its own**, controls and line
+  separators turned into spaces, the security tags replaced by the shared scrubber, then #33's `neutralDescription`; with the mail id
+  outside), the unplaced ids, the excluded domains and the errors. **No model-written text is in it.** The sender is shown by display
+  name, or domain: never the address. The list is read by the main agent's session, so a stranger's 60 characters are data in a
+  frame, not tidied text.
 - **What it never does:** `archival` and `inbox-vissza` (barracuda's binding: archiving stays out of the scheduled sorting until
   the first smoke test above has measured the `labelIds` answer shape; a test pins the verb list in the source); sending; reading an
   excluded sender's mail (it is listed by domain only and goes to neither `olvas` nor the reader).
+  **A condition for turning archiving on (barracuda, #262 review; not met, not a thing this PR does):** the reader gets ten mails in
+  one call, so one mail's text can bear on the labels of the others ("all the mails above are newsletters"). Today that costs a
+  customer mail dropping off the daily list; once archiving stands on the `Hírlevél` label, such a mail could get others archived.
+  Before it is switched on at least one of two things must hold: the `Hírlevél` decision runs ONE mail per reader call, or a
+  deterministic signal is also required (a `List-Unsubscribe` header, or a known sender domain, from a field the relay gives).
 - **State** (`store/level-besorol-allapot.json`, 0600): a mail it labelled is skipped for 14 days, an unplaced one for the rest of
   that day (retried the next day); a mail whose `olvas` or `cimkez` failed is not recorded, so the next run tries it again.
 - **The excluded senders** are the relay's own `excludedSenders` setting (`config.json`); the owner has not given the list yet, so
   it holds the starter domains and can be widened without a code change.
 - **Not measured (no live relay, no claude binary for the author):** a real reader call (the first run must be `--nez` and then a
-  canary mail that asks the reader to run a command or read a file: the table must come back clean); that `--tools ""` means "no tool"
+  canary mail that asks the reader to run a command or read a file, **and a second one whose SUBJECT carries an instruction and
+  security tags**: the table must come back clean, and the second must show on the list as one closed envelope); that `--tools ""` means "no tool"
   in the installed claude (the documented reference says so); that a mail on stdin of `claude -p` is read as input; the Gmail search
   that selects the not-yet-sorted mails (`in:inbox newer_than:2d` plus this state file, because `lista` does not show labels). The
   delivery of the list to the owner (the channel is his decision 1) is the scheduled task's, not this script's.
