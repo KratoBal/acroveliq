@@ -1,0 +1,116 @@
+# The mail relay (task level-kozvetito, slice 3). Its own compose project on the host:
+#   /opt/levelkozvetito/compose.yaml     (this file, root-owned)
+#   /opt/levelkozvetito/src              (root-owned clone at a reviewed commit)
+#   /opt/levelkozvetito/config.json      (root-owned, callers, excluded senders, limits; no secret in it)
+#   /opt/levelkozvetito/titkok/          (root 700; the OAuth client and the two refresh tokens, uid 10003 400)
+#   /opt/levelkozvetito/karanten/        (10003:<reader gid> 2750; attachments, see README)
+# NOT under /opt/marveen-docker (that tree is mounted writable into the fleet). No docker socket, no host port,
+# no host path of the fleet. The fleet reaches it by name on an internal network and by a bearer token.
+name: levelkozvetito
+
+services:
+  levelkozvetito:
+    build:
+      context: /opt/levelkozvetito/src
+      dockerfile: level-kozvetito/Dockerfile
+      args:
+        # set in /opt/levelkozvetito/.env as <image>@sha256:<digest>; no value, no build
+        NODE_IMAGE: ${LEVELKOZVETITO_NODE_IMAGE:?set LEVELKOZVETITO_NODE_IMAGE in /opt/levelkozvetito/.env to node:22-bookworm-slim@sha256:<digest>}
+    image: levelkozvetito:local
+    container_name: levelkozvetito
+    restart: unless-stopped
+    user: "10003:10003"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    environment:
+      LEVELKOZVETITO_CONFIG: /etc/levelkozvetito/config.json
+      LEVELKOZVETITO_PORT: "8788"
+    volumes:
+      - type: bind
+        source: /opt/levelkozvetito/config.json
+        target: /etc/levelkozvetito/config.json
+        read_only: true
+      - type: volume
+        source: allapot
+        target: /var/lib/levelkozvetito
+      # attachments for the fleet's quarantine reader; the fleet mounts the same host directory READ-ONLY
+      - type: bind
+        source: /opt/levelkozvetito/karanten
+        target: /var/lib/levelkozvetito/karanten
+    secrets:
+      - oauth-client-id
+      - oauth-client-secret
+      - info-refresh-token
+      - balazs-refresh-token
+    networks:
+      hivas:
+        aliases:
+          - levelkozvetito
+      ki: {}
+
+  # the consent command: a one-off, never started by `up` (profile), run by the owner
+  # `docker compose run --rm oauth url balazs` / `... code balazs - < pasted.txt`
+  oauth:
+    profiles: ["oauth"]
+    image: levelkozvetito:local
+    entrypoint: ["node", "/app/level-kozvetito/oauth-main.js"]
+    # root only to write the token file into the secrets directory and hand it to uid 10003; no capability but CHOWN
+    user: "0:0"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      LEVELKOZVETITO_CONFIG: /etc/levelkozvetito/config.json
+      LEVELKOZVETITO_SECRET_UID: "10003"
+    volumes:
+      - type: bind
+        source: /opt/levelkozvetito/config.json
+        target: /etc/levelkozvetito/config.json
+        read_only: true
+      - type: volume
+        source: allapot
+        target: /var/lib/levelkozvetito
+      # the directory the refresh tokens are written to (the settings name /run/secrets/*-refresh-token)
+      - type: bind
+        source: /opt/levelkozvetito/titkok
+        target: /run/secrets
+    networks:
+      - ki
+
+networks:
+  # the fleet's container joins this one (docker network connect); nothing else
+  hivas:
+    name: levelkozvetito-hivas
+    internal: true
+  # outward: a plain bridge, so ANY host is reachable from the container; the code calls only Google's fixed
+  # prefixes (accounts.google.com, oauth2.googleapis.com, gmail.googleapis.com, www.googleapis.com),
+  # and the source test keeps it so. There is no egress filter here.
+  ki:
+    name: levelkozvetito-ki
+
+volumes:
+  allapot:
+    name: levelkozvetito-allapot
+
+secrets:
+  oauth-client-id:
+    file: /opt/levelkozvetito/titkok/oauth-client-id
+  oauth-client-secret:
+    file: /opt/levelkozvetito/titkok/oauth-client-secret
+  info-refresh-token:
+    file: /opt/levelkozvetito/titkok/info-refresh-token
+  balazs-refresh-token:
+    file: /opt/levelkozvetito/titkok/balazs-refresh-token

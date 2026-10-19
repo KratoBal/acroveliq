@@ -12,7 +12,7 @@
 import { GoogleError, type GoogleApi } from './google.js'
 import type { AccountId, RelayConfig } from './config.js'
 import type { ArchiveLedger } from './ledger.js'
-import { Refusal, type LogFields } from './relay.js'
+import { Refusal, type LogFields } from './errors.js'
 
 export const LABEL_NAMES = ['Acrobot/Számla', 'Acrobot/Beszállító', 'Acrobot/Ügyfél', 'Acrobot/Hírlevél', 'Acrobot/Tennivaló'] as const
 export type LabelName = (typeof LABEL_NAMES)[number]
