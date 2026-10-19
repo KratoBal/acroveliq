@@ -426,7 +426,7 @@ step "4c. the fleet-pane broker: its root script, start directory and sudo rule 
 FP_SUDOERS=/etc/sudoers.d/fleet-pane
 FP_BIN=/usr/local/sbin/fleet-pane
 FP_START=/etc/fleet-pane/start
-FP_PIN=cd78b99161218695a72ca6f4219cea2ac0d243ee1f1d5e3db03b459261ea03a3
+FP_PIN=e944306c3c0883d286d4b10935fedaa9ca6a0385a9adc6b01572a8015fd0a9f3
 FP_RC=0
 FP_DEPLOYED=0
 fp_tmpdir="$(mktemp -d)"

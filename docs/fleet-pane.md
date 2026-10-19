@@ -87,6 +87,59 @@ only on a parked box with no dialog and no running turn).
 - The race between the look before the Enter and the Enter is not closed (plan 4.3); a dialog seen
   right after the Enter is logged as `suspect-accept`.
 
+## Typing pace and the content gates (task `broker-beillesztes-helyorzo`, 2026-10-19)
+
+**The finding** (acrobot, live pane capture): the Claude TUI folds pieces that arrive quickly one after the other into a
+`[Pasted text #N]` stub (no line count) and shows the first piece, or the tail of the message, verbatim beside it. A plain Enter on
+a stub only unfolds it. The same quick typing is the probable cause of `not-in-box`: a look 30 ms after the last piece can see an
+EMPTY box, because the TUI gathers fast input until a gap. Ten idle-path deliveries not-landed since 10-16, and the double
+delivery of 32993 and 33086, came from here.
+
+**What `deliver` does now** (`scripts/root/fleet-pane.py`):
+
+- a pause between pieces (0.12 s, `PIECE_PAUSE`) and the next piece only after the previous one is DRAWN: the last 16 non-space
+  characters typed so far must be the tail of the box, with every whitespace dropped on both sides (a wrap, the continuation indent
+  and the pad are not text). The wait is time based (0.6 s, `ECHO_WAIT`); no echo means stop typing, not a blind continuation;
+- a stub seen while typing stops the typing; the box is emptied (`clear`, with the stable-look rule below) and the text typed once
+  more, slower (twice the pause and the wait). A stub again: the box is emptied and the answer is `placeholder-cleared`;
+- before the Enter, the box must be the SAME in two looks in a row and not empty (`settle`), then a pause, then a last look: a late
+  fold at that point is emptied too (`placeholder-cleared`), never left parked;
+- the broker's own deadline is `DELIVER_BASE + DELIVER_PER_PIECE x pieces` (40 s + 2.2 s each): at the deadline the typing stops,
+  the typed beginning is emptied, `deliver-timeout`. The router waits 30 s longer (`deliverTimeoutMs`, a test reads both numbers from
+  this file), so the broker answers first and the box is never left half typed by a killed run;
+- a failed deliver empties the box ONLY when the box holds exactly a beginning of what this call typed (whitespace aside).
+  Anything else in it (an earlier draft, somebody's paste) stays and the answer is `not-in-box`.
+
+**Ctrl-C and the stub.** Ctrl-C empties a stub, but on an EMPTY box it starts the exit and a second one quits the session. So every
+Ctrl-C is preceded by a STABLE look (two identical looks) that still shows the stub; an empty stable look ends the loop; at most
+three presses. Limit: a TUI that keeps showing the stub for more than about 0.6 s after the Ctrl-C and then empties it would get a
+second press on an empty box. The model assumes the redraw is faster (measured only as "not a problem so far").
+
+**`submit --expect` and `clear --expect`** (the expected text on stdin): the Enter goes only on a box that holds exactly that text
+(`not-ours` or `placeholder` otherwise, nothing pressed); the clear empties a box that holds that text, or that text folded around a
+stub with a verbatim run of at least 8 characters beside it (a bare stub is indistinguishable from somebody's paste: `not-ours`).
+Without `--expect` the verbs behave as before. An older broker answers `bad-option` (exit 2); the router's parked takeover then falls
+back to the plain verbs once, because the old `parked` already meant "the box holds ONLY our text".
+
+**The router** (`src/web/parked-takeover.ts`, `agent-process.ts`): `parked` takes `submit --expect` (at most 3, a settle between); a
+box that is not exactly ours or a stub gets the content-gated `clear --expect`; `no-echo`, `placeholder-cleared` and `deliver-timeout`
+mean the broker emptied it itself. A text a slow TUI draws LATER than the broker waited sits in the box unseen; the next deliver of
+the same message gets `box-not-free`, and the router first tries `clear --expect` with that very message: ours is emptied and the
+message typed once more, anything else is left alone.
+
+**The pace file** `/etc/fleet-pane/conf/deliver-pace.json`: `{"echoWait": 0..2, "piecePause": 0.01..1}` seconds. The directory is the
+owner's host mount (read only in the container, see `FP_CONF` in `scripts/fleet-bootstrap.sh`), so the file SURVIVES a container
+recreation and the bootstrap never writes it. Missing, not root-owned, group or world writable, a symlink, or out of range: the
+built-in values (never a refusal). `{"echoWait": 0, "piecePause": 0.03}` is the old tempo: that is the rollback if the new pace
+misbehaves on the real TUI, without a new broker version.
+
+**The model is NOT MEASURED on the real TUI.** `scripts/__tests__/fleet-pane.test.py` (class `Tui`) is a model of the capture above:
+pieces closer than 0.10 s are gathered and fold past 700 characters, an Enter on a stub unfolds, Ctrl-C on an empty box exits, the
+redraw after a Ctrl-C takes 0.3 s. Its numbers are the live capture's, its timing is an assumption. First live measurement, after the
+install and before other traffic: one 2000+ character message to a spare agent, then read the broker log (`/var/log/fleet-pane.log`,
+root) for the reason and count the Ctrl-C presses. Known non-red calibration: the in-typing stub return only saves the echo wait (the
+echo check alone also stops the typing).
+
 ## Two tmux facts the typing depends on (measured on tmux 3.3a, 2026-10-15)
 
 - An argument that ENDS in `;` is a command separator: `E;` types `E`, `A\;` types `A;`, a lone

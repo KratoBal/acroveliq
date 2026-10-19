@@ -76,9 +76,7 @@ SUBMIT_RETRIES = 3
 # gap, the previous piece's echo awaited before the next goes, the box awaited to settle before it is judged, and a pause before
 # the Enter. The thresholds themselves are NOT measured on the real TUI (see docs/fleet-pane.md).
 PIECE_PAUSE = 0.12
-SLOW_PIECE_PAUSE = 0.25
 ECHO_POLL = 0.04
-ECHO_POLLS = 15
 SETTLE_POLL = 0.15
 SETTLE_MAX_POLLS = 14
 PRE_ENTER_PAUSE = 0.15

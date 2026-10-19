@@ -142,13 +142,22 @@ export const DELIVER_MAX_CHARS = 32_000
 const DELIVER_PIECE = 80
 
 /**
- * How long a deliver of `chars` characters may take: 30 s for the looks and the Enter retries,
- * plus 250 ms per piece (a look, a send and a 30 ms pause, each through runuser). For the
- * broker's longest text (400 pieces) that is 130 s; a fixed 60 s could cut a long message
- * half-typed (barracuda, #182).
+ * The broker's own deadline for one deliver: DELIVER_BASE + DELIVER_PER_PIECE per piece (scripts/root/fleet-pane.py), the worst
+ * case of two typing passes with the slower pause and the longer echo wait. A test reads both numbers from the broker's source.
+ */
+export const BROKER_DELIVER_BASE_S = 40
+export const BROKER_DELIVER_PER_PIECE_S = 2.2
+/** The router waits this much longer than the broker's deadline, so the broker answers (and empties the box) first. */
+export const ROUTER_DELIVER_MARGIN_S = 30
+
+/**
+ * How long a deliver of `chars` characters may take at the router: the broker's deadline plus the margin. A router limit shorter than
+ * the broker's would kill the broker mid-typing and leave half a message in the box (barracuda, #182); a longer one is what the margin
+ * is for.
  */
 export function deliverTimeoutMs(chars: number): number {
-  return 30_000 + 250 * Math.ceil(Math.min(Math.max(chars, 0), DELIVER_MAX_CHARS) / DELIVER_PIECE)
+  const pieces = Math.ceil(Math.min(Math.max(chars, 0), DELIVER_MAX_CHARS) / DELIVER_PIECE)
+  return Math.round((BROKER_DELIVER_BASE_S + ROUTER_DELIVER_MARGIN_S + BROKER_DELIVER_PER_PIECE_S * pieces) * 1000)
 }
 
 /** The router's sendPromptToSession outcome for a broker deliver result. */
