@@ -287,8 +287,16 @@ check 'the script has the two fixed lines, once each' 2 \
   "$(grep -cxE '(FLEET_APPROVE=/usr/local/sbin/fleet-approve|SUDO="sudo -n")' "$HERE/../review-ellenoriz.sh")"
 check 'the main copy has neither of them' 0 "$(grep -cxE '(FLEET_APPROVE=/usr/local/sbin/fleet-approve|SUDO="sudo -n")' "$T/ell.sh")"
 RC="$T/root-calls"
+AC="$T/approve-calls"
 cat > "$T/fleet-approve" <<EOF
 #!/usr/bin/env bash
+if [ "\$1" = approve ]; then
+  [ -f "$T/approve-refused" ] && { echo "fleet-approve: refused: the reviewed head is not the PR head: a push came after the review" >&2; exit 10; }
+  [ -f "$T/approve-failed" ] && { echo "fleet-approve: failed: GitHub review HTTP 502" >&2; exit 13; }
+  printf '%s\n' "\$*" >> "$AC"
+  echo "approved \$2#\$3 at 1234"
+  exit 0
+fi
 [ -f "$T/fail-root" ] && { echo "fleet-approve: refused: agent-tesztelo is not an approver" >&2; exit 10; }
 printf '%s\n' "\$*" >> "$RC"
 echo "recorded \$5 \$2#\$3 at \$6, task \$4"
@@ -301,6 +309,8 @@ cat > "$T/sudo" <<EOF
 [ "\$1" = -n ] || { echo "sudo stub: -n expected"; exit 1; }
 shift
 [ -f "$T/no-rule" ] && { echo "sudo: a password is required" >&2; exit 1; }
+# a policy without the approve line: -l <approver> approve ... and the run itself are refused
+[ -f "$T/no-approve-rule" ] && { [ "\$3" = approve ] || [ "\$2" = approve ]; } && { echo "sudo: a password is required" >&2; exit 1; }
 [ "\$1" = -l ] && exit 0
 exec "\$@"
 EOF
@@ -365,6 +375,36 @@ check '... says why no root record was made' 1 "$(grep -c '^MEGJEGYZES: a gepi j
 check '... and nothing was recorded' "$r" "$(roots)"
 check '... a short head is not an error then either (nothing could be recorded anyway)' 0 "$(ell4 1700 tsk-b APPROVE)"
 rm "$T/no-rule"
+echo 'the GitHub review (b25-gepi-review): an APPROVE also runs `fleet-approve approve`'
+ac() { [ -f "$AC" ] && wc -l < "$AC" | tr -d ' ' || echo 0; }
+a0="$(ac)"
+check 'an APPROVE -> 0' 0 "$(ell4 marveen70 tsk-a APPROVE)"
+check '... runs approve with the repo, the PR and the task, once' "approve KratoBal/acroveliq 70 tsk-a|$((a0 + 1))" "$(tail -n1 "$AC")|$(ac)"
+check '... says the GitHub review is there' 1 "$(grep -c '^OK GitHub-review: approved KratoBal/acroveliq#70' "$T/out")"
+a0="$(ac)"
+check 'a CHANGES -> 0, and posts no review' "0|$a0" "$(ell4 marveen70 tsk-a CHANGES)|$(ac)"
+n="$(events)"; r="$(roots)"
+touch "$T/approve-refused"
+check 'approve refuses (the head moved) -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
+check '... says the GitHub review is MISSING, loudly, with the exit code' 1 "$(grep -c '^FAIL: az idovonalon es a root rekordban az APPROVE megvan, de a GitHub-review NEM jott letre (kilepes 10' "$T/out")"
+check '... the approver own words are passed on' 1 "$(grep -c 'a push came after the review' "$T/out")"
+check '... a refusal is not retryable: no rerun line' 0 "$(grep -c 'Ujra, a verdict esemeny ismetlese nelkul' "$T/out")"
+check '... the timeline verdict and the root record STAY (written before the approve)' "$((n + 1))|$((r + 1))" "$(events)|$(roots)"
+rm "$T/approve-refused"
+touch "$T/approve-failed"
+check 'approve fails (GitHub did not answer) -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
+check '... says missing, exit 13' 1 "$(grep -c 'GitHub-review NEM jott letre (kilepes 13' "$T/out")"
+check '... and prints the line that repeats ONLY the approve' 1 "$(grep -c "Ujra, a verdict esemeny ismetlese nelkul: sudo -n $T/fleet-approve approve KratoBal/acroveliq 70 tsk-a\$" "$T/out")"
+rm "$T/approve-failed"
+a0="$(ac)"
+touch "$T/no-approve-rule"
+check 'sudo allows record but not approve -> 1' 1 "$(ell4 marveen70 tsk-a APPROVE)"
+check '... says the sudo does not allow approve and the review is missing' 1 "$(grep -c 'a sudo az approve iget nem engedi: a GitHub-review NEM jott letre' "$T/out")"
+check '... and approve was not called' "$a0" "$(ac)"
+check 'a CHANGES still passes then (it needs no approve line) -> 0' 0 "$(ell4 marveen70 tsk-a CHANGES)"
+rm "$T/no-approve-rule"
+r="$(roots)"; a0="$(ac)"
+check 'an APPROVE with the match marker missing never reaches approve' "1|$a0" "$(ell4 marveen70 tsk-b APPROVE)|$(ac)"
 check 'a document verdict -> 0' 0 "$(ell4 doc-tsk-d tsk-d APPROVE)"
 check '... has no PR: no root record' "$r" "$(roots)"
 check 'a refused verdict (another task) never reaches the approver' "1|$r" "$(ell4 marveen70 tsk-b APPROVE)|$(roots)"

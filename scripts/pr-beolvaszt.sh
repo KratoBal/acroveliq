@@ -37,6 +37,12 @@ BAZIS_OK=""
 SORREND_OK=""
 DUPLA_OK=""
 KOZOS_OK=""
+GEPI_OK=""
+# b25-gepi-review: a GEPI REVIEW KAPU modja, egy sor. 0 = naplo mod: a hiany kiirodik, de nem allit meg
+# (az elso meres a beolvadas utan egy nyitott PR-on, a ruleset bekapcsolasa ELOTT). 1 = kenyszerit: a
+# jovahagyott fejen GitHub-review nelkul a beolvasztas nem indul. A ruleset Required approvals szamanak
+# bekapcsolasakor UGYANABBAN a lepesben 1-re kell allitani (acrobot, b25-gepi-review).
+GEPI_REVIEW_KENYSZERIT=0
 while :; do
   case "${1:-}" in
     --nez) NEZ=1; shift ;;
@@ -76,6 +82,12 @@ while :; do
       shift
       KOZOS_OK="${1:?a --kozos-fajl-rendben INDOKOT var: miert mehet ez elobb, mint a kozos fajlu masik PR}"
       shift ;;
+    # A GEPI REVIEW HIANYANAK feloldasa (csak kenyszerit modban kell). Ugyanaz az alak, mint a tobbi
+    # feloldasnal: az INDOK KOTELEZO es kiirodik.
+    --gepi-review-rendben)
+      shift
+      GEPI_OK="${1:?a --gepi-review-rendben INDOKOT var: mibol tudod, hogy a fejet jovahagyta barracuda, ha a GitHubon nincs review}"
+      shift ;;
     --friss-fej-rendben)
       shift
       FRISS_OK="${1:?a --friss-fej-rendben INDOKOT var: mibol tudod, hogy a szerzo befejezte}"
@@ -83,7 +95,7 @@ while :; do
     *) break ;;
   esac
 done
-PR="${1:?hasznalat: pr-beolvaszt.sh [--nez] [--task <task_id>] [--friss-fej-rendben \"indok\"] [--elavult-bazis-rendben \"indok\"] [--migracio-sorrend-rendben \"indok\"] [--kozos-fajl-rendben \"indok\"] <PR-szam> [tulajdonos/repo]}"
+PR="${1:?hasznalat: pr-beolvaszt.sh [--nez] [--task <task_id>] [--friss-fej-rendben \"indok\"] [--gepi-review-rendben \"indok\"] [--elavult-bazis-rendben \"indok\"] [--migracio-sorrend-rendben \"indok\"] [--kozos-fajl-rendben \"indok\"] <PR-szam> [tulajdonos/repo]}"
 # A repo masodik argumentumkent adhato meg. Alapertelmezes az Acropora OS, mert a
 # beolvasztasok tulnyomo resze oda megy -- de a commerce repora is kell, es ott a
 # check-runs vegpont 403-at ad ugyanezzel a tokennel (merve 2026-09-04, murena
@@ -162,9 +174,10 @@ fi
 TARTAS=/home/marveen/marveen/exchange/pr-tartas.txt
 
 ESEMENY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/beolvadt-esemeny.py"
+GEPI_REVIEW="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gepi-review-ellenor.py"
 # the token goes in the environment, not the argv (every agent's `ps` shows argv;
 # acrovelIQ P0-1); argv[3] stays a placeholder so the positions do not move
-PR_BEOLVASZT_TOK="$TOK" python3 - "$PR" "$REPO" "-" "$NEZ" "$TARTAS" "$FRISS_OK" "$BAZIS_OK" "$SORREND_OK" "$DUPLA_OK" "$KOZOS_OK" "$TASK" "$ESEMENY" << 'PYEOF'
+PR_BEOLVASZT_TOK="$TOK" python3 - "$PR" "$REPO" "-" "$NEZ" "$TARTAS" "$FRISS_OK" "$BAZIS_OK" "$SORREND_OK" "$DUPLA_OK" "$KOZOS_OK" "$TASK" "$ESEMENY" "$GEPI_REVIEW" "$GEPI_OK" "$GEPI_REVIEW_KENYSZERIT" << 'PYEOF'
 import json, os, re as _re, subprocess, sys, time
 pr, repo = sys.argv[1], sys.argv[2]
 # popped, so the curl, git and python children do not inherit it
@@ -178,6 +191,9 @@ dupla_ok = sys.argv[9] if len(sys.argv) > 9 else ''
 kozos_ok = sys.argv[10] if len(sys.argv) > 10 else ''
 task = sys.argv[11] if len(sys.argv) > 11 else ''
 esemeny_szkript = sys.argv[12] if len(sys.argv) > 12 else ''
+gepi_szkript = sys.argv[13] if len(sys.argv) > 13 else ''
+gepi_ok = sys.argv[14] if len(sys.argv) > 14 else ''
+gepi_kenyszerit = (sys.argv[15] if len(sys.argv) > 15 else '0') == '1'
 
 # A TARTAS ELOSZOR, MINDEN API-HIVAS ELOTT: egy tartott PR-t meg megnezni sem kell
 # ahhoz, hogy tudjuk, nem megy be.
@@ -895,6 +911,32 @@ if not kozos_ok:
         sys.exit(1)
 else:
     print(f'   kozos fajl feloldva: {kozos_ok}')
+
+# === A GEPI REVIEW A JOVAHAGYOTT FEJEN (b25-gepi-review) ===
+#
+# A review-ellenoriz.sh APPROVE eseten a root rekord utan a `fleet-approve approve`-ot is hivja, ami a
+# gepi fiokkal GitHub-reviewt tesz a PR-re, a fejhez kotve. A ruleset Required approvals szama ezt a
+# reviewt szamolja, tehat a beolvaszto is azt nezi, amit a GitHub: van-e ezen a fejen APPROVED review.
+# Naplo modban (GEPI_REVIEW_KENYSZERIT=0) a hiany csak kiirodik; kenyszerit modban a beolvasztas nem
+# indul, es a --gepi-review-rendben "indok" oldja fel. A repo-hatokort es az iteletet a segedprogram
+# adja (gepi-review-ellenor.py): kilepes 0 van review (vagy nem flotta repo), 1 nincs, 3 nem tudtam
+# megkerdezni -- az utobbi kenyszerit modban ugyanugy megall, de nem azt allitja, hogy nincs review.
+_gr = subprocess.run(['python3', '-B', gepi_szkript, '--repo', repo, '--pr', str(pr), '--head', sha],
+                     capture_output=True, text=True)
+_gr_szoveg = (_gr.stdout + _gr.stderr).strip() or '(a segedprogram nem irt ki semmit)'
+if _gr.returncode == 0:
+    print(f'   {_gr_szoveg}')
+elif gepi_ok:
+    print(f'   gepi review feloldva: {gepi_ok}')
+    print(f'   (a hiany: {_gr_szoveg})')
+elif gepi_kenyszerit:
+    print(f'NEM OLVASZTOK: {_gr_szoveg}')
+    print('   A flotta PR-jan a beolvasztashoz a jovahagyott fejen GitHub-review kell. Barracuda APPROVE-ja utan a')
+    print('   review-ellenoriz.sh maga hivja a fleet-approve approve-ot; ha az elbukott, a kimenete megmondta, miert.')
+    print('   Feloldas: --gepi-review-rendben "mibol tudod, hogy a fejet jovahagyta barracuda"')
+    sys.exit(1)
+else:
+    print(f'   FIGYELEM (naplo mod, a ruleset utan kapu): {_gr_szoveg}')
 
 def _feladat_esemeny(extra):
     # TC-Lite L4: a merged esemeny a feladatra, a sajat ellenorzeseivel (beolvadt-esemeny.py)

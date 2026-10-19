@@ -65,8 +65,18 @@
 # an APPROVE through after an ELTER). Missing: exit 1, the timeline verdict stands, and the way on is
 # a new packet from the developer. A CHANGES needs nothing: it only closes.
 #
-# Exit: 0 recorded and read back (and root-recorded where the approver is installed);
-# 1 refused, not confirmed, or not root-recorded; 2 bad argument.
+# THE GITHUB REVIEW (b25-gepi-review, barracuda's route (b), acrobot 32880/32881): after the root record
+# an APPROVE also runs `sudo -n fleet-approve approve <repo> <pr> <task_id>` (the same sudo line as the
+# record, no profile change). That posts the machine account's APPROVE review pinned to the recorded
+# head, which is what the ruleset's required approval counts. If it fails the timeline APPROVE and the
+# root record STAY (they are true: barracuda did approve), but the script exits 1 and says that the
+# GitHub review is missing and why (10 refused: the head moved or the PR is no longer open, a new
+# packet is needed; 13 GitHub did not answer: run the printed `fleet-approve approve` line again, which
+# does not repeat the verdict event). A CHANGES posts no review. scripts/pr-beolvaszt.sh checks that
+# the review exists on the head before it merges (scripts/gepi-review-ellenor.py).
+#
+# Exit: 0 recorded and read back (and root-recorded, and GitHub-reviewed, where the approver is installed);
+# 1 refused, not confirmed, not root-recorded, or an APPROVE whose GitHub review failed; 2 bad argument.
 set -uo pipefail
 set -f
 
@@ -246,3 +256,28 @@ if ! $SUDO "$FLEET_APPROVE" "${ROOTARGS[@]}" > "$T/root" 2>&1; then
   exit 1
 fi
 echo "OK root rekord: $(head -c 300 "$T/root")"
+
+# THE GITHUB REVIEW (b25-gepi-review): the root record is what the approver trusts, the GitHub review is
+# what the ruleset counts. An APPROVE ends with `fleet-approve approve`, which posts the machine account's
+# review pinned to the recorded head. A CHANGES posts nothing.
+[ "$V" = APPROVE ] || exit 0
+APPROVEARGS=(approve "${PRREF_ROOT%#*}" "${PRREF_ROOT##*#}" "$TASK")
+RERUN="sudo -n $FLEET_APPROVE ${APPROVEARGS[*]}"
+# every failure below keeps the timeline APPROVE and the root record, and says LOUDLY that the review is missing
+if ! $SUDO -l "$FLEET_APPROVE" "${APPROVEARGS[@]}" > /dev/null 2>&1; then
+  echo "FAIL: az idovonalon es a root rekordban az APPROVE megvan, de a sudo az approve iget nem engedi: a GitHub-review NEM jott letre, a ruleset nem szamolja a jovahagyast" >&2
+  exit 1
+fi
+$SUDO "$FLEET_APPROVE" "${APPROVEARGS[@]}" > "$T/approve" 2>&1
+RC=$?
+if [ "$RC" -ne 0 ]; then
+  case "$RC" in
+    10) WHY="elutasitva (a PR feje mas, mint amit atneztel, vagy a PR mar nem nyitott): a fejlesztotol uj csomag kell" ;;
+    13) WHY="a GitHub nem valaszolt vagy elutasitotta: ujraprobalhato" ;;
+    *) WHY="ismeretlen hiba" ;;
+  esac
+  echo "FAIL: az idovonalon es a root rekordban az APPROVE megvan, de a GitHub-review NEM jott letre (kilepes $RC, $WHY): $(head -c 300 "$T/approve")" >&2
+  [ "$RC" = 13 ] && echo "  Ujra, a verdict esemeny ismetlese nelkul: $RERUN" >&2
+  exit 1
+fi
+echo "OK GitHub-review: $(head -c 300 "$T/approve")"
