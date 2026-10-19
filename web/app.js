@@ -8438,6 +8438,66 @@ async function loadVault() {
   valInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.click() })
 })()
 
+// --- Relay secrets: the mail relay's OAuth client secret (task parancssor-f-titok-urlap) ---
+// The value goes to POST /api/titok-urlap/oauth-client-secret/ir and nowhere else: the field is cleared as soon as the
+// request is sent, and the page shows only what the answer holds (length, version, state), as text.
+;(function wireRelaySecret() {
+  const input = document.getElementById('relaySecretValue')
+  const sendBtn = document.getElementById('relaySecretSend')
+  const rollbackBtn = document.getElementById('relaySecretRollback')
+  const closeBtn = document.getElementById('relaySecretClose')
+  const status = document.getElementById('relaySecretStatus')
+  if (!input || !sendBtn || !rollbackBtn || !closeBtn || !status) return
+  const BASE = '/api/titok-urlap/oauth-client-secret/'
+  const ERRORS = {
+    'szolgaltato-elutasitotta': 'A Google elutasította ezt a titkot, nem lett aktív.',
+    'frissito-token-hiba': 'A Google a frissítő tokent utasította el (visszavont hozzájárulás), nem a titkot: új hozzájárulás kell, a titok nem változott.',
+    'szolgaltato-nem-elerheto': 'A Google nem érhető el, nem történt változás.',
+    'rotacio-nyitva': 'Nyitott rotáció van: előbb zárd le, vagy állítsd vissza az előzőt.',
+    'nincs-nyitott-rotacio': 'Nincs nyitott rotáció.',
+    foglalt: 'Egy másik írás folyamatban van, próbáld újra.',
+    'rate-limit': 'Egy órán belül legfeljebb öt próbálkozás lehet.',
+    'iro-token-hiany': 'A vezérlőpult nem találja az író tokent, a beállítás hiányos.',
+    'kozvetito-nem-elerheto': 'A levélközvetítő nem érhető el.',
+    'ervenytelen-keres': 'A titok alakja nem megfelelő (8-512 látható karakter, szóköz nélkül).',
+    'torzs-tul-nagy': 'A beküldött szöveg túl nagy.',
+    caller: 'A közvetítő nem fogadta el a vezérlőpult tokenjét.',
+  }
+  const show = (text) => { status.textContent = text }
+  async function send(verb, value) {
+    const res = await fetch(BASE + verb, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(verb === 'ir' ? { ertek: value } : {}),
+    })
+    const out = await res.json().catch(() => ({}))
+    if (res.status === 403) { show('Ezt csak a tulajdonos bejelentkezett munkamenete teheti.'); return null }
+    if (!res.ok) { show(ERRORS[out.error] || 'A művelet nem sikerült.'); return null }
+    const open = out.allapot === 'rotacio-nyitva'
+    show(`Aktív verzió: ${out.verzio}, a titok hossza ${out.hossz} karakter. ` + (open ? 'A rotáció nyitva: az előző titok megmaradt.' : 'Nincs nyitott rotáció.'))
+    rollbackBtn.hidden = !open
+    closeBtn.hidden = !open
+    return out
+  }
+  sendBtn.addEventListener('click', async () => {
+    const value = input.value
+    // gone from the page before the request is even answered
+    input.value = ''
+    if (!value) { show('Add meg az új titkot.'); return }
+    sendBtn.disabled = true
+    show('Küldés, és a közvetítő kipróbálja a Google-nél...')
+    try { await send('ir', value) } finally { sendBtn.disabled = false }
+  })
+  rollbackBtn.addEventListener('click', async () => {
+    if (!confirm('Az előző titok lesz újra az aktív. Folytatod?')) return
+    await send('visszaall')
+  })
+  closeBtn.addEventListener('click', async () => {
+    if (!confirm('Biztosan visszavontad a régi titkot a Google Cloud konzolban? A lezárás törli az előzőt a közvetítő tárából.')) return
+    await send('lezar')
+  })
+})()
+
 // --- Env var modal for GitHub repo install ---
 let _envVarResolve = null
 function showEnvVarModal(envVars) {

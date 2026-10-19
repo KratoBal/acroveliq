@@ -2,6 +2,7 @@
 //
 //   POST /<account>/<verb>   JSON body, `Authorization: Bearer <caller token>`   -> 200 the answer
 //   GET  /healthz                                                                 -> 200
+//   POST /titok/<target>/<verb>   the secret door (titok.ts), only when the settings name secret writers
 //
 // The network keeps strangers out; the caller token keeps the other agents out (every agent of the fleet is
 // on that network). An answer carries only what the verb returns; a failure of Google answers 502 with a fixed
@@ -10,6 +11,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import { GoogleError } from './google.js'
 import { MailRelay, Refusal } from './relay.js'
+import type { SecretService } from './titok.js'
 
 export const MAX_BODY_BYTES = 4 * 1024
 
@@ -48,13 +50,18 @@ function bearer(req: IncomingMessage): string | undefined {
   return m ? m[1] : undefined
 }
 
-export function createRelayServer(relay: MailRelay): Server {
+export function createRelayServer(relay: MailRelay, secrets?: SecretService): Server {
   return createServer((req, res) => {
     const method = req.method ?? ''
     const path = (req.url ?? '').split('?')[0] ?? ''
     void (async () => {
       try {
         if (method === 'GET' && path === '/healthz') return send(res, 200, { ok: true })
+        const door = /^\/titok\/([a-z-]{1,32})\/([a-z]{1,16})$/.exec(path)
+        if (method === 'POST' && door && secrets) {
+          const body = await readJson(req)
+          return send(res, 200, await secrets.handle(bearer(req), door[1]!, door[2]!, body))
+        }
         const m = /^\/([a-z]{1,16})\/([a-z-]{1,32})$/.exec(path)
         if (method === 'POST' && m) {
           const body = await readJson(req)

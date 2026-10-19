@@ -373,6 +373,7 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | GET | `/api/debates/:id` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
 | POST | `/api/debates/:id/turns/:token` | ERZEKENY | ✓ | ✓ | ✓ | ✗ | ✓ | class:ERZEKENY |  |
 | POST | `/api/decisions/:id/discord-reply` | KRITIKUS | ✗ | ✓ | ✗ | ✗ | ✗ | decision-discord-reply |  |
+| POST | `/api/titok-urlap/(oauth-client-secret)/(ir\|lezar\|visszaall)` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | class:KRITIKUS |  |
 
 ## A régi token minimuma
 

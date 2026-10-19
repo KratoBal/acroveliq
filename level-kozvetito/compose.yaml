@@ -4,6 +4,7 @@
 #   /opt/levelkozvetito/config.json      (root-owned, callers, excluded senders, limits; no secret in it)
 #   /opt/levelkozvetito/titkok/          (root 700; the OAuth client and the two refresh tokens, uid 10003 400)
 #   /opt/levelkozvetito/karanten/        (10003:<reader gid> 2750; attachments, see README)
+#   /opt/levelkozvetito/titkok-ver/      (10003:10003 700; the versioned client-secret store the secret door writes, see README)
 # NOT under /opt/marveen-docker (that tree is mounted writable into the fleet). No docker socket, no host port,
 # no host path of the fleet. The fleet reaches it by name on an internal network and by a bearer token.
 name: levelkozvetito
@@ -44,6 +45,14 @@ services:
       - type: bind
         source: /opt/levelkozvetito/karanten
         target: /var/lib/levelkozvetito/karanten
+      # the relay's own versioned store of its OAuth client secret (task parancssor-f-titok-urlap): the ONE writable
+      # mount besides the state volume and the quarantine folder. Never mounted into the fleet's container.
+      # create_host_path false: a missing directory stops `up` instead of being created root-owned (README, install).
+      - type: bind
+        source: /opt/levelkozvetito/titkok-ver
+        target: /var/lib/levelkozvetito/titkok-ver
+        bind:
+          create_host_path: false
     secrets:
       - oauth-client-id
       - oauth-client-secret
@@ -87,6 +96,13 @@ services:
       - type: bind
         source: /opt/levelkozvetito/titkok
         target: /run/secrets
+      # the same store as the relay, READ-ONLY: the consent reads the ACTIVE client secret, it cannot write one
+      - type: bind
+        source: /opt/levelkozvetito/titkok-ver
+        target: /var/lib/levelkozvetito/titkok-ver
+        read_only: true
+        bind:
+          create_host_path: false
     networks:
       - ki
 

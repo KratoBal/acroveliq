@@ -362,4 +362,5 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'GET', path: '/api/debates/:id', module: 'debates', class: 'OLVASO', note: 'Többmodelles V1: one debate with its turns' },
   { method: 'POST', path: '/api/debates/:id/turns/:token', module: 'debates', class: 'ERZEKENY', note: 'Többmodelles V1: Acrobot hands in its round with the round\'s one-time token; the main agent\'s own token only (the handler), once per token; the controller posts it to the thread' },
   { method: 'POST', path: '/api/decisions/:id/discord-reply', module: 'decisions', class: 'KRITIKUS', note: 'the main agent attaches the Discord message the owner answered in; decides nothing' },
+  { method: 'POST', path: '/api/titok-urlap/(oauth-client-secret)/(ir|lezar|visszaall)', module: 'titok-urlap', class: 'KRITIKUS', note: 'secret: hands the mail relay its OAuth client secret (the relay\'s own versioned store); the owner\'s session only, in every access mode (the handler); not on the AcrovelIQ host; the body is never logged' },
 ]
