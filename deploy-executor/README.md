@@ -2,7 +2,8 @@
 
 A separate container that holds the only Coolify **deploy** keys. The fleet asks
 it for a deployment; it deploys only a commit that the owner approved on
-Discord, once, within the approval window, on an allowlisted application.
+Discord, or that the rule path approves from the evidence on GitHub (below), once,
+within the approval window, on an allowlisted application.
 Code: `src/deploy-executor/` (logic and tests in `src/__tests__/deploy-executor*.test.ts`).
 
 Plans: `exchange/biztonsag/baseline/sb1-coolify-token-terv-2026-10-13.md` and
@@ -49,6 +50,66 @@ commit-pinned rollback of its sha, recorded after the R was spent and held by no
 other R, becomes its deployment (`queued`, then followed); anything else is
 `interrupted` (spent, result unknown, look at Coolify). A `queued` R is followed
 again.
+
+## The rule path: no Discord question (task `vegrehajto-szabaly-jovahagyas`)
+
+Balázs, 2026-10-19 19:54 UTC ("1 mehet 2 mehet 3 mehet"; CLAUDE.md "NINCS DISCORDOS ENGEDÉLYEZGETÉS"): a deploy
+that passed the review and the CI goes to stage on its own, and one that passed on stage goes to prod on its own,
+the commerce freeze excepted. The Discord path above stays, as the fallback.
+
+```
+POST http://vegrehajto:8787/requests          the same R as above
+POST http://vegrehajto:8787/executions/by-rule {"r"}   -> 200 used, or 403 naming the condition that failed
+```
+
+`scripts/vegrehajto.sh szabaly <agent> <env> <app> <sha40>` does both. The executor itself reads the evidence on
+GitHub (`src/deploy-executor/rules.ts`), every time:
+
+| | stage (`stage-auto`) | prod (`prod-auto`) |
+|---|---|---|
+| the commit | the merge commit of exactly one merged PR into the app's branch, and on that branch | the same |
+| the review | the LATEST decisive review of a `rules.reviewerLogins` login on that PR is APPROVED, for exactly the PR's head | the same |
+| the CI | the head: every check run in the app's `requiredChecks` there by name, completed and `success` (skipped or neutral is not); no other run failed or unfinished; the merge commit: none failed or unfinished | the same, and the required runs green on the merge commit too |
+| the CI files | the PR changes nothing under `.github/` or a `rules.ciPaths` path (old or new path): a PR that rewrites what green means is the owner's | the same |
+| the stage | | this executor deployed the same commit to the app's `stageApp` and saw `finished_verified` |
+| the freeze | | the repo is not in `rules.frozenRepos`, and no changed file (old or new path) matches `rules.frozenPaths`; else 403 naming the file |
+
+An app without `requiredChecks` is never approved by rule. `frozenPaths` is a backstop, not the freeze itself: the
+freeze is about the subject (CLAUDE.md), the list about file names, so extending it is Balázs's list to keep.
+
+Never by rule: a fleet_ro grant (a permission change, the owner's own), and a step back, a fork or an unmeasured
+running version (the Discord line shows those to the owner; a rule has no one to show them to). The audit log has a
+line for every decision: `approved` with `by: rule`, the rule and the evidence (PR, head, reviewer, check counts, the
+stage R, the number of files checked), or `refused` with `by: rule`, the rule and the reason.
+
+**Why a GitHub review and not barracuda's root record.** The record (`/var/lib/fleet-approve/verdicts.jsonl`) lives
+inside the fleet container, root 0600; this executor runs outside the fleet on purpose and cannot read it. What it can
+read is the review `fleet-approve approve` posts with the machine account, which `fleet-approve` posts only for a
+verdict in that record, bound to that head (`docs/fleet-github.md`). **Until that review is posted on a repo, the rule
+path refuses there** (`no review by <login>`), and the Discord path is the way: on 2026-10-19 the machine account could
+not yet write reviews on caparium-napplo and acropora-os (barracuda: HTTP 404/403, the G2 step).
+
+**THE INVARIANT THE WHOLE RULE STANDS ON: the reviewer login is a separate machine account, and its only token is in
+`fleet-approve`'s root file; it lives nowhere else.** An APPROVE by that login is worth something only because nothing
+but `fleet-approve`, reading the root record, can write it. The config refuses a `name[bot]` login (the fleet's GitHub
+App is what every agent acts as through the broker), but it cannot see where a user account's token lives: Balázs makes
+the account at the G2 step with exactly this in mind, and no agent ever gets its token.
+
+### Install (the owner, on the host, as root; one block)
+
+```
+cd /opt/vegrehajto/src && git fetch origin && git checkout <the merged commit of this PR>
+# config.json, from config.example.json: a "rules" block (reviewerLogins: the separate machine account fleet-approve
+#   posts its reviews with, never a [bot] login; frozenPaths; frozenRepos; ciPaths), "requiredChecks" on each app
+#   (the CI job names that must be green; without them the rule path refuses the app), and "stageApp" on each prod
+#   app that has a stage counterpart
+# the github-olvaso token: besides contents:read, also "Pull requests: read" and "Checks: read" on the same repos
+cd /opt/vegrehajto && docker compose build && docker compose up -d
+docker compose logs vegrehajto | grep '"event":"listening"'     # the line ends with "rules":true
+```
+
+After it, from the fleet: `bash scripts/vegrehajto.sh szabaly acrobot stage <a stage app> <a merged, reviewed sha>`;
+a 403 names the missing evidence, and nothing is deployed.
 
 ## Install on a host (the owner, as root; nothing here is run by the fleet)
 

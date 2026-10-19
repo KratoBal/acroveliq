@@ -34,7 +34,12 @@
       "actions": [
         "deploy"
       ],
-      "approvalMinutes": 30
+      "approvalMinutes": 30,
+      "stageApp": "acropora-stage-api",
+      "requiredChecks": [
+        "verify",
+        "Docker runtime smoke test (api)"
+      ]
     },
     {
       "env": "prod",
@@ -46,7 +51,12 @@
       "actions": [
         "deploy"
       ],
-      "approvalMinutes": 30
+      "approvalMinutes": 30,
+      "stageApp": "acropora-stage-api",
+      "requiredChecks": [
+        "verify",
+        "Docker runtime smoke test (api)"
+      ]
     },
     {
       "env": "prod",
@@ -58,7 +68,12 @@
       "actions": [
         "deploy"
       ],
-      "approvalMinutes": 30
+      "approvalMinutes": 30,
+      "stageApp": "acropora-stage-api",
+      "requiredChecks": [
+        "verify",
+        "Docker runtime smoke test (api)"
+      ]
     },
     {
       "env": "prod",
@@ -82,7 +97,11 @@
       "actions": [
         "deploy"
       ],
-      "approvalMinutes": 30
+      "approvalMinutes": 30,
+      "requiredChecks": [
+        "verify",
+        "Docker runtime smoke test (api)"
+      ]
     }
   ],
   "gate": {
@@ -102,5 +121,31 @@
       "database": "acropora",
       "approvalMinutes": 30
     }
-  ]
+  ],
+  "rules": {
+    "reviewerLogins": [
+      "replace-with-machine-login"
+    ],
+    "frozenPaths": [
+      "unas",
+      "medusa",
+      "webshop",
+      "storefront",
+      "kirakat",
+      "commerce",
+      "catalog",
+      "katalogus",
+      "projection",
+      "vetites",
+      "category-map",
+      "kategoria",
+      "order-intake"
+    ],
+    "frozenRepos": [
+      "KratoBal/acropora-commerce"
+    ],
+    "ciPaths": [
+      "(^|/)scripts/ci/"
+    ]
+  }
 }

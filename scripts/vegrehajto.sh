@@ -19,6 +19,11 @@
 #   vegrehajto.sh vegrehajt <R> <approval_id>
 #       the approval must be approved, carry the Discord message id, and describe
 #       this very R; then POST $VEGREHAJTO_URL/executions
+#   vegrehajto.sh szabaly <agent> <env> <app> <sha40>
+#       the rule path (task vegrehajto-szabaly-jovahagyas, Balázs 2026-10-19): POST /requests, then
+#       POST /executions/by-rule. No Discord question: the executor approves only if the commit is a merged PR's
+#       merge commit with a green CI and the reviewer's APPROVED review on its head (prod: also verified on stage,
+#       and no frozen file). A refusal (exit 5) names the missing condition.
 #   vegrehajto.sh allapot <R>
 #       the R as the executor sees it (status, outcome, deployment uuid)
 #
@@ -38,7 +43,7 @@ CATEGORY='coolify_deploy'
 MARGIN_SECONDS=60
 
 usage() {
-  echo "hasznalat: vegrehajto.sh kerj <agent> <env> <app> <sha40> | fleet-ro-kerj <agent> <env> <cel> <commit40> | vegrehajt <R> <approval_id> | allapot <R>" >&2
+  echo "hasznalat: vegrehajto.sh kerj <agent> <env> <app> <sha40> | szabaly <agent> <env> <app> <sha40> | fleet-ro-kerj <agent> <env> <cel> <commit40> | vegrehajt <R> <approval_id> | allapot <R>" >&2
   exit 2
 }
 
@@ -171,6 +176,27 @@ print(json.dumps({"r": os.environ["R"], "requestMessageId": os.environ["MSG_ID"]
     call POST "${EXEC_URL}/executions" "$EXE"
     [ "$CODE" = 200 ] || executor_fail "vegrehajtas"
     echo "R=${R} status=$(json_field "$BODY" status) outcome=$(json_field "$BODY" outcome) deployment=$(json_field "$BODY" deploymentUuid)$(pa_suffix)"
+    echo "a telepites allapota: bash scripts/vegrehajto.sh allapot ${R}"
+    ;;
+  szabaly)
+    # the rule path (task vegrehajto-szabaly-jovahagyas): an R, then its execution by rule, no Discord question.
+    # The executor judges the evidence on GitHub itself (src/deploy-executor/rules.ts); a refusal names what is missing,
+    # and the R stays open until it expires, so the Discord path (kerj, vegrehajt) can still use another R.
+    [ $# -eq 4 ] || usage
+    AGENT="$1"; ENV_NAME="$2"; APP="$3"; SHA="$4"
+    [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || fail "a sha 40 jegyu kisbetus commit legyen (git rev-parse), kapott: ${SHA}"
+    REQ="$(AGENT="$AGENT" ENV_NAME="$ENV_NAME" APP="$APP" SHA="$SHA" python3 -c '
+import json, os
+print(json.dumps({"env": os.environ["ENV_NAME"], "app": os.environ["APP"], "action": "deploy",
+                  "sha": os.environ["SHA"], "requester": os.environ["AGENT"]}))')"
+    call POST "${EXEC_URL}/requests" "$REQ"
+    [ "$CODE" = 201 ] || executor_fail "R kerese"
+    R="$(json_field "$BODY" r)"
+    [[ "$R" =~ ^[A-Z0-9]{1,16}$ ]] || fail "a vegrehajto valasza hianyos: $(printf '%s' "$BODY" | head -c 200)"
+    EXE="$(R="$R" python3 -c 'import json, os; print(json.dumps({"r": os.environ["R"]}))')"
+    call POST "${EXEC_URL}/executions/by-rule" "$EXE"
+    [ "$CODE" = 200 ] || executor_fail "vegrehajtas szabaly szerint (R=${R})"
+    echo "R=${R} status=$(json_field "$BODY" status) outcome=$(json_field "$BODY" outcome) deployment=$(json_field "$BODY" deploymentUuid)"
     echo "a telepites allapota: bash scripts/vegrehajto.sh allapot ${R}"
     ;;
   allapot)

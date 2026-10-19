@@ -5,6 +5,9 @@
 //            commit on the app's branch. The running commit is compared with
 //            it, and a step back is written into the line the owner approves.
 //   execute  {r, requestMessageId} -> the approved commit queued in Coolify.
+//   executeByRule {r} -> the same, approved by the rule path instead of a Discord
+//            answer (rules.ts; task vegrehajto-szabaly-jovahagyas): stage and prod
+//            deploys whose evidence on GitHub is complete. Grants never.
 //            The owner's Discord answer is read back and checked
 //            (verify-approval.ts), the sha and the relation measured again,
 //            the R marked used, and only then the commit-pinned rollback call
@@ -20,7 +23,8 @@ import { canonicalLine, GRANT_APPROVAL_CATEGORY, grantCanonicalLine, GrantLineEr
 import { findApp, findGrant, GRANT_ACTION, type ExecutorConfig, type GrantEntry } from './config.js'
 import { parseGateOutput, planText, type GatePlan } from './grant-plan.js'
 import type { RequestRecord, RequestStore, Relation } from './store.js'
-import type { CoolifyClient, DiscordReader, GateClient, GitHubReader, HealthProbe } from './transports.js'
+import type { CoolifyClient, DiscordReader, GateClient, GitHubReader, GitHubRuleReader, HealthProbe } from './transports.js'
+import { judgeByRule } from './rules.js'
 import { verifyDiscordApproval, type ChannelMessage } from './verify-approval.js'
 
 export class Refusal extends Error {
@@ -51,6 +55,8 @@ export interface ExecutorDeps {
   store: RequestStore
   discord: DiscordReader
   github: GitHubReader
+  /** the GitHub reads of the rule path; absent: every execution by rule is refused */
+  githubRules?: GitHubRuleReader
   coolify: CoolifyClient
   /** the SSH door to the B8 gate; absent when the settings name no grants */
   gate?: GateClient
@@ -150,6 +156,19 @@ export class DeployExecutor {
       return Promise.reject(err)
     }
     return this.serial(() => this.doExecute(input))
+  }
+
+  /**
+   * The rule path (rules.ts): the same R, approved by the evidence on GitHub instead of a Discord answer. Same window,
+   * same serial chain, same deploy steps after the approval.
+   */
+  executeByRule(input: { r?: unknown }): Promise<PublicRecord> {
+    try {
+      this.throttle('execute', EXECUTIONS_PER_MINUTE)
+    } catch (err) {
+      return Promise.reject(err)
+    }
+    return this.serial(() => this.doExecuteByRule(input))
   }
 
   /**
@@ -309,7 +328,7 @@ export class DeployExecutor {
   }
 
   private async doExecute(input: { r?: unknown; requestMessageId?: unknown }): Promise<PublicRecord> {
-    const { config, store, discord, coolify } = this.deps
+    const { config, store, discord } = this.deps
     const { r, requestMessageId } = input
     if (typeof r !== 'string' || typeof requestMessageId !== 'string' || !SNOWFLAKE.test(requestMessageId)) {
       throw new Refusal('r and requestMessageId are required')
@@ -332,6 +351,55 @@ export class DeployExecutor {
 
     if (rec.grant) return this.executeGrant(rec, verdict, requestMessageId, refuse)
 
+    return this.deployApproved(
+      rec,
+      { requestMessageId, decisionMessageId: verdict.decisionMessageId, deciderId: verdict.deciderId, code: verdict.code },
+      { requestMessageId, decisionMessageId: verdict.decisionMessageId, deciderId: verdict.deciderId },
+      refuse,
+    )
+  }
+
+  private async doExecuteByRule(input: { r?: unknown }): Promise<PublicRecord> {
+    const { config, store } = this.deps
+    const { r } = input
+    if (typeof r !== 'string') throw new Refusal('r is required')
+    const rec = store.get(r)
+    if (!rec) throw new Refusal('unknown R')
+    // every refusal of the rule path names the rule it was judged by; the audit line is the decision's record
+    let ruleName: string | null = null
+    const refuse = (reason: string): never => {
+      store.audit('refused', { r, reason, by: 'rule', rule: ruleName })
+      throw new Refusal(reason)
+    }
+    if (rec.status !== 'open') return refuse('R was already used')
+    if (this.now() >= rec.expiresAt * 1000) return refuse('R has expired')
+    if (rec.grant) return refuse('a grant is never approved by rule: it goes to the owner')
+    const app = findApp(config, rec.env, rec.app)
+    if (!app) return refuse('application is no longer on the allowlist')
+    let verdict
+    try {
+      verdict = await judgeByRule({ rec, app, rules: config.rules, github: this.deps.githubRules, records: store.ids().map((id) => store.get(id)!) })
+    } catch {
+      // a GitHub read that failed is not evidence of anything: nothing is approved by it
+      return refuse('a GitHub read of the rule path failed')
+    }
+    ruleName = verdict.ok ? verdict.evidence.rule : verdict.rule
+    if (!verdict.ok) return refuse(verdict.reason)
+    return this.deployApproved(rec, { rule: verdict.evidence.rule, evidence: verdict.evidence }, { by: 'rule', ...verdict.evidence }, refuse)
+  }
+
+  /**
+   * After an approval of either kind: the allowlist, the branch and the running version measured again, the R spent
+   * FIRST and durably, then the one Coolify call that deploys, and the follow-up.
+   */
+  private async deployApproved(
+    rec: RequestRecord,
+    approval: NonNullable<RequestRecord['approval']>,
+    auditFields: Record<string, string | number | boolean | null | undefined>,
+    refuse: (reason: string) => never,
+  ): Promise<PublicRecord> {
+    const { config, store, coolify } = this.deps
+    const r = rec.id
     // the world may have moved since the request: measure both claims again
     const entry = findApp(config, rec.env, rec.app)
     if (!entry || entry.coolifyHost !== rec.coolifyHost || entry.coolifyUuid !== rec.coolifyUuid || !(entry.actions as readonly string[]).includes(rec.action)) {
@@ -345,9 +413,9 @@ export class DeployExecutor {
     rec.status = 'used'
     rec.outcome = 'calling'
     rec.usedAt = Math.floor(this.now() / 1000)
-    rec.approval = { requestMessageId, decisionMessageId: verdict.decisionMessageId, deciderId: verdict.deciderId, code: verdict.code }
+    rec.approval = approval
     store.put(rec)
-    store.audit('approved', { r, requestMessageId, decisionMessageId: verdict.decisionMessageId, deciderId: verdict.deciderId })
+    store.audit('approved', { r, ...auditFields })
 
     let deploymentUuid: string | null = null
     try {

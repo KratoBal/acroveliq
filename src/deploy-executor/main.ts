@@ -20,11 +20,13 @@ async function main(): Promise<void> {
   const hosts = Object.fromEntries(
     Object.entries(config.coolifyHosts).map(([name, h]) => [name, { coolifyApiUrl: h.coolifyApiUrl, token: readSecretFile(h.coolifyTokenFile) }]),
   )
+  const github = githubRest(readSecretFile(config.github.tokenFile))
   const executor = new DeployExecutor({
     config,
     store: new RequestStore(config.stateDir),
     discord: discordRest(readSecretFile(config.discord.tokenFile)),
-    github: githubRest(readSecretFile(config.github.tokenFile)),
+    github,
+    githubRules: github,
     coolify: coolifyRest(hosts),
     health: healthHttp(),
     gate: config.gate ? gateSsh(config.gate) : undefined,
@@ -34,7 +36,7 @@ async function main(): Promise<void> {
   process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), event: 'recovered', ...recovered, pruned })}\n`)
   const port = Number(process.env['VEGREHAJTO_PORT'] ?? '8787')
   createExecutorServer(executor).listen(port, '0.0.0.0', () => {
-    process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), event: 'listening', port, apps: config.apps.length, grants: config.grants.length })}\n`)
+    process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), event: 'listening', port, apps: config.apps.length, grants: config.grants.length, rules: config.rules !== null })}\n`)
   })
 }
 

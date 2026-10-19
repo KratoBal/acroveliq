@@ -1,10 +1,12 @@
 // The executor's only door: a small HTTP API on the internal docker network
 // (SB1 three-changes 1, "hívás"). The caller is not authenticated by a secret:
 // a secret the fleet keeps would not protect anything, and the right to deploy
-// comes from the owner's Discord answer, so a false caller gets a refusal.
+// comes from the owner's Discord answer or from the rule path's evidence on
+// GitHub (rules.ts), so a false caller gets a refusal.
 //
 //   POST /requests    {env, app, action, sha, requester}  -> 201 the R
 //   POST /executions  {r, requestMessageId}               -> 200 the R, used
+//   POST /executions/by-rule  {r}                         -> 200 the R, used (rules.ts: the evidence on GitHub)
 //   GET  /requests/R                                      -> 200 the R
 //   GET  /healthz                                         -> 200
 //
@@ -60,6 +62,7 @@ export function createExecutorServer(executor: DeployExecutor, log: (f: Record<s
         if (method === 'GET' && path === '/healthz') return done(200, { ok: true })
         if (method === 'POST' && path === '/requests') return done(201, await executor.request(await readJson(req)))
         if (method === 'POST' && path === '/executions') return done(200, await executor.execute(await readJson(req)))
+        if (method === 'POST' && path === '/executions/by-rule') return done(200, await executor.executeByRule(await readJson(req)))
         const m = /^\/requests\/([A-Z0-9]{1,16})$/.exec(path)
         if (method === 'GET' && m) {
           const rec = executor.status(m[1])
