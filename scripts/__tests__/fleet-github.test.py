@@ -54,11 +54,8 @@ def fake_stat(modes):
 T = tempfile.mkdtemp(prefix="fleet-github-")
 try:
     print("the broker: roles")
-    check("no role but ci carries workflows, administration, secrets or webhooks", [],
-          [(r, k) for r, p in gh.ROLE_PERMISSIONS.items() for k in p if k in gh.NEVER and (r, k) != ("ci", "workflows")])
-    check("ci carries workflows write and contents write, and no pull-request or admin permission",
-          {"metadata": "read", "contents": "write", "workflows": "write"}, gh.ROLE_PERMISSIONS["ci"])
-    check("the ci role is the only one with workflows", ["ci"], [r for r, p in gh.ROLE_PERMISSIONS.items() if "workflows" in p])
+    check("no role carries workflows, administration, secrets or webhooks", [],
+          [(r, k) for r, p in gh.ROLE_PERMISSIONS.items() for k in p if k in gh.NEVER])
     check("push cannot write pull requests", None, gh.ROLE_PERMISSIONS["push"].get("pull_requests"))
     check("olvas is read only", {"read"}, set(gh.ROLE_PERMISSIONS["olvas"].values()))
     for bad in (["token", "KratoBal/acroveliq"], ["token", "KratoBal/acroveliq", "admin"], ["token", "acroveliq", "push"],
@@ -123,35 +120,6 @@ try:
         code, out = gh.run(argv, env(caller, post_ok(), modes))
         check("refused (%s): exit 10" % why, 10, code)
     check("and GitHub was not asked for any of them", n, len(calls))
-
-    print("the broker: the ci role (workflows write) is for root itself and nobody else")
-    # a config that LISTS ci for an agent and for the '*' merger: it must change nothing
-    json.dump({"app_id": "4242", "installation_id": 77, "owner": "KratoBal", "repos": ["acroveliq", "acropora-os"],
-               "callers": {"agent-nautilus": {"acroveliq": ["push", "ci"]}, "marveen": {"*": ["beolvaszt", "ci"]},
-                           "root": {"*": ["olvas"]}}}, open(cfg_path, "w"))
-    n = len(calls)
-    for caller, via_sudo, why in [("agent-nautilus", True, "an agent whose config lists ci"),
-                                  ("marveen", True, "the router whose config lists ci under '*'"),
-                                  ("root", True, "root arriving through sudo (SUDO_UID set): how an agent gets here"),
-                                  ("agent-nautilus", False, "an agent, even without sudo, whose config lists ci")]:
-        code, out = gh.run(["token", "KratoBal/acroveliq", "ci"], {**env(caller, post_ok()), "via_sudo": via_sudo})
-        check("ci refused (%s): exit 10, no token" % why, (10, True), (code, "ghs_" not in out))
-    check("and GitHub was not asked for any of them", n, len(calls))
-    code, out = gh.run(["token", "KratoBal/acroveliq", "ci"], {**env("root", post_ok()), "via_sudo": False})
-    check("root itself, scrubbed environment: the token", (0, "ghs_SECRET_TOKEN_VALUE"), (code, out))
-    check("asked for exactly contents write and workflows write on the one repository",
-          {"repositories": ["acroveliq"], "permissions": {"metadata": "read", "contents": "write", "workflows": "write"}},
-          calls[-1][1])
-    code, _ = gh.run(["token", "KratoBal/acroveliq", "ci"], {**env("root", post_ok({"metadata": "read", "contents": "write", "workflows": "write", "administration": "write"})), "via_sudo": False})
-    check("a ci token with an extra permission: exit 13", 13, code)
-    code, _ = gh.run(["token", "KratoBal/secret-repo", "ci"], {**env("root", post_ok()), "via_sudo": False})
-    check("root, a repository not in the fleet list: exit 10", 10, code)
-    # the other roles still refuse workflows: nobody can ask a non-ci role for it
-    code, _ = gh.run(["token", "KratoBal/acroveliq", "push"], {**env("agent-nautilus", post_ok({"contents": "write", "metadata": "read", "workflows": "write"})), "via_sudo": True})
-    check("a push token that comes back with workflows: exit 13", 13, code)
-    json.dump({"app_id": "4242", "installation_id": 77, "owner": "KratoBal", "repos": ["acroveliq", "acropora-os"],
-               "callers": {"agent-nautilus": {"acroveliq": ["push", "pr", "olvas"]}, "marveen": {"*": ["beolvaszt", "olvas"]}}},
-              open(cfg_path, "w"))
     code, _ = gh.run(["token", "KratoBal/acroveliq", "push"], env("agent-nautilus", post_ok({"contents": "write", "metadata": "read", "pull_requests": "write"})))
     check("a token with an extra permission: exit 13, not printed", 13, code)
     code, _ = gh.run(["token", "KratoBal/acroveliq", "olvas"], env("agent-nautilus", post_ok({**gh.ROLE_PERMISSIONS["olvas"], "contents": "write"})))

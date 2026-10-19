@@ -114,31 +114,13 @@ export function matchDecisions(
 export const DESCRIPTION_MAX = 500
 
 /**
- * Categories whose request is a REVIEWED LIST, not one line, and so need more room than 500 characters.
- * `root_telepites` is the root installer's (docs/root-telepito.md): its daily CI-change message carries
- * every item's repository, branch, file and diff in ONE request, so the owner approves what he read.
- * The Discord message limit is 2000 and the three lines before the description take about 230, so 1500
- * leaves a margin. Every other category, the deploy executor's `coolify_deploy` included, keeps 500: the
- * executor compares the whole message letter for letter, and its lines are far shorter.
- *
- * `scripts/root/root-telepito.py` keeps the same table (DESCRIPTION_MAX_BY_CATEGORY); the fixture
- * `scripts/__tests__/fixtures/approval-text.json` ties the two, with a long description in each category.
- */
-export const DESCRIPTION_MAX_BY_CATEGORY: Readonly<Record<string, number>> = { root_telepites: 1500 }
-
-/** The longest description the request of this category may show (the category as the message prints it). */
-export function descriptionMaxFor(category: string): number {
-  return DESCRIPTION_MAX_BY_CATEGORY[category.replace(/[^\w.-]/g, '')] ?? DESCRIPTION_MAX
-}
-
-/**
  * The requesting agent's words, made inert: one line, no markdown characters,
  * cut to a limit, quoted. Any agent may create a request, so its text must
  * not be able to look like our instructions (barracuda #33).
  */
-export function neutralDescription(text: string, max: number = DESCRIPTION_MAX): string {
+export function neutralDescription(text: string): string {
   const flat = text.replace(/[`>#*_~|]/g, ' ').replace(/\s+/g, ' ').trim()
-  const cut = flat.length > max ? `${flat.slice(0, max)}...` : flat
+  const cut = flat.length > DESCRIPTION_MAX ? `${flat.slice(0, DESCRIPTION_MAX)}...` : flat
   return `> ${cut}`
 }
 
@@ -169,7 +151,7 @@ export function buildDiscordApprovalText(
     `**JÓVÁHAGYÁS KELL, kód: ${code}**`,
     `${how}: \`${cfg.yes} ${code}\` vagy \`${cfg.no} ${code}\` (csak ez a két alak dönt). Lejárat: ${expires}`,
     `Kérő: ${approval.agent_id} | ${approval.category.replace(/[^\w.-]/g, '')}`,
-    neutralDescription(approval.action_description, descriptionMaxFor(approval.category)),
+    neutralDescription(approval.action_description),
   ].join('\n')
 }
 
