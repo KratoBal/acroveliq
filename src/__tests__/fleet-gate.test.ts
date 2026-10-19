@@ -724,7 +724,10 @@ cat "$f"
     writeFileSync(join(g.w.dir, 'doc.md'), readFileSync(join(process.cwd(), 'docs', 'fleet-gate.md'), 'utf-8'))
     const r = g.run(`fleet-ro-grant ${OS_DB} acropora ${COMMIT} terv`)
     const pairs: string[] = g.sql().match(/\('[A-Za-z_][A-Za-z0-9_]*', '[A-Za-z_][A-Za-z0-9_]*'\)/g) ?? []
-    expect([r.code, new Set(pairs).size, pairs.includes("('_prisma_migrations', 'migration_name')"), pairs.includes("('NavIncomingInvoice', 'purchaseInvoiceId')")], 'GRANT-DOC')
+    // The gate's own refusal goes into the message: on 2026-10-19 this assertion failed once in CI
+    // ([2, 0, false, false], PR #243 job 118028152528) with no way to see which check refused the list.
+    expect([r.code, new Set(pairs).size, pairs.includes("('_prisma_migrations', 'migration_name')"), pairs.includes("('NavIncomingInvoice', 'purchaseInvoiceId')")],
+      `GRANT-DOC (gate stderr: ${r.err.trim().slice(0, 400) || 'empty'})`)
       .toEqual([0, 67, true, true])
   })
 
