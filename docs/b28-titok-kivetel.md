@@ -7,6 +7,11 @@ Feladat: `b28-eles-kulcsok-kivetele` (P1-00e, P0-2). Terv: projektterv v2 B28 so
 **Minden lépés Balázsé, és mindegyik külön jóváhagyás** (rotáció a szolgáltatóknál, root-lépés a konténerben). A
 parancsok a hostról futnak. Titok-értéket ez a lap nem tartalmaz, és a leltárhoz egyet sem olvastunk.
 
+**Változás, 2026-10-19 este:** a `.gsuite-refresh-token-balazs` Balázs kérésére VISSZAKERÜLT (a balazs@ levelek
+olvasása, csak `gmail.readonly`, a `gcal.sh`-val). Az új állapotot 2026-10-20 05:29 UTC-kor jóváhagyta (biztonsági
+szál), ezért a `titok-jog-figyelo.py` már nem kivett kulcsként, hanem rendes figyelt titokként kezeli. A lenti
+táblák a 10-16-i kivétel állapotát írják le.
+
 ## 1. Mit mértünk (2026-10-16)
 
 - **Ki olvassa:** `scripts/fleet-secrets.py --matrix`, uid-onként a tulajdonosból, a csoportból, a módból és a

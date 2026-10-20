@@ -89,11 +89,13 @@ def diff(old, new):
 # their own copies, and the old values are rotated. Their return is not a change to report once:
 # it breaks the B28 rule, so every run says so until the file is gone, and STATE never absorbs it.
 # Stripe and Medusa keys are NOT here: the commerce freeze allows only an inventory (task brief).
+# .gsuite-refresh-token-balazs is back ON PURPOSE: the owner had the balazs@ mailbox reconnected,
+# read-only, on 2026-10-19 evening, and approved the new state on 2026-10-20 05:29 UTC (security
+# thread). It is an ordinary watched secret again: a change to it is reported once, like any other.
 RETIRED = (
     ".foxpost-credentials",
     ".gls-credentials.json",
     ".gls-credentials.json.bak-20261005",
-    ".gsuite-refresh-token-balazs",
     ".gsuite-refresh-token-ticket",
     ".os-balazs-google-refresh-token",
     ".otp-ebiz-api-key",
