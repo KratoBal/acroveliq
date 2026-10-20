@@ -525,6 +525,12 @@ check 'the output folder is a symlink -> 1, nothing written there' '1 0' "$(olvf
 rm "$T/home/.review-fej"
 check 'without --fej nothing is asked of GitHub' "0|$(wc -l < "$T/api/requests")" "$(olv marveen70)|$(wc -l < "$T/api/requests")"
 
+# a binary file in the head: the full blob ids decide (review-fej-binary). Its own python suite, run from here so
+# the CI runs it (the workflow list is not ours to change: the GitHub App may not write workflow files).
+check 'review-fej-diff on binary files: only full, 40 hex blob ids that match' 0 \
+  "$(python3 -B -I "$(dirname "${BASH_SOURCE[0]}")/review-fej-diff-binary.test.py" > "$T/bin-suite" 2>&1; echo $?)"
+[ "$(tail -1 "$T/bin-suite")" = 'all pass' ] || cat "$T/bin-suite"
+
 # the refs the script wrote, for the Task Core guard test (src/__tests__/review-ref-shape.test.ts)
 [ -n "${REVIEW_REFS_OUT:-}" ] && grep ' verdict ' "$EV" | sed -E 's/^task-event [^ ]+ verdict [^ ]+  //' > "$REVIEW_REFS_OUT"
 

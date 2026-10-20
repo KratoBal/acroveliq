@@ -32,6 +32,7 @@ import stat
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 REPO_RX = re.compile(r'^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$')
@@ -99,13 +100,14 @@ def parse_diff(text):
     on through the hunk). The same lines in the same order at another place in the file are another
     change (barracuda, #229 review v2: a guard moved into another function). The head side refers to
     the head file in both diffs, so another merge base does not move it; the base side (-a) would, and
-    is not compared. The index line names blobs, not changes, and is not compared either."""
+    is not compared. The index line names blobs, not changes: for a text file it is not compared; for a
+    BINARY file, which has no lines, its blob ids are the content (review-fej-binary, below)."""
     out, cur, in_hunk, at = {}, None, False, 0
     for line in text.split('\n'):
         if line.startswith('diff --git '):
             m = re.match(r'^diff --git a/(.*) b/(.*)$', line)
             path = m.group(2) if m else line[len('diff --git '):]
-            cur = out[path] = {'stats': (0, 0), 'changes': [], 'modes': [], 'binary': False}
+            cur = out[path] = {'stats': (0, 0), 'changes': [], 'modes': [], 'binary': False, 'blobs': None}
             in_hunk = False
         elif cur is None:
             continue
@@ -120,6 +122,10 @@ def parse_diff(text):
                 cur['stats'] = (None, None)
             elif line.startswith(MODE_PREFIXES):
                 cur['modes'].append(line)
+            else:
+                m = re.match(r'^index ([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})(?: [0-7]{6})?$', line)
+                if m:
+                    cur['blobs'] = (m.group(1), m.group(2))
         elif line[:1] in ('+', '-', '\\'):
             cur['changes'].append((at, line))
             a, d = cur['stats']
@@ -151,6 +157,53 @@ def write_private(out_dir, name, data):
     return path
 
 
+FULL_BLOB_RX = re.compile(r'^[0-9a-f]{40}$')
+ZERO_BLOB = '0' * 40
+
+
+def same_blobs(a, b):
+    """A binary file has no lines to compare: its blob ids (old, new) ARE its content. Only full, 40 hex
+    ids on BOTH sides and an exact match count (barracuda 33479, acrobot 33480): an abbreviated id is a
+    prefix, and a prefix is cheap to collide for a binary file, so it proves nothing and stays BINARIS."""
+    if not a or not b:
+        return False
+    return all(FULL_BLOB_RX.match(x) and FULL_BLOB_RX.match(y) and x == y for x, y in zip(a, b))
+
+
+def head_blobs(api, repo, base, head, token, paths):
+    """The FULL blob ids (old, new) of the head's binary files, from GitHub, not from the abbreviated
+    index line of its diff: the compare JSON names each file's new blob (files[].sha); the old one is the
+    file at the merge base (the contents API), or none (40 zeros) for an added file, and the new one is
+    none for a removed file. Asked only when the head's diff has a binary file."""
+    def as_json(body, what):
+        try:
+            v = json.loads(body.decode() or '{}')
+        except ValueError:
+            raise Stop(f'a {what} valasza nem JSON')
+        return v if isinstance(v, dict) else {}
+    c = as_json(get(f'{api}/repos/{repo}/compare/{base}...{head}', 'application/vnd.github+json', token), 'compare')
+    mb = ((c.get('merge_base_commit') or {}).get('sha')) or ''
+    if not SHA_RX.match(mb):
+        raise Stop('a compare nem nevezte meg a merge base-t: a binaris fajl nem vetheto ossze')
+    files = {f.get('filename'): f for f in (c.get('files') or [])}
+    out = {}
+    for p in paths:
+        f = files.get(p)
+        if not f:
+            continue  # stays without full ids: BINARIS
+        status, new = f.get('status'), f.get('sha') or ''
+        if status == 'removed':
+            new = ZERO_BLOB
+        if status == 'added':
+            old = ZERO_BLOB
+        else:
+            src = f.get('previous_filename') or p
+            meta = as_json(get(f'{api}/repos/{repo}/contents/{urllib.parse.quote(src)}?ref={mb}', 'application/vnd.github+json', token), 'contents')
+            old = meta.get('sha') or ''
+        out[p] = (old, new)
+    return out
+
+
 def compare(head, packet):
     """Lines saying where the packet's patch is not the head's diff; empty when it is."""
     out = []
@@ -161,7 +214,11 @@ def compare(head, packet):
     for p in sorted(set(head) & set(packet)):
         h, k = head[p], packet[p]
         if h['binary'] or k['binary']:
-            out.append(f'BINARIS: {p}: a tartalma szovegkent nem vetheto ossze')
+            if not (h['binary'] and k['binary'] and same_blobs(h['blobs'], k['blobs'])):
+                out.append(f'BINARIS: {p}: a tartalma szovegkent nem vetheto ossze, es a teljes blob-azonositok nem egyeznek '
+                           f'(fej {h["blobs"]}, csomag {k["blobs"]})')
+            elif h['modes'] != k['modes']:
+                out.append(f'MAS MOD: {p} fej {h["modes"]}, csomag {k["modes"]}')
         elif h['modes'] != k['modes']:
             out.append(f'MAS MOD: {p} fej {h["modes"]}, csomag {k["modes"]}')
         elif h['changes'] != k['changes']:
@@ -199,6 +256,17 @@ def run(argv):
     diff = get(f'{api}/repos/{repo}/compare/{base}...{head}', 'application/vnd.github.diff', token)
     path = write_private(out_dir, base_name + '.patch', diff)
     hs = parse_diff(diff.decode('utf-8', 'replace'))
+    # a binary file: the full blob ids from GitHub replace the diff's abbreviated ones (review-fej-binary)
+    # when GitHub does not give them, nothing stops: the file stays without full ids, i.e. BINARIS, and the reason is said
+    bins = sorted(f for f, v in hs.items() if v['binary'])
+    if bins:
+        for f in bins:
+            hs[f]['blobs'] = None  # never the diff's abbreviated ids
+        try:
+            for f, ids in head_blobs(api, repo, base, head, token, bins).items():
+                hs[f]['blobs'] = ids
+        except Stop as e:
+            lines.append(f'   a binaris fajlok teljes blob-azonositoja nem jott meg a GitHubtol: {e}')
     lines.append(f'== a fejbol eloallitott diff (GitHub compare {base}...{head}): {path}')
     for f, v in sorted(hs.items()):
         a, d = v['stats']
