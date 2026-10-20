@@ -212,5 +212,6 @@ else
   OUT="$D/diff.patch"
   printf "%s PR %s %s\npr: %s\ntask_id: %s\nfej: %s\nmerge-base: %s\norigin/main: %s\n" "$1" "$PR" "$LABEL" "$PRREF" "$TASK" "$H" "$B" "$M" > "$D/README.md"
 fi
-git diff "$B" "$H" > "$OUT"
+# --full-index: a binary file's content is its blob ids, and review-fej-diff.py accepts only full, 40 hex ids
+git diff --full-index "$B" "$H" > "$OUT"
 echo "$OUT ($(git diff --shortstat "$B" "$H"))"
