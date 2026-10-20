@@ -474,6 +474,7 @@ describe('fleet-api.sh deployed (TC-03 minimum)', () => {
   const gitEnv = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' }
   const g = (...args: string[]) => execFileSync('git', args, { cwd: repo, env: gitEnv }).toString().trim()
   let BASE = '', MERGE = '', PICK = '', OTHER_PICK = '', MAIN = ''
+  let CTX_MERGE = '', CTX_PICK = '', CTX_OTHER_MERGE = '', CTX_OTHER_PICK = ''
   const bin = join(root, 'deployed-bin')
   beforeAll(() => {
     g('init', '-q', '-b', 'main')
@@ -488,6 +489,27 @@ describe('fleet-api.sh deployed (TC-03 minimum)', () => {
     g('cherry-pick', MERGE); PICK = g('rev-parse', 'HEAD')
     g('checkout', '-q', '-b', 'release-wrong', 'release~1')
     g('cherry-pick', other); OTHER_PICK = g('rev-parse', 'HEAD')
+    // THE SAME CHANGE NEXT TO OTHER LINES (koord card a94da4fa, e81d9bd vs 3288ec5): a file both
+    // branches share, the change inserts a line in its middle, and the release branch edited a
+    // line two lines below the insert before the cherry-pick (inside the 3 context lines, outside
+    // the hunk, so the pick applies cleanly). Another change on the same spot is the negative.
+    const lines = (over: Record<number, string> = {}, insert?: [number, string]) => {
+      const out = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => over[n] ?? `line ${n}`)
+      if (insert) out.splice(insert[0], 0, insert[1])
+      return out.join('\n') + '\n'
+    }
+    g('checkout', '-q', '-b', 'ctx-main', BASE)
+    writeFileSync(join(repo, 'ctx.txt'), lines()); g('add', '.'); g('commit', '-q', '-m', 'ctx base')
+    const ctxBase = g('rev-parse', 'HEAD')
+    writeFileSync(join(repo, 'ctx.txt'), lines({}, [5, 'the change'])); g('commit', '-q', '-am', 'ctx squash merge (#9)'); CTX_MERGE = g('rev-parse', 'HEAD')
+    g('checkout', '-q', '-b', 'ctx-other-main', ctxBase)
+    writeFileSync(join(repo, 'ctx.txt'), lines({}, [5, 'ANOTHER change'])); g('commit', '-q', '-am', 'ctx another (#10)'); CTX_OTHER_MERGE = g('rev-parse', 'HEAD')
+    g('checkout', '-q', '-b', 'ctx-release', ctxBase)
+    writeFileSync(join(repo, 'ctx.txt'), lines({ 7: 'line 7 (release)' })); g('commit', '-q', '-am', 'release edit next to the change')
+    const releaseEdit = g('rev-parse', 'HEAD')
+    g('cherry-pick', CTX_MERGE); CTX_PICK = g('rev-parse', 'HEAD')
+    g('checkout', '-q', '-b', 'ctx-release-wrong', releaseEdit)
+    g('cherry-pick', CTX_OTHER_MERGE); CTX_OTHER_PICK = g('rev-parse', 'HEAD')
     mkdirSync(bin, { recursive: true })
   })
   const merged = (over: Record<string, unknown> = {}) => ({
@@ -538,6 +560,26 @@ describe('fleet-api.sh deployed (TC-03 minimum)', () => {
     const wrong = await run(['deployed', 'marveen', 't9', '--commit', OTHER_PICK], undefined, live('release-wrong'))
     expect([none.code, noneWrites, ok.code, okBody?.data.evidence, okBody?.data.deployed_sha, wrong.code, posts().length, /patch-id/.test(wrong.out)],
       'DEPLOYED-CHERRY-PICK').toEqual([5, 0, 0, 'cherry-pick', PICK, 5, 0, true])
+  })
+
+  // WHAT TURNS THIS RED: the fingerprint carrying the context lines, so the same change next to other
+  // lines on the release branch is refused (exit 5); or the fingerprint ignoring the changed lines, so
+  // ANOTHER change on the same spot passes.
+  it('DEPLOYED-CHERRY-PICK-CONTEXT: the same change next to other lines passes; another change on the same spot does not', async () => {
+    const pid = (sha: string, ...opt: string[]) =>
+      execFileSync('git', ['-C', repo, 'show', ...opt, sha], { env: gitEnv }).toString()
+    const patchId = (sha: string, ...opt: string[]) =>
+      execFileSync('git', ['patch-id', '--stable'], { cwd: repo, input: pid(sha, ...opt) }).toString().split(' ')[0]
+    // the fixture itself: with context the two ids differ (the reported bug), without they are the same
+    expect([patchId(CTX_MERGE) === patchId(CTX_PICK), patchId(CTX_MERGE, '-U0') === patchId(CTX_PICK, '-U0')],
+      'DEPLOYED-CHERRY-PICK-CONTEXT fixture').toEqual([false, true])
+    fakeTimeline([merged({ merge_sha: CTX_MERGE })])
+    const ok = await run(['deployed', 'marveen', 't9', '--commit', CTX_PICK], undefined, live('ctx-release'))
+    const okBody = posts()[0]?.body as { data: Record<string, unknown> } | undefined
+    fakeTimeline([merged({ merge_sha: CTX_MERGE })])
+    const wrong = await run(['deployed', 'marveen', 't9', '--commit', CTX_OTHER_PICK], undefined, live('ctx-release-wrong'))
+    expect([ok.code, okBody?.data.evidence, okBody?.data.deployed_sha, wrong.code, posts().length, /patch-id/.test(wrong.out)],
+      `DEPLOYED-CHERRY-PICK-CONTEXT ${ok.out} ${wrong.out}`).toEqual([0, 'cherry-pick', CTX_PICK, 5, 0, true])
   })
 
   it('DEPLOYED-STOPS: no merged event 4, another repo 4, a merge not in the tree 3, --nez writes nothing', async () => {

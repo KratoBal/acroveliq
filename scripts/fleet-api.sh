@@ -936,8 +936,12 @@ print(json.dumps({"kind":"deployed","actor":"acrobot","ref":ref,"data":data}))')
       [ -n "$COMMIT" ] || { echo "FAIL 5: a ${M_SHA:0:12} nem ose az elo HEAD-nek (${HEAD_SHA:0:12}); cherry-pick eseten: --commit <a cherry-pick sha-ja>"; exit 5; }
       C_SHA="$(git -C "$LIVE" rev-parse --verify -q "${COMMIT}^{commit}")" || { echo "FAIL 3: a --commit (${COMMIT}) nincs az elo faban"; exit 3; }
       git -C "$LIVE" merge-base --is-ancestor "$C_SHA" "$HEAD_SHA" || { echo "FAIL 5: a --commit (${C_SHA:0:12}) nem ose az elo HEAD-nek"; exit 5; }
-      P_MERGE="$(git -C "$LIVE" show "$M_SHA" | git -C "$LIVE" patch-id --stable | cut -d' ' -f1)"
-      P_PICK="$(git -C "$LIVE" show "$C_SHA" | git -C "$LIVE" patch-id --stable | cut -d' ' -f1)"
+      # -U0: the fingerprint is the CHANGED lines only. With the default 3 context lines the same
+      # change next to other lines on the release branch gets another patch-id, and a true
+      # cherry-pick is refused (koord card a94da4fa: e81d9bd vs 3288ec5, one context line apart).
+      # handoff-read's fingerprint (task-handoff.ts changeFingerprint, #79) leaves context out too.
+      P_MERGE="$(git -C "$LIVE" show -U0 "$M_SHA" | git -C "$LIVE" patch-id --stable | cut -d' ' -f1)"
+      P_PICK="$(git -C "$LIVE" show -U0 "$C_SHA" | git -C "$LIVE" patch-id --stable | cut -d' ' -f1)"
       [ -n "$P_MERGE" ] && [ "$P_MERGE" = "$P_PICK" ] \
         || { echo "FAIL 5: a --commit valtozasa nem a merge commite (patch-id ${P_PICK:0:12} kontra ${P_MERGE:0:12})"; exit 5; }
       echo "MERT: a ${C_SHA:0:12} cherry-pick az elo HEAD ose, a patch-id egyezik a ${M_SHA:0:12}-val"
