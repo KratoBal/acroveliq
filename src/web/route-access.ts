@@ -198,7 +198,7 @@ const GROUPS: Group[] = [
     name: 'fleet-reads',
     match: (r) => r.module === 'fleet-reads',
     grants: g('yes', 'yes', 'no', 'no', 'no'),
-    why: 'B29: the main agent\'s fixed reads of the fleet database (access decisions, messages, the tool log): its session cannot open the database once it runs under its own user; no other caller needs them',
+    why: 'B29: the main agent\'s fixed reads of the fleet database (access decisions, messages, the tool log, the shared token\'s caller hints): its session cannot open the database once it runs under its own user; no other caller needs them',
   },
   {
     name: 'log-prune',

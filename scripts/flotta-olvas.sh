@@ -9,6 +9,7 @@
 #   bash scripts/flotta-olvas.sh tool-log-osszesito agens=acrobot napok=7 csoport=elotag
 #   bash scripts/flotta-olvas.sh tool-log-minta agens=acrobot elotag='Bash: curl' napok=7
 #   bash scripts/flotta-olvas.sh kartya-letrehozas tol=1792111090 ig=1792111092
+#   bash scripts/flotta-olvas.sh legacy-hivok nap=2026-10-20 [method=POST] [path=/api/tool-log]
 #
 # A thin client of GET /api/fleet-reads/<kerdes> (src/web/routes/fleet-reads.ts): fixed questions,
 # no SQL, the server checks every parameter. Only the session and the main agent get an answer.
@@ -20,8 +21,8 @@ BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${MARVEEN_WEB_PORT:-3420}"
 Q="${1:-}"
 case "$Q" in
-  access-decisions|request-actors|uzenet-ablak|uzenet|tool-log-osszesito|tool-log-minta|kartya-letrehozas) ;;
-  *) echo "hasznalat: flotta-olvas.sh <access-decisions|request-actors|uzenet-ablak|uzenet|tool-log-osszesito|tool-log-minta|kartya-letrehozas> [kulcs=ertek ...]" >&2; exit 2 ;;
+  access-decisions|request-actors|uzenet-ablak|uzenet|tool-log-osszesito|tool-log-minta|kartya-letrehozas|legacy-hivok) ;;
+  *) echo "hasznalat: flotta-olvas.sh <access-decisions|request-actors|uzenet-ablak|uzenet|tool-log-osszesito|tool-log-minta|kartya-letrehozas|legacy-hivok> [kulcs=ertek ...]" >&2; exit 2 ;;
 esac
 shift
 QS="$(python3 -I - "$@" <<'PY'

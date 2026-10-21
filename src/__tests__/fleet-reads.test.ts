@@ -58,6 +58,10 @@ beforeAll(() => {
   tl.run('s', 'Bash', 'curl -s -H "Authorization: ' + 'Bearer ' + 'b'.repeat(30) + '" http://x', NOW - 60, 'acrobot')
   tl.run('s', 'Read', '/home/marveen/marveen/CLAUDE.md', NOW - 60, 'acrobot')
   tl.run('s', 'Bash', 'grep x', NOW - 40 * 86400, 'acrobot')
+  const lc = db.prepare('INSERT INTO legacy_callers (day, method, path, ua, claimed, remote, count, first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?)')
+  lc.run('2026-10-20', 'POST', '/api/tool-log', 'Python-urllib/3.11', '-', '127.0.0.1', 2, 1792470000, 1792471000)
+  lc.run('2026-10-20', 'POST', '/api/messages', 'curl/7.88.1', 'murena', '127.0.0.1', 1, 1792480000, 1792480000)
+  lc.run('2026-10-19', 'GET', '/api/approvals/:id', 'curl/7.88.1', '-', '172.18.0.1', 1, 1792390000, 1792390000)
   db.prepare("INSERT INTO kanban_cards (id, title, status, priority, created_at, updated_at) VALUES ('e7e85a81', '[flotta] kvota-kapu', 'planned', 'low', 1792111091, 1792111091)").run()
 })
 
@@ -136,6 +140,20 @@ describe('fleet-reads: the questions', () => {
     expect(k.body.sorok).toEqual([{ id: 'e7e85a81', title: '[flotta] kvota-kapu', assignee: null, created_at: 1792111091 }])
   })
 
+  it('legacy-hivok: the shared token\'s calls with their hints, by day or window, method and route pattern', async () => {
+    const day = await call('/api/fleet-reads/legacy-hivok?nap=2026-10-20')
+    expect(day.body.sorok.map((x: any) => [x.method, x.path, x.ua, x.claimed, x.remote, x.count])).toEqual([
+      ['POST', '/api/messages', 'curl/7.88.1', 'murena', '127.0.0.1', 1],
+      ['POST', '/api/tool-log', 'Python-urllib/3.11', '-', '127.0.0.1', 2],
+    ])
+    expect((await call('/api/fleet-reads/legacy-hivok?nap=2026-10-20&method=POST&path=%2Fapi%2Ftool-log')).body.sorok.map((x: any) => x.ua)).toEqual(['Python-urllib/3.11'])
+    expect((await call('/api/fleet-reads/legacy-hivok?nap=2026-10-20&method=GET')).body.darab).toBe(0)
+    expect((await call('/api/fleet-reads/legacy-hivok?tol=1792389000&ig=1792391000')).body.sorok.map((x: any) => x.path)).toEqual(['/api/approvals/:id'])
+    expect((await call('/api/fleet-reads/legacy-hivok?nap=2026-10-20&path=%3Aismeretlen%20%2Fapi%2Ftasks')).body.darab).toBe(0)
+    expect((await call('/api/fleet-reads/legacy-hivok?nap=2026-10-20', { kind: 'token', actor: 'nautilus' })).status).toBe(403)
+    expect(matchRouteRule('GET', '/api/fleet-reads/legacy-hivok')?.module).toBe('fleet-reads')
+  })
+
   it('every bad parameter is 400, and nothing is answered', async () => {
     for (const p of [
       '/api/fleet-reads/access-decisions',
@@ -151,6 +169,10 @@ describe('fleet-reads: the questions', () => {
       '/api/fleet-reads/tool-log-osszesito?agens=acrobot&csoport=tabla',
       '/api/fleet-reads/tool-log-minta?agens=acrobot',
       '/api/fleet-reads/kartya-letrehozas?tol=1792000000&ig=1792200000',
+      '/api/fleet-reads/legacy-hivok',
+      '/api/fleet-reads/legacy-hivok?nap=2026-10-20&method=get',
+      '/api/fleet-reads/legacy-hivok?nap=2026-10-20&path=api%2Ftool-log',
+      "/api/fleet-reads/legacy-hivok?nap=2026-10-20&path=%2Fapi%2Fx'%20OR%201%3D1",
     ]) {
       const r = await call(p)
       expect(r.status, p).toBe(400)

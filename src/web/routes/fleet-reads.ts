@@ -15,6 +15,11 @@
 //   tool-log-osszesito ?agens= [&napok=1..30] [&csoport=elotag|eszkoz]
 //   tool-log-minta     ?agens= &elotag= [&napok=1..30]
 //   kartya-letrehozas  ?tol= &ig=            (window at most a day)
+//   legacy-hivok       ?nap=YYYY-MM-DD | ?tol=&ig=   [&method=] [&path=]
+//                      the shared token's calls with their three hints (legacy_callers:
+//                      User-Agent product, self-declared name, remote address): the one table
+//                      that says WHERE a residual shared-token call came from, and until now
+//                      nothing read it (card 809a2f48, task p0-1-preflight-tisztitas)
 // Answer: { sorok: [...], darab: n }.
 import { getDb } from '../../db.js'
 import { MAIN_AGENT_ID } from '../../config.js'
@@ -23,7 +28,7 @@ import { SECRET_PATTERNS } from '../../security/secret-gate.js'
 import { json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
-export const FLEET_READS = ['access-decisions', 'request-actors', 'uzenet-ablak', 'uzenet', 'tool-log-osszesito', 'tool-log-minta', 'kartya-letrehozas'] as const
+export const FLEET_READS = ['access-decisions', 'request-actors', 'uzenet-ablak', 'uzenet', 'tool-log-osszesito', 'tool-log-minta', 'kartya-letrehozas', 'legacy-hivok'] as const
 const MAX_ROWS = 500
 const CUT = 200
 const DAY = 86400
@@ -163,14 +168,38 @@ function answer(name: string, sp: URLSearchParams): Row[] {
       const rows = db.prepare(`SELECT id, title, assignee, created_at FROM kanban_cards WHERE created_at BETWEEN ? AND ? ORDER BY created_at LIMIT ${MAX_ROWS}`).all(tol, ig) as Row[]
       return rows.map((r) => ({ ...r, title: safeText(r['title']) }))
     }
+    case 'legacy-hivok': {
+      const where: string[] = []
+      const args: unknown[] = []
+      const nap = sp.get('nap')
+      if (nap) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(nap)) throw new BadParam('nap: ÉÉÉÉ-HH-NN')
+        where.push('day = ?'); args.push(nap)
+      } else {
+        const [tol, ig] = window(sp)
+        where.push('last_seen >= ? AND first_seen <= ?'); args.push(tol, ig)
+      }
+      const method = sp.get('method')
+      if (method) {
+        if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) throw new BadParam('method: GET, POST, PUT, PATCH vagy DELETE')
+        where.push('method = ?'); args.push(method)
+      }
+      // the stored path is the route rule's pattern (routeKey), so the filter is one too
+      const path = sp.get('path')
+      if (path) {
+        if (!/^(\/[a-z0-9:._-]+)+$|^:ismeretlen( \/api\/[a-z0-9-]+)?$/.test(path)) throw new BadParam('path: egy szabály mintája (/api/messages/:id) vagy :ismeretlen')
+        where.push('path = ?'); args.push(path)
+      }
+      return db.prepare(`SELECT day, method, path, ua, claimed, remote, count, first_seen, last_seen FROM legacy_callers WHERE ${where.join(' AND ')} ORDER BY last_seen DESC LIMIT ${MAX_ROWS}`).all(...args) as Row[]
+    }
   }
   throw new BadParam('ismeretlen kérdés')
 }
 
 export async function tryHandleFleetReads(ctx: RouteContext): Promise<boolean> {
   const { res, method, path } = ctx
-  // the seven names spelled out, so the route inventory reads this matcher as the rule's route
-  const m = path.match(/^\/api\/fleet-reads\/(access-decisions|request-actors|uzenet-ablak|uzenet|tool-log-osszesito|tool-log-minta|kartya-letrehozas)$/)
+  // the eight names spelled out, so the route inventory reads this matcher as the rule's route
+  const m = path.match(/^\/api\/fleet-reads\/(access-decisions|request-actors|uzenet-ablak|uzenet|tool-log-osszesito|tool-log-minta|kartya-letrehozas|legacy-hivok)$/)
   if (!m || method !== 'GET') return false
   const name = m[1]!
   const a = ctx.auth
