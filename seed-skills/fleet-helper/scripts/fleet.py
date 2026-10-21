@@ -58,7 +58,8 @@ def db_path():
     return os.path.join(project_dir(), "store", "claudeclaw.db")
 
 
-def api(method, path, payload=None, timeout=20):
+def _request(method, path, payload=None, timeout=20):
+    """(headers, parsed body) of one dashboard API call; api() is its body half."""
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(base_url() + path, data=data, method=method)
     req.add_header("Authorization", "Bearer " + token())
@@ -67,12 +68,17 @@ def api(method, path, payload=None, timeout=20):
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             body = r.read().decode()
+            headers = r.headers
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"API {method} {path} -> {e.code}: {e.read().decode()[:200]}")
     try:
-        return json.loads(body)
+        return headers, json.loads(body)
     except ValueError:
-        return body
+        return headers, body
+
+
+def api(method, path, payload=None, timeout=20):
+    return _request(method, path, payload, timeout)[1]
 
 
 def save_memory(agent, content, category="warm", keywords=""):
@@ -80,12 +86,30 @@ def save_memory(agent, content, category="warm", keywords=""):
                                          "category": category, "keywords": keywords})
 
 
+# The server answers at most `limit` memories (50 by default, 200 at most). This search asked with
+# no limit, so it was cut after the 50th hit, silently, and a "no such memory" could stand on a cut
+# list (card 1daee3a5, acrobot 34053). It asks with an explicit limit now and, when the answer
+# reached it or the server says it capped it (X-Limit-Capped), says so loudly on stderr. The
+# returned value is unchanged.
+MEMORY_SEARCH_LIMIT = 50
+
+
 def search_memory(agent, q, category=None):
     from urllib.parse import quote
-    path = f"/api/memories?agent={quote(agent)}&q={quote(q)}"
+    path = f"/api/memories?agent={quote(agent)}&q={quote(q)}&limit={MEMORY_SEARCH_LIMIT}"
     if category:
         path += f"&category={quote(category)}"
-    return api("GET", path)
+    headers, rows = _request("GET", path)
+    if isinstance(rows, list):
+        capped = headers.get("X-Limit-Capped")
+        if capped:
+            print(f"FIGYELEM: a lista VAGOTT: a szerver {capped} sornal levagta (X-Limit-Capped), "
+                  "ez nem a teljes talalat-halmaz.", file=sys.stderr)
+        elif len(rows) >= MEMORY_SEARCH_LIMIT:
+            print(f"FIGYELEM: a lista elerte a limitet ({MEMORY_SEARCH_LIMIT} sor), tehat lehet, hogy VAGOTT, "
+                  "nem teljes. Hianyra vagy nullara ne epits; szukitsd a keresest (kategoria, pontosabb kulcsszo).",
+                  file=sys.stderr)
+    return rows
 
 
 def daily_log(agent, content):

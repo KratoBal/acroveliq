@@ -211,9 +211,36 @@ case "$CMD" in
     argc_max 3 "$#" "fleet-api.sh memory-search <agent> \"kulcsszo\" [kategoria]"
     : "${1:?agent required}"; AGENT="$(arg "$1")"; : "${2:?query required}"; Q="$(arg "$2")"; CAT="${3-}"
     Q_ENC="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$Q")"
-    P="/memories?agent=${AGENT}&q=${Q_ENC}"
+    # A LISTA LEHET VAGOTT (kartya 1daee3a5, acrobot 34053). A szerver legfeljebb `limit` sort ad
+    # (alapbol 50, legfeljebb 200), es eddig ez a parancs limit nelkul hivta, tehat az 50. talalat
+    # utan CSENDBEN vagott: egy "nincs ilyen emlek" allitas egy levagott listan allhatott. Ezert
+    # most kifejezett limitet ker, es ha a valasz elerte (vagy a szerver X-Limit-Capped fejleccel
+    # jelzi, hogy levagta), a STDERR-re hangosan kiirja. A stdout valtozatlanul a JSON-tomb:
+    # hivok gepi uton olvassak, oda szoveg nem kerulhet.
+    LIMIT=50
+    P="/memories?agent=${AGENT}&q=${Q_ENC}&limit=${LIMIT}"
     [ -n "$CAT" ] && P="${P}&category=${CAT}"
-    get "$P"
+    HDR_FILE="$(mktemp)"; BODY_FILE="$(mktemp)"
+    if ! curl -s -D "$HDR_FILE" -o "$BODY_FILE" -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "${API}${P}"; then
+      rm -f "$HDR_FILE" "$BODY_FILE"; echo "FAIL: GET ${P}"; exit 1
+    fi
+    cat "$BODY_FILE"
+    python3 - "$HDR_FILE" "$BODY_FILE" "$LIMIT" >&2 <<'VAGOTT'
+import json, sys
+headers, body, limit = open(sys.argv[1]).read().lower(), open(sys.argv[2]).read(), int(sys.argv[3])
+try:
+    rows = json.loads(body)
+except ValueError:
+    sys.exit(0)
+if not isinstance(rows, list):
+    sys.exit(0)
+capped = next((l.split(":", 1)[1].strip() for l in headers.splitlines() if l.startswith("x-limit-capped:")), None)
+if capped:
+    print(f"FIGYELEM: a lista VAGOTT: a szerver {capped} sornal levagta (X-Limit-Capped), ez nem a teljes talalat-halmaz.")
+elif len(rows) >= limit:
+    print(f"FIGYELEM: a lista elerte a limitet ({limit} sor), tehat lehet, hogy VAGOTT, nem teljes. Hianyra vagy nullara ne epits; szukitsd a keresest (kategoria, pontosabb kulcsszo).")
+VAGOTT
+    rm -f "$HDR_FILE" "$BODY_FILE"
     ;;
   daily-log)
     # A hatar KETTO, es ez pontosan az az ag, ahol 2026-08-27 este nautilus tizenot bejegyzese
