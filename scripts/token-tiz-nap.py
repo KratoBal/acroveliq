@@ -82,6 +82,9 @@ def feladat_sor(task, usage, timeline):
         'atado': handoff,
         'munkamenet': session,
         'ervenyes': bool(usage.get('valid', True)),
+        # how the server tied the calls to the task: by the registered session, or by the time window
+        'session_hivas': int(usage.get('by_mode', {}).get('session') or 0),
+        'window_hivas': int(usage.get('by_mode', {}).get('window') or 0),
         'elnyelo': elnyelo,
     }
 
@@ -112,12 +115,18 @@ def osszevetes(sorok):
                 'irt_osszes': sum(s['irt'] for s in csop),
                 'javitasi_kor_atlag': sum(s['javitasi_kor'] for s in csop) / len(csop),
                 'kesz': sum(1 for s in csop if s['kesz']),
+                'session_arany': (lambda se, wi: se / (se + wi) if se + wi else None)(
+                    sum(s['session_hivas'] for s in csop), sum(s['window_hivas'] for s in csop)),
             })
     return ki
 
 
 def _m(n):
     return '-' if n is None else f'{n / 1e6:.2f}M'
+
+
+def _pct(x):
+    return '-' if x is None else f'{x * 100:.0f}%'
 
 
 def _ido(mp):
@@ -150,15 +159,21 @@ def jelentes(sorok, tol, ig, meres_ideje):
         '',
         '## Friss kontra hosszú, hasonló méretben (csak a mérhetőkön)',
         '',
-        '| méret | mód | feladat | olvasott/hívás (medián) | hívás (medián) | olvasott össz. | írt össz. | javítási kör (átlag) | kész |',
-        '|---|---|---|---|---|---|---|---|---|',
+        '| méret | mód | feladat | olvasott/hívás (medián) | hívás (medián) | olvasott össz. | írt össz. | javítási kör (átlag) | kész | munkamenet-mód aránya |',
+        '|---|---|---|---|---|---|---|---|---|---|',
     ]
     for g in osszevetes(fejl):
         L.append(f"| {g['meret']} | {g['mod']} | {g['feladat']} | {_m(g['hivasonkent_median'])} | {g['hivas_median']:.0f} | "
-                 f"{_m(g['olvasott_osszes'])} | {_m(g['irt_osszes'])} | {g['javitasi_kor_atlag']:.2f} | {g['kesz']} |")
+                 f"{_m(g['olvasott_osszes'])} | {_m(g['irt_osszes'])} | {g['javitasi_kor_atlag']:.2f} | {g['kesz']} | "
+                 f"{_pct(g['session_arany'])} |")
     L += [
         '',
         'Egy sávban 3-nál kevesebb feladat nem összevetés, csak eset.',
+        '',
+        'A munkamenet-mód aránya: a csoport hívásainak hány százalékát kötötte a szerver a feladathoz bejegyzett '
+        'munkamenet alapján (a többit időablak alapján). A két mód NEM azonos mérce: az időablak egy párhuzamos '
+        'munka hívásait is a feladathoz veheti, tehát felfelé torzíthat, a munkamenet pontosabb (barracuda, #277). '
+        'Ha a friss csoport olcsóbbnak látszik, annak egy része a hozzárendelés különbsége lehet, nem a munkameneté.',
         '',
         '## Feladatonként (fejlesztői, létrehozás szerint)',
         '',
