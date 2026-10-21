@@ -13,7 +13,8 @@
 //
 // THE ASSIGNMENT, in this order:
 //   1. by session: a session registered to a task (`task_sessions`, the V3
-//      case) belongs to that task, whole;
+//      case) belongs to that task until the task ends (sessionClaimEnd); a
+//      call after that end goes on to the windows;
 //   2. by time window: an agent's call that falls in exactly one task's window
 //      for that agent. A call that falls in the windows of TWO OR MORE tasks
 //      is not guessed: it is assigned to none. A WORK call there makes every
@@ -501,6 +502,25 @@ export interface Overlap {
 
 const inWindow = (w: TaskWindow, t: number, now: number) => t >= w.from && t < (w.to ?? now + 1)
 
+/*
+  HOW LONG A REGISTERED SESSION SPEAKS FOR ITS TASK (task task-usage-bejegyzes-hatar, acrobot 34142).
+  A session registered to a task (agent-restart --task) used to take every call it ever made. A
+  restart without --fresh continues that session into the agent's next tasks, so the first task
+  swallowed them all and the later ones got 0 calls: measured 2026-10-21, reefclub-szelet-4 was
+  merged on 10-20 at 15:27 and still held 1882 calls up to 10-21 05:28, while ai-beszelgetes-alany
+  (10-21 04:49-04:59, in that session) showed none. The claim now ends at the registering task's
+  first end (TASK_END) after its last work start: past it the windows decide, as for any session.
+  A task that never ended keeps the claim open (the V3 variants and a task still in progress).
+*/
+export function sessionClaimEnd(events: readonly TaskEvent[]): number | null {
+  let end: number | null = null
+  for (const e of events) {
+    if (WORK_OPEN.has(e.kind)) end = null
+    else if (TASK_END.has(e.kind) && end === null) end = e.at
+  }
+  return end
+}
+
 /**
  * THE ASSIGNMENT OF ONE TASK'S CALLS. `calls` are the candidate calls (the
  * agents and the time span the task's windows touch); `windows` are EVERY
@@ -512,6 +532,8 @@ export function assignCalls(input: {
   windows: readonly TaskWindow[]
   /** `agent|session` -> task id, every registered session. */
   sessions: ReadonlyMap<string, string>
+  /** task id -> the end of its session claim (sessionClaimEnd); missing or null: open. */
+  sessionEnds?: ReadonlyMap<string, number | null>
   now: number
 }): {
   assigned: CallAssignment[]
@@ -531,12 +553,14 @@ export function assignCalls(input: {
     const sessionOwner = input.sessions.get(`${call.agent}|${call.session_id}`)
     const hits = input.windows.filter((w) => w.agent === call.agent && inWindow(w, call.timestamp, input.now))
     const own = hits.filter((w) => w.task_id === input.taskId)
-    if (sessionOwner !== undefined) {
-      // a registered session is explicit: it is its task's, and no window argues
+    const claimEnd = sessionOwner === undefined ? null : input.sessionEnds?.get(sessionOwner) ?? null
+    if (sessionOwner !== undefined && (claimEnd === null || call.timestamp <= claimEnd)) {
+      // a registered session is explicit while its task runs: it is its task's, and no window argues
       if (sessionOwner === input.taskId)
         assigned.push({ call, mode: 'session', role: own[0]?.role ?? 'work' })
       continue
     }
+    // past the registering task's end the session no longer speaks for it: the windows decide
     if (own.length === 0) continue
     // A coord window decides the call for EVERY task, not only for its own: queried from
     // another task with a work window open at the same time, the call is the coord
@@ -704,8 +728,10 @@ export function taskUsage(db: Database.Database, taskId: string, now: number): T
       .all(w.agent, w.from, w.to ?? now + 1) as UsageCall[])
       calls.set(row.id, row)
 
+  const sessionEnds = new Map([...byTask.entries()].map(([id, evs]) => [id, sessionClaimEnd(evs)] as const))
   const { assigned, overlaps, unassigned, concurrent, ceded } = assignCalls({
     taskId,
+    sessionEnds,
     calls: [...calls.values()].sort((a, b) => a.timestamp - b.timestamp || a.id - b.id),
     windows,
     sessions,
