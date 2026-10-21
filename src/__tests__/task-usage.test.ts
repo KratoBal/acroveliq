@@ -38,6 +38,7 @@ import {
   loadTaskEvents,
   parseTaskCoreMode,
   reviewRefGuard,
+  sessionClaimEnd,
   taskTimeline,
   taskUsage,
   taskUsageWithVariants,
@@ -214,6 +215,58 @@ describe('a session of its own (V3)', () => {
     expect([v3.totals.calls, v3.by_mode.session, v3.valid, other.totals.calls, other.valid], 'TASK-USAGE-SESSION').toEqual([
       2, 2, true, 1, true,
     ])
+  })
+})
+
+describe('a registered session speaks for its task until the task ends (task-usage-bejegyzes-hatar)', () => {
+  it('TASK-USAGE-SESSION-END: the 2026-10-21 shape: a merged task no longer swallows the next task of the continued session', () => {
+    // reefclub-szelet-4: registered at 14:46, merged 15:27; the session went on into the night
+    task('reefclub-szelet-4')
+    task('ai-beszelgetes-alany')
+    addTaskSession(db, 'reefclub-szelet-4', 'nautilus', 'sess-n', T('14:46:00'))
+    event('reefclub-szelet-4', 'started', 'nautilus', T('14:46:00'))
+    event('reefclub-szelet-4', 'merged', 'acrobot', T('15:27:00'))
+    call('nautilus', T('15:00:00'), 1000, 'sess-n')
+    call('nautilus', T('15:27:00'), 1000, 'sess-n') // the end's own second is still the task's
+    call('nautilus', T('20:00:00'), 1000, 'sess-n') // between tasks, in no window
+    // ai-beszelgetes-alany, the next morning, in the same session (its usage showed 0 calls)
+    const day = 86400
+    event('ai-beszelgetes-alany', 'started', 'nautilus', T('04:49:47') + day)
+    event('ai-beszelgetes-alany', 'review_requested', 'nautilus', T('04:52:58') + day)
+    event('ai-beszelgetes-alany', 'verdict', 'barracuda', T('04:53:49') + day)
+    event('ai-beszelgetes-alany', 'merged', 'acrobot', T('04:57:38') + day)
+    event('ai-beszelgetes-alany', 'done', 'nautilus', T('04:59:01') + day)
+    for (let i = 0; i < 5; i++) call('nautilus', T('04:50:00') + day + i * 30, 2000, 'sess-n')
+    const first = taskUsage(db, 'reefclub-szelet-4', NOW + 2 * day)!
+    const next = taskUsage(db, 'ai-beszelgetes-alany', NOW + 2 * day)!
+    expect([first.totals.calls, first.by_mode.session, next.totals.calls, next.by_mode.window, next.totals.cache_read, next.valid],
+      'TASK-USAGE-SESSION-END').toEqual([2, 2, 5, 5, 10_000, true])
+  })
+
+  it('TASK-USAGE-SESSION-REOPEN: a fix after the merge keeps the claim to the fix round\'s end, not past it', () => {
+    task('t')
+    addTaskSession(db, 't', 'murena', 'sess-t', T('08:00:00'))
+    event('t', 'started', 'murena', T('08:00:00'))
+    event('t', 'merged', 'acrobot', T('09:00:00'))
+    event('t', 'fix_started', 'murena', T('10:00:00'))
+    event('t', 'done', 'murena', T('11:00:00'))
+    call('murena', T('08:30:00'), 1000, 'sess-t')
+    call('murena', T('09:30:00'), 1000, 'sess-t') // between the merge and the fix: the claim runs to the end after the last start
+    call('murena', T('10:30:00'), 1000, 'sess-t')
+    call('murena', T('11:30:00'), 1000, 'sess-t') // after the last end
+    expect(taskUsage(db, 't', NOW)!.totals.calls, 'TASK-USAGE-SESSION-REOPEN').toBe(3)
+  })
+
+  it('TASK-USAGE-CLAIM-END: the claim ends at the first end after the last work start; never ended is open', () => {
+    const e = (kind: TaskEventKind, at: number) => ({ task_id: 'x', kind, actor: 'a', at, ref: null }) as Parameters<typeof sessionClaimEnd>[0][number]
+    expect([
+      sessionClaimEnd([]),
+      sessionClaimEnd([e('started', 1), e('merged', 5), e('done', 7)]),
+      sessionClaimEnd([e('started', 1), e('merged', 5), e('fix_started', 6)]),
+      sessionClaimEnd([e('started', 1), e('merged', 5), e('fix_started', 6), e('done', 9)]),
+      sessionClaimEnd([e('assigned', 1), e('cancelled', 3)]),
+      sessionClaimEnd([e('started', 1), e('blocked', 2)]),
+    ], 'TASK-USAGE-CLAIM-END').toEqual([null, 5, null, 9, 3, null])
   })
 })
 
