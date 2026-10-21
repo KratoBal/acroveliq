@@ -33,6 +33,7 @@ const S: CallerSource = { kind: 'session', user: 'balazs' }
 const A: CallerSource = { kind: 'token', principal: principal('acrobot') }
 const G: CallerSource = { kind: 'token', principal: principal('murena') }
 const G2: CallerSource = { kind: 'token', principal: principal('nautilus') }
+const G3: CallerSource = { kind: 'token', principal: principal('polip') }
 const L: CallerSource = { kind: 'token' }
 const D: CallerSource = { kind: 'device', device: 'telefon' }
 
@@ -47,7 +48,9 @@ beforeAll(async () => {
   initDatabase(':memory:')
   const db = getDb()
   db.prepare("INSERT INTO kanban_cards (id, title, assignee, created_at, updated_at) VALUES ('c-murena', 'x', 'murena', 0, 0), ('c-nautilus', 'x', 'nautilus', 0, 0)").run()
-  db.prepare("INSERT INTO agent_messages (id, from_agent, to_agent, content, created_at) VALUES (17, 'nautilus', 'murena', 'x', 0), (18, 'nautilus', 'acrobot', 'x', 0)").run()
+  // 17 delivered (the recipient closes it), 18 pending to another agent, 19 pending from nautilus to murena
+  db.prepare("INSERT INTO agent_messages (id, from_agent, to_agent, content, created_at, status, delivered_at) VALUES (17, 'nautilus', 'murena', 'x', 0, 'delivered', 0)").run()
+  db.prepare("INSERT INTO agent_messages (id, from_agent, to_agent, content, created_at) VALUES (18, 'nautilus', 'acrobot', 'x', 0), (19, 'nautilus', 'murena', 'x', 0)").run()
   db.prepare("INSERT INTO memories (id, chat_id, content, sector, agent_id, category, created_at, accessed_at) VALUES (5, 'c', 'x', 'semantic', 'murena', 'warm', 0, 0), (6, 'c', 'x', 'semantic', 'nautilus', 'warm', 0, 0)").run()
   for (const [name, agent] of [['murena-feladat', 'murena'], ['fo-feladat', undefined]] as const) {
     mkdirSync(join(tasksDir, name), { recursive: true })
@@ -177,7 +180,12 @@ describe('access enforcement: through the gate', () => {
       [G, 'GET', '/api/messages/17', undefined, 200],
       [G, 'GET', '/api/messages/18', undefined, 403],
       [G, 'PUT', '/api/messages/17', { status: 'done' }, 200],
-      [G2, 'PUT', '/api/messages/17', { status: 'done' }, 403], // the sender does not close it
+      [G2, 'PUT', '/api/messages/17', { status: 'done' }, 403], // the sender does not close a DELIVERED message
+      // a PENDING message: its sender may withdraw it (acrobot 34258), the recipient may close it, a third agent not
+      [G2, 'PUT', '/api/messages/19', { status: 'done' }, 200],
+      [G, 'PUT', '/api/messages/19', { status: 'done' }, 200],
+      [G3, 'PUT', '/api/messages/19', { status: 'done' }, 403],
+      [G3, 'PUT', '/api/messages/18', { status: 'done' }, 403], // pending, but neither its sender nor its recipient
       [G, 'PUT', '/api/messages/99', { status: 'done' }, 403], // no such message: no owner
       // cards and memories: own only; moving a memory to another writer is not own
       [G, 'POST', '/api/kanban/c-murena/move', { status: 'done' }, 200],

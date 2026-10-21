@@ -156,6 +156,18 @@ export async function resolveOwner(
       const next = (body as Record<string, unknown>).assignee
       return next === assignee || next === deps.mainAgent ? assignee : null
     }
+    case 'message-closer': {
+      // THE SENDER MAY WITHDRAW ITS OWN MESSAGE WHILE IT IS PENDING (acrobot 34258; P0-1 preflight
+      // 2026-10-21: murena closed its own, still pending message to a mistyped recipient, the
+      // documented message-close, and the rule would have refused it). A delivered message is closed
+      // by its recipient only: closing writes the completion report into the sender's pane in the
+      // recipient's name, so a sender closing a delivered message would answer for the recipient.
+      const row = deps.db.prepare('SELECT from_agent, to_agent, status FROM agent_messages WHERE id = ?').get(id) as
+        | { from_agent: string; to_agent: string; status: string }
+        | undefined
+      if (!row) return null
+      return row.status === 'pending' ? [row.from_agent, row.to_agent] : row.to_agent
+    }
     case 'message-participants':
     case 'message-recipient': {
       const row = deps.db.prepare('SELECT from_agent, to_agent FROM agent_messages WHERE id = ?').get(id) as

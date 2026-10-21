@@ -43,7 +43,7 @@ export type OwnerSource =
  * schedule's agent, a message's recipient, a memory's writer; a message's
  * participants (either may read it).
  */
-export type LookupRecord = 'kanban-card' | 'schedule' | 'message-participants' | 'message-recipient' | 'memory'
+export type LookupRecord = 'kanban-card' | 'schedule' | 'message-participants' | 'message-recipient' | 'message-closer' | 'memory'
 
 export interface Access {
   grants: Record<Column, Grant>
@@ -124,8 +124,8 @@ const GROUPS: Group[] = [
     name: 'message-state',
     match: is('PUT', '/api/messages/:id'),
     grants: g('yes', 'yes', 'own', 'yes', 'yes'),
-    owner: { from: 'lookup', record: 'message-recipient', param: 'id' },
-    why: 'closing a message can inject text into a pane: an agent only its own messages (the recipient)',
+    owner: { from: 'lookup', record: 'message-closer', param: 'id' },
+    why: 'closing a message can inject text into a pane: an agent only its own messages (the recipient); the sender may withdraw its own message while it is still pending (a wrong recipient, the documented message-close), never a delivered one',
   },
   {
     name: 'message-read',

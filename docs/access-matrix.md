@@ -234,7 +234,7 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | GET | `/api/messages/backlog` | OLVASO | ✓ | ✓ | saját | ✗ | ✓ | message-read | query: agent |
 | GET | `/api/messages` | OLVASO | ✓ | ✓ | saját | ✓ | ✓ | message-read | query: agent |
 | GET | `/api/messages/:id` | OLVASO | ✓ | ✓ | saját | ✗ | ✓ | message-read-one | rekord: message-participants (:id) |
-| PUT | `/api/messages/:id` | KRITIKUS | ✓ | ✓ | saját | ✗ | ✓ | message-state | rekord: message-recipient (:id) |
+| PUT | `/api/messages/:id` | KRITIKUS | ✓ | ✓ | saját | ✗ | ✓ | message-state | rekord: message-closer (:id) |
 | POST | `/api/memories` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | memory-write | body: agent_id |
 | GET | `/api/memories` | OLVASO | ✓ | ✓ | ✓ | ✓ | ✓ | class:OLVASO |  |
 | POST | `/api/memories/import` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | memory-write | body: agent_id |
@@ -399,7 +399,7 @@ Az L oszlopban csak ezek ✓, akármit ad a csoport vagy az osztály (a többi s
 - **approval-request**: anyone may ask; the decision is the gate
 - **federation-wire**: the federation wire endpoints: peers reach them with their own scoped token (handled apart), not fleet tokens
 - **message-send**: anyone may send; the stored sender is the token's owner, never the body's `from` (PR 3b); the shared token sends as `legacy-ismeretlen`, marked unverified
-- **message-state**: closing a message can inject text into a pane: an agent only its own messages (the recipient)
+- **message-state**: closing a message can inject text into a pane: an agent only its own messages (the recipient); the sender may withdraw its own message while it is still pending (a wrong recipient, the documented message-close), never a delivered one
 - **message-read**: an agent reads its own messages (plan 3)
 - **message-read-one**: an agent reads its own messages, sent or received (plan 3)
 - **schedule-create**: only its own scheduled task; on another agent only from the session (plan 3); an agent-created task runs with a peer frame (PR 3b)
