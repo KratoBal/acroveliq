@@ -74,6 +74,25 @@ def _main_agent_id():
     return "marveen"
 
 
+def _caller_agent(root):
+    """The agent whose token this hook presents: the calling OS user's (dashboard_token.token_agent).
+
+    The server answers /api/voice/directive only for the token's own agent, so the agent named in the
+    query must be the same one. Reading it from the session's cwd named a different agent whenever the
+    main agent's session stood in an agents/<x>/ folder (copying a hand-off file, say), and the call
+    was "not its own" (P0-1 preflight, 2026-10-21: acrobot 7x). None when the resolver cannot tell.
+    """
+    try:
+        import pwd
+        _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
+        if _lib not in sys.path:
+            sys.path.insert(0, _lib)
+        from dashboard_token import token_agent
+        return token_agent(root, pwd.getpwuid(os.geteuid()).pw_name)
+    except Exception:
+        return None
+
+
 def _agent_id(cwd):
     if not cwd:
         return None
@@ -117,7 +136,8 @@ def main():
     m_kind = re.search(r'\battachment_kind="([a-z_]+)"', prompt)
     kind = m_kind.group(1) if m_kind else None
 
-    agent_id = _agent_id(payload.get("cwd"))
+    # the token's own agent first; the cwd only when the resolver cannot name one
+    agent_id = _caller_agent(_project_root()) or _agent_id(payload.get("cwd"))
     if not agent_id:
         sys.exit(0)
 
