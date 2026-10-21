@@ -83,6 +83,14 @@ IncomingSupplierDocument id,payeeCheck,purchaseInvoiceId 2026-11-17 bejövő sz�
 BankTransactionMatch documentId,bankTransactionId 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
 PurchaseInvoice id,invoiceDate,isPaid,status 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
 NavIncomingInvoice purchaseInvoiceId 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
+ProductEnrichmentRun id,status,productCount,startedAt 2026-11-21 JEV-mérés és SimplePay behúzás (2026-10-21-i kézi lap)
+ProductEnrichmentRunProduct id,runId,productId,checkedAt,errorCode 2026-11-21 JEV-mérés és SimplePay behúzás (2026-10-21-i kézi lap)
+ProductEnrichmentFieldResult checkId,field,status,value 2026-11-21 JEV-mérés és SimplePay behúzás (2026-10-21-i kézi lap)
+Product id,isActive 2026-11-21 JEV-mérés és SimplePay behúzás (2026-10-21-i kézi lap)
+ChannelListing productId,channel,externalStatus 2026-11-21 JEV-mérés és SimplePay behúzás (2026-10-21-i kézi lap)
+UnasProductSnapshot productId,rawPayload 2026-11-21 JEV-mérés és SimplePay behúzás (2026-10-21-i kézi lap)
+SimplePayReport id,fileName,reportDate,periodStart,periodEnd,status,gmailMessageId,lineCount,createdAt 2026-11-21 JEV-mérés és SimplePay behúzás (2026-10-21-i kézi lap)
+SimplePaySyncRun status,trigger,startedAt,completedAt,messagesSeen,documentsRead,duplicateCount,failedCount,errorCode 2026-11-21 JEV-mérés és SimplePay behúzás (2026-10-21-i kézi lap)
 ```
 
 **A három mód:**

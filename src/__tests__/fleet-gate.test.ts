@@ -721,7 +721,7 @@ cat "$f"
     expect([results, shape], 'GRANT-REFUSE').toEqual([cases.map(([name]) => [name, 2, 0]), [2, 2, 2, 2]])
   })
 
-  it('GRANT-DOC: the list block in docs/fleet-gate.md passes the gate\'s own checks, 67 columns, the B8 base lasting', () => {
+  it('GRANT-DOC: the list block in docs/fleet-gate.md passes the gate\'s own checks, 105 columns, the B8 base lasting', () => {
     const g = grantWorld()
     g.onMain(true)
     writeFileSync(join(g.w.dir, 'doc.md'), readFileSync(join(process.cwd(), 'docs', 'fleet-gate.md'), 'utf-8'))
@@ -731,7 +731,7 @@ cat "$f"
     // ([2, 0, false, false], PR #243 job 118028152528) with no way to see which check refused the list.
     expect([r.code, new Set(pairs).size, pairs.includes("('_prisma_migrations', 'migration_name')"), pairs.includes("('NavIncomingInvoice', 'purchaseInvoiceId')")],
       `GRANT-DOC (gate stderr: ${r.err.trim().slice(0, 400) || 'empty'})`)
-      .toEqual([0, 67, true, true])
+      .toEqual([0, 105, true, true])
   })
 
   it('GRANT-STALE: an older main commit whose list a later PR changed is refused; one whose list main still holds passes', () => {
