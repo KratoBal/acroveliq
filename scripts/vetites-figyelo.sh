@@ -62,6 +62,21 @@ p = health["doseProjection"]
 if p is None:
     alarm(f"az OS nem tudta olvasni a vetites allapotat (doseProjection: null, http {code})")
 
+# The shape first (barracuda, #274): a missing or renamed key read as False would say OK on a
+# field this script does not understand, and a non-object would crash with no line. Unknown shape
+# is RIASZT. After this only checked numbers reach the line (it lands in an agent's context).
+def is_number(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+known = (
+    isinstance(p, dict)
+    and isinstance(p.get("stale"), bool)
+    and isinstance(p.get("failingSinceLastSuccess"), bool)
+    and isinstance(p.get("rowCount"), int) and not isinstance(p.get("rowCount"), bool)
+    and "ageHours" in p and (p["ageHours"] is None or is_number(p["ageHours"]))
+)
+if not known:
+    alarm(f"a doseProjection alakja ismeretlen (http {code})")
+
 reasons = []
 if p.get("failingSinceLastSuccess"):
     reasons.append("az ujraepites a legutobbi siker ota bukik")

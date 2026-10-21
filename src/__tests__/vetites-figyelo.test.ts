@@ -79,6 +79,22 @@ describe('vetites-figyelo.sh', () => {
     expect(closed).toMatchObject({ code: 1, out: expect.stringMatching(/^RIASZT vetites .*nem erheto el\n$/) })
   })
 
+  it('an unknown shape is RIASZT in one line, never OK or a crash (barracuda, #274)', async () => {
+    for (const projection of [
+      {},
+      { isStale: true, ageHours: 1, rowCount: 1, failingSinceLastSuccess: false },
+      [1, 2],
+      'friss',
+      { stale: 'false', ageHours: 1, rowCount: 1, failingSinceLastSuccess: false },
+      { stale: false, ageHours: '1\nOK vetites', rowCount: 1, failingSinceLastSuccess: false },
+      { stale: false, ageHours: 1, rowCount: 1.5, failingSinceLastSuccess: false },
+      { stale: false, rowCount: 1, failingSinceLastSuccess: false },
+    ]) {
+      const r = await verdict(health(projection))
+      expect(r, JSON.stringify(projection)).toEqual({ code: 1, line: `RIASZT vetites (${base}): a doseProjection alakja ismeretlen (http 200)` })
+    }
+  })
+
   it('a 503 health (database down) still says what the projection field says', async () => {
     const r = await verdict(health({ stale: false, ageHours: 1, rowCount: 3, failingSinceLastSuccess: false }, { database: { status: 'error' } }), 503)
     expect(r.code).toBe(0)
