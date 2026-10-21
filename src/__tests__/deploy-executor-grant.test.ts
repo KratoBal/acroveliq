@@ -373,17 +373,23 @@ describe('the compact approval text', () => {
     expect(line).toContain(`/ ${MAIN[4]} / lista abababababababab / terv cdcdcdcdcdcdcdcd / `)
   })
 
-  it("fits today's whole list: the first application of docs/fleet-gate.md, 16 tables and 67 columns, well under the category limit", () => {
-    const doc = readFileSync(join(process.cwd(), 'docs', 'fleet-gate.md'), 'utf8')
-    const block = /```fleet-ro-grant\n([\s\S]*?)```/.exec(doc)![1]!
+  // PINNED, NOT READ FROM THE LIVE DOC (2026-10-21): the executor is not in use (Balazs closed the
+  // line on 2026-10-19), and grants since then are applied by hand and only recorded in
+  // docs/fleet-gate.md. The 2026-10-21 rows took the doc to 24 tables and 105 columns, past what one
+  // compact approval text holds (1747 characters), so the live doc can no longer be the fixture.
+  // This keeps the executor's own property measured on the list it was built for.
+  it('fits the list it was built for: the 2026-10-19 block of docs/fleet-gate.md, 16 tables and 67 columns, well under the category limit', () => {
+    const block = readFileSync(join(process.cwd(), 'src', '__tests__', 'fixtures', 'fleet-ro-grant-2026-10-19.txt'), 'utf8')
     const all: PlanOp[] = []
+    const tables = new Set<string>()
     for (const row of block.split('\n')) {
       if (!row.trim() || row.startsWith('#')) continue
       const [table, cols] = row.split(' ')
+      tables.add(table!)
       for (const column of cols!.split(',')) all.push({ sign: '+', table: table!, column })
     }
-    // the control: the reading of the list found what the document has
-    expect(all.length).toBeGreaterThan(60)
+    // the control: the reading of the fixture found the list it pins
+    expect([tables.size, all.length]).toEqual([16, 67])
     const line = grantCanonicalLine({
       id: 'ABCD2345',
       env: 'prod',

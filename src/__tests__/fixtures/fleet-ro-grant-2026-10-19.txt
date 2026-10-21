@@ -1,0 +1,17 @@
+# tábla oszlopok(vesszővel) lejárat(ÉÉÉÉ-HH-NN vagy tartos) indok
+ExternalBillingDocument documentNumber,source,cancelled tartos B8 alaplista (#63): számla-párosítás
+User firstName,lastName,displayName,nickname,email tartos B8 alaplista (#63): név szerinti azonosítás
+Customer displayName,companyName,email tartos B8 alaplista (#63): vevő azonosítás
+CustomerAddress name,line1,line2 tartos B8 alaplista (#63): cím-egyezés
+Supplier name,contactPersonName,email,contactPersonEmail tartos B8 alaplista (#63): szállító azonosítás
+Contract contactPersonName,organizationalUnitName tartos B8 alaplista (#63): szerződés kapcsolattartó
+WorksheetVersionSignature signerName tartos B8 alaplista (#63): aláíró neve
+DecisionRun exposure,resolution,status,latencyMs,respondedModel,errorCode,createdAt tartos B8 alaplista: a döntési futások mérése
+_prisma_migrations migration_name,started_at,finished_at,rolled_back_at,applied_steps_count tartos B8 alaplista: migrációs állapot
+BankTransaction id,bankAccountId,bookingDate,amount,currency,counterpartyName,narrative,direction 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
+BankAccount id,name,currency 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
+IncomingBillingDocument id,issueDate,documentNumber,supplierName,source,kindCode,cancelled,currency,grossAmount,paymentsKnown,paidAmount,sourceDocumentId,externalId 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
+IncomingSupplierDocument id,payeeCheck,purchaseInvoiceId 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
+BankTransactionMatch documentId,bankTransactionId 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
+PurchaseInvoice id,invoiceDate,isPaid,status 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
+NavIncomingInvoice purchaseInvoiceId 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
