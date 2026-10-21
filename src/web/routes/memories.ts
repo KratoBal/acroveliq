@@ -45,6 +45,26 @@ function suspiciousContentLabel(content: string): string | null {
   return hit ? hit.label : null
 }
 
+/** The most memories one GET /api/memories answers. */
+export const MEMORY_LIST_MAX = 200
+
+/**
+ * THE PAGE SIZE (card 1daee3a5, measured 2026-10-21): an integer from 1 to MEMORY_LIST_MAX, 50 when
+ * absent; anything else is a 400, not a guess. Before, `Math.min(parseInt(limit), 200)` let a
+ * negative value through to SQLite, where LIMIT -1 means no limit at all (past the cap), turned
+ * "abc" into NaN (a datatype-mismatch error) and "1e3" into 1. Above the cap the answer is still
+ * capped, as the callers expect, but no longer silently: the X-Limit-Capped header says so.
+ */
+export function parseMemoryLimit(raw: string | null): { limit: number; capped: boolean } | { error: string } {
+  const value = raw?.trim() ?? ''
+  if (value === '') return { limit: 50, capped: false }
+  if (!/^[0-9]+$/.test(value) || Number(value) < 1) {
+    return { error: `limit must be a whole number from 1 to ${MEMORY_LIST_MAX} (got ${JSON.stringify(raw)})` }
+  }
+  const n = Number(value)
+  return n > MEMORY_LIST_MAX ? { limit: MEMORY_LIST_MAX, capped: true } : { limit: n, capped: false }
+}
+
 export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -89,7 +109,13 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     }
     const agentId = url.searchParams.get('agent') || agentIdAlias || ''
     const tier = url.searchParams.get('tier') || url.searchParams.get('category') || ''
-    const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
+    const parsedLimit = parseMemoryLimit(url.searchParams.get('limit'))
+    if ('error' in parsedLimit) {
+      json(res, { error: parsedLimit.error }, 400)
+      return true
+    }
+    const { limit } = parsedLimit
+    if (parsedLimit.capped) res.setHeader('X-Limit-Capped', String(MEMORY_LIST_MAX))
     const mode = url.searchParams.get('mode') || 'fts'
 
     let results: Memory[]
