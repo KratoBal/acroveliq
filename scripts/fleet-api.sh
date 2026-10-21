@@ -1317,6 +1317,13 @@ d = json.load(sys.stdin)
 # egy nem letezo azonositoval: az elso alak egy KITALALT sort irt ki (None -> None) es
 # 0-val tert vissza. A "status" megletet kerjuk, mert azt csak valodi sor viseli.
 m = d if isinstance(d, dict) and d.get("id") == mid and d.get("status") and not d.get("error") else None
+# A 403 NEM "nincs ilyen" (kartya 9bf16d71, P0-1). Egy alagens tokenjevel a mas ket agens kozti
+# uzenet nem a hivo sajatja, es a kikenyszerites 403-at ad ra. Addig ez az ag azt irta ki, hogy
+# "nincs ilyen uzenet": egy letezo, akar kezbesitett uzenetrol. Ugyanugy kell mondani, mint a
+# message-read: nem a tied (a kikenyszerito allasban a nem letezo uzenet is ide jut).
+if m is None and isinstance(d, dict) and d.get("error") == "Forbidden":
+    print("FAIL: a %d uzenet nem a tied, vagy nem letezik (403: %s). A kezbesitest a felado vagy a cimzett kerdezheti le." % (mid, d.get("reason", "")))
+    raise SystemExit(1)
 if m is None:
     print("FAIL: nincs %d azonositoju uzenet (a szerver valasza: %s)" % (mid, json.dumps(d)[:200]))
     raise SystemExit(1)
