@@ -6,3 +6,10 @@
 40 3 * * * /home/marveen/marveen/scripts/mentes-cron.sh fleet
 30 4 * * * /home/marveen/marveen/scripts/mentes-cron.sh ai
 30 5 * * 0 /home/marveen/marveen/scripts/mentes-cron.sh proba
+# Idle-path channel keepalive (no systemd in the container, so the .timer never runs). Without
+# it a quiet night leaves store/.channel-keepalive stale and the watchdog respawns the main
+# session every 15-20 min (measured 2026-10-17 00:34-02:46, five fresh sessions).
+*/3 * * * * /home/marveen/marveen/scripts/channel-keepalive-probe.sh >/dev/null 2>&1
+# Sutyerák production gateway keepalive (loopback 3430). Lost in a container recreate
+# and nothing restored it: staff got "Sutyerák most nem tud válaszolni" (measured 2026-10-21).
+* * * * * /home/marveen/sutyerak/run-gateway.sh
