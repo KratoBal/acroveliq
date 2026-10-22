@@ -43,10 +43,13 @@ function installRoot(): string {
   const root = mkdtempSync(join(tmpdir(), 'mv-toollog-'))
   mkdirSync(join(root, 'scripts', 'hooks'), { recursive: true })
   mkdirSync(join(root, 'scripts', 'lib'), { recursive: true })
-  mkdirSync(join(root, 'store'), { recursive: true })
+  mkdirSync(join(root, 'store', 'tokens'), { recursive: true })
   for (const f of ['tool-log-capture.py', 'ledger_lib.py']) copyFileSync(join(REPO, 'scripts', 'hooks', f), join(root, 'scripts', 'hooks', f))
   copyFileSync(join(REPO, 'scripts', 'lib', 'dashboard_token.py'), join(root, 'scripts', 'lib', 'dashboard_token.py'))
-  writeFileSync(join(root, 'store', '.dashboard-token'), 'test-token\n', { mode: 0o600 })
+  // the hook presents the main agent's OWN token and never the shared one (P0-1): .env names the main agent
+  writeFileSync(join(root, '.env'), 'MAIN_AGENT_ID=proba-fo\n')
+  writeFileSync(join(root, 'store', 'tokens', 'proba-fo.token'), 'test-token\n', { mode: 0o600 })
+  writeFileSync(join(root, 'store', '.dashboard-token'), 'KOZOS-NEM-HASZNALT\n', { mode: 0o600 })
   return root
 }
 

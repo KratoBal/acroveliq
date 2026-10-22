@@ -63,6 +63,47 @@ def _install_dir():
     return os.path.dirname(os.path.dirname(here))
 
 
+HOOK_FAILURE_LOG = ".hook-token-failures.log"
+
+
+def hook_token_failure(hook, why, agent_id=None):
+    """Record, at most once a day per hook and reason, that a hook had no own dashboard token.
+
+    A hook that cannot present its OWN token skips its work (it must not stop the agent, and it must never
+    fall back to the shared token), but the skip must not be silent. A telemetry hook runs on every tool call,
+    so a line in the agent's context would be noise: it goes to a log file instead, one line a day. The file
+    is in the agent's own directory (agents/<id>/, which the agent's user writes and the fleet group reads),
+    or in store/ for the main agent. Never raises, never follows a link.
+    """
+    try:
+        install = _install_dir()
+        main = main_agent_id()
+        candidates = []
+        if agent_id and agent_id != main:
+            candidates.append(os.path.join(install, "agents", agent_id))
+        candidates.append(os.path.join(install, "store"))
+        directory = next((d for d in candidates if os.path.isdir(d) and os.access(d, os.W_OK)), None)
+        if directory is None:
+            return
+        path = os.path.join(directory, HOOK_FAILURE_LOG)
+        stamp = time.strftime("%Y-%m-%d")
+        tail = " %s %s" % (hook, why)
+        try:
+            import stat as _stat
+            if not _stat.S_ISREG(os.lstat(path).st_mode):
+                return
+            with open(path, encoding="utf-8", errors="replace") as f:
+                if any(l.startswith(stamp) and l.rstrip("\n").endswith(tail) for l in f):
+                    return
+        except OSError:
+            pass  # no file yet (or unreadable): write the line
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o640)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("%s %s %s\n" % (time.strftime("%Y-%m-%d %H:%M"), hook, why))
+    except Exception:
+        return
+
+
 def main_agent_id():
     v = os.environ.get("MAIN_AGENT_ID")
     if v:
