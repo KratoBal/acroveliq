@@ -53,19 +53,11 @@ import json
 import unicodedata
 from datetime import datetime
 
-# the calling user's own dashboard token if handed out, else the shared one,
-# loudly (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py). Defensive:
-# a hook run from elsewhere falls back to the shared path instead of failing.
-def _dashboard_token_file(root):
-    try:
-        import sys as _sys
-        _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
-        if _lib not in _sys.path:
-            _sys.path.insert(0, _lib)
-        from dashboard_token import token_file
-        return token_file(root)
-    except Exception:
-        return os.path.join(root, "store", ".dashboard-token")
+# THIS GATE USES NO DASHBOARD TOKEN, and must not appear to (P0-1, task p01-csendes-visszaeso-hivok, 3/4).
+# It makes no API call: whether to flag depends only on the prompt, the rules file and the install's .env. It used to
+# resolve a token FILE PATH through the shared fallback and print `curl ... $(cat <that path>)` into the directive
+# when the fleet lead could not be resolved, which handed an agent the path of the SHARED token as a thing to read.
+# The directive now names the helper that resolves the agent's own token itself, and no token path at all.
 
 # --- provenance envelopes -------------------------------------------------
 # Substring markers, matched against the RAW prompt. Presence of any one means
@@ -304,8 +296,7 @@ def directive(labels):
     # Resolved per install, not hardcoded: this repo is shared across
     # deployments and the agent id, port and install path all differ.
     lead, lead_resolved = _lead_agent()
-    port = _env_setting("WEB_PORT", "3420")
-    token = _dashboard_token_file(_install_dir())
+    lister = os.path.join(_install_dir(), "seed-skills", "fleet-helper", "scripts", "fleet.py")
     helper = os.path.join(_install_dir(), "scripts", "agent-msg.sh")
     if lead_resolved:
         step3 = (
@@ -320,9 +311,8 @@ def directive(labels):
             "   A CIMZETTET EBBOL A SESSIONBOL NEM TUDOM FELOLDANI (a MAIN_AGENT_ID-t hordozo "
             ".env nem olvashato innen). NE TALALJ KI NEVET: egy nem letezo cimzettre kuldott "
             "uzenet `OK id=<n>` valaszt kap, `pending` marad, es SENKIHEZ nem jut el. Eloszor "
-            "kerd le a letezo agenseket:\n"
-            f"   curl -s -H \"Authorization: Bearer $(cat {token})\" "
-            f"http://localhost:{port}/api/agents\n"
+            "kerd le a letezo agenseket (a helper a SAJAT tokenjeddel hivja, tokent nem kell olvasnod):\n"
+            f"   python3 {lister} agents\n"
             f"   majd: bash {helper} <sajat-agent-id> <a flotta-vezeto> - < <fajl>\n"
         )
     return (

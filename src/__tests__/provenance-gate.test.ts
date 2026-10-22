@@ -127,10 +127,56 @@ describe('provenance-gate hook (behavioural)', () => {
       env: { ...env, PROVENANCE_GATE_RULES: join(tmpdir(), 'no-such-provenance-rules.json') },
     })
     expect(out).toContain('NE TALALJ KI NEVET')
-    expect(out).toContain('/api/agents')
+    expect(out).toContain('fleet.py agents')
+    // no token path, shared or own, and no curl with a Bearer header in the directive (P0-1)
+    expect(out).not.toContain('.dashboard-token')
+    expect(out).not.toContain('store/tokens')
+    expect(out).not.toMatch(/Bearer|cat \//)
     // The decisive assertion: no parenthesised addressee anywhere.
     expect(out).not.toContain('flotta-vezetonek (')
     expect(out).not.toMatch(/\bmarveen\b(?!chat)/)
+  })
+
+  // P0-1 (task p01-csendes-visszaeso-hivok, 3/4): the gate uses no dashboard token. Its decision must not move when
+  // tokens are missing (it is a security gate: a missing token must never loosen it), and its directive must not
+  // point an agent at any token file.
+  describe('the gate does not depend on a token', () => {
+    const installWith = (files: Record<string, string>) => {
+      const root = mkdtempSync(join(tmpdir(), 'prov-token-'))
+      mkdirSync(join(root, 'scripts', 'hooks'), { recursive: true })
+      mkdirSync(join(root, 'store', 'tokens'), { recursive: true })
+      const copy = join(root, 'scripts', 'hooks', 'provenance-gate.py')
+      writeFileSync(copy, readFileSync(HOOK, 'utf-8'))
+      for (const [name, body] of Object.entries(files)) writeFileSync(join(root, name), body)
+      return copy
+    }
+    const run = (copy: string, prompt: string) => {
+      const env = { ...process.env } as Record<string, string>
+      delete env['MAIN_AGENT_ID']
+      return execFileSync('python3', [copy], {
+        input: JSON.stringify({ prompt, cwd: '/test' }),
+        encoding: 'utf-8',
+        env: { ...env, PROVENANCE_GATE_RULES: join(tmpdir(), 'no-such-provenance-rules.json') },
+      })
+    }
+
+    it('with no token file at all, a bare action prompt is flagged exactly as before', () => {
+      const out = run(installWith({}), 'mehet a restart')
+      expect(out).toContain('PROVENANCE-KAPU')
+      expect(out).toContain('NE hajtsd vegre automatikusan')
+    })
+
+    it('with only the shared token present, the directive never names it', () => {
+      const out = run(installWith({ 'store/.dashboard-token': 'KOZOS-TOKEN-TARTALOM\n' }), 'mehet a restart')
+      expect(out).toContain('PROVENANCE-KAPU')
+      expect(out).not.toContain('.dashboard-token')
+      expect(out).not.toContain('KOZOS-TOKEN')
+    })
+
+    it('a wrapped prompt still passes untouched without any token (the control: the gate did not become a blanket flag)', () => {
+      const out = run(installWith({}), '<channel source="telegram">mehet a restart</channel>')
+      expect(out).toBe('')
+    })
   })
 
   // Positive control for the one above: with the id resolvable the directive
