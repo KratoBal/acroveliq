@@ -5,7 +5,8 @@ WHAT TURNS THIS RED:
   1. with an own token for the calling user, the header carries the shared one;
   2. without one, the header is empty or the fallback is silent (no stderr line);
   3. an empty or missing token gives a header with no token, or exit 0;
-  4. the token appears on stderr.
+  4. the token appears on stderr;
+  5. the Sutyerak gateway's handoff token file is the shared one again, or its URL moved.
 Run: python3 -B <thisfile>   Exit 0 = all pass. Runs with a fake FLEET_ROOT, no real token.
 """
 import getpass
@@ -94,6 +95,37 @@ probe = ("import importlib.util,sys;"
 r = subprocess.run([sys.executable, '-B', '-c', probe, os.path.join(REPO, 'seed-skills', 'fleet-helper', 'scripts', 'fleet.py')],
                    env=dict(os.environ, CLAW_DIR=root), capture_output=True, text=True, timeout=30)
 check('fleet.py token() is the own token', r.stdout.strip() == 'SAJAT-PROBA-TOKEN', r.stdout + r.stderr)
+shutil.rmtree(root)
+
+print('5. the Sutyerak gateway posts its handoff with the main agent\'s OWN token, not the shared one (p01-legacy-uzenet-hivo)')
+GW_PROBE = ("import importlib.util,sys,os;"
+            "os.environ['SUTYERAK_STATE']=sys.argv[2];"
+            "s=importlib.util.spec_from_file_location('gw',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
+            "e=m.mcp_env({'threadId':'t1'},{'token':'x','user':{'id':'u1','name':'n'}});"
+            "print(e['SUTYERAK_HANDOFF_TOKEN_FILE']);print(e['SUTYERAK_HANDOFF_URL'])")
+
+
+def gateway_env(own):
+    root = fake_root(own=own)
+    os.makedirs(os.path.join(root, 'sutyerak'))
+    shutil.copy(os.path.join(REPO, 'sutyerak', 'gateway.py'), os.path.join(root, 'sutyerak'))
+    shutil.copy(os.path.join(REPO, 'scripts', 'lib', 'dashboard_token.py'), os.path.join(root, 'scripts', 'lib'))
+    state = tempfile.mkdtemp(prefix='sutyerak-state-')
+    r = subprocess.run([sys.executable, '-B', '-c', GW_PROBE, os.path.join(root, 'sutyerak', 'gateway.py'), state],
+                       capture_output=True, text=True, timeout=30)
+    shutil.rmtree(state)
+    return root, r
+
+
+root, r = gateway_env('SAJAT-PROBA-TOKEN')
+lines = r.stdout.split()
+check('the handoff token file is the own token file', lines[:1] == [os.path.join(root, 'store', 'tokens', 'probaagens.token')], r.stdout + r.stderr)
+check('the handoff URL is unchanged', lines[1:] == ['http://localhost:3420/api/messages'], r.stdout)
+check('no fallback line with an own token', 'shared token' not in r.stderr, r.stderr)
+shutil.rmtree(root)
+root, r = gateway_env(None)
+check('no own token: the shared file, and the fallback is said on stderr',
+      r.stdout.split()[:1] == [os.path.join(root, 'store', '.dashboard-token')] and 'shared token' in r.stderr, r.stdout + r.stderr)
 shutil.rmtree(root)
 
 print()
