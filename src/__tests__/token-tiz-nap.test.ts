@@ -93,7 +93,12 @@ let lastAuth = ''
 
 beforeAll(async () => {
   mkdirSync(join(root, 'store'), { recursive: true })
-  writeFileSync(join(root, 'store', '.dashboard-token'), 'test-token')
+  // the caller is the install's owner here, so the resolver needs the main agent's name and its own token file
+  // (scripts/lib/dashboard_token.py: no .env or no own token is an error, not a shared-token fallback)
+  writeFileSync(join(root, '.env'), 'MAIN_AGENT_ID=proba-fo\n')
+  mkdirSync(join(root, 'store', 'tokens'), { recursive: true })
+  writeFileSync(join(root, 'store', 'tokens', 'proba-fo.token'), 'test-token')
+  writeFileSync(join(root, 'store', '.dashboard-token'), 'KOZOS-NEM-HASZNALT')
   server = createServer((req, res) => {
     lastAuth = String(req.headers.authorization ?? '')
     const url = req.url ?? ''

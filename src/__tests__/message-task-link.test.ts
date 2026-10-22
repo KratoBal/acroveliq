@@ -140,6 +140,11 @@ describe('agent-msg.sh --task', () => {
     const repo = join(__dirname, '..', '..', 'scripts')
     for (const f of ['agent-msg.sh', 'local-now.sh', 'lib/dashboard-token.sh']) cpSync(join(repo, f), join(base, 'scripts', f))
     writeFileSync(join(base, 'store', '.dashboard-token'), 'proba-token\n', { mode: 0o600 })
+    // the caller is the install's owner here: the resolver needs the main agent's name and its own token file
+    // (scripts/lib/dashboard-token.sh: no .env or no own token is an error, not a shared-token fallback)
+    writeFileSync(join(base, '.env'), 'MAIN_AGENT_ID=proba-fo\n')
+    mkdirSync(join(base, 'store', 'tokens'))
+    writeFileSync(join(base, 'store', 'tokens', 'proba-fo.token'), 'proba-token\n', { mode: 0o600 })
     server = createServer((req, res) => {
       let body = ''
       req.on('data', (c: Buffer) => (body += c.toString()))

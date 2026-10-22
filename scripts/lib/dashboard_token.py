@@ -3,8 +3,18 @@
 The same rule as scripts/lib/dashboard-token.sh, for the Python hooks: the agent
 is the CALLING OS USER's (an agent's runAsUser, or the main agent for the
 install's owner), never a name the caller passes; its token is
-store/tokens/<agent>.token. No readable per-agent token: the shared
-store/.dashboard-token, with one line on stderr, never a stop.
+store/tokens/<agent>.token.
+
+THREE CASES, and they are not the same (P0-1, task p01-legacy-uzenet-hivo, acrobot 35206):
+  - an AGENT's caller (its runAsUser, or the install's owner = the main agent) whose own token is missing,
+    unreadable or empty: DashboardTokenError. That is a provisioning fault, and falling back to the shared
+    token only hid it (the call then went out as "legacy" and, once the shared token is narrowed, was refused);
+  - the install's owner while .env is unreadable or has no MAIN_AGENT_ID: DashboardTokenError. The old
+    default "marveen" has no token file, so such a process silently used the shared token;
+  - a caller that is no agent at all (root, cron, an unknown user): the shared store/.dashboard-token with one
+    line on stderr, as before, until the scripts that legitimately use it (docs/b28-titok-kivetel.md) are moved.
+The error message is also written to stderr before it is raised, so a caller that swallows the exception
+(several hooks do, `except Exception`) is no longer silent about it.
 """
 import glob
 import json
@@ -16,16 +26,27 @@ import sys
 AGENT_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
+class DashboardTokenError(OSError):
+    """An agent's own token cannot be used. NOT a reason to fall back to the shared token."""
+
+
+def _fail(message):
+    full = "dashboard-token: " + message
+    print(full, file=sys.stderr)
+    raise DashboardTokenError(full)
+
+
 def _main_agent(root):
+    """MAIN_AGENT_ID from .env, or None when .env is unreadable or does not name one."""
     try:
         with open(os.path.join(root, ".env"), encoding="utf-8") as f:
             for line in f:
                 if line.startswith("MAIN_AGENT_ID="):
                     value = line.split("=", 1)[1].strip().strip("'\"")
-                    return value or "marveen"
+                    return value or None
     except OSError:
         pass
-    return "marveen"
+    return None
 
 
 def token_agent(root, user):
@@ -41,11 +62,17 @@ def token_agent(root, user):
         except (OSError, ValueError):
             continue
     try:
-        if os.stat(os.path.join(root, "store")).st_uid == os.geteuid():
-            main = _main_agent(root)
-            return main if AGENT_NAME.match(main) else None
+        owner = os.stat(os.path.join(root, "store")).st_uid == os.geteuid()
     except OSError:
-        pass
+        owner = False
+    if owner:
+        main = _main_agent(root)
+        if main is None:
+            _fail(
+                "this process runs as the install's owner but %s/.env is unreadable or has no MAIN_AGENT_ID: "
+                "refusing to guess the main agent (the old default had no token file)" % root
+            )
+        return main if AGENT_NAME.match(main) else None
     return None
 
 
@@ -64,18 +91,24 @@ def token_file(root, user=None):
         path = os.path.join(root, "store", "tokens", agent + ".token")
         if os.access(path, os.R_OK) and os.path.getsize(path) > 0:
             return path
+    if agent:
+        _fail(
+            "the own token of agent %s (user %s) is missing, unreadable or empty (%s): the shared token is NOT "
+            "used for an agent; ask the main agent to issue it (scripts/issue-agent-token.ts)"
+            % (agent, user or "?", path)
+        )
     print(
-        "dashboard-token: no readable per-agent token for user %s (agent %s), using the shared token"
-        % (user or "?", agent or "?"),
+        "dashboard-token: no agent for user %s, using the shared token" % (user or "?"),
         file=sys.stderr,
     )
     return os.path.join(root, "store", ".dashboard-token")
 
 
 def read_token(root, user=None):
-    """The token itself, stripped; '' when unreadable."""
+    """The token itself, stripped; '' when the file cannot be read. DashboardTokenError is NOT swallowed."""
+    path = token_file(root, user)
     try:
-        with open(token_file(root, user), encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return f.read().strip()
     except OSError:
         return ""

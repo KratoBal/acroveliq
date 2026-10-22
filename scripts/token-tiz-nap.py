@@ -241,7 +241,11 @@ def main(argv=None):
     sys.path.insert(0, os.path.join(HERE, 'lib'))
     from dashboard_token import read_token
     # the install whose store/tokens holds the caller's token (CLAW_DIR, like fleet.py); default: this checkout
-    token = read_token(os.environ.get('CLAW_DIR', os.path.dirname(HERE)))
+    try:
+        token = read_token(os.environ.get('CLAW_DIR', os.path.dirname(HERE)))
+    except OSError as e:  # DashboardTokenError: the resolver has said why on stderr
+        print(f'FAIL: nincs használható saját dashboard-token: {e}', file=sys.stderr)
+        return 3
     base = os.environ.get('CLAW_BASE', 'http://localhost:' + os.environ.get('MARVEEN_WEB_PORT', '3420')).rstrip('/')
     try:
         tasks = [t for t in _get(base, token, '/api/tasks') if tol <= (t.get('created_at') or 0) < ig]

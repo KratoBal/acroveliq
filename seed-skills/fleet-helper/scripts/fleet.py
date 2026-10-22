@@ -198,4 +198,11 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except OSError as e:
+        # an agent's own dashboard token is unusable (scripts/lib/dashboard_token.py DashboardTokenError): the
+        # resolver has already said why on stderr; no traceback, and NO fall back to the shared token
+        if e.__class__.__name__ == "DashboardTokenError":
+            sys.exit(2)
+        raise
