@@ -29,7 +29,7 @@ import time
 import urllib.request
 
 ROOT = os.environ.get("FLEET_ROOT", "/home/marveen/marveen")
-DASH = "http://localhost:3420"
+DASH = os.environ.get("FLEET_DASH", "http://localhost:3420")
 OUT = os.path.join(ROOT, "docs", "FLOTTA-ALLAPOT.md")
 
 
@@ -45,25 +45,32 @@ def git(*args):
     return run(["git", "-C", ROOT] + list(args))[1]
 
 
-def _token_file():
-    # the calling user's own dashboard token if handed out, else the shared one,
-    # loudly (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py)
+def _own_token():
+    """(token, None) of the caller's OWN token, or (None, why). Never the shared one (P0-1, 4/4)."""
     try:
         lib = os.path.join(ROOT, "scripts", "lib")
         if lib not in sys.path:
             sys.path.insert(0, lib)
-        from dashboard_token import token_file
-        return token_file(ROOT)
-    except Exception:
-        return os.path.join(ROOT, "store", ".dashboard-token")
+        from dashboard_token import own_token
+        return own_token(ROOT)
+    except Exception as e:
+        return None, "the token resolver could not be loaded (%s)" % type(e).__name__
+
+
+_WHY = [None]  # why the last api() call returned nothing: a missing token is not "the dashboard did not answer"
 
 
 def api(path):
+    """The parsed answer, or None with the reason in _WHY. The caller's OWN token only, never the shared one."""
+    tok, why = _own_token()
+    if not tok:
+        _WHY[0] = why
+        return None
     try:
-        tok = open(_token_file()).read().strip()
         req = urllib.request.Request(DASH + path, headers={"Authorization": "Bearer " + tok})
         return json.load(urllib.request.urlopen(req, timeout=10))
-    except Exception:
+    except Exception as e:
+        _WHY[0] = "the dashboard did not answer (%s)" % type(e).__name__
         return None
 
 
@@ -194,6 +201,10 @@ def section_autoupdate():
         except Exception:
             readable = False
 
+    if d is None:
+        L += ["**Nem tudom megmondani:** a vezérlőpult ütemezései nem olvashatók (%s). Ez nem azt jelenti," % _WHY[0],
+              "hogy nincs `auto-update` feladat.", ""]
+        return L
     if task is None:
         L += ["Ütemezett `auto-update` feladat nincs, vagy a vezérlőpult nem válaszolt.", ""]
         return L
@@ -221,6 +232,10 @@ def section_scheduled():
     L = ["## Ütemezett feladatok", ""]
     d = api("/api/schedules")
     rows = d if isinstance(d, list) else (d or {}).get("schedules", [])
+    if d is None:
+        L += ["**Nem tudom megmondani:** a vezérlőpult ütemezései nem olvashatók (%s). Ez **nem** azt" % _WHY[0],
+              "jelenti, hogy nincs ütemezett feladat.", ""]
+        return L
     if not rows:
         L += ["A vezérlőpult nem válaszolt, vagy nincs ütemezett feladat. Ez **nem** azt",
               "jelenti, hogy nincs: a lekérdezés hibája is ide vezet.", ""]

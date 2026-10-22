@@ -336,6 +336,20 @@ if short:
   kanban-list)
     get /kanban
     ;;
+  agents)
+    # The registered agents, one per line: name, running, model (GET /api/agents, open to every caller; the helper
+    # presents the caller's OWN token). The provenance gate's directive points here when it cannot name the fleet lead,
+    # so an agent can ask in an already permitted form instead of reading a token file (P0-1, 4/4).
+    argc_max 0 "$#" "fleet-api.sh agents"
+    get /agents | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+rows = d if isinstance(d, list) else d.get("agents", [])
+if not isinstance(rows, list):
+    print("FAIL: %s" % json.dumps(d)[:200]); raise SystemExit(1)
+for a in rows:
+    print("%s\t%s\t%s" % (a.get("name"), "running" if a.get("running") else "stopped", a.get("model") or "-"))'
+    ;;
   handoff-write)
     # A STRUKTURALT FELADATATADAS IRASA (acrovelIQ token-brief, 3. pont). A rekord
     # JSON, FAJLBOL, atiranyitassal: a szoveg dontest, tilalmat es kodallapotot
@@ -1571,7 +1585,7 @@ if d.get("action_description"):
 '
     ;;
   *)
-    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|kanban-keres|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-comment|kanban-comments|kanban-archive|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart|kiadas|deployed|task-project|project-repo)"
+    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|agents|kanban-keres|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-comment|kanban-comments|kanban-archive|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart|kiadas|deployed|task-project|project-repo)"
     exit 1
     ;;
 esac

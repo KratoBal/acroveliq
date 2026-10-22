@@ -48,11 +48,18 @@ set -uo pipefail
 
 # an explicit MARVEEN_TOKEN_FILE wins; otherwise the calling user's own token (P0-1, plan 5.2)
 TL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [ -z "${MARVEEN_TOKEN_FILE:-}" ] && [ -r "$TL_ROOT/scripts/lib/dashboard-token.sh" ]; then
-  . "$TL_ROOT/scripts/lib/dashboard-token.sh"
-  MARVEEN_TOKEN_FILE="$(dashboard_token_file "$TL_ROOT")"
+if [ -z "${MARVEEN_TOKEN_FILE:-}" ]; then
+  if [ -r "$TL_ROOT/scripts/lib/dashboard-token.sh" ]; then
+    . "$TL_ROOT/scripts/lib/dashboard-token.sh"
+    # an error from the resolver (an agent without its own token) must STOP this script: an empty result used
+    # to fall through the :- below to the shared token
+    MARVEEN_TOKEN_FILE="$(dashboard_token_file "$TL_ROOT")" || { echo "FAIL: nincs hasznalhato sajat token (a kozos tokent nem hasznalom)" >&2; exit 1; }
+  else
+    echo "dashboard-token: scripts/lib/dashboard-token.sh missing, using the shared token" >&2
+    MARVEEN_TOKEN_FILE="$TL_ROOT/store/.dashboard-token"
+  fi
 fi
-TOKEN_FILE="${MARVEEN_TOKEN_FILE:-$TL_ROOT/store/.dashboard-token}"
+TOKEN_FILE="$MARVEEN_TOKEN_FILE"
 PORT="${MARVEEN_WEB_PORT:-3420}"
 
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: nincs olvashato token: $TOKEN_FILE" >&2; exit 1; }

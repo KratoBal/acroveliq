@@ -296,7 +296,7 @@ def directive(labels):
     # Resolved per install, not hardcoded: this repo is shared across
     # deployments and the agent id, port and install path all differ.
     lead, lead_resolved = _lead_agent()
-    lister = os.path.join(_install_dir(), "seed-skills", "fleet-helper", "scripts", "fleet.py")
+    lister = os.path.join(_install_dir(), "scripts", "fleet-api.sh")
     helper = os.path.join(_install_dir(), "scripts", "agent-msg.sh")
     if lead_resolved:
         step3 = (
@@ -312,7 +312,7 @@ def directive(labels):
             ".env nem olvashato innen). NE TALALJ KI NEVET: egy nem letezo cimzettre kuldott "
             "uzenet `OK id=<n>` valaszt kap, `pending` marad, es SENKIHEZ nem jut el. Eloszor "
             "kerd le a letezo agenseket (a helper a SAJAT tokenjeddel hivja, tokent nem kell olvasnod):\n"
-            f"   python3 {lister} agents\n"
+            f"   bash {lister} agents\n"
             f"   majd: bash {helper} <sajat-agent-id> <a flotta-vezeto> - < <fajl>\n"
         )
     return (

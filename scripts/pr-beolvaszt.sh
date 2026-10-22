@@ -371,19 +371,17 @@ for _jel in ('NE OLVASZD BE', 'DO NOT MERGE', '[WIP]', 'NE OLVASSZ'):
 # nem a MEGITELES.
 def _jeloltek_kiir(_sha, _push_epoch):
     try:
-        # a hivo sajat tokenje, ha van, kulonben a kozos, hangosan (P0-1, terv 5.2)
-        _tf = '/home/marveen/marveen/store/.dashboard-token'
-        try:
-            sys.path.insert(0, '/home/marveen/marveen/scripts/lib')
-            from dashboard_token import token_file as _token_file
-            _tf = _token_file('/home/marveen/marveen')
-        except Exception:
-            pass
-        with open(_tf) as _f:
-            _tok = _f.read().strip()
+        # a hivo SAJAT tokenje, a kozos soha (P0-1, 4/4): ha nincs, a kereso ezt mondja ki, es a kezi indok marad
+        _root = os.environ.get('PR_BEOLVASZT_ROOT', '/home/marveen/marveen')
+        sys.path.insert(0, _root + '/scripts/lib')
+        from dashboard_token import own_token as _own_token
+        _tok, _why = _own_token(_root)
+        if not _tok:
+            print('   (a jelolt-kereso nem ert el az uzenetsorhoz: %s -- a kezi indok marad)' % _why)
+            return
         _r = subprocess.run(
             ['curl', '-s', '-m', '10', '-H', '@-',
-             'http://localhost:3420/api/messages?limit=120'],
+             'http://localhost:%s/api/messages?limit=120' % os.environ.get('MARVEEN_WEB_PORT', '3420')],
             input='Authorization: Bearer ' + _tok + '\n', capture_output=True, text=True)
         _d = json.loads(_r.stdout)
         _ms = _d if isinstance(_d, list) else _d.get('messages', [])

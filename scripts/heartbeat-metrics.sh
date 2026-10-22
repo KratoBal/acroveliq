@@ -64,25 +64,20 @@ def err(section, reason):
     print('ERROR %s: %s' % (section, reason))
     fail = 1
 
-# the calling user's own token if handed out, else the shared one, loudly
-# (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py)
+# The calling user's OWN token, never the shared one (acrovelIQ P0-1, task p01-csendes-visszaeso-hivok, 4/4).
+# This instrument is fail-closed: without an own token it prints an ERROR line with the reason and exits
+# non-zero, so a round reads "instrument failure", not a quiet success. The shared token is no fallback:
+# /api/kanban/heartbeat-summary is closed to it under enforcement.
 root = os.path.dirname(os.path.abspath(store))
-token_path = os.path.join(store, '.dashboard-token')
-try:
-    sys.path.insert(0, os.path.join(os.environ['CLAW_ROOT'], 'scripts', 'lib'))
-    from dashboard_token import token_file
-    own = token_file(root)
-    # only a per-agent token; the fallback stays the given store's shared one
-    if os.path.basename(os.path.dirname(own)) == 'tokens':
-        token_path = own
-except Exception:
-    pass
 tok = None
 try:
-    with open(token_path) as f:
-        tok = f.read().strip()
-except OSError as e:
-    err('token', 'cannot read %s: %s' % (os.path.basename(token_path), e))
+    sys.path.insert(0, os.path.join(os.environ['CLAW_ROOT'], 'scripts', 'lib'))
+    from dashboard_token import own_token
+    tok, why = own_token(root)
+except Exception as e:
+    why = 'the token resolver could not be loaded (%s)' % type(e).__name__
+if tok is None:
+    err('token', why)
 
 def get(path):
     req = urllib.request.Request(

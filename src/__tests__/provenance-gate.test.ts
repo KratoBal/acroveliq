@@ -127,7 +127,7 @@ describe('provenance-gate hook (behavioural)', () => {
       env: { ...env, PROVENANCE_GATE_RULES: join(tmpdir(), 'no-such-provenance-rules.json') },
     })
     expect(out).toContain('NE TALALJ KI NEVET')
-    expect(out).toContain('fleet.py agents')
+    expect(out).toContain('fleet-api.sh agents')
     // no token path, shared or own, and no curl with a Bearer header in the directive (P0-1)
     expect(out).not.toContain('.dashboard-token')
     expect(out).not.toContain('store/tokens')
