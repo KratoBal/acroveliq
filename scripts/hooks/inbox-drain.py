@@ -21,18 +21,22 @@ shared token (docs/access-matrix.md, column L). It used to fall back to the shar
 access mode enforces, a missing own token or any refused call would have stopped every inter-agent message
 without a sound. Now: no own token, or a drain that does not succeed -> the hook still exits 0 and does not
 block, but writes ONE line into the agent's context ("the inbox is not arriving: <why>") at most every
-NOTICE_SECONDS, so the main agent KNOWS. The line never carries the token or the URL.
+NOTICE_SECONDS (marker in the install's own store/), so the main agent KNOWS. The line never carries the token or the URL.
 """
 import sys
 import os
 import json
-import tempfile
+import stat
 import time
 import urllib.error
 import urllib.request
 
 # how often the "the inbox is not arriving" line may repeat (the hook runs on every prompt)
 NOTICE_SECONDS = 600
+# its marker lives in the install's store/, which only the install's owner (the main agent's user) can write: a marker in
+# the shared temp dir could be pre-created and kept fresh by any other agent's user, which would mute the notice for good
+# (barracuda on #288)
+NOTICE_MARKER = os.path.join("store", ".inbox-drain-notice")
 
 def _own_token_path(root):
     """(path, None) of the main agent's OWN token file, or (None, why). Never the shared file.
@@ -56,21 +60,28 @@ def _own_token_path(root):
     return path, None
 
 
-def _notice(why):
-    """One line into the agent's context, at most every NOTICE_SECONDS. Hook stdout is prepended to the prompt."""
-    marker = os.path.join(tempfile.gettempdir(), "inbox-drain-notice-%d" % os.geteuid())
+def _marker_fresh(marker):
+    """True only for a REGULAR file (not a link, not a directory) younger than NOTICE_SECONDS."""
     try:
-        if time.time() - os.path.getmtime(marker) < NOTICE_SECONDS:
-            return
+        st = os.lstat(marker)
     except OSError:
-        pass
+        return False
+    return stat.S_ISREG(st.st_mode) and time.time() - st.st_mtime < NOTICE_SECONDS
+
+
+def _notice(why, root):
+    """One line into the agent's context, at most every NOTICE_SECONDS. Hook stdout is prepended to the prompt."""
+    marker = os.path.join(root, NOTICE_MARKER)
+    if _marker_fresh(marker):
+        return
     try:
-        with open(marker, "w"):
-            pass
+        # O_NOFOLLOW: a link planted at the marker is never written through
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        os.close(fd)
     except OSError:
         pass  # no marker: the line may repeat, which is the safe side
     sys.stdout.write("[inbox-drain] A bejovo inter-agent uzenetek NEM erkeznek ebben a fordulon: %s. "
-                     "Jelezd Balazsnak vagy a vezerlopulton ellenorizd (ez a sor legfeljebb %d percenkent ismetlodik).\n"
+                     "Rogzitsd a vezerlopulton (kartya vagy naplo); ez a sor legfeljebb %d percenkent ismetlodik.\n"
                      % (why, NOTICE_SECONDS // 60))
 
 
@@ -106,16 +117,17 @@ def main():
     if agent_id != ledger_lib.main_agent_id():
         sys.exit(0)  # sub-agents are delivered by the router push path
 
-    token_path, why = _own_token_path(ledger_lib._install_dir())
+    root = ledger_lib._install_dir()
+    token_path, why = _own_token_path(root)
     if token_path is None:
-        _notice(why)
+        _notice(why, root)
         sys.exit(0)
 
     try:
         with open(token_path) as f:
             token = f.read().strip()
         if not token:
-            _notice("the main agent's own dashboard token is empty")
+            _notice("the main agent's own dashboard token is empty", root)
             sys.exit(0)
         url = "http://127.0.0.1:%s/api/agents/%s/drain-inbox" % (_web_port(), agent_id)
         req = urllib.request.Request(
@@ -132,9 +144,9 @@ def main():
             sys.stdout.write(text)
             sys.stdout.write("\n")
     except urllib.error.HTTPError as e:
-        _notice("the drain was refused (HTTP %d)" % e.code)  # never block the prompt: the next turn retries
+        _notice("the drain was refused (HTTP %d)" % e.code, root)  # never block the prompt: the next turn retries
     except Exception as e:
-        _notice("the drain failed (%s)" % type(e).__name__)  # never block the prompt: the next turn retries
+        _notice("the drain failed (%s)" % type(e).__name__, root)  # never block the prompt: the next turn retries
 
     sys.exit(0)
 

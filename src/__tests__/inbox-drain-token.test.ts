@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -11,7 +11,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
   scripts/hooks/inbox-drain.py: the main agent's ONLY inbound path (P0-1, task p01-inbox-drain-token, acrobot 35215).
   What turns these red: the hook presents anything but the main agent's OWN token (the shared file as a fallback
   included); a refused or failed drain, or a missing token, that is silent (the main agent would never learn its
-  inbox stopped); the same notice on EVERY prompt instead of at most every ten minutes; a notice carrying the
+  inbox stopped); the same notice on EVERY prompt instead of at most every ten minutes; a rate-limit marker that
+  another user can mute (it lives in the install's store/, never in the shared temp dir, and a link there is ignored
+  and never written through; barracuda on #288); a notice carrying the
   token; the hook blocking the prompt (any exit but 0); a sub-agent's session draining the main inbox.
 */
 
@@ -53,6 +55,9 @@ function install(ownToken: string | null) {
   writeFileSync(join(root, 'store', '.dashboard-token'), 'KOZOS-TOKEN-NEM-HASZNALT\n')
   if (ownToken !== null) writeFileSync(join(root, 'store', 'tokens', `${MAIN}.token`), ownToken)
 }
+
+/** The rate-limit marker: in the install's own store/, which only the install's owner can write. */
+const markerOf = () => join(root, 'store', '.inbox-drain-notice')
 
 function fire(agent = MAIN): Promise<{ code: number | null; out: string; err: string }> {
   return new Promise((resolve) => {
@@ -112,7 +117,7 @@ describe('inbox-drain.py', () => {
     expect(a.out).toContain('[inbox-drain]')
     expect(a.out).toContain('HTTP 403')
     expect(a.out).not.toContain('own-token')
-    rmSync(join(tmp, `inbox-drain-notice-${process.getuid?.() ?? 0}`), { force: true })
+    rmSync(markerOf(), { force: true })
     mode = '500'
     const b = await fire()
     expect(b.code).toBe(0)
@@ -127,12 +132,48 @@ describe('inbox-drain.py', () => {
     const second = await fire()
     expect(second.code).toBe(0)
     expect(second.out, 'the same line on every prompt would bury the context').toBe('')
-    const marker = join(tmp, `inbox-drain-notice-${process.getuid?.() ?? 0}`)
+    const marker = markerOf()
     expect(existsSync(marker)).toBe(true)
     const old = new Date(Date.now() - 11 * 60 * 1000)
     utimesSync(marker, old, old)
     const third = await fire()
     expect(third.out).toContain('[inbox-drain]')
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('a marker pre-planted in the SHARED temp dir does not mute the notice (it is not where the hook looks)', async () => {
+    install(null)
+    const decoy = join(tmp, `inbox-drain-notice-${process.getuid?.() ?? 0}`)
+    writeFileSync(decoy, '')
+    const r = await fire()
+    expect(r.out, 'a fresh file in /tmp must not silence the main agent\'s warning').toContain('[inbox-drain]')
+    expect(existsSync(markerOf())).toBe(true)
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('a LINK at the marker is ignored: the line is printed and nothing is written through it', async () => {
+    install(null)
+    const target = join(tmp, 'celpont')
+    writeFileSync(target, 'ne irj ide')
+    // a FRESH target: if the hook took a link for a valid marker it would stay silent, and a write through it would move the mtime
+    const recent = new Date(Date.now() - 60 * 1000)
+    utimesSync(target, recent, recent)
+    symlinkSync(target, markerOf())
+    const before = lstatSync(target).mtimeMs
+    const first = await fire()
+    expect(first.code).toBe(0)
+    expect(first.out).toContain('[inbox-drain]')
+    const second = await fire()
+    expect(second.out, 'a link is never a valid marker, so the line comes again').toContain('[inbox-drain]')
+    expect(lstatSync(target).mtimeMs, 'the link target was written through').toBe(before)
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('the notice text points at the dashboard, not at the owner', async () => {
+    install(null)
+    const r = await fire()
+    expect(r.out).toContain('vezerlopulton')
+    expect(r.out).not.toContain('Balazs')
     rmSync(root, { recursive: true, force: true })
   })
 
