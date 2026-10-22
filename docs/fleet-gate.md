@@ -91,6 +91,11 @@ ChannelListing productId,channel,externalStatus 2026-11-21 JEV-mérés és Simpl
 UnasProductSnapshot productId,rawPayload 2026-11-21 JEV-mérés és SimplePay behúzás (2026-10-21-i kézi lap)
 SimplePayReport id,fileName,reportDate,periodStart,periodEnd,status,gmailMessageId,lineCount,createdAt 2026-11-21 JEV-mérés és SimplePay behúzás (2026-10-21-i kézi lap)
 SimplePaySyncRun status,trigger,startedAt,completedAt,messagesSeen,documentsRead,duplicateCount,failedCount,errorCode 2026-11-21 JEV-mérés és SimplePay behúzás (2026-10-21-i kézi lap)
+Supplier id,code 2026-11-22 Product Knowledge beszállítói és gyártói kódok (2026-10-22-i kézi lap)
+SupplierProduct supplierId,variantId,supplierSku 2026-11-22 Product Knowledge beszállítói és gyártói kódok (2026-10-22-i kézi lap)
+PurchaseOrderLine variantId,supplierSku 2026-11-22 Product Knowledge beszállítói és gyártói kódok (2026-10-22-i kézi lap)
+ProductVariant manufacturerPartNumber 2026-11-22 Product Knowledge beszállítói és gyártói kódok (2026-10-22-i kézi lap)
+ProductBarcode code 2026-11-22 Product Knowledge beszállítói és gyártói kódok (2026-10-22-i kézi lap)
 ```
 
 **A három mód:**
