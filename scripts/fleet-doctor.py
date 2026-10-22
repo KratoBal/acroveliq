@@ -117,14 +117,35 @@ def profile_mode(profile_id):
 
 
 def claude_process(user):
-    """The agent's own claude process line, or None. Excludes the tmux wrapper."""
+    """The agent's own claude process line, or None. Excludes the tmux wrapper.
+
+    None means "NOT SEEN FROM HERE", which is not the same as "not running": /proc is mounted with hidepid=invisible
+    (a process of another user is invisible to a caller outside that group), and the launcher's path is not always
+    .../bin/claude (the broker runs /etc/fleet-pane/conf/claude/<version>/claude). The match is the executable's
+    BASENAME, the first word of the command, not a substring of the whole line (measured 2026-10-22: the substring
+    "/bin/claude" matched none of the six agents, so the doctor said "not running" for all of them while the dashboard
+    said running)."""
     rc, out = run(["ps", "-u", user, "-o", "pid=,cmd="])
     if rc != 0:
         return None
     for line in out.splitlines():
-        if "/bin/claude" in line and "tmux" not in line:
+        words = line.split(None, 2)
+        if len(words) >= 2 and os.path.basename(words[1]) == "claude":
             return line.strip()
     return None
+
+
+def running_map():
+    """name -> running, as the dashboard says (GET /api/agents: the dashboard's own tmux-session check), or None when
+    it cannot be read. The authority for "is it running"; the process line is a cross-check for user and flags."""
+    rows = api("/api/agents")
+    if isinstance(rows, dict):
+        rows = rows.get("agents", [])
+    if not isinstance(rows, list):
+        if rows is not None:
+            _WHY[0] = "the dashboard's agent list had an unexpected shape"
+        return None
+    return {r.get("name"): bool(r.get("running")) for r in rows if isinstance(r, dict) and r.get("name")}
 
 
 def broker_on():
@@ -208,6 +229,9 @@ def main():
             to = m.get("to_agent") or m.get("to")
             pending[to] = pending.get(to, 0) + 1
 
+    running_by_api = running_map()
+    why_running = _WHY[0]
+
     rows = []
     problems = []
 
@@ -218,22 +242,38 @@ def main():
         prof_ok, mode = profile_mode(prof_id)
 
         proc = claude_process(want_user)
-        running = proc is not None
-        skip = proc is not None and "--dangerously-skip-permissions" in proc
+        seen = proc is not None
+        # "is it running": the dashboard's answer first; the process line only when the dashboard cannot be read.
+        # A process we cannot see is NOT evidence of "not running" (hidepid), so that case is UNKNOWN, never a verdict.
+        said = running_by_api.get(name) if running_by_api is not None else None
+        if said is not None:
+            running = said
+        elif seen:
+            running = True
+        else:
+            running = None
+        skip = seen and "--dangerously-skip-permissions" in proc
         # strict profile -> no skip flag. Anything else -> flag expected.
         want_skip = mode != "strict"
 
         session = "agent-" + name
-        state = classify(pane(want_user, session)) if running else "-"
-        tr = transcript_state(name) if running else "-"
+        state = classify(pane(want_user, session)) if running else ("?" if running is None else "-")
+        tr = transcript_state(name) if running else ("?" if running is None else "-")
         q = pending.get(name, 0) if queue_known else None
 
         notes = []
-        if not running:
-            notes.append("not running")
+        infos = []
+        if running is False:
+            notes.append("not running (the dashboard says so)" if said is not None else "not running")
+            if seen:
+                notes.append("a claude process of %s EXISTS although the dashboard says not running" % want_user)
+        elif running is None:
+            notes.append("running state UNKNOWN (not 'not running'): the process is not visible from here and the dashboard gave no answer (%s)" % why_running)
+        elif not seen:
+            infos.append("the process is not visible from here (/proc hidepid): the user and launch-flag checks were skipped, not passed")
         if not prof_ok:
             notes.append("profile file MISSING (%s) -> falls back to permissive" % prof_id)
-        if running and prof_ok and skip != want_skip:
+        if running and seen and prof_ok and skip != want_skip:
             notes.append("launch flag does not match profile (%s, skip=%s)" % (mode, skip))
         if state in ("LOGIN", "TRUST"):
             notes.append("parked on a start-up dialog -- answer it, do NOT restart")
@@ -246,7 +286,7 @@ def main():
         elif q:
             notes.append("%d message(s) queued" % q)
 
-        rows.append((name, want_user, prof_id or "-", mode or "?", state, tr, q, notes))
+        rows.append((name, want_user, prof_id or "-", mode or "?", state, tr, q, notes, infos))
         if notes:
             problems.append(name)
 
@@ -255,12 +295,14 @@ def main():
     if not quiet:
         print(hdr)
         print("-" * len(hdr))
-    for name, user, prof, mode, state, tr, q, notes in rows:
+    for name, user, prof, mode, state, tr, q, notes, infos in rows:
         if quiet and not notes:
             continue
         print("%-11s %-17s %-18s %-10s %-9s %-7s %s" % (name, user, prof, mode, state, tr, "?" if q is None else q))
         for n in notes:
             print("    ! %s" % n)
+        for i in infos:
+            print("    i %s" % i)
 
     print()
     if not problems:
