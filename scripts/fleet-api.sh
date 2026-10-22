@@ -343,7 +343,12 @@ if short:
     argc_max 0 "$#" "fleet-api.sh agents"
     get /agents | python3 -c '
 import json, sys
-d = json.load(sys.stdin)
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw)
+except ValueError:
+    # get() already printed a FAIL line, or the dashboard answered with something that is not JSON
+    print((raw.strip() or "FAIL: empty answer")[:200]); raise SystemExit(1)
 rows = d if isinstance(d, list) else d.get("agents", [])
 if not isinstance(rows, list):
     print("FAIL: %s" % json.dumps(d)[:200]); raise SystemExit(1)
