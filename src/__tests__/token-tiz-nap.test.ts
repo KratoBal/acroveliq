@@ -30,25 +30,25 @@ const fixtures: Fixture[] = [
   {
     task: { id: 'friss-1', assignee: 'nautilus', verification_profile: 'code_app', created_at: T0 },
     usage: { totals: tot(40, 8_000_000), valid: true, duration_seconds: 1200, by_mode: { session: 40, window: 0 }, by_session: { s1: tot(40, 8_000_000, 1000, T0 + 1200) } },
-    items: [ev('started', T0), { source: 'handoff', at: T0 }, { source: 'session', at: T0 }, ev('merged', T0 + 1200)],
+    items: [ev('started', T0), ev('review_requested', T0), { source: 'handoff', at: T0 }, { source: 'session', at: T0 }, ev('merged', T0 + 1200)],
   },
   // long: neither; 20 calls, 12M read, one fix round
   {
     task: { id: 'hosszu-1', assignee: 'murena', verification_profile: 'code_fleet', created_at: T0 + 10 },
     usage: { totals: tot(20, 12_000_000), valid: true, duration_seconds: 900, by_mode: { session: 0, window: 20 }, by_session: {} },
-    items: [ev('started', T0), ev('fix_started', T0 + 300), ev('done', T0 + 900)],
+    items: [ev('started', T0), ev('review_requested', T0 + 200), ev('fix_started', T0 + 300), ev('review_requested', T0 + 400), ev('done', T0 + 900)],
   },
   // mixed: a handoff only
   {
     task: { id: 'vegyes-1', assignee: 'nautilus', verification_profile: 'migration', created_at: T0 + 20 },
     usage: { totals: tot(10, 1_000_000), valid: true, duration_seconds: 60, by_mode: { session: 0, window: 10 }, by_session: {} },
-    items: [ev('started', T0), { source: 'handoff', at: T0 }],
+    items: [ev('started', T0), ev('review_requested', T0 + 30), ev('review_requested', T0 + 500), { source: 'handoff', at: T0 }],
   },
   // 0 calls: its session is another task's
   {
     task: { id: 'nulla-1', assignee: 'nautilus', verification_profile: 'code_app', created_at: T0 + 30 },
     usage: { totals: tot(0, 0, 0), valid: true, duration_seconds: 600, by_mode: { session: 0, window: 0 }, by_session: {} },
-    items: [ev('started', T0), ev('merged', T0 + 600)],
+    items: [ev('started', T0), ev('review_requested', T0 + 300), ev('merged', T0 + 600)],
   },
   // swallowing: its registered session runs two hours past its last event
   {
@@ -60,12 +60,23 @@ const fixtures: Fixture[] = [
   {
     task: { id: 'ervenytelen-1', assignee: 'murena', verification_profile: 'code_app', created_at: T0 + 50 },
     usage: { totals: tot(30, 50_000_000), valid: false, duration_seconds: 600, by_mode: { session: 0, window: 30 }, by_session: {} },
-    items: [ev('started', T0)],
+    items: [ev('started', T0), ev('review_requested', T0 + 1000), ev('review_requested', T0 + 2000)],
   },
   // not a developer profile: listed nowhere in the developer report
   {
     task: { id: 'docs-1', assignee: 'nautilus', verification_profile: 'docs', created_at: T0 + 60 },
     usage: { totals: tot(5, 1_000_000), valid: true, duration_seconds: 60, by_mode: { session: 0, window: 5 }, by_session: {} },
+    items: [ev('started', T0)],
+  },
+  // no verification profile: left out of the comparison, named on its own coverage line (acrobot 35195)
+  {
+    task: { id: 'profiltalan-1', assignee: 'murena', created_at: T0 + 70 },
+    usage: { totals: tot(12, 2_000_000), valid: true, duration_seconds: 60, by_mode: { session: 0, window: 12 }, by_session: {} },
+    items: [ev('started', T0), ev('merged', T0 + 60)],
+  },
+  {
+    task: { id: 'profiltalan-2', assignee: 'nautilus', created_at: T0 + 80 },
+    usage: { totals: tot(8, 1_000_000), valid: true, duration_seconds: 60, by_mode: { session: 0, window: 8 }, by_session: {} },
     items: [ev('started', T0)],
   },
   // outside the window (before 10-13)
@@ -120,18 +131,21 @@ describe('token-tiz-nap.py', () => {
     expect(lastAuth).toBe('Bearer test-token')
     const sorok = JSON.parse(readFileSync(json, 'utf-8')) as Record<string, any>[]
     const by = Object.fromEntries(sorok.map((s) => [s.id, s]))
-    expect(Object.keys(by).sort()).toEqual(['docs-1', 'elnyelo-1', 'ervenytelen-1', 'friss-1', 'hosszu-1', 'nulla-1', 'vegyes-1'])
+    expect(Object.keys(by).sort()).toEqual(['docs-1', 'elnyelo-1', 'ervenytelen-1', 'friss-1', 'hosszu-1', 'nulla-1', 'profiltalan-1', 'profiltalan-2', 'vegyes-1'])
     expect([by['friss-1'].mod, by['hosszu-1'].mod, by['vegyes-1'].mod]).toEqual(['friss', 'hosszú', 'vegyes'])
     expect(by['friss-1'].olvasott).toBe(40 + 8_000_000 + 400)
     expect(by['hosszu-1'].javitasi_kor).toBe(1)
     expect([by['hosszu-1'].kesz, by['vegyes-1'].kesz]).toEqual([true, false])
+    // the event-discipline fields: the gap from `started` to the first review request, and the review rounds
+    expect([by['friss-1'].start_review_mp, by['hosszu-1'].start_review_mp, by['vegyes-1'].start_review_mp, by['nulla-1'].start_review_mp]).toEqual([0, 200, 30, 300])
+    expect([by['friss-1'].review_korok, by['hosszu-1'].review_korok, by['vegyes-1'].review_korok]).toEqual([1, 2, 2])
     expect([by['elnyelo-1'].elnyelo, by['friss-1'].elnyelo]).toEqual([true, false])
   })
 
   it('the report: coverage counted, and only the measurable developer rows in the comparison', async () => {
     const r = await run(['--tol', '2026-10-13', '--ig', '2026-10-24'])
     expect(r.code).toBe(0)
-    expect(r.out).toContain('- feladat az időszakban: 7, ebből fejlesztői: 6')
+    expect(r.out).toContain('- feladat az időszakban: 9, ebből fejlesztői: 6')
     expect(r.out).toContain('- mérhető (van hívás, nem elnyelő, érvényes): **3**')
     expect(r.out).toMatch(/- 0 hívás .*: 1\n/)
     expect(r.out).toMatch(/- elnyelő .*: 1\n/)
@@ -141,6 +155,13 @@ describe('token-tiz-nap.py', () => {
     // the session-mode share: the fresh row was tied by its session, the long one by its window (barracuda, #277)
     expect(r.out).toMatch(/\| kicsi \(1-49 hívás\) \| friss \|[^\n]*\| 100% \|\n/)
     expect(r.out).toMatch(/\| kicsi \(1-49 hívás\) \| hosszú \|[^\n]*\| 0% \|\n/)
+    // the two coverage lines (acrobot 35195): the profile-less rows named, and the event discipline counted
+    expect(r.out).toContain('- profil nélkül (verification_profile üres; az összevetésből kimarad, utólag NEM pótoljuk): 2 feladat, kié: murena 1, nautilus 1; hívásuk összesen: 20; elkészült: 1\n')
+    // started within 60 s of the review request: friss-1 (0 s) and vegyes-1 (30 s) of the five that have both; hosszu-1 (200 s), nulla-1 (300 s) and ervenytelen-1 (1000 s) are not
+    expect(r.out).toContain('a `started` a review kérésétől számított 60 másodpercen belül van: 2 / 5;')
+    // more than one review round without a fix_started: vegyes-1 and ervenytelen-1 of the three multi-round ones (hosszu-1 has its fix)
+    expect(r.out).toContain('több review-kör `fix_started` nélkül: 2 / 3.')
+    expect(r.out).toContain('ALSÓ KORLÁT')
     expect(r.out).toContain('A két mód NEM azonos mérce')
     expect(r.out).not.toMatch(/\| nagy \(150\+\) \|/)
     expect(r.out).not.toContain('docs-1')
