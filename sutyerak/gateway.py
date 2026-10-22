@@ -158,8 +158,15 @@ def mcp_env(t: dict, body: dict) -> dict:
     is narrowed to its minimum, refuses POST /api/messages altogether). P0-1, task p01-legacy-uzenet-hivo; the
     two legacy calls of 2026-10-21 10:46 and 10:48 UTC were this handoff.
     The MCP child reads the file only to post one fixed body to one fixed URL; the model supplies the request
-    text only. If the resolver cannot find the own token it falls back to the shared one with a line on stderr."""
+    text only. If the own token is missing the handoff is switched off (empty path), never the shared token."""
     user = body["user"]
+    try:
+        handoff_token_file = token_file(ROOT)
+    except OSError:
+        # DashboardTokenError: the main agent's own token is missing or empty. The resolver has said so on stderr
+        # and does NOT hand out the shared token for an agent. An empty path makes the handoff tool report "not
+        # configured" (os_read_mcp.py); the employee's answers go on.
+        handoff_token_file = ""
     return {
         "SUTYERAK_OS_BASE": OS_BASE,
         "SUTYERAK_OS_TOKEN": body["token"],
@@ -172,7 +179,7 @@ def mcp_env(t: dict, body: dict) -> dict:
         "SUTYERAK_CONVERSATION_ID": str((body.get("context") or {}).get("conversationId") or "")[:64],
         "SUTYERAK_TOOL_LOG": os.path.join(LOG_DIR, "tools.jsonl"),
         "SUTYERAK_HANDOFF_URL": "http://localhost:3420/api/messages",
-        "SUTYERAK_HANDOFF_TOKEN_FILE": token_file(ROOT),
+        "SUTYERAK_HANDOFF_TOKEN_FILE": handoff_token_file,
         "SUTYERAK_HANDOFF_DIR": os.path.join(STATE, "atadas"),
     }
 

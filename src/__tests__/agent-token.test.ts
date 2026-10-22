@@ -16,7 +16,9 @@ import { resolvePrincipalToken } from '../web/auth-principals.js'
 /*
   AN AGENT'S OWN DASHBOARD TOKEN (acrovelIQ P0-1, plan step 5.2). What turns
   these red: a resolver that takes the shared token although the caller's own
-  is there, or that stops instead of falling back, or falls back silently; a
+  is there, or that falls back to the shared one for an AGENT whose own token is
+  missing (it must stop; only a caller that is no agent at all falls back, loudly),
+  or that guesses "marveen" when .env names no main agent; a
   resolver that serves an unreadable file; the bash and Python resolvers
   disagreeing; an issuer that overwrites a token file, leaves it wider than
   0400, stores the raw token, returns or prints it, or keeps a row whose file
@@ -47,7 +49,19 @@ function viaPython(root: string, env: NodeJS.ProcessEnv = process.env) {
   return { file: r.stdout.trim(), err: r.stderr.trim(), code: r.status }
 }
 
-describe.each([['bash', viaBash], ['python', viaPython]] as const)('the token resolver (%s)', (_lang, resolve) => {
+/** The same two resolvers as a process that is neither an agent's user nor the install's owner. */
+function strangerBash(root: string) {
+  const probe = `. "${REPO}/scripts/lib/dashboard-token.sh"; _dashboard_token_owns() { return 1; }; dashboard_token_file "$1"`
+  const r = spawnSync('bash', ['-c', probe, '_', root], { encoding: 'utf8' })
+  return { file: r.stdout.trim(), err: r.stderr.trim(), code: r.status }
+}
+function strangerPython(root: string) {
+  const probe = `import sys, os; sys.path.insert(0, "${REPO}/scripts/lib"); import dashboard_token as d; d.os.geteuid = lambda: 424242; print(d.token_file(sys.argv[1]))`
+  const r = spawnSync('python3', ['-c', probe, root], { encoding: 'utf8' })
+  return { file: r.stdout.trim(), err: r.stderr.trim(), code: r.status }
+}
+
+describe.each([['bash', viaBash, strangerBash], ['python', viaPython, strangerPython]] as const)('the token resolver (%s)', (_lang, resolve, stranger) => {
   it('TOK-OWN: the caller\'s own readable token, silently', () => {
     const root = tree({ runAsUser: ME })
     writeFileSync(join(root, 'store', 'tokens', 'scout.token'), 'own\n')
@@ -56,23 +70,48 @@ describe.each([['bash', viaBash], ['python', viaPython]] as const)('the token re
     expect(r.err).toBe('')
   })
 
-  it('TOK-FALLBACK: no own token, the shared one with one stderr line, no stop', () => {
+  it('TOK-NO-OWN: an agent without an own token is an ERROR, never the shared token', () => {
     const root = tree({ runAsUser: ME })
     const r = resolve(root)
-    expect(r.code).toBe(0)
-    expect(r.file).toBe(join(root, 'store', '.dashboard-token'))
-    expect(r.err.split('\n')).toHaveLength(1)
-    expect(r.err).toMatch(/no readable per-agent token for user .* \(agent scout\)/)
+    expect(r.code, 'it stops').not.toBe(0)
+    expect(r.file, 'no file is named, least of all the shared one').not.toContain('.dashboard-token')
+    expect(r.err).toMatch(/the own token of agent scout .* is missing, unreadable or empty/)
+    expect(r.err).toContain('the shared token is NOT used for an agent')
   })
 
-  it('TOK-UNREADABLE: an unreadable or empty own file is not served', () => {
+  it('TOK-UNREADABLE: an unreadable or empty own file is an error, not the shared token', () => {
     const root = tree({ runAsUser: ME })
     const own = join(root, 'store', 'tokens', 'scout.token')
     writeFileSync(own, '')
-    expect(resolve(root).file).toBe(join(root, 'store', '.dashboard-token'))
+    const empty = resolve(root)
+    expect([empty.code === 0, empty.file.includes('.dashboard-token')]).toEqual([false, false])
     writeFileSync(own, 'own\n')
     chmodSync(own, 0o000)
-    if (process.getuid?.() !== 0) expect(resolve(root).file).toBe(join(root, 'store', '.dashboard-token'))
+    if (process.getuid?.() !== 0) {
+      const closed = resolve(root)
+      expect([closed.code === 0, closed.file.includes('.dashboard-token')]).toEqual([false, false])
+    }
+  })
+
+  it('TOK-STRANGER: a caller that is no agent and not the owner (root, cron) still gets the shared one, loudly', () => {
+    const root = tree({ runAsUser: 'someone-else', mainAgent: 'boss' })
+    const r = stranger(root)
+    expect(r.code).toBe(0)
+    expect(r.file).toBe(join(root, 'store', '.dashboard-token'))
+    expect(r.err.split('\n')).toHaveLength(1)
+    expect(r.err).toMatch(/no agent for user .*, using the shared token/)
+  })
+
+  it('TOK-MAIN-ENV: the install\'s owner whose .env names no main agent is an error (the old default "marveen" had no token file)', () => {
+    const noEnv = tree({ runAsUser: 'someone-else' })
+    const a = resolve(noEnv)
+    expect(a.code).not.toBe(0)
+    expect(a.err).toContain('refusing to guess the main agent')
+    const noKey = tree({ runAsUser: 'someone-else' })
+    writeFileSync(join(noKey, '.env'), '# nothing\nOTHER=1\nMAIN_AGENT_ID=\n')
+    const b = resolve(noKey)
+    expect(b.code).not.toBe(0)
+    expect(b.err).toContain('refusing to guess the main agent')
   })
 
   it('TOK-MAIN: the install\'s owner without a runAsUser is the main agent', () => {
@@ -277,9 +316,10 @@ describe('fleet-api.sh presents the resolved token (end to end)', () => {
     return auth
   }
 
-  it('TOK-E2E: the own token when handed out, the shared one otherwise', async () => {
+  it('TOK-E2E: the own token when handed out, no request at all otherwise (never the shared one)', async () => {
     expect(await bearerSent(true)).toBe('Bearer own-token')
-    expect(await bearerSent(false)).toBe('Bearer shared-token')
+    // an agent without an own token sends NOTHING (no request at all), and above all not the shared token
+    expect(await bearerSent(false)).toBe('')
   })
 })
 
