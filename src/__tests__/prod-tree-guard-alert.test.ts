@@ -153,13 +153,13 @@ describe('the hook delivers the alert', () => {
     expect(seen[0]!.body['content']).toContain('feature-probe')
   })
 
-  it('with only the shared token (the 2026-10-14 hook\'s situation): the route says 403 and the hook is LOUD, exit 0', async () => {
+  it('with no own token for the main agent: the shared token is NOT used, nothing is sent, and the resolver says why (was: the shared token, 403)', async () => {
     const s = setup({ agentToken: false })
     const r = await fire(s)
     expect(r.code).toBe(0)
-    expect(seen).toHaveLength(1)
-    expect(seen[0]!.auth).toBe(`Bearer ${SHARED_TOKEN}`)
-    expect(r.stderr).toContain('NEM ert celba (HTTP 403)')
+    // since P0-1 (p01-legacy-uzenet-hivo) an agent's missing own token is an error: the alert is not posted as "legacy"
+    expect(seen).toHaveLength(0)
+    expect(r.stderr).toContain('NOT used for an agent')
   })
 
   it('MARVEEN_GUARD_ALERT_TO still redirects the recipient (the sender stays the main agent)', async () => {

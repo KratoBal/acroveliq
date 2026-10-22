@@ -32,6 +32,11 @@ beforeAll(async () => {
   copyFileSync(join(process.cwd(), 'scripts', 'lib', 'dashboard_token.py'), join(root, 'scripts', 'lib', 'dashboard_token.py'))
   copyFileSync(join(process.cwd(), 'seed-skills', 'fleet-helper', 'scripts', 'fleet.py'), fleetPy)
   writeFileSync(join(root, 'store', '.dashboard-token'), 'test-token')
+  // the caller is the install's owner here: the resolver needs the main agent's name and its own token file
+  // (scripts/lib/dashboard_token.py: no .env or no own token is an error, not a shared-token fallback)
+  writeFileSync(join(root, '.env'), 'MAIN_AGENT_ID=proba-fo\n')
+  mkdirSync(join(root, 'store', 'tokens'), { recursive: true })
+  writeFileSync(join(root, 'store', 'tokens', 'proba-fo.token'), 'test-token')
   server = createServer((req, res) => {
     requests.push(req.url ?? '')
     const rows = Array.from({ length: answer.rows }, (_, i) => ({ id: i + 1, content: `emlek ${i + 1}` }))

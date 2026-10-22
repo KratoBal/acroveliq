@@ -36,6 +36,11 @@ beforeAll(async () => {
   copyFileSync(join(REPO_ROOT, 'scripts', 'feladat-pr-szerint.py'), finder)
   cpSync(join(REPO_ROOT, 'scripts', 'lib'), join(root, 'scripts', 'lib'), { recursive: true })
   writeFileSync(join(root, 'store', '.dashboard-token'), 'dash-token\n')
+  // the caller is the install's owner here: the resolver needs the main agent's name and its own token file
+  // (scripts/lib/dashboard_token.py: no .env or no own token is an error, not a shared-token fallback)
+  writeFileSync(join(root, '.env'), 'MAIN_AGENT_ID=proba-fo\n')
+  mkdirSync(join(root, 'store', 'tokens'), { recursive: true })
+  writeFileSync(join(root, 'store', 'tokens', 'proba-fo.token'), 'dash-token\n')
   server = createServer((req, res) => {
     seenAuth.push(req.headers.authorization)
     const url = req.url ?? ''

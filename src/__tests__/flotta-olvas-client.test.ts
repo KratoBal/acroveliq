@@ -23,6 +23,11 @@ beforeAll(async () => {
   mkdirSync(join(root, 'store'), { recursive: true })
   for (const f of ['flotta-olvas.sh', 'dashboard-fejlec.sh', 'lib/dashboard-token.sh']) copyFileSync(join(process.cwd(), 'scripts', f), join(root, 'scripts', f))
   writeFileSync(join(root, 'store', '.dashboard-token'), 'proba-token')
+  // the caller is the install's owner here: the resolver needs the main agent's name and its own token file
+  // (scripts/lib/dashboard_token.py: no .env or no own token is an error, not a shared-token fallback)
+  writeFileSync(join(root, '.env'), 'MAIN_AGENT_ID=proba-fo\n')
+  mkdirSync(join(root, 'store', 'tokens'), { recursive: true })
+  writeFileSync(join(root, 'store', 'tokens', 'proba-fo.token'), 'proba-token')
   server = createServer((req, res) => {
     requests.push({ method: req.method ?? '', path: req.url ?? '', auth: String(req.headers['authorization'] ?? '') })
     if ((req.url ?? '').startsWith('/api/fleet-reads/uzenet?id=403')) {
