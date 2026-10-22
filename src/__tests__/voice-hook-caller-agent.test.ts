@@ -30,6 +30,8 @@ beforeAll(async () => {
   mkdirSync(join(root, 'store', 'tokens'), { recursive: true })
   mkdirSync(join(root, 'agents', 'nautilus', 'atadas'), { recursive: true })
   copyFileSync(join(process.cwd(), 'scripts', 'hooks', 'voice-reply-directive.py'), hook)
+  // the hook imports ledger_lib (the rate-limited notice when it has no own token)
+  copyFileSync(join(process.cwd(), 'scripts', 'hooks', 'ledger_lib.py'), join(root, 'scripts', 'hooks', 'ledger_lib.py'))
   copyFileSync(join(process.cwd(), 'scripts', 'lib', 'dashboard_token.py'), join(root, 'scripts', 'lib', 'dashboard_token.py'))
   writeFileSync(join(root, 'store', 'tokens', 'acrobot.token'), 'acrobot-token')
   server = createServer((req, res) => {

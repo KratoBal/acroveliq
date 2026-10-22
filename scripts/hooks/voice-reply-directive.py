@@ -20,19 +20,23 @@ import re
 import urllib.request
 import urllib.parse
 
-# the calling user's own dashboard token if handed out, else the shared one,
-# loudly (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py). Defensive:
-# a hook run from elsewhere falls back to the shared path instead of failing.
-def _dashboard_token_file(root):
+# The calling user's OWN dashboard token, or nothing (acrovelIQ P0-1, task p01-csendes-visszaeso-hivok).
+# NEVER the shared one: GET /api/voice/directive is the agent's own. Without an own token the hook says so
+# (one rate-limited line into the context) instead of silently bringing nothing.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ledger_lib  # noqa: E402
+
+
+def _own_token(root):
     try:
         import sys as _sys
         _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
         if _lib not in _sys.path:
             _sys.path.insert(0, _lib)
-        from dashboard_token import token_file
-        return token_file(root)
-    except Exception:
-        return os.path.join(root, "store", ".dashboard-token")
+        from dashboard_token import own_token
+        return own_token(root)
+    except Exception as e:
+        return None, "the token resolver could not be loaded (%s)" % type(e).__name__
 
 
 def _project_root():
@@ -52,14 +56,6 @@ def _web_port():
         except Exception:
             pass
     return port or "3420"
-
-
-def _token():
-    try:
-        with open(_dashboard_token_file(_project_root())) as f:
-            return f.read().strip()
-    except Exception:
-        return ""
 
 
 def _main_agent_id():
@@ -141,8 +137,11 @@ def main():
     if not agent_id:
         sys.exit(0)
 
-    token = _token()
+    token, why = _own_token(_project_root())
     if not token:
+        # a voice message that arrives without its transcript and directive is otherwise just unheard
+        sys.stdout.write(ledger_lib.hook_context_notice("voice-reply-directive", why, agent_id))
+        sys.stdout.flush()
         sys.exit(0)
 
     port = _web_port()

@@ -14,7 +14,8 @@ This prints only the HEADLINE of each recent entry (the first line), newest firs
 names the command that opens the full text. The point is recognition, not recall: enough to
 know that a subject was already handled, and where to read the rest.
 
-Read-only: it queries the dashboard API and prints. It writes nothing.
+Read-only: it queries the dashboard API and prints. It writes nothing, except when it has no own dashboard token:
+then it prints one rate-limited line and keeps a marker and a one-line-a-day note (ledger_lib.hook_context_notice).
 """
 
 import datetime
@@ -24,34 +25,44 @@ import sys
 import urllib.error
 import urllib.request
 
-# the calling user's own dashboard token if handed out, else the shared one,
-# loudly (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py). Defensive:
-# a hook run from elsewhere falls back to the shared path instead of failing.
-def _dashboard_token_file(root):
+# The calling user's OWN dashboard token, or nothing (acrovelIQ P0-1, task p01-csendes-visszaeso-hivok).
+# NEVER the shared one. Without it the hook SAYS so (one rate-limited line into the context): a session start
+# that silently brings back nothing hides that the day's log was not read.
+def _own_token(root):
     try:
         import sys as _sys
         _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
         if _lib not in _sys.path:
             _sys.path.insert(0, _lib)
-        from dashboard_token import token_file
-        return token_file(root)
-    except Exception:
-        return os.path.join(root, "store", ".dashboard-token")
+        from dashboard_token import own_token
+        return own_token(root)
+    except Exception as e:
+        return None, "the token resolver could not be loaded (%s)" % type(e).__name__
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ledger_lib  # noqa: E402
 
 INSTALL_DIR = os.environ.get("CLAUDE_PROJECT_DIR", "/home/marveen/marveen")
-API = "http://localhost:3420/api/daily-log"
-TOKEN_FILE = _dashboard_token_file(INSTALL_DIR)
+
+
+def _web_port():
+    port = os.environ.get("WEB_PORT")
+    if not port:
+        try:
+            with open(os.path.join(INSTALL_DIR, ".env")) as f:
+                for line in f:
+                    if line.startswith("WEB_PORT="):
+                        port = line.split("=", 1)[1].strip().strip('"')
+                        break
+        except OSError:
+            pass
+    return port or "3420"
+
+
+API = "http://localhost:%s/api/daily-log" % _web_port()
 AGENT = "acrobot"
 DAYS = 2
 MAX_ROWS = 12
-
-
-def token():
-    try:
-        with open(TOKEN_FILE, "r", encoding="utf-8") as fh:
-            return fh.read().strip()
-    except OSError:
-        return None
 
 
 def fetch(day, tok):
@@ -83,8 +94,9 @@ def headline(entry):
 
 
 def main():
-    tok = token()
+    tok, why = _own_token(INSTALL_DIR)
     if not tok:
+        sys.stdout.write(ledger_lib.hook_context_notice("session-recent-log", why))
         return 0
     rows = []
     today = datetime.date.today()

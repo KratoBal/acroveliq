@@ -47,22 +47,25 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# the calling user's own dashboard token if handed out, else the shared one,
-# loudly (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py). Defensive:
-# a hook run from elsewhere falls back to the shared path instead of failing.
-def _dashboard_token_file(root):
+# The calling user's OWN dashboard token, or nothing (acrovelIQ P0-1, task p01-csendes-visszaeso-hivok).
+# NEVER the shared one: GET /api/recall is closed to it under enforcement. Without an own token the hook says so
+# (one rate-limited line into the context) instead of silently bringing nothing.
+def _own_token(root):
     try:
         import sys as _sys
         _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
         if _lib not in _sys.path:
             _sys.path.insert(0, _lib)
-        from dashboard_token import token_file
-        return token_file(root)
-    except Exception:
-        return os.path.join(root, "store", ".dashboard-token")
+        from dashboard_token import own_token
+        return own_token(root)
+    except Exception as e:
+        return None, "the token resolver could not be loaded (%s)" % type(e).__name__
+
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ledger_lib  # noqa: E402
 
 INSTALL_DIR = os.environ.get("CLAUDE_PROJECT_DIR", "/home/marveen/marveen")
-TOKEN_FILE = _dashboard_token_file(INSTALL_DIR)
 ENV_FILE = os.path.join(INSTALL_DIR, ".env")
 
 MIN_PROMPT_LEN = 25      # below this there is nothing to key on
@@ -189,14 +192,6 @@ def api_base():
 
 def agent_id():
     return env_value("SERVICE_ID", env_value("MAIN_AGENT_ID", "acrobot"))
-
-
-def token():
-    try:
-        with open(TOKEN_FILE, "r", encoding="utf-8") as fh:
-            return fh.read().strip()
-    except OSError:
-        return ""
 
 
 def get(url, tok):
@@ -629,8 +624,16 @@ def main():
             if len(prompt) < MIN_PROMPT_LEN:
                 return 0
 
-    tok = token()
+    tok, why = _own_token(INSTALL_DIR)
     if not tok:
+        # say so (rate limited) instead of silently recalling nothing; the outgoing-message entry point
+        # carries it as additionalContext, the prompt entry point as plain text
+        notice = ledger_lib.hook_context_notice("prior-art-recall", why)
+        if notice and outgoing:
+            sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": notice}},
+                                        ensure_ascii=False) + "\n")
+        elif notice:
+            sys.stdout.write(notice)
         return 0
     words = keywords(prompt)
     if not words:
