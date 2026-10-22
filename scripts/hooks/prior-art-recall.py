@@ -628,7 +628,7 @@ def main():
     if not tok:
         # say so (rate limited) instead of silently recalling nothing; the outgoing-message entry point
         # carries it as additionalContext, the prompt entry point as plain text
-        notice = ledger_lib.hook_context_notice("prior-art-recall", why)
+        notice = ledger_lib.hook_context_notice("prior-art-recall", why, ledger_lib.agent_id_from_payload(payload))
         if notice and outgoing:
             sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": notice}},
                                         ensure_ascii=False) + "\n")

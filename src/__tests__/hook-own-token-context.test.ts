@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -193,6 +193,47 @@ describe('taskstate-replay JSON shape', () => {
     const parsed = JSON.parse(r.out.trim())
     expect(parsed.hookSpecificOutput.hookEventName).toBe('SessionStart')
     expect(parsed.hookSpecificOutput.additionalContext).toContain('[taskstate-replay]')
+    cleanup()
+  })
+})
+
+// barracuda's two notes on #290, taken up in 4/4
+describe('the notice when there is nowhere to note it, and prior-art-recall in a sub-agent session', () => {
+  it('no writable state dir: the line comes EVERY time and says so (not "at most every ten minutes")', async () => {
+    install(null)
+    chmodSync(join(root, 'agents', 'al-agens'), 0o555)
+    chmodSync(join(root, 'store'), 0o555)
+    try {
+      const a = await fire('taskstate-replay.py', { source: 'resume' }, 'al-agens')
+      const b = await fire('taskstate-replay.py', { source: 'resume' }, 'al-agens')
+      for (const r of [a, b]) {
+        expect(r.code).toBe(0)
+        expect(r.out).toContain('[taskstate-replay]')
+        expect(r.out).toContain('minden alkalommal')
+        expect(r.out).not.toContain('legfeljebb 10 percenkent')
+      }
+    } finally {
+      chmodSync(join(root, 'agents', 'al-agens'), 0o755)
+      chmodSync(join(root, 'store'), 0o755)
+      cleanup()
+    }
+  })
+
+  it('with a writable state dir the line keeps saying "at most every ten minutes"', async () => {
+    install(null)
+    const r = await fire('taskstate-replay.py', { source: 'resume' }, 'al-agens')
+    expect(r.out).toContain('legfeljebb 10 percenkent ismetlodik')
+    cleanup()
+  })
+
+  it('prior-art-recall run by a SUB-agent keeps its marker in that agent\'s directory, not in store/', async () => {
+    install(null)
+    const r = await fire('prior-art-recall.py', PROMPT, 'al-agens')
+    expect(r.out).toContain('[prior-art-recall]')
+    expect(existsSync(join(root, 'agents', 'al-agens', '.hook-notice-prior-art-recall'))).toBe(true)
+    expect(existsSync(join(root, 'store', '.hook-notice-prior-art-recall'))).toBe(false)
+    const again = await fire('prior-art-recall.py', PROMPT, 'al-agens')
+    expect(again.out, 'with the marker kept, the second prompt is silent').not.toContain('[prior-art-recall]')
     cleanup()
   })
 })

@@ -43,7 +43,7 @@ import urllib.request
 ROOT = os.environ.get("FLEET_ROOT", "/home/marveen/marveen")
 AGENTS_DIR = os.path.join(ROOT, "agents")
 PROFILES_DIR = os.path.join(ROOT, "templates", "profiles")
-DASH = "http://localhost:3420"
+DASH = os.environ.get("FLEET_DASH", "http://localhost:3420")
 
 
 def run(cmd, timeout=15):
@@ -55,35 +55,32 @@ def run(cmd, timeout=15):
         return 1, ""
 
 
-def _token_file():
-    # the calling user's own dashboard token if handed out, else the shared one,
-    # loudly (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py)
+def _own_token():
+    """(token, None) of the caller's OWN token, or (None, why). Never the shared one (P0-1, 4/4)."""
     try:
         lib = os.path.join(ROOT, "scripts", "lib")
         if lib not in sys.path:
             sys.path.insert(0, lib)
-        from dashboard_token import token_file
-        return token_file(ROOT)
-    except Exception:
-        return os.path.join(ROOT, "store", ".dashboard-token")
+        from dashboard_token import own_token
+        return own_token(ROOT)
+    except Exception as e:
+        return None, "the token resolver could not be loaded (%s)" % type(e).__name__
 
 
-def token():
-    try:
-        with open(_token_file()) as f:
-            return f.read().strip()
-    except Exception:
-        return None
+_WHY = [None]  # why the last api() call returned nothing: a missing token is not "the dashboard did not answer"
 
 
 def api(path):
-    t = token()
+    """The parsed answer, or None with the reason in _WHY. The caller's OWN token only, never the shared one."""
+    t, why = _own_token()
     if not t:
+        _WHY[0] = why
         return None
     try:
         req = urllib.request.Request(DASH + path, headers={"Authorization": "Bearer " + t})
         return json.load(urllib.request.urlopen(req, timeout=10))
-    except Exception:
+    except Exception as e:
+        _WHY[0] = "the dashboard did not answer (%s)" % type(e).__name__
         return None
 
 
@@ -199,9 +196,12 @@ def transcript_state(name):
 def main():
     quiet = "--quiet" in sys.argv
 
-    msgs = api("/api/messages?limit=200") or []
+    msgs = api("/api/messages?limit=200")
+    # None is NOT an empty queue: a failed capture read as zero is the mistake this tool exists to prevent
+    queue_known = msgs is not None
     if isinstance(msgs, dict):
         msgs = msgs.get("messages", [])
+    msgs = msgs or []
     pending = {}
     for m in msgs:
         if m.get("status") == "pending":
@@ -226,7 +226,7 @@ def main():
         session = "agent-" + name
         state = classify(pane(want_user, session)) if running else "-"
         tr = transcript_state(name) if running else "-"
-        q = pending.get(name, 0)
+        q = pending.get(name, 0) if queue_known else None
 
         notes = []
         if not running:
@@ -241,7 +241,9 @@ def main():
             notes.append("parked on an approval prompt -- receives no messages while there")
         if tr == "NONE":
             notes.append("NO transcript is being written -- its context is RAM-only")
-        if q:
+        if q is None:
+            notes.append("message queue UNKNOWN (not zero): %s" % _WHY[0])
+        elif q:
             notes.append("%d message(s) queued" % q)
 
         rows.append((name, want_user, prof_id or "-", mode or "?", state, tr, q, notes))
@@ -256,7 +258,7 @@ def main():
     for name, user, prof, mode, state, tr, q, notes in rows:
         if quiet and not notes:
             continue
-        print("%-11s %-17s %-18s %-10s %-9s %-7s %d" % (name, user, prof, mode, state, tr, q))
+        print("%-11s %-17s %-18s %-10s %-9s %-7s %s" % (name, user, prof, mode, state, tr, "?" if q is None else q))
         for n in notes:
             print("    ! %s" % n)
 

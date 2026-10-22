@@ -14,7 +14,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFile, spawnSync } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
-import { accessSync, constants, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AddressInfo } from 'node:net'
@@ -29,6 +29,9 @@ let schedulesBody: unknown
 let server: Server
 let origin: string
 let storeDir: string
+let rootDir: string
+let requests: string[] = []
+const OWN_TOKEN_FILE = () => join(storeDir, 'tokens', 'proba-fo.token')
 
 const FULL_SUMMARY = () => ({
   counts: {
@@ -71,8 +74,14 @@ function runScript(env: Record<string, string> = {}): Promise<{ status: number; 
 }
 
 beforeAll(async () => {
-  storeDir = mkdtempSync(join(tmpdir(), 'hb-metrics-store-'))
-  writeFileSync(join(storeDir, '.dashboard-token'), TOKEN + '\n')
+  // The script derives the install root from the store dir's parent and resolves the caller's OWN token there
+  // (P0-1, task p01-csendes-visszaeso-hivok 4/4): the install's owner is the main agent named in .env.
+  rootDir = mkdtempSync(join(tmpdir(), 'hb-metrics-root-'))
+  storeDir = join(rootDir, 'store')
+  mkdirSync(join(storeDir, 'tokens'), { recursive: true })
+  writeFileSync(join(rootDir, '.env'), 'MAIN_AGENT_ID=proba-fo\n')
+  writeFileSync(OWN_TOKEN_FILE(), TOKEN + '\n')
+  writeFileSync(join(storeDir, '.dashboard-token'), 'KOZOS-TOKEN-NEM-HASZNALT\n')
 
   // Fixture task_runs DB, created with the same python3 the script uses.
   // Three rows probe the milliseconds cutoff behaviourally:
@@ -93,6 +102,7 @@ con.commit()
   if (mk.status !== 0) throw new Error('fixture db failed: ' + mk.stderr)
 
   server = createServer((req, res) => {
+    requests.push(String(req.headers.authorization ?? ''))
     if (req.headers.authorization !== 'Bearer ' + TOKEN) {
       res.writeHead(401).end('{"error":"unauthorized"}')
       return
@@ -114,7 +124,7 @@ con.commit()
 
 afterAll(async () => {
   await new Promise<void>(resolve => server.close(() => resolve()))
-  rmSync(storeDir, { recursive: true, force: true })
+  rmSync(rootDir, { recursive: true, force: true })
 })
 
 describe('path binding (a rename must fail in CI, not at 22:00 on the host)', () => {
@@ -222,7 +232,7 @@ describe('fail-closed: a missing value is an ERROR line + non-zero exit, never a
   it('rejected token (401): ERROR from the summary and schedules sections', async () => {
     summaryBody = FULL_SUMMARY()
     schedulesBody = []
-    writeFileSync(join(storeDir, '.dashboard-token'), 'wrong-token\n')
+    writeFileSync(OWN_TOKEN_FILE(), 'wrong-token\n')
     try {
       const r = await runScript()
       expect(r.status).not.toBe(0)
@@ -230,7 +240,42 @@ describe('fail-closed: a missing value is an ERROR line + non-zero exit, never a
       expect(r.stdout).toContain('ERROR schedules:')
       expect(r.stdout).not.toContain('COUNTS')
     } finally {
-      writeFileSync(join(storeDir, '.dashboard-token'), TOKEN + '\n')
+      writeFileSync(OWN_TOKEN_FILE(), TOKEN + '\n')
+    }
+  })
+
+  // P0-1 (4/4): the own token or an ERROR, never the shared one. The shared token exists in the fixture
+  // (KOZOS-TOKEN-NEM-HASZNALT) and the server would 401 it anyway, so the proof is that NO request is made.
+  it('no OWN token though the shared one exists: ERROR token with the reason, non-zero exit, NO request at all', async () => {
+    summaryBody = FULL_SUMMARY()
+    schedulesBody = []
+    rmSync(OWN_TOKEN_FILE())
+    requests = []
+    try {
+      const r = await runScript()
+      expect(r.status).not.toBe(0)
+      expect(r.stdout.split('\n')[0]).toMatch(/^HB_METRICS_V1 /)
+      expect(r.stdout).toMatch(/ERROR token: .*own dashboard token/)
+      expect(r.stdout).not.toContain('COUNTS')
+      expect(r.stdout).not.toContain('KOZOS-TOKEN')
+      expect(requests, 'the shared token must not be presented').toEqual([])
+    } finally {
+      writeFileSync(OWN_TOKEN_FILE(), TOKEN + '\n')
+    }
+  })
+
+  it('an EMPTY own token is the same', async () => {
+    summaryBody = FULL_SUMMARY()
+    schedulesBody = []
+    writeFileSync(OWN_TOKEN_FILE(), '')
+    requests = []
+    try {
+      const r = await runScript()
+      expect(r.status).not.toBe(0)
+      expect(r.stdout).toContain('ERROR token:')
+      expect(requests).toEqual([])
+    } finally {
+      writeFileSync(OWN_TOKEN_FILE(), TOKEN + '\n')
     }
   })
 })

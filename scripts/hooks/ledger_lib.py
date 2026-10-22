@@ -94,6 +94,7 @@ def hook_context_notice(hook, why, agent_id=None, seconds=HOOK_NOTICE_SECONDS):
     The skip is also noted in the daily failure log. The text carries neither the token nor a URL, and is ASCII
     (a hook's stdout encoding is not guaranteed)."""
     hook_token_failure(hook, why, agent_id)
+    kept = False  # could a marker be written? only then is "at most every N minutes" true
     try:
         directory = _hook_state_dir(agent_id)
         if directory is not None:
@@ -108,13 +109,15 @@ def hook_context_notice(hook, why, agent_id=None, seconds=HOOK_NOTICE_SECONDS):
             try:
                 fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
                 os.close(fd)
+                kept = True
             except OSError:
                 pass
     except Exception:
         pass
+    when = ("ez a sor legfeljebb %d percenkent ismetlodik" % (seconds // 60)) if kept else \
+        "ez a sor minden alkalommal megjelenik (nincs hova jegyezni, hogy mar szoltam)"
     return ("[%s] A hook nem tudta behozni a kontextusba, amit kellett: %s. "
-            "Rogzitsd a vezerlopulton (kartya vagy naplo); ez a sor legfeljebb %d percenkent ismetlodik.\n"
-            % (hook, why, seconds // 60))
+            "Rogzitsd a vezerlopulton (kartya vagy naplo); %s.\n" % (hook, why, when))
 
 
 def hook_token_failure(hook, why, agent_id=None):
