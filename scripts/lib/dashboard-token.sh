@@ -4,7 +4,7 @@
 #
 # The agent is the CALLING OS USER's, never a name the caller passes: an
 # agent's `runAsUser` in agents/<name>/agent-config.json, or the main agent
-# (MAIN_AGENT_ID in .env, default marveen) for the install's owner. Its token
+# (MAIN_AGENT_ID in .env, NO default: see the second case below) for the install's owner. Its token
 # is store/tokens/<agent>.token. That file being 0400 and the agent's own is
 # the real gate; this function only picks the file.
 #

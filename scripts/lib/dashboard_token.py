@@ -13,8 +13,11 @@ THREE CASES, and they are not the same (P0-1, task p01-legacy-uzenet-hivo, acrob
     default "marveen" has no token file, so such a process silently used the shared token;
   - a caller that is no agent at all (root, cron, an unknown user): the shared store/.dashboard-token with one
     line on stderr, as before, until the scripts that legitimately use it (docs/b28-titok-kivetel.md) are moved.
-The error message is also written to stderr before it is raised, so a caller that swallows the exception
-(several hooks do, `except Exception`) is no longer silent about it.
+The error message is also written to stderr before it is raised. That leaves a trace for a caller that swallows
+the exception (thirteen callers do, `except Exception`, and take the shared path: eight hooks, fleet-doctor.py,
+fleet-state.py, heartbeat-metrics.sh, pr-beolvaszt.sh, task-last-run.sh), but for a HOOK that trace is only in its
+log: Claude Code shows a hook's stderr on exit 0 only in the verbose view. Those callers are being moved one by one
+(card 809a2f48); until then they still use the shared token in that case.
 """
 import glob
 import json
