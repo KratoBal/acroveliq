@@ -38,6 +38,7 @@ import hmac
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -52,7 +53,10 @@ BIND = os.environ.get("SUTYERAK_BIND", "127.0.0.1")
 MODEL = os.environ.get("SUTYERAK_MODEL", "claude-sonnet-5-5")
 SECRET_FILE = os.environ.get("SUTYERAK_SECRET_FILE", "/home/marveen/marveen/store/.sutyerak-gateway-secret")
 OAUTH_FILE = os.environ.get("SUTYERAK_OAUTH_FILE", "/home/marveen/marveen/store/.claude-oauth-token")
-DASHBOARD_TOKEN_FILE = "/home/marveen/marveen/store/.dashboard-token"
+# The install's root: this file lives in <root>/sutyerak/.
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
+from dashboard_token import token_file  # noqa: E402  (the one resolver every fleet script uses)
 RUN_TIMEOUT = 240
 THREAD_IDLE_S = 2 * 3600
 THREAD_MAX_S = 24 * 3600
@@ -144,6 +148,35 @@ def build_prompt(question: str, context: dict | None, user_name: str) -> str:
     return "\n".join(parts)
 
 
+def mcp_env(t: dict, body: dict) -> dict:
+    """The environment of the sutyerak MCP process for one run (pure: no I/O besides the token file's NAME).
+
+    THE HANDOFF TOKEN is the main agent's OWN dashboard token, picked by the same resolver as every fleet
+    script (scripts/lib/dashboard_token.py: this process runs as the install's owner, so the owner's token is
+    the main agent's). It used to be the shared store/.dashboard-token: the message it posts is
+    acrobot -> acrobot, and with the shared token the server cannot say who sent it (and, once the shared token
+    is narrowed to its minimum, refuses POST /api/messages altogether). P0-1, task p01-legacy-uzenet-hivo; the
+    two legacy calls of 2026-10-21 10:46 and 10:48 UTC were this handoff.
+    The MCP child reads the file only to post one fixed body to one fixed URL; the model supplies the request
+    text only. If the resolver cannot find the own token it falls back to the shared one with a line on stderr."""
+    user = body["user"]
+    return {
+        "SUTYERAK_OS_BASE": OS_BASE,
+        "SUTYERAK_OS_TOKEN": body["token"],
+        "SUTYERAK_CATALOG": CATALOG,
+        "SUTYERAK_USER_ID": str(user["id"]),
+        "SUTYERAK_USER_NAME": str(user.get("name", "")),
+        "SUTYERAK_THREAD_ID": t["threadId"],
+        # The Messages conversation the question came from (empty for the widget):
+        # the handoff file carries it so acrobot's answer can go back there.
+        "SUTYERAK_CONVERSATION_ID": str((body.get("context") or {}).get("conversationId") or "")[:64],
+        "SUTYERAK_TOOL_LOG": os.path.join(LOG_DIR, "tools.jsonl"),
+        "SUTYERAK_HANDOFF_URL": "http://localhost:3420/api/messages",
+        "SUTYERAK_HANDOFF_TOKEN_FILE": token_file(ROOT),
+        "SUTYERAK_HANDOFF_DIR": os.path.join(STATE, "atadas"),
+    }
+
+
 def run_claude(t: dict, is_new: bool, prompt: str, body: dict, emit) -> dict:
     user = body["user"]
     with tempfile.TemporaryDirectory(dir=RUN_DIR) as tmp:
@@ -152,21 +185,7 @@ def run_claude(t: dict, is_new: bool, prompt: str, body: dict, emit) -> dict:
             "type": "stdio",
             "command": "python3",
             "args": [os.path.join(HERE, "os_read_mcp.py")],
-            "env": {
-                "SUTYERAK_OS_BASE": OS_BASE,
-                "SUTYERAK_OS_TOKEN": body["token"],
-                "SUTYERAK_CATALOG": CATALOG,
-                "SUTYERAK_USER_ID": str(user["id"]),
-                "SUTYERAK_USER_NAME": str(user.get("name", "")),
-                "SUTYERAK_THREAD_ID": t["threadId"],
-                # The Messages conversation the question came from (empty for the widget):
-                # the handoff file carries it so acrobot's answer can go back there.
-                "SUTYERAK_CONVERSATION_ID": str((body.get("context") or {}).get("conversationId") or "")[:64],
-                "SUTYERAK_TOOL_LOG": os.path.join(LOG_DIR, "tools.jsonl"),
-                "SUTYERAK_HANDOFF_URL": "http://localhost:3420/api/messages",
-                "SUTYERAK_HANDOFF_TOKEN_FILE": DASHBOARD_TOKEN_FILE,
-                "SUTYERAK_HANDOFF_DIR": os.path.join(STATE, "atadas"),
-            },
+            "env": mcp_env(t, body),
         }}}
         fd = os.open(mcp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as f:
