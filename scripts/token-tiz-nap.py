@@ -27,6 +27,16 @@
 # A kettő együtt azt jelenti, hogy a hosszú munkamenet olcsónak (0), a friss drágának látszana. Ezért
 # az összevetés csak a mérhető feladatokon fut, és a kimenet kiírja, hány maradt ki és miért.
 #
+# A LEFEDETTSÉG-BLOKK KÉT SORA, amit a szkript a mérés megbízhatóságáról ad (acrobot 35195, task
+# token-tiz-nap-lefedettseg, 2026-10-22):
+#   profil nélkül   a feladatnak nincs verification_profile-ja, ezért a fejlesztői összevetésből kimarad. NEM pótoljuk
+#                   utólag (egy utólag írt profil kitalált adat lenne); a sor megnevezi: darab, kié, hány hívás.
+#   esemény-fegyelem  a hívásokat a szerver a feladat ESEMÉNYEI szerinti ablakokhoz köti (task-usage.ts): `started` ->
+#                   a szereplő következő `review_requested`-je; újabb ablakot csak `fix_started` nyit. Ha a `started`
+#                   a review kérésével együtt, utólag kerül be, az ablak üres; ha egy többkörös feladatnak nincs
+#                   `fix_started`-ja, a javítási munka ablakon kívül esik. Mindkét esetben a feladat hívásszáma és tokenje
+#                   ALSÓ KORLÁT, a kimenet csak megszámolja őket.
+#
 # Kilépés: 0 kész, 2 hibás hívás, 3 a vezérlőpult nem válaszolt.
 import argparse
 import json
@@ -41,6 +51,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FEJLESZTOI = ('code_app', 'code_fleet', 'migration')
 KESZ = ('merged', 'deployed', 'done')
 TULNYULAS_MP = 30 * 60
+# a `started` ennyi másodpercen belül követi az első `review_requested`-et: utólag bejegyzettnek számít
+UTOLAGOS_START_MP = 60
 MERET_HATAROK = ((1, 49, 'kicsi (1-49 hívás)'), (50, 149, 'közepes (50-149)'), (150, 10**9, 'nagy (150+)'))
 
 
@@ -61,6 +73,8 @@ def feladat_sor(task, usage, timeline):
     session = any(i.get('source') == 'session' for i in items)
     tot = usage['totals']
     last_event = max((e['at'] for e in events), default=None)
+    first_started = min((e['at'] for e in events if e.get('kind') == 'started'), default=None)
+    first_review = min((e['at'] for e in events if e.get('kind') == 'review_requested'), default=None)
     elnyelo = False
     if last_event is not None and usage.get('by_mode', {}).get('session'):
         for s in usage.get('by_session', {}).values():
@@ -77,6 +91,9 @@ def feladat_sor(task, usage, timeline):
         'hivasonkent': (olvasott(tot) / tot['calls']) if tot['calls'] else None,
         'ido_mp': usage.get('duration_seconds'),
         'javitasi_kor': kinds.count('fix_started'),
+        'review_korok': kinds.count('review_requested'),
+        # seconds from the first `started` to the first `review_requested`; None when either is missing
+        'start_review_mp': (first_review - first_started) if first_started is not None and first_review is not None else None,
         'kesz': any(k in KESZ for k in kinds),
         'mod': 'friss' if handoff and session else 'hosszú' if not handoff and not session else 'vegyes',
         'atado': handoff,
@@ -142,6 +159,15 @@ def jelentes(sorok, tol, ig, meres_ideje):
     elnyelo = [s for s in fejl if s['elnyelo']]
     ervenytelen = [s for s in fejl if not s['ervenyes']]
     merheto = [s for s in fejl if s['hivas'] > 0 and not s['elnyelo'] and s['ervenyes']]
+    profiltalan = [s for s in sorok if not s['profil']]
+    ures_start = [s for s in fejl if s['start_review_mp'] is not None]
+    utolagos = [s for s in ures_start if s['start_review_mp'] <= UTOLAGOS_START_MP]
+    tobbkoru = [s for s in fejl if s['review_korok'] > 1]
+    fix_nelkul = [s for s in tobbkoru if s['javitasi_kor'] == 0]
+    kie = {}
+    for s in profiltalan:
+        kie[s['assignee'] or '?'] = kie.get(s['assignee'] or '?', 0) + 1
+    kie_szoveg = ', '.join(f'{n} {db}' for n, db in sorted(kie.items(), key=lambda kv: (-kv[1], kv[0]))) or '-'
     L = [
         f'# V3 tíz munkanap: feladatonkénti fogyasztás, {tol}..{ig}',
         '',
@@ -155,6 +181,10 @@ def jelentes(sorok, tol, ig, meres_ideje):
         f'- 0 hívás (a munkamenete másik feladathoz bejegyezve, vagy nem futott): {len(nulla)}',
         f'- elnyelő (bejegyzett munkamenete {TULNYULAS_MP // 60} percnél tovább túlnyúlik a feladaton, a száma felfújt): {len(elnyelo)}',
         f'- érvénytelen (munka-hívás két feladat ablakában): {len(ervenytelen)}',
+        f'- profil nélkül (verification_profile üres; az összevetésből kimarad, utólag NEM pótoljuk): {len(profiltalan)} feladat, '
+        f'kié: {kie_szoveg}; hívásuk összesen: {sum(s["hivas"] for s in profiltalan)}; elkészült: {sum(1 for s in profiltalan if s["kesz"])}',
+        f'- esemény-fegyelem (fejlesztői): a `started` a review kérésétől számított {UTOLAGOS_START_MP} másodpercen belül van: {len(utolagos)} / {len(ures_start)}; '
+        f'több review-kör `fix_started` nélkül: {len(fix_nelkul)} / {len(tobbkoru)}. Az ilyen feladat hívásszáma és tokenje ALSÓ KORLÁT (az ablakon kívüli munka nincs benne), nem egyformán szoros',
         f'- mód a fejlesztőin: friss {sum(s["mod"] == "friss" for s in fejl)}, hosszú {sum(s["mod"] == "hosszú" for s in fejl)}, vegyes {sum(s["mod"] == "vegyes" for s in fejl)}',
         '',
         '## Friss kontra hosszú, hasonló méretben (csak a mérhetőkön)',
