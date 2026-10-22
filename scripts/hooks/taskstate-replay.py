@@ -20,19 +20,19 @@ import os
 import json
 import urllib.request
 
-# the calling user's own dashboard token if handed out, else the shared one,
-# loudly (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py). Defensive:
-# a hook run from elsewhere falls back to the shared path instead of failing.
-def _dashboard_token_file(root):
+# The calling user's OWN dashboard token, or nothing (acrovelIQ P0-1, task p01-csendes-visszaeso-hivok).
+# NEVER the shared one: the replay route is the agent's own. Without an own token the hook says so
+# (one rate-limited line into the context) instead of silently bringing nothing.
+def _own_token(root):
     try:
         import sys as _sys
         _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
         if _lib not in _sys.path:
             _sys.path.insert(0, _lib)
-        from dashboard_token import token_file
-        return token_file(root)
-    except Exception:
-        return os.path.join(root, "store", ".dashboard-token")
+        from dashboard_token import own_token
+        return own_token(root)
+    except Exception as e:
+        return None, "the token resolver could not be loaded (%s)" % type(e).__name__
 
 # Agent identity comes from the ledger library -- ONE resolver for every hook
 # (LEDGERCWD828: the cwd is mutable within a session, so this file's private
@@ -62,14 +62,6 @@ def _web_port():
 
 
 API = "http://localhost:%s/api" % _web_port()
-
-
-def _token():
-    try:
-        with open(_dashboard_token_file(_project_root()), "r") as f:
-            return f.read().strip()
-    except Exception:
-        return ""
 
 
 def _main_agent_id():
@@ -105,8 +97,15 @@ def main():
     agent = ledger_lib.agent_id_from_payload(payload)
     if not agent:
         sys.exit(0)  # main agent / unknown -> not a sub-agent task-state target
-    token = _token()
+    token, why = _own_token(_project_root())
     if not token:
+        # a replay that silently does not happen is the amnesia this hook exists to prevent: say so
+        notice = ledger_lib.hook_context_notice("taskstate-replay", why, agent)
+        if notice:
+            print(json.dumps({
+                "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": notice}
+            }, ensure_ascii=False))
+            sys.stdout.flush()
         sys.exit(0)
 
     # READ: ask the dashboard whether to replay (it applies source/consumed/TTL/empty).

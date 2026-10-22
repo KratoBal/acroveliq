@@ -64,6 +64,57 @@ def _install_dir():
 
 
 HOOK_FAILURE_LOG = ".hook-token-failures.log"
+HOOK_NOTICE_SECONDS = 600
+
+
+def _hook_state_dir(agent_id=None):
+    """The directory a hook may write its small state files into, or None.
+
+    agents/<id>/ for a sub-agent, store/ for the main agent. Only a directory the calling user can write is
+    returned. If a sub-agent's directory is not writable (or the payload names the wrong agent), the choice
+    falls back to store/, which an agent user cannot write, so the result is None and the caller's note is
+    simply not kept: the safe side, nothing is written into a wrong place. That can make a skip fully silent
+    for such a hook (barracuda on #289); the context hooks then repeat their line instead, see
+    hook_context_notice."""
+    install = _install_dir()
+    candidates = []
+    if agent_id and agent_id != main_agent_id():
+        candidates.append(os.path.join(install, "agents", agent_id))
+    candidates.append(os.path.join(install, "store"))
+    return next((d for d in candidates if os.path.isdir(d) and os.access(d, os.W_OK)), None)
+
+
+def hook_context_notice(hook, why, agent_id=None, seconds=HOOK_NOTICE_SECONDS):
+    """The one line a CONTEXT-giving hook prints when it cannot present its own token, or "" if one was printed lately.
+
+    A hook that brings something INTO the agent's context (the recent log, a replay, a recall, a voice transcript)
+    and silently brings nothing is worse than one that says so. The line is rate limited by a marker file
+    (.hook-notice-<hook>) in the hook's state dir; with no writable state dir the line is repeated every time,
+    never swallowed. The marker is trusted only as a regular file (a link never is) and is opened with O_NOFOLLOW.
+    The skip is also noted in the daily failure log. The text carries neither the token nor a URL, and is ASCII
+    (a hook's stdout encoding is not guaranteed)."""
+    hook_token_failure(hook, why, agent_id)
+    try:
+        directory = _hook_state_dir(agent_id)
+        if directory is not None:
+            import stat as _stat
+            marker = os.path.join(directory, ".hook-notice-%s" % hook)
+            try:
+                st = os.lstat(marker)
+                if _stat.S_ISREG(st.st_mode) and time.time() - st.st_mtime < seconds:
+                    return ""
+            except OSError:
+                pass
+            try:
+                fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+                os.close(fd)
+            except OSError:
+                pass
+    except Exception:
+        pass
+    return ("[%s] A hook nem tudta behozni a kontextusba, amit kellett: %s. "
+            "Rogzitsd a vezerlopulton (kartya vagy naplo); ez a sor legfeljebb %d percenkent ismetlodik.\n"
+            % (hook, why, seconds // 60))
 
 
 def hook_token_failure(hook, why, agent_id=None):
@@ -76,13 +127,7 @@ def hook_token_failure(hook, why, agent_id=None):
     or in store/ for the main agent. Never raises, never follows a link.
     """
     try:
-        install = _install_dir()
-        main = main_agent_id()
-        candidates = []
-        if agent_id and agent_id != main:
-            candidates.append(os.path.join(install, "agents", agent_id))
-        candidates.append(os.path.join(install, "store"))
-        directory = next((d for d in candidates if os.path.isdir(d) and os.access(d, os.W_OK)), None)
+        directory = _hook_state_dir(agent_id)
         if directory is None:
             return
         path = os.path.join(directory, HOOK_FAILURE_LOG)
