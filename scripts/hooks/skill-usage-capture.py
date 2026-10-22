@@ -24,19 +24,19 @@ import json
 import urllib.request
 import urllib.error
 
-# the calling user's own dashboard token if handed out, else the shared one,
-# loudly (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py). Defensive:
-# a hook run from elsewhere falls back to the shared path instead of failing.
-def _dashboard_token_file(root):
+# The calling user's OWN dashboard token, or nothing (acrovelIQ P0-1, task p01-csendes-visszaeso-hivok).
+# NEVER the shared one: POST /api/skill-usage is closed to it under enforcement, and the old fallback hid a
+# missing own token. Without one the hook skips (it must never stop the agent) and notes it once a day.
+def _own_token(root):
     try:
         import sys as _sys
         _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
         if _lib not in _sys.path:
             _sys.path.insert(0, _lib)
-        from dashboard_token import token_file
-        return token_file(root)
-    except Exception:
-        return os.path.join(root, "store", ".dashboard-token")
+        from dashboard_token import own_token
+        return own_token(root)
+    except Exception as e:
+        return None, "the token resolver could not be loaded (%s)" % type(e).__name__
 
 # Agent identity comes from the ledger library -- ONE resolver for every hook.
 # This file used to carry its own _agent_id_from_cwd() copy, which drifted:
@@ -65,14 +65,6 @@ def _web_port() -> str:
         except Exception:
             pass
     return port or "3420"
-
-
-def _dashboard_token() -> str:
-    try:
-        with open(_dashboard_token_file(_install_dir())) as f:
-            return f.read().strip()
-    except OSError:
-        return ""
 
 
 # Kept as a module-level alias for the tests (they pin that this file has no
@@ -119,8 +111,9 @@ def main() -> None:
     skill_name, trigger_type = result
     agent_id = ledger_lib.agent_id_from_payload(payload)
 
-    token = _dashboard_token()
+    token, why = _own_token(_install_dir())
     if not token:
+        ledger_lib.hook_token_failure("skill-usage-capture", why, agent_id)
         sys.exit(0)
 
     body = json.dumps({

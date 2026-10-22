@@ -107,6 +107,39 @@ def token_file(root, user=None):
     return os.path.join(root, "store", ".dashboard-token")
 
 
+def own_token_path(root, user=None):
+    """(path, None) of the caller's OWN token file, or (None, why). NEVER the shared file, and never raises.
+
+    For callers that must carry on without a token (a hook must not stop the agent): they get the reason to
+    report and decide what to do. token_file() raises DashboardTokenError for an agent whose own token is
+    missing; for a caller that is no agent at all it still returns the shared path (loudly), which is refused
+    here by its location, because the own tokens live in store/tokens/."""
+    try:
+        path = token_file(root, user)
+    except OSError:
+        return None, "the own dashboard token is missing, unreadable or empty"
+    except Exception as e:
+        return None, "the token resolver failed (%s)" % type(e).__name__
+    if os.path.basename(os.path.dirname(path)) != "tokens":
+        return None, "no own dashboard token (only the shared one exists, and it is not used)"
+    return path, None
+
+
+def own_token(root, user=None):
+    """(token, None) of the caller's OWN token, or (None, why). The shared token is never returned."""
+    path, why = own_token_path(root, user)
+    if path is None:
+        return None, why
+    try:
+        with open(path, encoding="utf-8") as f:
+            token = f.read().strip()
+    except OSError:
+        return None, "the own dashboard token cannot be read"
+    if not token:
+        return None, "the own dashboard token is empty"
+    return token, None
+
+
 def read_token(root, user=None):
     """The token itself, stripped; '' when the file cannot be read. DashboardTokenError is NOT swallowed."""
     path = token_file(root, user)

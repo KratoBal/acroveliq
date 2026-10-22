@@ -7,19 +7,19 @@ import re
 import urllib.request
 import urllib.error
 
-# the calling user's own dashboard token if handed out, else the shared one,
-# loudly (acrovelIQ P0-1, plan 5.2; scripts/lib/dashboard_token.py). Defensive:
-# a hook run from elsewhere falls back to the shared path instead of failing.
-def _dashboard_token_file(root):
+# The calling user's OWN dashboard token, or nothing (acrovelIQ P0-1, task p01-csendes-visszaeso-hivok).
+# NEVER the shared one: POST /api/tool-log is closed to it under enforcement, and the old fallback hid a
+# missing own token. Without one the hook skips (it must never stop the agent) and notes it once a day.
+def _own_token(root):
     try:
         import sys as _sys
         _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
         if _lib not in _sys.path:
             _sys.path.insert(0, _lib)
-        from dashboard_token import token_file
-        return token_file(root)
-    except Exception:
-        return os.path.join(root, "store", ".dashboard-token")
+        from dashboard_token import own_token
+        return own_token(root)
+    except Exception as e:
+        return None, "the token resolver could not be loaded (%s)" % type(e).__name__
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
@@ -42,14 +42,6 @@ def _web_port() -> str:
         except Exception:
             pass
     return port or "3420"
-
-
-def _dashboard_token() -> str:
-    try:
-        with open(_dashboard_token_file(_project_root())) as f:
-            return f.read().strip()
-    except OSError:
-        return ''
 
 
 # Patterns that could reveal secrets if stored verbatim.
@@ -115,8 +107,10 @@ def main():
     if not session_id or not tool_name:
         sys.exit(0)
 
-    token = _dashboard_token()
+    agent_id = ledger_lib.agent_id_from_payload(payload)
+    token, why = _own_token(_project_root())
     if not token:
+        ledger_lib.hook_token_failure('tool-log-capture', why, agent_id)
         sys.exit(0)
 
     port = _web_port()
@@ -127,7 +121,7 @@ def main():
         'tool_name': tool_name,
         'input_summary': _input_summary(tool_input, tool_name),
         'success': success,
-        'agent_id': ledger_lib.agent_id_from_payload(payload),
+        'agent_id': agent_id,
         # trace_id holds the CC-native tool_use_id: stable, unique per call,
         # present in both Pre and PostToolUse payloads (empirically verified).
         # No PreToolUse hook needed -- CC already gives us the correlation key
