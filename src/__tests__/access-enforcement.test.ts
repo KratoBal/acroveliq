@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { AddressInfo } from 'node:net'
 import { initDatabase, getDb } from '../db.js'
+import { PROBE_UNRULED_PATH, probesFor } from '../web/access-mode-switch.js'
 import { readBody } from '../web/http-helpers.js'
 import {
   ACCESS_MODES, accessGate, callerOf, enforces, parseAccessMode, scheduleAgentFrom,
@@ -225,6 +226,45 @@ describe('access enforcement: through the gate', () => {
       if (r.status !== expected) wrong.push(`${callerOf(as, 'acrobot')?.column} ${method} ${path}: ${r.status}, expected ${expected}`)
     }
     expect(wrong, 'ACCESS-ENFORCED').toEqual([])
+  })
+
+  it('ACCESS-PREFLIGHT-1023: the three shapes the 2026-10-23 preflight listed get a 403 enforced, the control call too, and the main agent\'s fixed routes a 200', async () => {
+    mode = 'kikenyszerit'
+    // a DELIVERED message murena sent to nautilus: murena (the sender) does not close it
+    getDb().prepare("INSERT OR REPLACE INTO agent_messages (id, from_agent, to_agent, content, created_at, status, delivered_at) VALUES (20, 'murena', 'nautilus', 'x', 0, 'delivered', 0)").run()
+    const reads = ['access-decisions', 'request-actors', 'uzenet-ablak', 'uzenet', 'tool-log-osszesito', 'tool-log-minta', 'kartya-letrehozas', 'legacy-hivok']
+    const cases: Array<[string, CallerSource, string, string, number]> = [
+      ['murena moves nautilus\'s card (kanban-card-change)', G, 'POST', '/api/kanban/c-nautilus/move', 403],
+      ['murena closes the delivered message it sent (message-state)', G, 'PUT', '/api/messages/20', 403],
+      ['the control call: the shared token on a route no rule answers', L, 'GET', PROBE_UNRULED_PATH, 403],
+      ...reads.flatMap((q): Array<[string, CallerSource, string, string, number]> => [
+        [`nautilus reads fleet-reads/${q}`, G2, 'GET', `/api/fleet-reads/${q}`, 403],
+        [`murena reads fleet-reads/${q}`, G, 'GET', `/api/fleet-reads/${q}`, 403],
+        [`the shared token reads fleet-reads/${q}`, L, 'GET', `/api/fleet-reads/${q}`, 403],
+        [`the main agent reads fleet-reads/${q}`, A, 'GET', `/api/fleet-reads/${q}`, 200],
+        [`the session reads fleet-reads/${q}`, S, 'GET', `/api/fleet-reads/${q}`, 200],
+      ]),
+      ...probesFor('kikenyszerit', '2026-10-23').filter((p) => p.caller === 'A' && p.expected === 200)
+        .map((p): [string, CallerSource, string, string, number] => [`the main agent's fixed route ${p.path}`, A, 'GET', p.path, 200]),
+    ]
+    const wrong: string[] = []
+    for (const [what, as, method, path, expected] of cases) {
+      const r = await call(as, method, path)
+      if (r.status !== expected) wrong.push(`${what}: ${r.status}, expected ${expected}`)
+    }
+    expect(wrong, 'ACCESS-PREFLIGHT-1023').toEqual([])
+  })
+
+  it('ACCESS-SWITCH-PROBES: what the switch step expects of the running mode (403 or let through) is what the gate does, mode by mode', async () => {
+    // the real dashboard answers a let-through unruled route with 404; this harness has one handler that says 200
+    const letThrough = (expected: number) => (expected === 403 ? 403 : 200)
+    for (const m of ['naplo', 'legacy-szukitett', 'kikenyszerit'] as const) {
+      mode = m
+      for (const p of probesFor(m, '2026-10-23')) {
+        const r = await call(p.caller === 'L' ? L : A, 'GET', p.path)
+        expect(r.status, `${m}: ${p.name}`).toBe(letThrough(p.expected))
+      }
+    }
   })
 
   it('ACCESS-LEGACY-NARROWED: only the shared token is held; an agent token is logged, not denied', async () => {
