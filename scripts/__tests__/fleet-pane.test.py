@@ -392,6 +392,16 @@ check('Q10d the first-run trust dialog with seven blank rows after it is still s
 fresh_idle = '\n'.join(['Welcome'] + [''] * 8 + [SEP, '❯ ', SEP, FOOTER])
 check('Q10e a fresh idle pane (blank rows above the box, footer on the last row): live footer, no dialog, idle',
       (fp.live_footer(fresh_idle), fp.dialog(fresh_idle), fp.Broker.parked_ok(None, {'plain': fresh_idle, 'dimless': fresh_idle})), (True, None, 'box-empty'))
+# Q11 (card 06e0f4ab, e; acrobot 35362): feedback_draft looks for the options row OUTSIDE the box. A quoted options row in a message stood
+# in the box as a dialog when the message had a row of its own that begins with the prompt glyph after it (the old "a prompt row below" test).
+OPTIONS_ROW = '│ 1 to review · 2 to send · 0 to dismiss │'
+check('Q11a an options row quoted in the box is not a draft modal, whether or not a prompt-glyph row of the message follows it',
+      (fp.feedback_draft(box_pane('Az uzenet elso sora', OPTIONS_ROW)), fp.feedback_draft(box_pane('Az uzenet elso sora', OPTIONS_ROW, '❯ masodik prompt-szeru sor')),
+       fp.dialog(box_pane('Az uzenet elso sora', OPTIONS_ROW, '❯ masodik prompt-szeru sor'))), (False, False, None))
+DRAFT_ABOVE = '\n'.join(['● kesz', ' ╭──────╮', ' │ Bug report drafted: x │', ' ' + OPTIONS_ROW, ' ╰──────╯', '', SEP, '❯ ', SEP, FOOTER])
+check('Q11b the real draft modal above the box is still a draft modal (and a dialog)', (fp.feedback_draft(DRAFT_ABOVE), fp.dialog(DRAFT_ABOVE)), (True, 'feedback-draft'))
+check('Q11c the real modal above a message parked in the box is still seen',
+      fp.feedback_draft('\n'.join(['● kesz', ' ╭──────╮', ' ' + OPTIONS_ROW, ' ╰──────╯', '', SEP, '❯ Az uzenet', '  masodik sor', SEP, FOOTER])), True)
 check('Q5 without_box blanks the box rows only (same line count), separators and footer stay',
       fp.without_box(live('hosszu szoveg')).split('\n'), ['  ⎿  … tool output …', '', SEP, '', SEP, '  Opus 5 · ctx 40%', FOOTER])
 # Q7: the busy windows are counted from the bottom, so blanking keeps their place; REMOVING the rows would pull the line above the box into
