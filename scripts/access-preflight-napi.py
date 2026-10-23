@@ -63,6 +63,7 @@ def paths(root):
     return {
         'dir': d,
         'last': os.path.join(d, 'napi.last'),
+        'history': os.path.join(d, 'napi.tortenet'),
         'since': os.path.join(d, 'napi.since'),
         'lock': os.path.join(d, '.lock'),
     }
@@ -208,6 +209,26 @@ def prune(directory):
         os.unlink(os.path.join(directory, f))
 
 
+HISTORY_KEEP = 60
+
+
+def append_history(path, line):
+    """One line per run, the same as napi.last, append-only (the last HISTORY_KEEP kept): the switch
+    step (scripts/access-mode.ts) reads it to see two CLEAN daily runs one after the other, which a
+    single napi.last cannot show. Best effort: the daily run does not fail on its own history."""
+    try:
+        with open(path, 'a') as fh:
+            fh.write(line)
+        with open(path) as fh:
+            lines = fh.readlines()
+        if len(lines) > HISTORY_KEEP:
+            with open(path + '.tmp', 'w') as fh:
+                fh.writelines(lines[-HISTORY_KEEP:])
+            os.replace(path + '.tmp', path)
+    except OSError as err:
+        print(f'access-preflight-napi: a tortenet nem irhato: {err}', file=sys.stderr)
+
+
 def futtat(args):
     p = paths(args.root)
     os.makedirs(p['dir'], mode=0o700, exist_ok=True)
@@ -240,6 +261,7 @@ def futtat(args):
     with open(p['last'] + '.tmp', 'w') as fh:
         fh.write(f'{int(now)} {verdict} {first}\n')
     os.replace(p['last'] + '.tmp', p['last'])
+    append_history(p['history'], f'{int(now)} {verdict} {first}\n')
     prune(p['dir'])
     print(text)
     ok, resp = send(['bash', args.naplo_cmd, 'acrobot', 'Hozzaferesi preflight (napi, P0-1 L4)', '-'], text, p['dir'])

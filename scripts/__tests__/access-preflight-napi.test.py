@@ -118,6 +118,21 @@ e = Env()
 r = e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [])})
 check('both lists empty: exit 0, RENDBEN', r.returncode == 0 and ' RENDBEN ' in e.last())
 check('the dashboard entry is written, no message', e.sent('naplo').count('--END--') == 1 and e.sent('uzenet') == '')
+hist = open(e.p['history']).read().splitlines()
+check('the run is also one line in napi.tortenet, the same as napi.last (the switch step reads it)',
+      len(hist) == 1 and hist[0] == e.last().strip())
+e.done()
+print('1b. the history is append-only, keeps every verdict, and is cut at HISTORY_KEEP')
+e = Env()
+e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [])})
+e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [row('murena')])})
+verdicts = [ln.split(' ')[1] for ln in open(e.p['history']).read().splitlines()]
+check('a clean run, then a JELZES run: both lines stay, in order', verdicts == ['RENDBEN', 'JELZES'])
+with open(e.p['history'], 'w') as fh:
+    fh.write(''.join(f'{1700000000 + i} RENDBEN x\n' for i in range(napi.HISTORY_KEEP + 5)))
+napi.append_history(e.p['history'], '1800000000 RENDBEN utolso\n')
+kept = open(e.p['history']).read().splitlines()
+check('over the limit: the newest HISTORY_KEEP lines stay, the newest last', len(kept) == napi.HISTORY_KEEP and kept[-1].endswith('utolso'))
 e.done()
 
 e = Env()
