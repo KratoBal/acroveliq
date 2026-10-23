@@ -20,6 +20,8 @@ import {
   submitLanded,
   paneShowsContextSaturation,
   withoutInputBox,
+  lastFooterIndex,
+  liveInputBoxRows,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -2365,5 +2367,64 @@ describe('busy guards ignore what stands in the input box (06e0f4ab)', () => {
       const out = withoutInputBox(quoted.split('\n'))
       expect(out.join('\n')).not.toContain('esc to interrupt')
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Card 06e0f4ab, (a): the box's frame hangs on the LAST footer-shaped line, not the first.
+//
+// A message standing in the input box that QUOTES a footer-shaped line ("... bypass permissions on
+// (shift+tab to cycle)", which the fleet writes about all day) used to frame the box INSIDE the
+// message: detectPaneState read 'idle' while text was parked, and the stuck-input recovery chain,
+// which gates on 'typing', never saw it. Replayed on synthetic panes; the 2026-10-21 cases are NOT
+// shown to be this cause.
+// ---------------------------------------------------------------------------
+describe('the input box hangs on the last footer line (06e0f4ab, a)', () => {
+  const QFOOTER = '⏵⏵ bypass permissions on (shift+tab to cycle)'
+  const FOOTER = '  ⏵⏵ bypass permissions on (shift+tab to cycle)'
+  const live = (rows: string[], extra: string[] = []) =>
+    ['● kesz', '', SEP, '❯ ' + rows[0], ...rows.slice(1).map((r) => '  ' + r), SEP, '  Opus 5 · ctx 40%', ...extra, FOOTER].join('\n')
+
+  it('a parked message that quotes a footer line is typing, with its three rows and its recovery signature', () => {
+    for (const rows of [
+      ['Az uzenet elso sora', QFOOTER, 'harmadik'],
+      [QFOOTER + ' ez az elso sor', 'masodik', 'harmadik'],
+      ['Az uzenet elso sora', 'masodik', QFOOTER],
+    ]) {
+      const pane = live(rows)
+      expect(detectPaneState(pane)).toBe('typing')
+      expect(liveInputBoxRows(pane)?.length).toBe(3)
+      expect(parkedInputText(pane)).not.toBeNull()
+      expect(stuckInputSignature(pane)).not.toBeNull()
+    }
+  })
+
+  it('an empty box with the real footer stays idle, and a quote in scrollback above the box does not frame anything', () => {
+    expect(detectPaneState(['● kesz', '', SEP, '❯ ', SEP, FOOTER].join('\n'))).toBe('idle')
+    const scrollback = ['  valaki azt irta: ' + QFOOTER, '● kesz', '', SEP, '❯ ', SEP, FOOTER].join('\n')
+    expect(detectPaneState(scrollback)).toBe('idle')
+  })
+
+  it('lastFooterIndex: the bottom-most footer-shaped line, -1 when there is none', () => {
+    expect(lastFooterIndex(['a', QFOOTER, 'b', FOOTER])).toBe(3)
+    expect(lastFooterIndex(['a', QFOOTER, 'b'])).toBe(1)
+    expect(lastFooterIndex(['a', 'b'])).toBe(-1)
+  })
+})
+
+// Card 06e0f4ab, (b): the context-saturation banner is read outside the input box.
+describe('paneShowsContextSaturation ignores the input box (06e0f4ab, b)', () => {
+  const FOOTER = '  ⏵⏵ bypass permissions on (shift+tab to cycle)'
+  const pane = (rows: string[], banner: string[] = []) =>
+    ['● kesz', '', SEP, '❯ ' + rows[0], ...rows.slice(1).map((r) => '  ' + r), SEP, '  Opus 5 · ctx 40%', ...banner, FOOTER].join('\n')
+
+  it('a message quoting "100% context used" in the box is not a saturated session', () => {
+    expect(paneShowsContextSaturation(pane(['a "100% context used" feliratrol van szo', 'vege']))).toBe(false)
+    expect(paneShowsContextSaturation(pane(['kezdet', 'context limit', 'vege']))).toBe(false)
+  })
+
+  it('the real banner (a row above the footer, outside the box) still counts', () => {
+    expect(paneShowsContextSaturation(pane(['szoveg'], ['  100% context used']))).toBe(true)
+    expect(paneShowsContextSaturation(pane([''], ['  100% context used']))).toBe(true)
   })
 })

@@ -332,6 +332,20 @@ check('Q3 busy() on the real signs and on the quote',
 # the old reading stands where the box cannot be located: no footer / no separators -> nothing is taken out
 NO_SEP = '\n'.join(['a lablec "· esc to interrupt" jelzi', FOOTER])
 check('Q4 without separators the old reading stands (the quote counts, nothing is hidden)', fp.busy(NO_SEP), True)
+# Q8 (card 06e0f4ab, a): the box hangs on the LAST footer-shaped line. A message in the box that quotes one used to frame the box INSIDE the
+# message: box_state read our own text as someone else's, and `submit --expect` / `clear --expect` refused it (not-ours).
+QFOOTER = '⏵⏵ bypass permissions on (shift+tab to cycle)'
+Q_ROWS = ('Az uzenet elso sora, hosszu szoveg', QFOOTER, 'harmadik sor', 'vege')
+Q_TEXT = ' '.join(Q_ROWS)
+q_pane = Pane(box=box_of(*Q_ROWS))
+check('Q8a box_rows keeps all four rows of a message that quotes a footer line',
+      len(fp.box_rows(q_pane.render()) or []), 4)
+check('Q8b the box holds OUR text although it quotes a footer line (ours, not other)', fp.box_state(q_pane.render(), Q_TEXT)[0], 'ours')
+p = Pane(box=box_of(*Q_ROWS))
+check('Q8c submit --expect on our text that quotes a footer line: one Enter (was not-ours)',
+      (e.run(p, ['submit', 'proba', '--expect'], Q_TEXT.encode())[0], p.keys), (0, ['Enter']))
+check('Q8d a quote in the scrollback above the box frames nothing: an empty box stays empty',
+      fp.box_rows('\n'.join(['  valaki azt irta: ' + QFOOTER, SEP, '❯ ', SEP, '  Opus 5 · ctx 40%', FOOTER])), ['❯ '])
 check('Q5 without_box blanks the box rows only (same line count), separators and footer stay',
       fp.without_box(live('hosszu szoveg')).split('\n'), ['  ⎿  … tool output …', '', SEP, '', SEP, '  Opus 5 · ctx 40%', FOOTER])
 # Q7: the busy windows are counted from the bottom, so blanking keeps their place; REMOVING the rows would pull the line above the box into
