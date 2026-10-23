@@ -777,7 +777,9 @@ export function detectsFeedbackDraftModal(pane: string): boolean {
   const liveFrom = Math.max(0, lines.length - BUSY_LIVE_REGION_LINES)
   let optionsAt = -1
   for (let i = lines.length - 1; i >= liveFrom; i--) {
-    if (FEEDBACK_DRAFT_OPTIONS_RX.test(lines[i])) { optionsAt = i; break }
+    // outside the input box: a message in the box that QUOTES the options row is text we typed (card 06e0f4ab); the prompt
+    // marker below is the box's own first row, so that part keeps reading `lines`
+    if (FEEDBACK_DRAFT_OPTIONS_RX.test(linesLive[i]!)) { optionsAt = i; break }
   }
   if (optionsAt < 0) return false
 
