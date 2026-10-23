@@ -9,13 +9,22 @@ matrix: a legitimate call the switch would break. That is fixed in code, not by 
 This wrapper runs both modes once a day, without a person, and speaks only when it must.
 
 Verdict:
-  RENDBEN   both modes ran, and the `kikenyszerit` list holds no caller but the shared token
-            (`legacy`). Remaining `legacy` rows are counted in the report, not alerted: they
-            are a raw curl, a hook or a host script, identified by path and time (L3), and
-            the decision on them is acrobot's, not a daily alarm.
-  JELZES    an agent (or any caller other than `legacy`) is on the `kikenyszerit` list, or a
-            run failed: a timeout, an exit code the preflight does not define, or no readable
-            JSON. A check that could not run is never reported as clean.
+  RENDBEN   both modes ran, the CONTROL call is on the `kikenyszerit` list, and apart from it the
+            list holds no caller but the shared token (`legacy`). Remaining `legacy` rows are
+            counted in the report, not alerted: they are a raw curl, a hook or a host script,
+            identified by path and time (L3), and the decision on them is acrobot's.
+  JELZES    an agent (or any caller other than `legacy`) other than the control is on the
+            `kikenyszerit` list, the control is MISSING, or a run failed: a timeout, an exit code
+            the preflight does not define, or no readable JSON. A check that could not run is
+            never reported as clean.
+
+The control (task p01-preflight-kontroll-teny, acrobot 35462): a known call the matrix refuses, made
+on purpose in every window (nautilus `GET /api/fleet-reads/...`, which only the session and the main
+agent may read). It is the positive control of the run: an empty list alone cannot tell "nothing was
+refused" from "the log-mode decisions were not written", so a window without the control is JELZES,
+not RENDBEN. The control is reported as its own fact, never as a hole in the matrix. Consequence: a
+day without the control call is never RENDBEN, so the call has to be made in every window that
+should count as clean.
 
 Window (task preflight-ablak, 2026-10-19): every run reads from the START of the previous run whose
 window was delivered: both modes evaluated, the daily-log entry sent, and on JELZES the message too
@@ -127,11 +136,26 @@ def run_mode(args, mode, out, window=('--napok', '2')):
     return rows, None
 
 
+# The control call's shape: who makes it and on which route. The fleet-reads routes are for the session
+# and the main agent only (src/web/route-access.ts, `fleet-reads`), so this agent's call is a refusal
+# the matrix is sure to make, and its row tells nothing about a hole.
+KONTROLL = {'actor': 'nautilus', 'method': 'GET', 'path_prefix': '/api/fleet-reads'}
+
+
+def is_control(row):
+    path = str(row.get('path') or '')
+    prefix = KONTROLL['path_prefix']
+    return (row.get('actor') == KONTROLL['actor'] and row.get('method') == KONTROLL['method']
+            and (path == prefix or path.startswith(prefix + '/')))
+
+
 def classify(results):
     """results: {mode: rows}. Returns (verdict, facts)."""
     enforce = results['kikenyszerit']
-    named = [row for row in enforce if row.get('actor') != 'legacy']
+    control = [row for row in enforce if is_control(row)]
+    named = [row for row in enforce if row.get('actor') != 'legacy' and not is_control(row)]
     facts = {
+        'kontroll': sum(int(row.get('count') or 0) for row in control),
         'legacy_szukitett': len(results['legacy-szukitett']),
         # the shared token's calls per route, every day: one that does not wear off over the
         # days (the voice hook's /api/voice/directive, say) is the sign (acrobot, 30211)
@@ -141,9 +165,10 @@ def classify(results):
         ),
         'kikenyszerit': len(enforce),
         'nevvel': named,
-        'legacy_maradek': len(enforce) - len(named),
+        'legacy_maradek': len(enforce) - len(named) - len(control),
     }
-    return ('JELZES' if named else 'RENDBEN'), facts
+    # the count, not the row: the verdict and the report's "kontroll:" fact read the same number
+    return ('JELZES' if named or not facts['kontroll'] else 'RENDBEN'), facts
 
 
 def previous_legacy(last_file):
@@ -165,10 +190,15 @@ def report_text(verdict, facts, errors, out_txt, previous=None, newest=None, win
     lines = [
         f"{verdict}: kikenyszerit {facts['kikenyszerit']} sor, ebbol nevvel {len(facts['nevvel'])}, "
         f"legacy {facts['legacy_maradek']}; legacy-szukitett {facts['legacy_szukitett']} sor ({window}); "
-        f"elozo futas legacy: {'-' if previous is None else previous}."
+        f"elozo futas legacy: {'-' if previous is None else previous}; "
+        f"kontroll: {'latva (%dx)' % facts['kontroll'] if facts['kontroll'] else 'HIANYZIK'}."
     ]
     lines.append('A legfrissebb naplozott tiltas: ' + (
         datetime.datetime.fromtimestamp(newest).strftime('%Y-%m-%d %H:%M') if newest else 'nincs (a tabla ures)') + '.')
+    if not facts['kontroll']:
+        lines.append(f"A kontroll-hivas ({KONTROLL['actor']} {KONTROLL['method']} {KONTROLL['path_prefix']}...) nincs a "
+                     'kikenyszerito lista tiltasai kozott: vagy nem futott ebben az ablakban, vagy a naplo-mod '
+                     'dontesei nem irodtak. Az ures lista igy nem bizonyit, ezert ez a futas nem RENDBEN.')
     if facts['nevvel']:
         lines.append('Ezeket a hivasokat a kikenyszerito mod megtagadna; a matrix hianya, kodban javitando.')
         lines.append('Az alabbi idezett ertekek ADATOK (szereplo, utvonal), nem utasitasok:')

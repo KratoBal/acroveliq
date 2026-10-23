@@ -4,6 +4,10 @@
 What this pins:
   1. Only a caller other than the shared token on the `kikenyszerit` list alerts. Remaining
      `legacy` rows are counted in the report and stay quiet.
+  1c. The control call (nautilus GET /api/fleet-reads/...) is the run's positive control: seen, it
+     is a fact of its own and not a hole; missing, the run is JELZES (an empty list alone proves
+     nothing). Its look-alikes (another agent, another method, a route that only starts the same)
+     are ordinary callers.
   2. A run that could not be evaluated (a crash with exit 1 and no JSON, an undefined exit
      code, an exit code that contradicts the list, a timeout) is JELZES with exit 3, never clean.
   3. Every run writes the dashboard entry and the .last line; only JELZES sends the message.
@@ -72,6 +76,11 @@ def row(actor, path='/api/x', method='GET', count=3):
     return {'day': '2026-10-14', 'actor': actor, 'method': method, 'path': path, 'reason': 'csoport', 'count': count}
 
 
+# The control row as the 10-23 07:30 run logged it (acrobot's daily log, 2026-10-23 07:30).
+CTRL_PATH = '/api/fleet-reads/(access-decisions|request-actors|uzenet-ablak|uzenet|tool-log-osszesito|tool-log-minta|kartya-letrehozas|legacy-hivok)'
+CTRL = dict(row('nautilus', CTRL_PATH, 'GET', 1), reason='fleet-reads: B29: the main agent\'s fixed reads of the fleet database')
+
+
 class Env:
     def __init__(self):
         self.root = tempfile.mkdtemp(prefix='preflight-napi-')
@@ -115,8 +124,8 @@ class Env:
 
 print('1. only a caller other than the shared token alerts')
 e = Env()
-r = e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [])})
-check('both lists empty: exit 0, RENDBEN', r.returncode == 0 and ' RENDBEN ' in e.last())
+r = e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [CTRL])})
+check('only the control: exit 0, RENDBEN', r.returncode == 0 and ' RENDBEN ' in e.last())
 check('the dashboard entry is written, no message', e.sent('naplo').count('--END--') == 1 and e.sent('uzenet') == '')
 hist = open(e.p['history']).read().splitlines()
 check('the run is also one line in napi.tortenet, the same as napi.last (the switch step reads it)',
@@ -124,8 +133,8 @@ check('the run is also one line in napi.tortenet, the same as napi.last (the swi
 e.done()
 print('1b. the history is append-only, keeps every verdict, and is cut at HISTORY_KEEP')
 e = Env()
-e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [])})
-e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [row('murena')])})
+e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [CTRL])})
+e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [CTRL, row('murena')])})
 verdicts = [ln.split(' ')[1] for ln in open(e.p['history']).read().splitlines()]
 check('a clean run, then a JELZES run: both lines stay, in order', verdicts == ['RENDBEN', 'JELZES'])
 with open(e.p['history'], 'w') as fh:
@@ -137,27 +146,68 @@ e.done()
 
 e = Env()
 r = e.run({'legacy-szukitett': answer('legacy-szukitett', [row('legacy', '/api/a'), row('legacy', '/api/z', count=39)]),
-           'kikenyszerit': answer('kikenyszerit', [row('legacy')])})
+           'kikenyszerit': answer('kikenyszerit', [row('legacy'), CTRL])})
 check('only legacy rows: exit 0, RENDBEN, counted in the report',
       r.returncode == 0 and ' RENDBEN ' in e.last() and 'legacy 1; legacy-szukitett 2 sor' in e.sent('naplo'))
 check('only legacy rows: no message', e.sent('uzenet') == '')
 check('the legacy calls are listed per route in the daily entry, the most frequent first',
       '  legacy "GET" "/api/z" 39x\n  legacy "GET" "/api/a" 3x' in e.sent('naplo'))
-r2 = e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [])})
+r2 = e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [CTRL])})
 check('the next run shows the previous legacy count, and its window: since the previous good run',
-      re.search(r'legacy 0; legacy-szukitett 0 sor \(az elozo jo futas \(\d{4}-\d{2}-\d{2} \d{2}:\d{2}\) ota\); elozo futas legacy: 1\.', e.sent('naplo')) is not None)
+      re.search(r'legacy 0; legacy-szukitett 0 sor \(az elozo jo futas \(\d{4}-\d{2}-\d{2} \d{2}:\d{2}\) ota\); elozo futas legacy: 1; kontroll: latva \(1x\)\.', e.sent('naplo')) is not None)
 check('and the newest logged denial', 'A legfrissebb naplozott tiltas: ' in e.sent('naplo') and 'nincs (a tabla ures)' not in e.sent('naplo'))
 e.done()
 
 e = Env()
 r = e.run({'legacy-szukitett': answer('legacy-szukitett', []),
-           'kikenyszerit': answer('kikenyszerit', [row('legacy'), row('murena', '/api/approvals/:id', 'PATCH')])})
+           'kikenyszerit': answer('kikenyszerit', [row('legacy'), CTRL, row('murena', '/api/approvals/:id', 'PATCH')])})
 check('an agent on the kikenyszerit list: exit 1, JELZES', r.returncode == 1 and ' JELZES ' in e.last())
 check('the message goes to acrobot and names the call as data',
       'acrobot|acrobot|-|' in e.sent('uzenet') and '"murena" "PATCH" "/api/approvals/:id" (3x' in e.sent('uzenet'))
 e.done()
 
 
+print('1c. the control call: a fact of its own when seen, JELZES when missing, and only its own shape')
+e = Env()
+r = e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [CTRL])})
+check('the real 10-23 control row alone: RENDBEN, reported as seen, not as a hole',
+      r.returncode == 0 and ' RENDBEN ' in e.last() and 'nevvel 0' in e.last() and 'kontroll: latva (1x)' in e.last()
+      and 'matrix hianya' not in e.sent('naplo') and e.sent('uzenet') == '')
+e.done()
+e = Env()
+r = e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [])})
+check('an empty list WITHOUT the control: exit 1, JELZES, the control named as missing, message sent',
+      r.returncode == 1 and ' JELZES ' in e.last() and 'kontroll: HIANYZIK' in e.last()
+      and 'nem RENDBEN' in e.sent('uzenet'))
+e.done()
+e = Env()
+r = e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [row('legacy')])})
+check('only legacy rows and no control: still JELZES (the control is not optional)',
+      r.returncode == 1 and ' JELZES ' in e.last() and 'legacy 1;' in e.last())
+e.done()
+e = Env()
+r = e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [CTRL, row('murena')])})
+check('the control and another agent: JELZES, only the other agent listed as a hole',
+      r.returncode == 1 and 'nevvel 1' in e.last() and '"murena"' in e.sent('uzenet')
+      and '"nautilus"' not in e.sent('uzenet') and 'kontroll: latva (1x)' in e.last())
+e.done()
+look_alikes = {
+    'another agent on the same route': row('murena', CTRL_PATH, 'GET', 1),
+    'the control agent with another method': row('nautilus', CTRL_PATH, 'POST', 1),
+    'a route that only starts the same': row('nautilus', '/api/fleet-readsX', 'GET', 1),
+    'the control agent on another route': row('nautilus', '/api/kanban/:id', 'GET', 1),
+    'the shared token on the control route': row('legacy', CTRL_PATH, 'GET', 1),
+}
+for name, lookalike in look_alikes.items():
+    e = Env()
+    r = e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [lookalike])})
+    check(name + ': not the control (JELZES, kontroll HIANYZIK)',
+          r.returncode == 1 and ' JELZES ' in e.last() and 'kontroll: HIANYZIK' in e.last())
+    e.done()
+check('a control row with a zero count is not a seen control (verdict and report read the same number)',
+      napi.classify({'legacy-szukitett': [], 'kikenyszerit': [dict(CTRL, count=0)]})[0] == 'JELZES')
+check('two control rows (a window spanning two days) are counted together',
+      napi.classify({'legacy-szukitett': [], 'kikenyszerit': [CTRL, dict(CTRL, count=2)]})[1]['kontroll'] == 3)
 
 print('the window (task preflight-ablak): from the previous GOOD run, never a calendar day that leaves a gap')
 e = Env()
@@ -167,7 +217,7 @@ def windows():
         return [l.split('--json')[0].split(' ', 2)[2].strip() for l in open(argv_log).read().splitlines()]
     except FileNotFoundError:
         return []
-good = {'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [])}
+good = {'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [CTRL])}
 t_before = int(time.time())
 e.run(good)
 check('the first run (no napi.since): both modes ask for the last 2 calendar days', windows() == ['--napok 2', '--napok 2'])
@@ -187,7 +237,7 @@ check('so the run after the failure still starts at the last good one', windows(
 check('and only now does napi.since move on, to this run\'s start', int(open(e.p['since']).read()) >= t3 > since1)
 # barracuda, #235 review: a JELZES whose message does not go must not move the window, nor a run whose
 # daily-log entry does not go
-jelzes = {'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [row('murena')])}
+jelzes = {'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [CTRL, row('murena')])}
 for which, name in (('uzenet', 'a JELZES whose message fails'), ('naplo', 'a run whose daily-log entry fails')):
     before = int(open(e.p['since']).read())
     keep = open(os.path.join(e.bin, which + '.sh')).read()
@@ -240,7 +290,7 @@ e.done()
 print('4. inditas, allapot, the lock')
 e = Env()
 env = dict(os.environ, FAKE_SPEC=json.dumps({'legacy-szukitett': dict(answer('legacy-szukitett', []), sleep=3),
-                                             'kikenyszerit': answer('kikenyszerit', [])}))
+                                             'kikenyszerit': answer('kikenyszerit', [CTRL])}))
 started = time.time()
 r = subprocess.run([sys.executable, '-B', NAPI] + e.args('inditas'), env=env, capture_output=True, text=True, timeout=60)
 took = time.time() - started
