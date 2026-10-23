@@ -241,6 +241,18 @@ export function detectsPastePlaceholder(pane: string): boolean {
 const BOX_SEP_RX = /^─{10,}/
 
 /**
+ * Is there an idle footer in the LIVE footer region, the bottom lines of the pane? (card 06e0f4ab)
+ *
+ * The footer is the bottom of the pane. The dialog detectors and the "no footer" gates used to ask the WHOLE pane, so a
+ * footer-shaped line QUOTED in the scrollback above a first-run, consent or menu dialog (the dialog hides the input box,
+ * the scrollback does not) made them answer "there is a footer": the dialog went unseen, detectPaneState read 'idle'
+ * (the router would type into the dialog), and the recovery stayed away. Replayed on synthetic panes.
+ */
+export function hasLiveFooter(pane: string): boolean {
+  return IDLE_FOOTER_RX.test(pane.split('\n').slice(-LIVE_FOOTER_REGION_LINES).join('\n'))
+}
+
+/**
  * The index of the LIVE footer line: the LAST line that looks like the idle footer, or -1.
  *
  * The live footer is the bottom of the pane, so a footer-shaped line QUOTED higher up (in a message standing in the input
@@ -573,7 +585,7 @@ export function detectsBlockingMenu(pane: string): boolean {
   const lines = pane.split('\n')
   const footerRegion = lines.slice(-MENU_FOOTER_REGION_LINES).join('\n')
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
-  if (IDLE_FOOTER_RX.test(pane)) return false
+  if (hasLiveFooter(pane)) return false
   return MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)
 }
 
@@ -650,7 +662,7 @@ export function detectsFirstRunGate(pane: string): FirstRunGateKind | null {
   }
   const footerRegion = linesLive.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
-  if (IDLE_FOOTER_RX.test(pane)) return null
+  if (hasLiveFooter(pane)) return null
   for (const g of FIRST_RUN_GATES) {
     if (!g.rx.test(pane)) continue
     // The welcome banner also heads the NORMAL fresh-session layout (logo +
@@ -700,7 +712,7 @@ export function detectsModelConsentDialog(pane: string): boolean {
   }
   const footerRegion = linesLive.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
-  if (IDLE_FOOTER_RX.test(pane)) return false
+  if (hasLiveFooter(pane)) return false
   return MODEL_CONSENT_TITLE_RX.test(pane)
     && MODEL_CONSENT_CONTINUE_RX.test(pane)
     && MODEL_CONSENT_CONFIRM_RX.test(footerRegion)
@@ -869,7 +881,7 @@ export function detectPaneState(
   // defer rather than pile a second prompt on.
   if (detectsPastePlaceholder(pane)) return 'busy'
 
-  if (!IDLE_FOOTER_RX.test(pane)) {
+  if (!hasLiveFooter(pane)) {
     // Footer-less fresh-session / welcome-screen: a PARKED \u276F input box still
     // means the agent has a delivered message waiting to submit. Classify it
     // 'typing' (not 'unknown') so the stuck-input recovery stack can see and
@@ -1002,7 +1014,7 @@ export function paneShowsOnlyLiveInput(pane: string): boolean {
 export function liveInputRefusal(pane: string | null): string | null {
   const dialog = dialogRefusal(pane)
   if (dialog) return dialog
-  if (!IDLE_FOOTER_RX.test(pane!)) return 'no-footer'
+  if (!hasLiveFooter(pane!)) return 'no-footer'
   // the box's BOTTOM (its lower separator above the footer) proves the live prompt; its top may
   // have scrolled out of view under a long message (task kezbesites-busy-panelre, nautilus)
   return liveInputBoxRows(pane!) != null ? null : 'no-box'
@@ -1261,7 +1273,7 @@ export function shouldRetrySubmit(
 
   // Without an idle footer the pane is either not Claude Code or in an
   // unknown render state. Be conservative and skip.
-  if (!IDLE_FOOTER_RX.test(pane)) return false
+  if (!hasLiveFooter(pane)) return false
 
   const inputBox = liveInputBox(pane)
   if (inputBox == null) return false

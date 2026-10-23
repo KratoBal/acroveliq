@@ -201,6 +201,12 @@ def without_box(pane):
     return '\n'.join(lines[:top + 1] + [''] * (bottom - top - 1) + lines[bottom:])
 
 
+def live_footer(pane):
+    """Is there an idle footer in the LIVE footer region (the bottom FOOTER_LINES lines)? A footer-shaped line QUOTED in the scrollback
+    above a dialog must not answer "there is a footer": the dialog hides the input box, the scrollback does not (card 06e0f4ab, replayed)."""
+    return bool(IDLE_FOOTER_RX.search(tail(pane, FOOTER_LINES)))
+
+
 def busy(pane):
     live = without_box(pane)
     return any(rx.search(tail(live, LIVE_LINES)) for rx in BUSY_RXS) or bool(ESC_TO_INTERRUPT_RX.search(tail(live, FOOTER_LINES)))
@@ -216,12 +222,12 @@ def feedback_draft(pane):
 
 
 def model_consent(pane):
-    return (not busy(pane) and not IDLE_FOOTER_RX.search(pane) and bool(CONSENT_TITLE_RX.search(pane))
+    return (not busy(pane) and not live_footer(pane) and bool(CONSENT_TITLE_RX.search(pane))
             and bool(CONSENT_CONTINUE_RX.search(pane)) and bool(CONFIRM_RX.search(tail(pane, FOOTER_LINES))))
 
 
 def first_run(pane):
-    if busy(pane) or IDLE_FOOTER_RX.search(pane):
+    if busy(pane) or live_footer(pane):
         return None
     for kind, rx in FIRST_RUN:
         if rx.search(pane) and not (kind == 'welcome' and '❯' in pane):
@@ -329,7 +335,7 @@ def ready_refusal(look, queued):
     d = dialog(plain)
     if d:
         return d
-    if not IDLE_FOOTER_RX.search(plain):
+    if not live_footer(plain):
         return 'no-footer'
     if box_rows(plain) is None:
         return 'no-box'
@@ -479,7 +485,7 @@ class Broker:
         p = look['plain']
         if dialog(p):
             return 'dialog:' + dialog(p)
-        if busy(p) or not IDLE_FOOTER_RX.search(p) or box_rows(p) is None:
+        if busy(p) or not live_footer(p) or box_rows(p) is None:
             return 'not-idle'
         if box_free(look):
             return 'box-empty'
