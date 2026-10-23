@@ -332,8 +332,15 @@ check('Q3 busy() on the real signs and on the quote',
 # the old reading stands where the box cannot be located: no footer / no separators -> nothing is taken out
 NO_SEP = '\n'.join(['a lablec "· esc to interrupt" jelzi', FOOTER])
 check('Q4 without separators the old reading stands (the quote counts, nothing is hidden)', fp.busy(NO_SEP), True)
-check('Q5 without_box takes out the box rows only, separators and footer stay',
-      fp.without_box(live('hosszu szoveg')).split('\n'), ['  ⎿  … tool output …', '', SEP, SEP, '  Opus 5 · ctx 40%', FOOTER])
+check('Q5 without_box blanks the box rows only (same line count), separators and footer stay',
+      fp.without_box(live('hosszu szoveg')).split('\n'), ['  ⎿  … tool output …', '', SEP, '', SEP, '  Opus 5 · ctx 40%', FOOTER])
+# Q7: the busy windows are counted from the bottom, so blanking keeps their place; REMOVING the rows would pull the line above the box into
+# the window. A stale token counter that scrolled just out of the 12-line window (the 94-retry regression, pane-state.test.ts) must stay out.
+STALE = 'Forming… (3m 7s · ↓ 6.1k tokens)'
+stale_pane = '\n'.join([STALE] + ['  sor %d' % i for i in range(7)] + [SEP, '❯ ', SEP, '  Opus 5 · ctx 40%', FOOTER])
+check('Q7 a stale token counter just outside the 12-line window stays outside (idle pane, one empty box row)',
+      (len(stale_pane.split('\n')), fp.busy(stale_pane), fp.Broker.parked_ok(None, {'plain': stale_pane, 'dimless': stale_pane})),
+      (13, False, 'box-empty'))
 # Q6 (barracuda, #294 review): the lower separator is found and the upper one is not. Everything above the lower separator then goes, the
 # spinner line with it; the footer's `esc to interrupt` is what still marks a running turn busy. Pinned as it is, limit included.
 INDENTED_SEP = '  ' + '─' * 60   # an upper separator BOX_SEP_RX does not match (it must start the line)
