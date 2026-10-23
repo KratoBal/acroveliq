@@ -8,9 +8,10 @@
 //
 // A lépés (src/web/access-mode-switch.ts): a terv (három állás, egyszerre egy lépés, jóváhagyás hivatkozással,
 // két egymás utáni tiszta napi preflight), a `.env` egyetlen sora, egy JSON-sor a store/access-mode.log-ba,
-// a vezérlőpult újraindítása, olvasó próbák (a FUTÓ állást és a fő ágens fix útjait mérik), és bukott próbánál
-// azonnali visszalépés `naplo`-ra. A visszalépés CÉLZOTT: `naplo`-ra megy, nem "kikapcsolásra" (olyan állás
-// nincs). A telepítés Balázs külön jóváhagyása; ez a szkript nem dönt helyette, csak megköveteli a hivatkozást.
+// a vezérlőpult újraindítása (bizonyítottan ÚJ folyamat: a pid előtte és utána különbözik), olvasó próbák (a FUTÓ
+// állást és a fő ágens fix útjait mérik), és bukott próbánál azonnali visszalépés a lépés KIINDULÓ állására (egy
+// állás; szigorúbb állásból magától nem esik `naplo`-ba). A `naplo`-ba csak kézzel, a `vissza` lépéssel lehet menni,
+// indoklással; "kikapcsolás" nincs. A telepítés Balázs külön jóváhagyása; ez a szkript nem dönt helyette, csak megköveteli a hivatkozást.
 // A `--szaraz` a tervnél megáll. Az `allapot` csak olvas.
 //
 // Kilépési kód: 0 rendben; 1 megtagadva vagy bukott (a kimenet megnevezi); 2 rossz használat.
@@ -20,7 +21,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameS
 import { dirname, join } from 'node:path'
 import { MAIN_AGENT_ID, PROJECT_ROOT, WEB_PORT } from '../src/config.js'
 import {
-  modeFromStatuses, modeInEnv, parseHistory, probesFor, PROBE_UNRULED_PATH, runSwitch,
+  modeFromStatuses, modeInEnv, parseHistory, probesFor, PROBE_UNRULED_PATH, restartDashboard, runSwitch,
   type Probe, type SwitchDeps, type SwitchRecord,
 } from '../src/web/access-mode-switch.js'
 import { localDay } from '../src/web/auth-principals.js'
@@ -60,15 +61,26 @@ async function dashboardAnswers(): Promise<boolean> {
   return (await probe({ name: 'up', caller: 'A', path: '/api/agents', expected: 200 })) === 200
 }
 
+function supervisorPid(): Promise<number | null> {
+  const r = spawnSync('supervisorctl', ['pid', 'dashboard'], { encoding: 'utf-8', timeout: 20_000 })
+  const pid = Number((r.stdout ?? '').trim())
+  return Promise.resolve(r.status === 0 && Number.isInteger(pid) && pid > 0 ? pid : null)
+}
+
 async function restart(): Promise<boolean> {
-  const r = spawnSync('supervisorctl', ['restart', 'dashboard'], { encoding: 'utf-8', timeout: 60_000 })
-  process.stdout.write(`supervisorctl restart dashboard: ${r.status === 0 ? 'ok' : `kilépés ${r.status}`}\n`)
-  const until = Date.now() + RESTART_WAIT_MS
-  while (Date.now() < until) {
-    await new Promise((resolve) => setTimeout(resolve, 2000))
-    if (await dashboardAnswers()) return true
-  }
-  return false
+  // a restart is a NEW process answering: the pid before and after differ (src/web/access-mode-switch.ts restartDashboard)
+  const result = await restartDashboard(
+    {
+      pid: supervisorPid,
+      restart: () => Promise.resolve(spawnSync('supervisorctl', ['restart', 'dashboard'], { encoding: 'utf-8', timeout: 60_000 }).status),
+      answers: dashboardAnswers,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      now: () => Date.now(),
+    },
+    RESTART_WAIT_MS,
+  )
+  process.stdout.write(`dashboard újraindítás: ${result.ok ? 'rendben' : 'NEM SIKERÜLT'} (${result.why})\n`)
+  return result.ok
 }
 
 function writeEnv(text: string): void {

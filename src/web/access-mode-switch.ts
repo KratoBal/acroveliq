@@ -17,7 +17,9 @@
 //   5. probe:  read-only calls whose answers tell the RUNNING mode (an unruled route is a 404 in
 //              `naplo`, a 403 for the shared token in `legacy-szukitett`, a 403 for everyone in
 //              `kikenyszerit`) and prove the main agent's fixed routes still answer 200;
-//   6. a failed probe turns the setting back to `naplo` at once, restarts, records it, and says so.
+//   6. a failed probe turns the setting back to the position the step STARTED from (one position, never
+//      further: from a stricter position the check is never dropped to `naplo` by itself), restarts,
+//      records it, and says so. `naplo` is reached only by hand, by the named `vissza` step with a reason.
 // A dry run (`szaraz`) stops after the plan.
 
 import { ACCESS_MODES, parseAccessMode, type AccessMode } from './access-enforcement.js'
@@ -210,6 +212,42 @@ export function modeFromStatuses(forL: number, forA: number): AccessMode | null 
   return null
 }
 
+// ---- the restart, proven ------------------------------------------------------------------
+
+export interface RestartIo {
+  /** The dashboard process's pid (supervisorctl pid dashboard); null when it cannot be read. */
+  pid: () => Promise<number | null>
+  /** supervisorctl restart dashboard; resolves its exit code (null when it could not be run). */
+  restart: () => Promise<number | null>
+  /** Does the dashboard answer (a 200 for the main agent)? */
+  answers: () => Promise<boolean>
+  sleep: (ms: number) => Promise<void>
+  now: () => number
+}
+
+/**
+ * A restart is a NEW process answering. supervisorctl's exit code alone proves nothing (the old process
+ * keeps answering when it fails to stop, and a 200 from it would pass for "restarted"), and a 200 alone proves
+ * nothing either: the pid before and after must differ (barracuda, #300 review).
+ */
+export async function restartDashboard(io: RestartIo, waitMs: number): Promise<{ ok: boolean; why: string }> {
+  const before = await io.pid()
+  if (before === null) return { ok: false, why: 'the dashboard pid could not be read before the restart: a restart cannot be proven' }
+  const code = await io.restart()
+  if (code !== 0) return { ok: false, why: `supervisorctl exited ${code === null ? 'without running' : code}: nothing was restarted` }
+  const until = io.now() + waitMs
+  let last: number | null = null
+  while (io.now() < until) {
+    await io.sleep(2000)
+    last = await io.pid()
+    if (last !== null && last !== before && (await io.answers())) return { ok: true, why: `new process ${last} (was ${before}) answers` }
+  }
+  return {
+    ok: false,
+    why: last === before ? `the same process (pid ${before}) is still there: nothing was restarted` : `no new process answered within ${Math.round(waitMs / 1000)} s (pid before ${before}, now ${last ?? 'unreadable'})`,
+  }
+}
+
 // ---- the step ----------------------------------------------------------------------------
 
 export interface SwitchRecord {
@@ -251,7 +289,8 @@ export interface SwitchOutcome {
   /** Human lines, in order. */
   lines: string[]
   plan: Plan
-  finalMode: AccessMode
+  /** The position the system is in at the end; null when it is not known (the .env and the running dashboard may differ). */
+  finalMode: AccessMode | null
 }
 
 async function probeAll(mode: AccessMode, deps: SwitchDeps): Promise<string[]> {
@@ -300,12 +339,14 @@ export async function runSwitch(req: SwitchRequest, deps: SwitchDeps): Promise<S
   lines.push(`.env: ${SETTING}=${plan.to}`)
   const restarted = await deps.restart()
   if (!restarted) {
-    // the line is written but the dashboard did not come back: put the line back and try once more
-    deps.writeEnv(envText)
+    // the line is written but no NEW dashboard answered (the old one may still): the line goes back to the position the step started
+    // from, written onto a FRESH read of .env (anything else written in the meantime stays), and the dashboard is restarted once more
+    deps.writeEnv(setModeInEnv(deps.readEnv(), plan.from))
     deps.record(recordOf(deps, plan.kind, plan.from, plan.to, req, plan.preflight, 'restart-failed'))
     const back = await deps.restart()
-    lines.push(`FAILED: the dashboard did not answer after the restart; the .env line is put back (${back ? 'it answers again' : 'IT STILL DOES NOT ANSWER: look at supervisorctl status dashboard'})`)
-    return { ok: false, lines, plan, finalMode: current.mode }
+    if (!back) lines.unshift(`UNKNOWN STATE: the .env says ${plan.from} and the running dashboard may be in another position; run \`allapot\``)
+    lines.push(`FAILED: no new dashboard answered after the restart; the .env line is put back to ${plan.from} (${back ? 'a new process answers again' : 'IT DOES NOT ANSWER: look at supervisorctl status dashboard'})`)
+    return { ok: false, lines, plan, finalMode: back ? plan.from : null }
   }
   const failed = await probeAll(plan.to, deps)
   if (failed.length === 0) {
@@ -314,17 +355,19 @@ export async function runSwitch(req: SwitchRequest, deps: SwitchDeps): Promise<S
     return { ok: true, lines, plan, finalMode: plan.to }
   }
 
-  // a probe failed: the targeted way back, at once, and said aloud
+  // a probe failed: back to the position the step STARTED from, at once, and said aloud. One position, never further: from a stricter
+  // position the check is not dropped to naplo by itself (acrobot 35377); naplo is reached by hand, with the `vissza` step.
   deps.record(recordOf(deps, plan.kind, plan.from, plan.to, req, plan.preflight, 'probe-failed', failed))
   lines.push(...failed.map((f) => `PROBE FAILED: ${f}`))
-  if (plan.to === ROLLBACK_TARGET) {
-    lines.push(`the target was already ${ROLLBACK_TARGET}: nothing to turn back to; look at the probes above`)
+  if (plan.kind === 'rollback') {
+    lines.push('the step was the way back itself: nothing further to turn back to; look at the probes above')
     return { ok: false, lines, plan, finalMode: plan.to }
   }
-  deps.writeEnv(setModeInEnv(envText, ROLLBACK_TARGET))
+  deps.writeEnv(setModeInEnv(deps.readEnv(), plan.from))
   const back = await deps.restart()
-  const backFailed = back ? await probeAll(ROLLBACK_TARGET, deps) : ['the dashboard did not answer']
-  deps.record(recordOf(deps, 'auto-rollback', plan.to, ROLLBACK_TARGET, { ...req, reason: `probe failed after ${plan.to}` }, 'automatic', backFailed.length === 0 ? 'ok' : 'probe-failed', backFailed.length ? backFailed : undefined))
-  lines.push(`turned back to ${ROLLBACK_TARGET}${backFailed.length === 0 ? ' and the probes agree' : `, BUT: ${backFailed.join('; ')}`}`)
-  return { ok: false, lines, plan, finalMode: backFailed.length === 0 ? ROLLBACK_TARGET : plan.to }
+  const backFailed = back ? await probeAll(plan.from, deps) : ['no new dashboard answered after the restart']
+  deps.record(recordOf(deps, 'auto-rollback', plan.to, plan.from, { ...req, reason: `probe failed after ${plan.to}` }, 'automatic', backFailed.length === 0 ? 'ok' : 'probe-failed', backFailed.length ? backFailed : undefined))
+  if (backFailed.length) lines.unshift(`UNKNOWN STATE: the .env says ${plan.from}; the running dashboard may not be in it (${backFailed.join('; ')}); run \`allapot\``)
+  lines.push(`turned back to ${plan.from}${backFailed.length === 0 ? ' and the probes agree' : `, BUT: ${backFailed.join('; ')}`}`)
+  return { ok: false, lines, plan, finalMode: backFailed.length === 0 ? plan.from : null }
 }

@@ -8,8 +8,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   ROLLBACK_TARGET, cleanRuns, modeFromStatuses, modeInEnv, parseHistory, planTransition, probesFor,
-  runSwitch, setModeInEnv, CLEAN_RUN_MAX_AGE_S, CLEAN_RUNS_MIN_GAP_S,
-  type HistoryEntry, type Probe, type SwitchDeps, type SwitchRecord,
+  restartDashboard, runSwitch, setModeInEnv, CLEAN_RUN_MAX_AGE_S, CLEAN_RUNS_MIN_GAP_S,
+  type HistoryEntry, type Probe, type RestartIo, type SwitchDeps, type SwitchRecord,
 } from '../web/access-mode-switch.js'
 import { ACCESS_MODES, type AccessMode } from '../web/access-enforcement.js'
 
@@ -132,6 +132,50 @@ describe('the probes', () => {
   })
 })
 
+// ---- the restart, proven ----------------------------------------------------------------
+
+function restartIo(over: { pids?: Array<number | null>; code?: number | null; answers?: boolean[] } = {}): RestartIo & { clock: number; ran: number } {
+  const pids = [...(over.pids ?? [100, 100, 200])]
+  const answers = [...(over.answers ?? [true])]
+  const io = {
+    clock: 0,
+    ran: 0,
+    pid: async () => (pids.length > 1 ? pids.shift()! : pids[0]!),
+    restart: async () => { io.ran += 1; return over.code === undefined ? 0 : over.code },
+    answers: async () => (answers.length > 1 ? answers.shift()! : answers[0]!),
+    sleep: async (ms: number) => { io.clock += ms },
+    now: () => io.clock,
+  }
+  return io
+}
+
+describe('the restart is a NEW process answering', () => {
+  it('a new pid that answers: restarted', async () => {
+    expect(await restartDashboard(restartIo({ pids: [100, 100, 200] }), 30_000)).toMatchObject({ ok: true, why: expect.stringContaining('new process 200') })
+  })
+
+  it('supervisorctl failing is a failure, even though the old process still answers', async () => {
+    const io = restartIo({ code: 7, pids: [100] })
+    expect(await restartDashboard(io, 30_000)).toMatchObject({ ok: false, why: expect.stringContaining('supervisorctl exited 7') })
+    expect(await restartDashboard(restartIo({ code: null, pids: [100] }), 30_000)).toMatchObject({ ok: false })
+  })
+
+  it('the SAME process answering is not a restart (the old one did not stop)', async () => {
+    expect(await restartDashboard(restartIo({ pids: [100] }), 10_000)).toMatchObject({ ok: false, why: expect.stringContaining('same process (pid 100)') })
+  })
+
+  it('a pid that cannot be read before the restart cannot be proven; one that never answers fails after the wait', async () => {
+    const unreadable = restartIo({ pids: [null] })
+    expect(await restartDashboard(unreadable, 30_000)).toMatchObject({ ok: false, why: expect.stringContaining('could not be read') })
+    expect(unreadable.ran).toBe(0)
+    expect(await restartDashboard(restartIo({ pids: [100, 200], answers: [false] }), 10_000)).toMatchObject({ ok: false, why: expect.stringContaining('no new process answered') })
+  })
+
+  it('a new process that comes up a little later still counts', async () => {
+    expect(await restartDashboard(restartIo({ pids: [100, null, 200], answers: [false, true] }), 30_000)).toMatchObject({ ok: true })
+  })
+})
+
 // ---- the step, with fakes ---------------------------------------------------------------
 
 function fakes(over: { env?: string; history?: string; answers?: (mode: AccessMode, p: Probe) => number; restartOk?: boolean[] } = {}) {
@@ -204,6 +248,57 @@ describe('the step (runSwitch)', () => {
     expect(state.env).toBe(before)
     expect(state.records.map((r) => r.result)).toEqual(['restart-failed'])
     expect(state.restarts).toBe(2)
+  })
+
+  it('a failed probe after a step from a STRICTER position goes back to where the step started, never to naplo', async () => {
+    const { state, deps } = fakes({
+      env: 'ACCESS_MODE=legacy-szukitett\n',
+      answers: (running, p) => (running === 'kikenyszerit' && p.path === '/api/kanban' ? 403 : probesFor(running, '2026-10-23').find((q) => q.path === p.path && q.caller === p.caller)!.expected),
+    })
+    const out = await runSwitch({ to: 'kikenyszerit', approval: 'discord:1562000000000000000' }, deps)
+    expect(out).toMatchObject({ ok: false, finalMode: 'legacy-szukitett' })
+    expect(modeInEnv(state.env).mode).toBe('legacy-szukitett')
+    expect(state.records.map((r) => [r.kind, r.from, r.to, r.result])).toEqual([
+      ['forward', 'legacy-szukitett', 'kikenyszerit', 'probe-failed'],
+      ['auto-rollback', 'kikenyszerit', 'legacy-szukitett', 'ok'],
+    ])
+    expect(JSON.stringify(state.records)).not.toContain('"to":"naplo"')
+    expect(state.env).not.toContain('naplo')
+  })
+
+  it('a restart that fails while the OLD dashboard still answers: the old line comes back and nothing falls to naplo', async () => {
+    const { state, deps } = fakes({ env: 'ACCESS_MODE=legacy-szukitett\n', restartOk: [false, true] })
+    const out = await runSwitch({ to: 'kikenyszerit', approval: 'discord:1562000000000000000' }, deps)
+    expect(out).toMatchObject({ ok: false, finalMode: 'legacy-szukitett' })
+    expect(modeInEnv(state.env).mode).toBe('legacy-szukitett')
+    expect(state.records.map((r) => [r.kind, r.result])).toEqual([['forward', 'restart-failed']])
+    expect(state.env).not.toContain('naplo')
+  })
+
+  it('the old line is written onto a FRESH read of .env: a setting written in the meantime stays', async () => {
+    const { state, deps } = fakes({ restartOk: [false, true] })
+    const realRestart = deps.restart
+    let first = true
+    deps.restart = async () => {
+      if (first) { first = false; state.env += 'MASIK_BEALLITAS=1\n' }
+      return realRestart()
+    }
+    await runSwitch(REQ, deps)
+    expect(state.env).toContain('MASIK_BEALLITAS=1')
+    expect(modeInEnv(state.env).mode).toBe('naplo')
+  })
+
+  it('when the way back cannot be confirmed either, the final state is UNKNOWN (null) and the first line says so', async () => {
+    const { state, deps } = fakes({ restartOk: [false, false] })
+    const out = await runSwitch(REQ, deps)
+    expect(out).toMatchObject({ ok: false, finalMode: null })
+    expect(out.lines[0]).toContain('UNKNOWN STATE')
+    expect(state.records.map((r) => r.result)).toEqual(['restart-failed'])
+    // and a failed probe whose way back fails too
+    const second = fakes({ restartOk: [true, false], answers: (_m, p) => p.expected + 1 })
+    const out2 = await runSwitch(REQ, second.deps)
+    expect(out2).toMatchObject({ ok: false, finalMode: null })
+    expect(out2.lines[0]).toContain('UNKNOWN STATE')
   })
 
   it('the way back: naplo, with the reason recorded; a failing probe there does not loop', async () => {
