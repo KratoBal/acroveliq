@@ -240,6 +240,42 @@ export function detectsPastePlaceholder(pane: string): boolean {
 // HORIZONTAL. At least 10 in a run to ignore stray `-` glyphs.
 const BOX_SEP_RX = /^─{10,}/
 
+/**
+ * The pane lines WITH THE LIVE INPUT BOX'S ROWS BLANKED (same line count; its separators stay), for the busy guards only.
+ *
+ * BLANKED, NOT REMOVED: the busy windows are counted from the bottom (12 and 5 lines). Taking the rows out pulls the
+ * line above the box INTO the window, and a stale token counter that had scrolled just out of it would read busy on an
+ * idle pane (the 94-retry regression, pinned in pane-state.test.ts; this very change tripped it on the first try).
+ *
+ * WHY (card 06e0f4ab; the broker's twin is `without_box` in scripts/root/fleet-pane.py, #294): what stands in the
+ * box is whatever was typed or pasted there, and a message that QUOTES a busy marker ("... · esc to interrupt",
+ * "(12s · ↓ 3.4k tokens)") made the pane read 'busy' for as long as it stood in the box. The real busy signs are
+ * outside the box: the spinner line above its upper separator, and `esc to interrupt` in the footer below its
+ * lower one. The LAST footer line anchors (a message may quote a footer line higher up).
+ * Three cases: no footer or no lower separator found: the lines come back as they are; both separators found: the
+ * rows between them are blanked; the lower one found and the UPPER one not: everything above the lower
+ * separator is blanked, the spinner line with it (the realistic cause is a box taller than the capture, where
+ * the upper separator and the spinner are off screen anyway; an upper separator BOX_SEP_RX does not match would
+ * leave only the footer's `esc to interrupt` to mark a running turn).
+ */
+export function withoutInputBox(lines: readonly string[]): string[] {
+  let footer = -1
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (IDLE_FOOTER_RX.test(lines[i]!)) { footer = i; break }
+  }
+  if (footer < 0) return [...lines]
+  let bottom = -1
+  for (let i = footer - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i]!)) { bottom = i; break }
+  }
+  if (bottom <= 0) return [...lines]
+  let top = -1
+  for (let i = bottom - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i]!)) { top = i; break }
+  }
+  return [...lines.slice(0, top + 1), ...Array<string>(bottom - top - 1).fill(''), ...lines.slice(bottom)]
+}
+
 // Prompt line inside the input box. `❯` followed by at least one
 // horizontal whitespace and then a non-whitespace character means the
 // user (or a send-keys that didn't submit) parked text there.
@@ -595,11 +631,12 @@ const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
 export function detectsFirstRunGate(pane: string): FirstRunGateKind | null {
   if (!pane || !pane.trim()) return null
   const lines = pane.split('\n')
-  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  const linesLive = withoutInputBox(lines)
+  const busyRegion = linesLive.slice(-BUSY_LIVE_REGION_LINES).join('\n')
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return null
   }
-  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = linesLive.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
   if (IDLE_FOOTER_RX.test(pane)) return null
   for (const g of FIRST_RUN_GATES) {
@@ -644,11 +681,12 @@ const MODEL_CONSENT_CONFIRM_RX = /Enter to confirm/
 export function detectsModelConsentDialog(pane: string): boolean {
   if (!pane || !pane.trim()) return false
   const lines = pane.split('\n')
-  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  const linesLive = withoutInputBox(lines)
+  const busyRegion = linesLive.slice(-BUSY_LIVE_REGION_LINES).join('\n')
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return false
   }
-  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = linesLive.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
   if (IDLE_FOOTER_RX.test(pane)) return false
   return MODEL_CONSENT_TITLE_RX.test(pane)
@@ -699,11 +737,12 @@ const PROMPT_MARKER_RX = /^[^\S\n]*❯/
 export function detectsFeedbackDraftModal(pane: string): boolean {
   if (!pane || !pane.trim()) return false
   const lines = pane.split('\n')
-  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  const linesLive = withoutInputBox(lines)
+  const busyRegion = linesLive.slice(-BUSY_LIVE_REGION_LINES).join('\n')
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return false
   }
-  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = linesLive.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
 
   const liveFrom = Math.max(0, lines.length - BUSY_LIVE_REGION_LINES)
@@ -794,7 +833,8 @@ export function detectPaneState(
   // Spinner / token-counter busy signals, scoped to the live bottom region.
   // Whole-pane scanning let a completed turn's stale token-counter line pin
   // an idle session busy (see BUSY_LIVE_REGION_LINES).
-  const busyRegion = paneLines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  const paneLinesLive = withoutInputBox(paneLines)
+  const busyRegion = paneLinesLive.slice(-BUSY_LIVE_REGION_LINES).join('\n')
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return 'busy'
   }
@@ -803,7 +843,7 @@ export function detectPaneState(
   // Checking the whole pane would let a scrollback quote of the phrase
   // (e.g. in a watchdog report or a log analysis) permanently classify
   // an idle session as busy.
-  const footerRegion = paneLines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = paneLinesLive.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return 'busy'
 
   // Pending-paste placeholder check runs BEFORE the idle-footer gate. The
@@ -1188,12 +1228,13 @@ export function shouldRetrySubmit(
   // Busy pane: the turn is mid-flight, no retry needed. Region-scoped (same
   // as detectPaneState) so a stale token-counter line does not suppress a
   // legitimate retry on an idle pane.
-  const retryBusyRegion = retryPaneLines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  const retryPaneLinesLive = withoutInputBox(retryPaneLines)
+  const retryBusyRegion = retryPaneLinesLive.slice(-BUSY_LIVE_REGION_LINES).join('\n')
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(retryBusyRegion)) return false
   }
   // Footer-region `esc to interrupt` check (same scoping as detectPaneState).
-  const retryFooterRegion = retryPaneLines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const retryFooterRegion = retryPaneLinesLive.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
   if (BUSY_ESC_TO_INTERRUPT_RX.test(retryFooterRegion)) return false
 
   // Path 1: placeholder is unambiguous, retry regardless of hint -- and it is
@@ -1489,11 +1530,12 @@ export function stuckInputSignature(pane: string): string | null {
 export function parkedPasteSignature(pane: string): string | null {
   if (!pane || !pane.trim()) return null
   const lines = pane.split('\n')
-  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  const linesLive = withoutInputBox(lines)
+  const busyRegion = linesLive.slice(-BUSY_LIVE_REGION_LINES).join('\n')
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return null
   }
-  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = linesLive.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
   if (!detectsPastePlaceholder(pane)) return null
   const sig = pastePlaceholderRegion(pane).replace(/\s+/g, ' ').trim()
