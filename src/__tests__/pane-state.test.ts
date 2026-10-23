@@ -26,6 +26,7 @@ import {
   detectsFirstRunGate,
   detectsModelConsentDialog,
   liveInputRefusal,
+  detectsFeedbackDraftModal,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -2516,5 +2517,24 @@ describe('a message quoting a dialog sign in the box is not a dialog (06e0f4ab, 
     expect(liveInputRefusal(permission)).toBe('permission-question')
     // a real question above a message parked in the box
     expect(liveInputRefusal([permission, '', SEP, '❯ Az uzenet', SEP, '  Opus 5 · ctx 40%', FOOTER].join('\n'))).toBe('permission-question')
+  })
+})
+
+// Card 06e0f4ab, (e) (acrobot 35362): the feedback-draft options row is looked for outside the input box.
+describe('a quoted feedback-draft options row in the box is not the draft modal (06e0f4ab, e)', () => {
+  const FOOTER = '  ⏵⏵ bypass permissions on (shift+tab to cycle)'
+  const OPTIONS = '│ 1 to review · 2 to send · 0 to dismiss │'
+  const box = (rows: string[]) =>
+    ['● kesz', '', SEP, '❯ ' + rows[0], ...rows.slice(1).map((r) => '  ' + r), SEP, '  Opus 5 · ctx 40%', FOOTER].join('\n')
+
+  it('whether or not a row of the message begins with the prompt glyph after the quote', () => {
+    expect(detectsFeedbackDraftModal(box(['Az uzenet elso sora', OPTIONS]))).toBe(false)
+    expect(detectsFeedbackDraftModal(box(['Az uzenet elso sora', OPTIONS, '❯ masodik prompt-szeru sor']))).toBe(false)
+  })
+
+  it('the real draft modal, above the box, is still seen, with or without a message parked in the box', () => {
+    const modal = ['● kesz', ' ╭──────╮', ' │ Bug report drafted: x │', ' ' + OPTIONS, ' ╰──────╯', '']
+    expect(detectsFeedbackDraftModal([...modal, SEP, '❯ ', SEP, FOOTER].join('\n'))).toBe(true)
+    expect(detectsFeedbackDraftModal([...modal, SEP, '❯ Az uzenet', '  masodik sor', SEP, FOOTER].join('\n'))).toBe(true)
   })
 })
