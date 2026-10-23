@@ -364,6 +364,34 @@ check('Q9e whitespace-only rows count as blank, and a quote high up with only bl
       (fp.live_footer('\n'.join(['x', SEP, '❯ ', SEP, FOOTER, '   ', '\t', ''])), fp.live_footer('\n'.join(['  valaki azt irta: ' + QFOOTER] + ['sor %d' % i for i in range(6)] + [''] * 8))),
       (True, False))
 check('Q9c the real footer at the bottom is a live footer', fp.live_footer('\n'.join(['x', SEP, '❯ ', SEP, FOOTER])), True)
+# Q10 (card 06e0f4ab, d; acrobot 35351, measured 2026-10-23): the dialog SIGNS are read outside the input box. A message standing in the box
+# that QUOTES one made the pane a "dialog" (menu, permission-question, survey, resume-summary): submit, clear and interrupt were refused
+# and the session had to be restarted. A real dialog hides the box, so its pane is read as before.
+def box_pane(*rows):
+    return '\n'.join(['● kesz', '', SEP, '❯ ' + rows[0]] + ['  ' + r for r in rows[1:]] + [SEP, '  Opus 5 · ctx 40%', FOOTER])
+QUOTED_SIGNS = {
+    'confirm/exit hint (acrobot 35351)': ('Az uzenet elso sora', ' Enter to confirm · Esc to exit'),
+    'navigate/cancel hint': ('Az uzenet elso sora', ' ↑/↓ to navigate · Esc to cancel'),
+    'permission question': ('Az uzenet elso sora', 'Do you want to proceed?'),
+    'survey': ('Az uzenet elso sora', 'How is Claude doing this session? (optional)'),
+    'resume summary': ('Az uzenet elso sora', 'Resume from summary', 'Enter to confirm'),
+}
+for name, rows in QUOTED_SIGNS.items():
+    pane_q = box_pane(*rows)
+    check('Q10 a message quoting a %s in the box is not a dialog (was %s)' % (name, 'a dialog'),
+          (fp.dialog(pane_q), fp.ready_refusal({'plain': pane_q, 'dimless': pane_q}, False)), (None, 'box-not-free'))
+MENU_SCREEN = '\n'.join([' Select something', ' ❯ 1. Yes', '   2. No', '', ' ↑/↓ to navigate · Esc to cancel'])
+check('Q10b the real dialogs (they hide the box) are read as before',
+      (fp.dialog(SCREENS['survey']), fp.dialog(PERMISSION), fp.dialog(SCREENS['resume-summary']), fp.dialog(MENU_SCREEN), fp.dialog(SCREENS['model-consent'])),
+      ('survey', 'permission-question', 'resume-summary', 'menu', 'model-consent'))
+check('Q10c a real permission question on top of a message in the box is still a dialog (the question is above the box)',
+      fp.dialog('\n'.join([PERMISSION, '', SEP, '❯ Az uzenet', SEP, '  Opus 5 · ctx 40%', FOOTER])), 'permission-question')
+# acrobot's measurement (Claude Code 2.1.309, 120x24): the first-run trust dialog ends at row 16, seven blank rows follow; a fresh idle pane has
+# its blank rows ABOVE the box and the footer on the last row
+check('Q10d the first-run trust dialog with seven blank rows after it is still seen', fp.dialog(SCREENS['trust'] + '\n' * 7), 'first-run-trust')
+fresh_idle = '\n'.join(['Welcome'] + [''] * 8 + [SEP, '❯ ', SEP, FOOTER])
+check('Q10e a fresh idle pane (blank rows above the box, footer on the last row): live footer, no dialog, idle',
+      (fp.live_footer(fresh_idle), fp.dialog(fresh_idle), fp.Broker.parked_ok(None, {'plain': fresh_idle, 'dimless': fresh_idle})), (True, None, 'box-empty'))
 check('Q5 without_box blanks the box rows only (same line count), separators and footer stay',
       fp.without_box(live('hosszu szoveg')).split('\n'), ['  ⎿  … tool output …', '', SEP, '', SEP, '  Opus 5 · ctx 40%', FOOTER])
 # Q7: the busy windows are counted from the bottom, so blanking keeps their place; REMOVING the rows would pull the line above the box into
