@@ -257,7 +257,9 @@ def dialog(pane):
 def box_rows(pane):
     """The live input box's rows, bottom-anchored (its lower separator above the footer)."""
     lines = pane.split('\n')
-    footer = next((i for i, l in enumerate(lines) if IDLE_FOOTER_RX.search(l)), -1)
+    # the LAST footer-shaped line is the live footer: one QUOTED in a message standing in the box must not frame the box inside
+    # that message (card 06e0f4ab, replayed: the box then read as someone else's text, and `submit`/`clear --expect` refused our own)
+    footer = next((i for i in range(len(lines) - 1, -1, -1) if IDLE_FOOTER_RX.search(lines[i])), -1)
     if footer < 0:
         return None
     bottom = next((i for i in range(footer - 1, -1, -1) if BOX_SEP_RX.search(lines[i])), -1)
