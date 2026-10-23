@@ -179,7 +179,13 @@ def without_box(pane):
     made `busy()` true for as long as it stood in the box. The broker then answered `not-idle` to the very `submit` that was to send it,
     and the router read that as "a turn is running". The real busy signs are outside the box: the spinner line above its top separator,
     and `esc to interrupt` in the footer below its lower one. The LAST footer line is the anchor (a message may quote a footer line
-    higher up); when no footer or no separator is found, nothing is taken out and the old reading stands."""
+    higher up). THREE CASES for the separators (barracuda, #294 review):
+      - no footer, or no lower separator found: nothing is taken out, the old reading stands;
+      - both separators found: the rows between them are taken out;
+      - the lower one found and the UPPER one not: everything above the lower separator is taken out, the spinner line too. The
+        realistic cause is a box taller than the capture (the upper separator and the spinner are off screen anyway, and this is the
+        very case the box text made busy). The other possible cause is an upper separator that BOX_SEP_RX does not match (another
+        drawing, an indent): then the spinner line is lost too and only the footer's `esc to interrupt` still marks the pane busy."""
     lines = pane.split('\n')
     footer = next((i for i in range(len(lines) - 1, -1, -1) if IDLE_FOOTER_RX.search(lines[i])), -1)
     if footer < 0:

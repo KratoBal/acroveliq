@@ -334,6 +334,16 @@ NO_SEP = '\n'.join(['a lablec "· esc to interrupt" jelzi', FOOTER])
 check('Q4 without separators the old reading stands (the quote counts, nothing is hidden)', fp.busy(NO_SEP), True)
 check('Q5 without_box takes out the box rows only, separators and footer stay',
       fp.without_box(live('hosszu szoveg')).split('\n'), ['  ⎿  … tool output …', '', SEP, SEP, '  Opus 5 · ctx 40%', FOOTER])
+# Q6 (barracuda, #294 review): the lower separator is found and the upper one is not. Everything above the lower separator then goes, the
+# spinner line with it; the footer's `esc to interrupt` is what still marks a running turn busy. Pinned as it is, limit included.
+INDENTED_SEP = '  ' + '─' * 60   # an upper separator BOX_SEP_RX does not match (it must start the line)
+no_top = lambda footer, spinner: '\n'.join(['  ⎿  … tool output …', '', spinner, INDENTED_SEP, '❯ szoveg', SEP, '  Opus 5 · ctx 40%', footer])
+check('Q6a upper separator not found, spinner above the box, esc in the footer: busy (the footer carries it)',
+      fp.busy(no_top(BUSY_FOOTER, SPINNER)), True)
+check('Q6b upper separator not found, spinner above the box, idle footer: NOT busy (known limit: the spinner went with the rows above)',
+      fp.busy(no_top(FOOTER, SPINNER)), False)
+check('Q6c upper separator not found, box taller than the capture, a quote in the rows: not busy (the case this fixes)',
+      fp.busy('\n'.join(['❯ a lablec "· esc to interrupt" jelzi', '  vege', SEP, '  Opus 5 · ctx 40%', FOOTER])), False)
 
 # --- positive: status, capture, stop --------------------------------------------------------
 p = Pane()
