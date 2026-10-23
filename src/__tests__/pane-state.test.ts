@@ -19,6 +19,7 @@ import {
   parkedInputRowCount,
   submitLanded,
   paneShowsContextSaturation,
+  withoutInputBox,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -2284,5 +2285,85 @@ describe('long turns (minutes and hours in the counter)', () => {
   })
   it('does not read a tool duration without the token arrow as busy', () => {
     expect(detectPaneState(TOOL_DURATION_ONLY)).toBe('idle')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Card 06e0f4ab: a message in the input box that QUOTES a busy marker is not a busy pane.
+//
+// The router types the agents' messages into the box, and the fleet talks about the pane footer all
+// day. `esc to interrupt` in the last 5 lines or a `(12s · ↓ 3k tokens)` count in the last 12 made the
+// pane read 'busy' for as long as such a message stood in the box. Replayed on synthetic panes (no
+// live capture of a stuck pane exists; the 2026-10-21 cases are NOT shown to be this cause). The real
+// busy signs are outside the box: the spinner above its upper separator, `esc to interrupt` in the
+// footer. The broker's twin is `without_box` (scripts/root/fleet-pane.py, same card).
+// ---------------------------------------------------------------------------
+describe('busy guards ignore what stands in the input box (06e0f4ab)', () => {
+  const FOOTER = '  ⏵⏵ bypass permissions on (shift+tab to cycle)'
+  const BUSY_FOOTER = '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt'
+  const SPINNER = '✳ Forming… (3m 7s · ↓ 6.1k tokens)'
+  const live = (rows: string[], footer = FOOTER, above: string[] = ['● kesz', '']) =>
+    [...above, SEP, '❯ ' + rows[0], ...rows.slice(1).map((r) => '  ' + r), SEP, '  Opus 5 · ctx 40%', footer].join('\n')
+  const message = ['Az uzenet elso sora', ...Array.from({ length: 8 }, (_, i) => 'sor ' + i)]
+
+  it('a long plain message is typing; the same message quoting a busy marker is typing too', () => {
+    expect(detectPaneState(live(message))).toBe('typing')
+    expect(detectPaneState(live([...message, 'a lablec "· esc to interrupt" jelzi', 'vege']))).toBe('typing')
+    expect(detectPaneState(live([...message, 'Thinking… (12s · ↓ 3.4k tokens) volt a sor', 'vege']))).toBe('typing')
+  })
+
+  it('the real signs stay busy: the spinner above the box, esc to interrupt in the footer', () => {
+    // (a short box: the spinner sits right above it, inside the 12-line window; a 9-row box pushes it out of the window with or
+    // without this change, which is the window's own limit)
+    expect(detectPaneState(live(message.slice(0, 2), FOOTER, ['● dolgozom', '', SPINNER]))).toBe('busy')
+    expect(detectPaneState(live(message, BUSY_FOOTER))).toBe('busy')
+    // and with a message that quotes a marker in the box: still busy, for the real sign
+    expect(detectPaneState(live([...message, 'a lablec "· esc to interrupt" jelzi'], BUSY_FOOTER))).toBe('busy')
+  })
+
+  it('the other busy guards read the same way: a parked paste stub next to a quoted marker is still a parked paste', () => {
+    const parked = live(['[Pasted text #1 +30 lines]', 'a lablec "· esc to interrupt" jelzi'])
+    expect(parkedPasteSignature(parked)).not.toBeNull()
+    // control: a real spinner above the same box still means a healthy paste about to submit
+    expect(parkedPasteSignature(live(['[Pasted text #1 +30 lines]'], FOOTER, ['● dolgozom', '', SPINNER]))).toBeNull()
+  })
+
+  describe('withoutInputBox', () => {
+    it('blanks the rows between the separators and keeps the line count, so the busy windows keep their place', () => {
+      const lines = live(message).split('\n')
+      const out = withoutInputBox(lines)
+      expect(out.length).toBe(lines.length)
+      expect(out.slice(0, 3)).toEqual(lines.slice(0, 3))
+      expect(out.slice(3, 3 + message.length).every((l) => l === '')).toBe(true)
+      expect(out.slice(3 + message.length)).toEqual(lines.slice(3 + message.length))
+    })
+
+    it('a stale token counter just outside the 12-line window stays outside (the 94-retry regression)', () => {
+      const stale = ['Forming… (3m 7s · ↓ 6.1k tokens)', ...Array.from({ length: 7 }, (_, i) => '  sor ' + i), SEP, '❯ ', SEP, '  Opus 5 · ctx 40%', FOOTER].join('\n')
+      expect(stale.split('\n').length).toBe(13)
+      expect(detectPaneState(stale)).toBe('idle')
+    })
+
+    it('no footer, or no lower separator: the lines come back as they are', () => {
+      const noFooter = ['a', SEP, '❯ x', SEP, 'b']
+      expect(withoutInputBox(noFooter)).toEqual(noFooter)
+      const noLower = ['a', '❯ x esc to interrupt', FOOTER]
+      expect(withoutInputBox(noLower)).toEqual(noLower)
+    })
+
+    it('the lower separator found and the upper one not: everything above it is blanked, the footer line stays', () => {
+      const lines = ['  ⎿  … tool output …', SPINNER, '  ' + '─'.repeat(60), '❯ szoveg', SEP, '  Opus 5 · ctx 40%', BUSY_FOOTER]
+      const out = withoutInputBox(lines)
+      expect(out).toEqual(['', '', '', '', SEP, '  Opus 5 · ctx 40%', BUSY_FOOTER])
+      // known limit: with an idle footer the spinner above an unmatched upper separator is lost; only the footer's esc marks busy
+      expect(detectPaneState(lines.join('\n'))).toBe('busy')
+      expect(detectPaneState(lines.slice(0, 6).concat([FOOTER]).join('\n'))).not.toBe('busy')
+    })
+
+    it('a footer line quoted in the box does not move the anchor (the LAST footer line does)', () => {
+      const quoted = live(['kezdet', '⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt', 'vege'])
+      const out = withoutInputBox(quoted.split('\n'))
+      expect(out.join('\n')).not.toContain('esc to interrupt')
+    })
   })
 })
