@@ -218,8 +218,13 @@ def feedback_draft(pane):
     lines = pane.split('\n')
     if busy(pane):
         return False
+    # The options row is looked for OUTSIDE the input box (the box rows blanked, the line count kept): a message standing in the box that
+    # QUOTES it is text we typed, not the modal. The prompt row below it is the box's own first row, so that part reads the whole pane.
+    # Before, only the absence of a prompt row below the quote kept it from counting: a message with a row of its own that begins with the
+    # prompt glyph, after the quote, made it a draft modal (card 06e0f4ab, replayed).
+    live = without_box(pane).split('\n')
     start = max(0, len(lines) - LIVE_LINES)
-    at = next((i for i in range(len(lines) - 1, start - 1, -1) if FEEDBACK_OPTIONS_RX.search(lines[i])), -1)
+    at = next((i for i in range(len(lines) - 1, start - 1, -1) if FEEDBACK_OPTIONS_RX.search(live[i])), -1)
     return at >= 0 and any(PROMPT_RX.search(lines[i]) for i in range(at + 1, len(lines)))
 
 
