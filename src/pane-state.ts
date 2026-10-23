@@ -241,6 +241,21 @@ export function detectsPastePlaceholder(pane: string): boolean {
 const BOX_SEP_RX = /^─{10,}/
 
 /**
+ * The index of the LIVE footer line: the LAST line that looks like the idle footer, or -1.
+ *
+ * The live footer is the bottom of the pane, so a footer-shaped line QUOTED higher up (in a message standing in the input
+ * box, in scrollback) must not win. Anchoring on the FIRST such line put the box's frame inside the quoted message: the
+ * pane read 'idle' while text was parked in the box, and the stuck-input recovery chain (which gates on 'typing') never
+ * saw it (card 06e0f4ab, replayed). `detectsThinkingBlockError` already read the footer from the bottom.
+ */
+export function lastFooterIndex(lines: readonly string[]): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (IDLE_FOOTER_RX.test(lines[i]!)) return i
+  }
+  return -1
+}
+
+/**
  * The pane lines WITH THE LIVE INPUT BOX'S ROWS BLANKED (same line count; its separators stay), for the busy guards only.
  *
  * BLANKED, NOT REMOVED: the busy windows are counted from the bottom (12 and 5 lines). Taking the rows out pulls the
@@ -259,10 +274,7 @@ const BOX_SEP_RX = /^─{10,}/
  * leave only the footer's `esc to interrupt` to mark a running turn).
  */
 export function withoutInputBox(lines: readonly string[]): string[] {
-  let footer = -1
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (IDLE_FOOTER_RX.test(lines[i]!)) { footer = i; break }
-  }
+  const footer = lastFooterIndex(lines)
   if (footer < 0) return [...lines]
   let bottom = -1
   for (let i = footer - 1; i >= 0; i--) {
@@ -876,7 +888,7 @@ export function detectPaneState(
   // Scan UPWARDS from the footer so we stay inside the live box and
   // don't pick up historical ❯ lines from scrollback.
   const lines = pane.split('\n')
-  const footerIdx = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
+  const footerIdx = lastFooterIndex(lines)
   if (footerIdx >= 0) {
     let bottomSep = -1
     for (let i = footerIdx - 1; i >= 0; i--) {
@@ -1017,7 +1029,7 @@ function dialogRefusal(pane: string | null): string | null {
  */
 export function liveInputBoxRows(pane: string): string[] | null {
   const lines = pane.split('\n')
-  const footerIdx = lines.findIndex((l) => IDLE_FOOTER_RX.test(l))
+  const footerIdx = lastFooterIndex(lines)
   if (footerIdx < 0) return null
   let bottomSep = -1
   for (let i = footerIdx - 1; i >= 0; i--) {
@@ -1134,7 +1146,7 @@ function liveInputBoxFooterless(lines: string[]): string | null {
 
 function liveInputBox(pane: string): string | null {
   const lines = pane.split('\n')
-  const footerIdx = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
+  const footerIdx = lastFooterIndex(lines)
   if (footerIdx < 0) return liveInputBoxFooterless(lines)
   let bottomSep = -1
   for (let i = footerIdx - 1; i >= 0; i--) {
@@ -2262,7 +2274,8 @@ const CTX_SAT_RX = /100% context used|context (?:is |limit reached|window )?full
 
 export function paneShowsContextSaturation(capture: string): boolean {
   if (!capture || !capture.trim()) return false
-  const lines = capture.split('\n')
+  // the box rows blanked (the line count kept): a "100% context used" QUOTED in a message standing in the input box is not the banner
+  const lines = withoutInputBox(capture.split('\n'))
   const footerRegion = lines.slice(-CTX_SAT_FOOTER_REGION_LINES).join('\n')
   return CTX_SAT_RX.test(footerRegion)
 }
