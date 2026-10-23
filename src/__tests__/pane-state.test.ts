@@ -2491,3 +2491,30 @@ describe('dialogs are seen under a footer line quoted in the scrollback (06e0f4a
     expect(hasLiveFooter(['a', 'b', '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\n'))).toBe(true)
   })
 })
+
+// Card 06e0f4ab, (d) (acrobot 35351, measured 2026-10-23): the dialog signs are read outside the input box.
+describe('a message quoting a dialog sign in the box is not a dialog (06e0f4ab, d)', () => {
+  const FOOTER = '  ⏵⏵ bypass permissions on (shift+tab to cycle)'
+  const box = (rows: string[]) =>
+    ['● kesz', '', SEP, '❯ ' + rows[0], ...rows.slice(1).map((r) => '  ' + r), SEP, '  Opus 5 · ctx 40%', FOOTER].join('\n')
+
+  it('the send path is not refused for a quoted menu hint or permission question', () => {
+    for (const rows of [
+      ['Az uzenet elso sora', ' Enter to confirm · Esc to exit'],
+      ['Az uzenet elso sora', ' ↑/↓ to navigate · Esc to cancel'],
+      ['Az uzenet elso sora', 'Do you want to proceed?'],
+    ]) {
+      expect(liveInputRefusal(box(rows))).toBeNull()
+      expect(detectPaneState(box(rows))).toBe('typing')
+    }
+  })
+
+  it('a real menu or permission question (it hides the box) is still refused', () => {
+    const menu = [' Select something', ' ❯ 1. Yes', '   2. No', '', ' ↑/↓ to navigate · Esc to cancel'].join('\n')
+    const permission = [' Bash command', '   touch /tmp/jelolo', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No (esc)', '', ' ↑/↓ to navigate · Esc to cancel'].join('\n')
+    expect(liveInputRefusal(menu)).toBe('menu')
+    expect(liveInputRefusal(permission)).toBe('permission-question')
+    // a real question above a message parked in the box
+    expect(liveInputRefusal([permission, '', SEP, '❯ Az uzenet', SEP, '  Opus 5 · ctx 40%', FOOTER].join('\n'))).toBe('permission-question')
+  })
+})
