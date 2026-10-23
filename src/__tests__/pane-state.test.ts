@@ -22,6 +22,10 @@ import {
   withoutInputBox,
   lastFooterIndex,
   liveInputBoxRows,
+  hasLiveFooter,
+  detectsFirstRunGate,
+  detectsModelConsentDialog,
+  liveInputRefusal,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -2426,5 +2430,64 @@ describe('paneShowsContextSaturation ignores the input box (06e0f4ab, b)', () =>
   it('the real banner (a row above the footer, outside the box) still counts', () => {
     expect(paneShowsContextSaturation(pane(['szoveg'], ['  100% context used']))).toBe(true)
     expect(paneShowsContextSaturation(pane([''], ['  100% context used']))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Card 06e0f4ab, (c): "is there a footer" is asked of the LIVE footer region, not of the whole pane.
+//
+// A footer-shaped line QUOTED in the scrollback above a first-run, consent or menu dialog (the dialog
+// hides the input box; the scrollback stays) answered the whole-pane question "there is a footer":
+// the dialog went unseen, detectPaneState read 'idle' (the router would type into the dialog) and the
+// recovery stayed away. Replayed on synthetic panes; the 2026-10-21 cases are NOT shown to be this cause.
+// ---------------------------------------------------------------------------
+describe('dialogs are seen under a footer line quoted in the scrollback (06e0f4ab, c)', () => {
+  const QUOTE = '  valaki azt irta: ⏵⏵ bypass permissions on (shift+tab to cycle)'
+  const TRUST = [' Do you trust the files in this folder?', ' ❯ 1. Yes, proceed', '   2. No, exit', '', ' Enter to confirm · Esc to exit']
+  const CONSENT = [' Fable 5 now uses usage credits', ' ❯ 1. Continue with Fable 5', '   2. Switch to Sonnet', '', ' Enter to confirm']
+  const MENU = [' Select something', ' ❯ 1. Yes', '   2. No', '', ' ↑/↓ to navigate · Esc to cancel']
+  const under = (dialog: string[]) => [QUOTE, '', ...dialog].join('\n')
+
+  it('a first-run, a consent and a menu dialog are recognised with the quote above, as without it', () => {
+    for (const quoted of [false, true]) {
+      const pane = (d: string[]) => (quoted ? under(d) : d.join('\n'))
+      expect(detectsFirstRunGate(pane(TRUST))).toBe('trust')
+      expect(detectsModelConsentDialog(pane(CONSENT))).toBe(true)
+      expect(detectsBlockingMenu(pane(MENU))).toBe(true)
+    }
+  })
+
+  it('the pane under such a quote is not idle: the router must not type into the dialog', () => {
+    for (const d of [TRUST, CONSENT, MENU]) {
+      expect(detectPaneState(under(d))).toBe('unknown')
+      expect(liveInputRefusal(under(d))).not.toBeNull()
+    }
+  })
+
+  it('a real idle pane (the footer at the bottom) is unchanged, with or without a quote above it', () => {
+    const idle = ['● kesz', '', SEP, '❯ ', SEP, '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\n')
+    expect(hasLiveFooter(idle)).toBe(true)
+    expect(detectPaneState(idle)).toBe('idle')
+    expect(detectPaneState([QUOTE, idle].join('\n'))).toBe('idle')
+    expect(detectsFirstRunGate(idle)).toBeNull()
+  })
+
+  it('blank rows under the footer (tmux prints the empty bottom rows too) do not hide it: a fresh session is idle', () => {
+    const idle = ['● kesz', '', SEP, '❯ ', SEP, '  ⏵⏵ bypass permissions on (shift+tab to cycle)']
+    for (const blanks of [1, 8, 20]) {
+      const pane = [...idle, ...Array<string>(blanks).fill('')].join('\n')
+      expect(hasLiveFooter(pane)).toBe(true)
+      expect(detectPaneState(pane)).toBe('idle')
+      expect(liveInputRefusal(pane)).toBeNull()
+    }
+    // whitespace-only rows count as blank, and the quote above still does not become a footer
+    expect(hasLiveFooter([...idle, '   ', '\t', ''].join('\n'))).toBe(true)
+    expect(hasLiveFooter([QUOTE, ...Array.from({ length: 6 }, (_, i) => 'sor ' + i), '', '', '', '', '', '', '', ''].join('\n'))).toBe(false)
+  })
+
+  it('hasLiveFooter: only the bottom lines count', () => {
+    const quoteOnly = [QUOTE, ...Array.from({ length: 6 }, (_, i) => 'sor ' + i)].join('\n')
+    expect(hasLiveFooter(quoteOnly)).toBe(false)
+    expect(hasLiveFooter(['a', 'b', '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\n'))).toBe(true)
   })
 })

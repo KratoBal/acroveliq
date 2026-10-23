@@ -346,6 +346,24 @@ check('Q8c submit --expect on our text that quotes a footer line: one Enter (was
       (e.run(p, ['submit', 'proba', '--expect'], Q_TEXT.encode())[0], p.keys), (0, ['Enter']))
 check('Q8d a quote in the scrollback above the box frames nothing: an empty box stays empty',
       fp.box_rows('\n'.join(['  valaki azt irta: ' + QFOOTER, SEP, '❯ ', SEP, '  Opus 5 · ctx 40%', FOOTER])), ['❯ '])
+# Q9 (card 06e0f4ab, c): "is there a footer" is asked of the LIVE footer region. A footer-shaped line QUOTED in the scrollback above a
+# first-run or consent dialog used to answer "there is a footer": the dialog went unseen (dialog() None), and the router could type into it.
+UNDER_QUOTE = '  valaki azt irta: ' + QFOOTER + '\n\n'
+for kind, want in (('trust', 'first-run-trust'), ('model-consent', 'model-consent'), ('survey', 'survey')):
+    check('Q9 %s dialog under a footer line quoted in the scrollback is still seen (%s)' % (kind, want),
+          (fp.dialog(SCREENS[kind]), fp.dialog(UNDER_QUOTE + SCREENS[kind])), (want, want))
+quote_only = UNDER_QUOTE + '\n'.join('sor %d' % i for i in range(8))
+check('Q9b a pane whose only footer-shaped line is quoted high up has no live footer: no-footer, not-idle',
+      (fp.live_footer(quote_only), fp.ready_refusal({'plain': quote_only, 'dimless': quote_only}, False),
+       fp.Broker.parked_ok(None, {'plain': quote_only, 'dimless': quote_only})), (False, 'no-footer', 'not-idle'))
+fresh = '\n'.join(['x', SEP, '❯ ', SEP, FOOTER] + [''] * 8)
+check('Q9d blank rows under the footer (tmux prints the empty bottom rows too): still a live footer, idle, box-empty (barracuda, #297)',
+      (fp.live_footer(fresh), fp.ready_refusal({'plain': fresh, 'dimless': fresh}, False),
+       fp.Broker.parked_ok(None, {'plain': fresh, 'dimless': fresh})), (True, None, 'box-empty'))
+check('Q9e whitespace-only rows count as blank, and a quote high up with only blank rows below is still no footer',
+      (fp.live_footer('\n'.join(['x', SEP, '❯ ', SEP, FOOTER, '   ', '\t', ''])), fp.live_footer('\n'.join(['  valaki azt irta: ' + QFOOTER] + ['sor %d' % i for i in range(6)] + [''] * 8))),
+      (True, False))
+check('Q9c the real footer at the bottom is a live footer', fp.live_footer('\n'.join(['x', SEP, '❯ ', SEP, FOOTER])), True)
 check('Q5 without_box blanks the box rows only (same line count), separators and footer stay',
       fp.without_box(live('hosszu szoveg')).split('\n'), ['  ⎿  … tool output …', '', SEP, '', SEP, '  Opus 5 · ctx 40%', FOOTER])
 # Q7: the busy windows are counted from the bottom, so blanking keeps their place; REMOVING the rows would pull the line above the box into
