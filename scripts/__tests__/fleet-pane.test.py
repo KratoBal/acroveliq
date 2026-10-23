@@ -305,6 +305,36 @@ check('P submit parked text: one Enter', (e.run(p, ['submit', 'proba'])[0], p.ke
 p = Pane()
 check('P submit on an empty box: nothing', (e.run(p, ['submit', 'proba'])[0], p.keys), (12, []))
 
+# --- card 06e0f4ab: a message of ours that QUOTES a busy marker is not a busy pane -----------------
+# Measured by replaying parked_ok on a pane whose box held a long message: the quoted `esc to interrupt` (in the last 5 lines) or
+# `(12s · ↓ 3k tokens)` (in the last 12) made busy() true, the broker answered `not-idle` to the very submit that was to send the
+# message, and the router read that as "a turn is running". The rows are exactly 76 wide, so the Pane keeps each marker on one row.
+def box_of(*rows):
+    return ''.join(r.ljust(76) for r in rows)
+QUOTE_ESC = box_of('Az elozo uzenet elso sora, hosszu szoveg', 'masodik sor', 'harmadik sor', 'a lablec "· esc to interrupt" jelzi, hogy fut', 'vege')
+QUOTE_SPIN = box_of('Az elozo uzenet elso sora, hosszu szoveg', 'masodik sor', 'Forming… (3m 7s · ↓ 6.1k tokens) volt a sor', 'vege')
+# the quoted footer lines are shorter than a row, so that each stays on ONE row; the idle one comes first (the old anchor was the FIRST footer line)
+QUOTE_FOOTER = box_of('Az elozo uzenet elso sora', '⏵⏵ bypass permissions on (shift+tab to cycle)',
+                      '⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt', 'vege')
+for name, quote in (('esc to interrupt', QUOTE_ESC), ('a spinner token count', QUOTE_SPIN), ('whole footer lines', QUOTE_FOOTER)):
+    p = Pane(box=quote)
+    check('Q1 submit on an idle pane whose box quotes %s: one Enter (was not-idle)' % name,
+          (e.run(p, ['submit', 'proba'])[0], p.keys), (0, ['Enter']))
+p = Pane(busy=True, box=QUOTE_ESC)
+check('Q2 a pane that IS busy (spinner above the box, esc in the footer) with the same box: still not-idle, no key',
+      (e.run(p, ['submit', 'proba']), p.keys), ((12, 'not-idle'), []))
+live = lambda box, footer=FOOTER, spinner=None: '\n'.join(['  ⎿  … tool output …', ''] + ([spinner] if spinner else []) +
+                                                          [SEP, '❯ ' + box, SEP, '  Opus 5 · ctx 40%', footer])
+check('Q3 busy() on the real signs and on the quote',
+      (fp.busy(live('szoveg')), fp.busy(live('szoveg', spinner=SPINNER)), fp.busy(live('szoveg', footer=BUSY_FOOTER)),
+       fp.busy(live('a lablec "· esc to interrupt" jelzi')), fp.busy(live('Forming… (3m 7s · ↓ 6.1k tokens)'))),
+      (False, True, True, False, False))
+# the old reading stands where the box cannot be located: no footer / no separators -> nothing is taken out
+NO_SEP = '\n'.join(['a lablec "· esc to interrupt" jelzi', FOOTER])
+check('Q4 without separators the old reading stands (the quote counts, nothing is hidden)', fp.busy(NO_SEP), True)
+check('Q5 without_box takes out the box rows only, separators and footer stay',
+      fp.without_box(live('hosszu szoveg')).split('\n'), ['  ⎿  … tool output …', '', SEP, SEP, '  Opus 5 · ctx 40%', FOOTER])
+
 # --- positive: status, capture, stop --------------------------------------------------------
 p = Pane()
 check('P status running, with created', e.run(p, ['status', 'proba', '--created']), (0, '1792000000\n'))

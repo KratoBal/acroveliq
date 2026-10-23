@@ -171,8 +171,29 @@ def strip_dim(s):
     return ''.join(out)
 
 
+def without_box(pane):
+    """The pane with the live input box's rows taken out (its separators stay), or the pane itself when the box cannot be located.
+
+    WHY (card 06e0f4ab, measured by replaying `parked_ok` on a pane whose box holds a long message): what stands in the box is
+    whatever was typed or pasted there, and a message of ours that QUOTES a busy marker ("... · esc to interrupt", "(12s · ↓ 3k tokens)")
+    made `busy()` true for as long as it stood in the box. The broker then answered `not-idle` to the very `submit` that was to send it,
+    and the router read that as "a turn is running". The real busy signs are outside the box: the spinner line above its top separator,
+    and `esc to interrupt` in the footer below its lower one. The LAST footer line is the anchor (a message may quote a footer line
+    higher up); when no footer or no separator is found, nothing is taken out and the old reading stands."""
+    lines = pane.split('\n')
+    footer = next((i for i in range(len(lines) - 1, -1, -1) if IDLE_FOOTER_RX.search(lines[i])), -1)
+    if footer < 0:
+        return pane
+    bottom = next((i for i in range(footer - 1, -1, -1) if BOX_SEP_RX.search(lines[i])), -1)
+    if bottom <= 0:
+        return pane
+    top = next((i for i in range(bottom - 1, -1, -1) if BOX_SEP_RX.search(lines[i])), -1)
+    return '\n'.join(lines[:top + 1] + lines[bottom:])
+
+
 def busy(pane):
-    return any(rx.search(tail(pane, LIVE_LINES)) for rx in BUSY_RXS) or bool(ESC_TO_INTERRUPT_RX.search(tail(pane, FOOTER_LINES)))
+    live = without_box(pane)
+    return any(rx.search(tail(live, LIVE_LINES)) for rx in BUSY_RXS) or bool(ESC_TO_INTERRUPT_RX.search(tail(live, FOOTER_LINES)))
 
 
 def feedback_draft(pane):
