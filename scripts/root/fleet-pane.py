@@ -171,8 +171,39 @@ def strip_dim(s):
     return ''.join(out)
 
 
+def without_box(pane):
+    """The pane with the live input box's rows BLANKED (same line count; its separators stay), or the pane itself when the box cannot be located.
+
+    BLANKED, NOT REMOVED: the busy windows are counted from the bottom (12 and 5 lines). Taking the rows out would pull the lines above the box
+    INTO the window, and a stale token counter that had scrolled just out of it (the 94-retry regression, pinned in pane-state.test.ts) would
+    read busy on an idle pane. Found by the TypeScript twin's existing test, 2026-10-23.
+
+    WHY (card 06e0f4ab, measured by replaying `parked_ok` on a pane whose box holds a long message): what stands in the box is
+    whatever was typed or pasted there, and a message of ours that QUOTES a busy marker ("... · esc to interrupt", "(12s · ↓ 3k tokens)")
+    made `busy()` true for as long as it stood in the box. The broker then answered `not-idle` to the very `submit` that was to send it,
+    and the router read that as "a turn is running". The real busy signs are outside the box: the spinner line above its top separator,
+    and `esc to interrupt` in the footer below its lower one. The LAST footer line is the anchor (a message may quote a footer line
+    higher up). THREE CASES for the separators (barracuda, #294 review):
+      - no footer, or no lower separator found: nothing is blanked, the old reading stands;
+      - both separators found: the rows between them are blanked;
+      - the lower one found and the UPPER one not: everything above the lower separator is blanked, the spinner line too. The
+        realistic cause is a box taller than the capture (the upper separator and the spinner are off screen anyway, and this is the
+        very case the box text made busy). The other possible cause is an upper separator that BOX_SEP_RX does not match (another
+        drawing, an indent): then the spinner line is lost too and only the footer's `esc to interrupt` still marks the pane busy."""
+    lines = pane.split('\n')
+    footer = next((i for i in range(len(lines) - 1, -1, -1) if IDLE_FOOTER_RX.search(lines[i])), -1)
+    if footer < 0:
+        return pane
+    bottom = next((i for i in range(footer - 1, -1, -1) if BOX_SEP_RX.search(lines[i])), -1)
+    if bottom <= 0:
+        return pane
+    top = next((i for i in range(bottom - 1, -1, -1) if BOX_SEP_RX.search(lines[i])), -1)
+    return '\n'.join(lines[:top + 1] + [''] * (bottom - top - 1) + lines[bottom:])
+
+
 def busy(pane):
-    return any(rx.search(tail(pane, LIVE_LINES)) for rx in BUSY_RXS) or bool(ESC_TO_INTERRUPT_RX.search(tail(pane, FOOTER_LINES)))
+    live = without_box(pane)
+    return any(rx.search(tail(live, LIVE_LINES)) for rx in BUSY_RXS) or bool(ESC_TO_INTERRUPT_RX.search(tail(live, FOOTER_LINES)))
 
 
 def feedback_draft(pane):
