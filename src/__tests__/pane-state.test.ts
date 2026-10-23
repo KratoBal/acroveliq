@@ -2472,6 +2472,19 @@ describe('dialogs are seen under a footer line quoted in the scrollback (06e0f4a
     expect(detectsFirstRunGate(idle)).toBeNull()
   })
 
+  it('blank rows under the footer (tmux prints the empty bottom rows too) do not hide it: a fresh session is idle', () => {
+    const idle = ['● kesz', '', SEP, '❯ ', SEP, '  ⏵⏵ bypass permissions on (shift+tab to cycle)']
+    for (const blanks of [1, 8, 20]) {
+      const pane = [...idle, ...Array<string>(blanks).fill('')].join('\n')
+      expect(hasLiveFooter(pane)).toBe(true)
+      expect(detectPaneState(pane)).toBe('idle')
+      expect(liveInputRefusal(pane)).toBeNull()
+    }
+    // whitespace-only rows count as blank, and the quote above still does not become a footer
+    expect(hasLiveFooter([...idle, '   ', '\t', ''].join('\n'))).toBe(true)
+    expect(hasLiveFooter([QUOTE, ...Array.from({ length: 6 }, (_, i) => 'sor ' + i), '', '', '', '', '', '', '', ''].join('\n'))).toBe(false)
+  })
+
   it('hasLiveFooter: only the bottom lines count', () => {
     const quoteOnly = [QUOTE, ...Array.from({ length: 6 }, (_, i) => 'sor ' + i)].join('\n')
     expect(hasLiveFooter(quoteOnly)).toBe(false)

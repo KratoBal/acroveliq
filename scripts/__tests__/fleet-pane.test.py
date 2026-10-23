@@ -356,6 +356,13 @@ quote_only = UNDER_QUOTE + '\n'.join('sor %d' % i for i in range(8))
 check('Q9b a pane whose only footer-shaped line is quoted high up has no live footer: no-footer, not-idle',
       (fp.live_footer(quote_only), fp.ready_refusal({'plain': quote_only, 'dimless': quote_only}, False),
        fp.Broker.parked_ok(None, {'plain': quote_only, 'dimless': quote_only})), (False, 'no-footer', 'not-idle'))
+fresh = '\n'.join(['x', SEP, '❯ ', SEP, FOOTER] + [''] * 8)
+check('Q9d blank rows under the footer (tmux prints the empty bottom rows too): still a live footer, idle, box-empty (barracuda, #297)',
+      (fp.live_footer(fresh), fp.ready_refusal({'plain': fresh, 'dimless': fresh}, False),
+       fp.Broker.parked_ok(None, {'plain': fresh, 'dimless': fresh})), (True, None, 'box-empty'))
+check('Q9e whitespace-only rows count as blank, and a quote high up with only blank rows below is still no footer',
+      (fp.live_footer('\n'.join(['x', SEP, '❯ ', SEP, FOOTER, '   ', '\t', ''])), fp.live_footer('\n'.join(['  valaki azt irta: ' + QFOOTER] + ['sor %d' % i for i in range(6)] + [''] * 8))),
+      (True, False))
 check('Q9c the real footer at the bottom is a live footer', fp.live_footer('\n'.join(['x', SEP, '❯ ', SEP, FOOTER])), True)
 check('Q5 without_box blanks the box rows only (same line count), separators and footer stay',
       fp.without_box(live('hosszu szoveg')).split('\n'), ['  ⎿  … tool output …', '', SEP, '', SEP, '  Opus 5 · ctx 40%', FOOTER])

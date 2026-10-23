@@ -249,7 +249,12 @@ const BOX_SEP_RX = /^─{10,}/
  * (the router would type into the dialog), and the recovery stayed away. Replayed on synthetic panes.
  */
 export function hasLiveFooter(pane: string): boolean {
-  return IDLE_FOOTER_RX.test(pane.split('\n').slice(-LIVE_FOOTER_REGION_LINES).join('\n'))
+  const lines = pane.split('\n')
+  // tmux prints EVERY visible row, the empty bottom ones too: a fresh session (a short welcome screen, box and footer in a
+  // 24-row pane) has blank rows under its footer. They are cut first, so the footer is the last NON-BLANK line (barracuda, #297 review).
+  let end = lines.length
+  while (end > 0 && lines[end - 1]!.trim() === '') end--
+  return IDLE_FOOTER_RX.test(lines.slice(Math.max(0, end - LIVE_FOOTER_REGION_LINES), end).join('\n'))
 }
 
 /**

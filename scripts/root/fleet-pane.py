@@ -204,7 +204,9 @@ def without_box(pane):
 def live_footer(pane):
     """Is there an idle footer in the LIVE footer region (the bottom FOOTER_LINES lines)? A footer-shaped line QUOTED in the scrollback
     above a dialog must not answer "there is a footer": the dialog hides the input box, the scrollback does not (card 06e0f4ab, replayed)."""
-    return bool(IDLE_FOOTER_RX.search(tail(pane, FOOTER_LINES)))
+    # tmux prints EVERY visible row, the empty bottom ones too: a fresh session (a short welcome screen, box and footer in a 24-row pane)
+    # has blank rows under its footer. They are cut first, so the footer is the last NON-BLANK line (barracuda, #297 review).
+    return bool(IDLE_FOOTER_RX.search(tail(pane.rstrip(), FOOTER_LINES)))
 
 
 def busy(pane):
