@@ -241,23 +241,28 @@ def dialog(pane):
     """A screen a keystroke would answer, by name; None when there is none."""
     if not pane or not pane.strip():
         return 'no-capture'
+    # The dialog SIGNS are read outside the live input box: a message standing in the box that QUOTES one ("Enter to confirm · Esc to
+    # exit", "Do you want to proceed?") is text we typed, not a dialog (card 06e0f4ab; measured 2026-10-23: such a message made the
+    # pane `menu`, and submit, clear and interrupt were refused until the session was restarted). A real dialog hides the input box, so
+    # without_box leaves its pane as it is. feedback_draft needs the prompt row below its options line and reads the whole pane.
+    live = without_box(pane)
     if feedback_draft(pane):
         return 'feedback-draft'
-    if FEEDBACK_OPTOUT_RX.search(tail(pane, LIVE_LINES)):
+    if FEEDBACK_OPTOUT_RX.search(tail(live, LIVE_LINES)):
         return 'feedback-optout'
     if model_consent(pane):
         return 'model-consent'
-    if PERMISSION_RX.search(tail(pane, LIVE_LINES)):
+    if PERMISSION_RX.search(tail(live, LIVE_LINES)):
         return 'permission-question'
     # the known dialogs before the generic menu: they carry an "Esc to ..." line too
     fr = first_run(pane)
     if fr:
         return 'first-run-' + fr
-    if RESUME_RX.search(tail(pane, LIVE_LINES)) and CONFIRM_RX.search(tail(pane, FOOTER_LINES)):
+    if RESUME_RX.search(tail(live, LIVE_LINES)) and CONFIRM_RX.search(tail(live, FOOTER_LINES)):
         return 'resume-summary'
-    if SURVEY_RX.search(tail(pane, LIVE_LINES)):
+    if SURVEY_RX.search(tail(live, LIVE_LINES)):
         return 'survey'
-    if MENU_NAV_RX.search(tail(pane, MENU_LINES)) or MENU_ESC_RX.search(tail(pane, MENU_LINES)):
+    if MENU_NAV_RX.search(tail(live, MENU_LINES)) or MENU_ESC_RX.search(tail(live, MENU_LINES)):
         return 'menu'
     return None
 

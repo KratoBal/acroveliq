@@ -1029,7 +1029,10 @@ export function liveInputRefusal(pane: string | null): string | null {
 function dialogRefusal(pane: string | null): string | null {
   if (!pane || !pane.trim()) return 'no-capture'
   if (detectsFeedbackDraftModal(pane) || detectsModelConsentDialog(pane)) return 'feedback-or-consent-dialog'
-  const lines = pane.split('\n')
+  // the dialog signs outside the live input box: a message standing in the box that QUOTES one ("Enter to confirm · Esc to exit",
+  // "Do you want to proceed?") is text we typed, not a dialog (card 06e0f4ab, measured 2026-10-23: the pane read `menu` and the send
+  // was refused). A real dialog hides the box, so withoutInputBox leaves its lines as they are.
+  const lines = withoutInputBox(pane.split('\n'))
   if (PERMISSION_QUESTION_RX.test(lines.slice(-PERMISSION_QUESTION_REGION_LINES).join('\n'))) return 'permission-question'
   const footerRegion = lines.slice(-MENU_FOOTER_REGION_LINES).join('\n')
   if (MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)) return 'menu'
