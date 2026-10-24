@@ -43,8 +43,8 @@ beforeEach(async () => {
   initDatabase(':memory:')
   taskCoreSettings.mode = 'naplo'
   taskCoreSettings.projectMode = 'naplo'
-  await call('POST', '/api/tasks', { id: 't-rev', title: 't', goal: 'g', assignee: 'nautilus', reviewer: 'barracuda', project: 'acropora' }, ACRO)
-  await call('POST', '/api/tasks', { id: 't-norev', title: 't', goal: 'g', assignee: 'nautilus', project: 'acropora' }, ACRO)
+  await call('POST', '/api/tasks', { id: 't-rev', title: 't', goal: 'g', assignee: 'nautilus', reviewer: 'barracuda', project: 'acropora', verification_profile: 'docs' }, ACRO)
+  await call('POST', '/api/tasks', { id: 't-norev', title: 't', goal: 'g', assignee: 'nautilus', project: 'acropora', verification_profile: 'docs' }, ACRO)
 })
 
 describe('a verdict is written with the reviewer\'s own token only', () => {

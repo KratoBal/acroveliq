@@ -34,7 +34,8 @@ function workingDirFor(name: string): string {
   return isMainChannelsAgent(name) ? PROJECT_ROOT : agentDir(name)
 }
 
-function newestTranscript(name: string): string | null {
+/** The agent's newest transcript file, or null (also read by the task route's session binding). */
+export function newestTranscript(name: string): string | null {
   const configDir = isMainChannelsAgent(name) ? undefined : (resolveAgentConfigDir(name).configDir ?? undefined)
   const dir = projectsDirFor(workingDirFor(name), configDir)
   try {

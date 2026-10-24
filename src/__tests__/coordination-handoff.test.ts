@@ -131,6 +131,8 @@ describe('the obligation is bound to the TASK, not to the writer (barracuda, rev
 })
 
 function postTask(body: unknown): Promise<{ status: number; body: any }> {
+  // a new task names its profile (Balázs, 2026-10-24); the tests here are about other keys
+  body = { verification_profile: 'docs', ...(body as Record<string, unknown>) }
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = { writeHead(status: number) { out.status = status; return res }, end(chunk?: string) { if (chunk) out.body = JSON.parse(chunk) }, setHeader() {} }
   const raw = JSON.stringify(body)

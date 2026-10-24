@@ -218,8 +218,8 @@ describe('assign and priority: an event and a message each; a repeat changes not
   })
 
   it('POST /api/tasks takes a priority too, and refuses an unknown one', async () => {
-    const ok = await call(tryHandleTaskUsage, 'POST', '/api/tasks', { id: 'tp', priority: 'high' }, ACRO)
-    const bad = await call(tryHandleTaskUsage, 'POST', '/api/tasks', { id: 'tq', priority: 'P0' }, ACRO)
+    const ok = await call(tryHandleTaskUsage, 'POST', '/api/tasks', { id: 'tp', priority: 'high', verification_profile: 'docs' }, ACRO)
+    const bad = await call(tryHandleTaskUsage, 'POST', '/api/tasks', { id: 'tq', priority: 'P0', verification_profile: 'docs' }, ACRO)
     expect([ok.status, bad.status, bad.body.missing]).toEqual([201, 400, ['priority (low|normal|high|urgent)']])
     expect(allTasks(getDb()).map((t) => [t.id, t.priority])).toEqual([['tp', 'high']])
   })

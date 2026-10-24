@@ -51,7 +51,12 @@ import {
 } from '../task-usage.js'
 import { ensureTaskHandoffSchema } from '../task-handoff.js'
 import { getDb, initDatabase } from '../db.js'
-import { eventTime, taskCoreSettings, tryHandleTaskUsage } from '../web/routes/task-usage.js'
+import { eventTime, startedSession, taskCoreSettings, tryHandleTaskUsage } from '../web/routes/task-usage.js'
+
+const findSession = startedSession.find
+afterEach(() => {
+  startedSession.find = findSession
+})
 import type { RouteContext } from '../web/routes/types.js'
 
 const T = (hhmmss: string) => Math.floor(Date.parse(`2026-10-12T${hhmmss}Z`) / 1000)
@@ -431,7 +436,7 @@ describe('the route', () => {
       return out
     }
     const unknown = await send(`/api/tasks/${id}/events`, 'POST', { kind: 'started', actor: 'murena' })
-    const created = await send('/api/tasks', 'POST', { id })
+    const created = await send('/api/tasks', 'POST', { id, verification_profile: 'docs' })
     const badKind = await send(`/api/tasks/${id}/events`, 'POST', { kind: 'begun', actor: '' })
     const ok = await send(`/api/tasks/${id}/events`, 'POST', { kind: 'started', actor: 'murena', at: '1760252580' })
     const usage = await send(`/api/tasks/${id}/usage`, 'GET')
@@ -545,7 +550,7 @@ describe('TC-Lite L1: idempotency', () => {
       await tryHandleTaskUsage(ctx)
       return out
     }
-    const make = fakeCtx('/api/tasks', 'POST', { id })
+    const make = fakeCtx('/api/tasks', 'POST', { id, verification_profile: 'docs' })
     await tryHandleTaskUsage(make.ctx)
     const a = await send({ kind: 'started', actor: 'murena' }, { 'idempotency-key': 'futas-0001' })
     const b = await send({ kind: 'started', actor: 'murena' }, { 'idempotency-key': 'futas-0001' })
@@ -585,7 +590,10 @@ describe('TC-Lite L1: the done guard', () => {
       await tryHandleTaskUsage(ctx)
       return out
     }
-    await post('/api/tasks', { id, ...(profile ? { verification_profile: profile } : {}) })
+    // a task without a profile can no longer be made on the route (Balázs, 2026-10-24); the
+    // rows made before it still exist, and the done guard still reads them
+    if (profile) await post('/api/tasks', { id, verification_profile: profile })
+    else upsertTask(getDb(), { id, type: null, parent_task: null, variant: null, brief_ref: null }, Math.floor(Date.now() / 1000))
     if (merged) await post(`/api/tasks/${id}/events`, { kind: 'merged', actor: 'acrobot', data: merged })
     const out = await post(`/api/tasks/${id}/events`, { kind: 'done', actor: 'acrobot' })
     const stored = getDb().prepare("SELECT data FROM task_events WHERE task_id = ? AND kind = 'done'").get(id) as { data: string | null } | undefined
@@ -702,6 +710,8 @@ describe('the review ref guard', () => {
     const send = async (mode: 'off' | 'naplo' | 'kenyszerit', kind: string, ref: string | null) => {
       initDatabase(':memory:')
       taskCoreSettings.mode = mode
+      // murena's own started binds its session: a session it has (the binding has its own test)
+      startedSession.find = () => `sess-${Math.random().toString(36).slice(2)}`
       const id = `ref-${Math.random().toString(36).slice(2)}`
       const post = async (path: string, body: unknown) => {
         const { ctx, out } = fakeCtx(path, 'POST', body)
@@ -831,7 +841,7 @@ describe('TC-Lite L1: the timeline and busy', () => {
       await tryHandleTaskUsage(ctx)
       return out
     }
-    await call('/api/tasks', 'POST', { id, assignee: 'murena', title: 'Lista' })
+    await call('/api/tasks', 'POST', { id, assignee: 'murena', title: 'Lista', verification_profile: 'docs' })
     await call(`/api/tasks/${id}/events`, 'POST', { kind: 'started', actor: 'murena' })
     const list = await call('/api/tasks', 'GET')
     const typo = await call('/api/tasks?agent=murena', 'GET')
@@ -850,7 +860,7 @@ describe('TC-Lite L1: the timeline and busy', () => {
       const handled = await tryHandleTaskUsage(ctx)
       return { handled, ...out }
     }
-    await call('/api/tasks', 'POST', { id, assignee: 'polip-' + id, title: 'Cím', acceptance: ['zöld kapu'] })
+    await call('/api/tasks', 'POST', { id, assignee: 'polip-' + id, title: 'Cím', acceptance: ['zöld kapu'], verification_profile: 'docs' })
     await call(`/api/tasks/${id}/events`, 'POST', { kind: 'started', actor: 'polip' })
     const busy = await call(`/api/tasks?assignee=polip-${id}&busy=1`, 'GET')
     const timeline = await call(`/api/tasks/${id}/timeline`, 'GET')
@@ -861,7 +871,7 @@ describe('TC-Lite L1: the timeline and busy', () => {
     expect([busy.status, busy.body.map((t: { id: string }) => t.id), timeline.status, timeline.body.items.length, unknown.status,
       noAssignee.status, badProfile.status, JSON.parse(acceptance.acceptance), timeline.body.fields, timeline.body.paused]).toEqual([
       200, [id], 200, 1, 404, 400, 400, ['zöld kapu'],
-      { title: 'Cím', goal: null, assignee: 'polip-' + id, reviewer: null, authorization_ref: null, verification_profile: null, priority: null, project: 'acropora', project_id: 'acropora' },
+      { title: 'Cím', goal: null, assignee: 'polip-' + id, reviewer: null, authorization_ref: null, verification_profile: 'docs', priority: null, project: 'acropora', project_id: 'acropora' },
       false,
     ])
   })
