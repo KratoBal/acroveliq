@@ -26,6 +26,7 @@
 //     not the latest one (same second: the higher id), it is out of newest-first
 //     order, or a misspelt filter answers with the whole list.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { MAIN_AGENT_ID } from '../config.js'
 import Database from 'better-sqlite3'
 
 import {
@@ -587,6 +588,8 @@ describe('TC-Lite L1: the done guard', () => {
     const id = `done-${Math.random().toString(36).slice(2)}`
     const post = async (path: string, body: unknown) => {
       const { ctx, out } = fakeCtx(path, 'POST', body)
+      // the merge path writes merged with the main agent's own token (#302 note a)
+      ;(ctx as { auth: unknown }).auth = { kind: 'token', actor: MAIN_AGENT_ID, project: 'acropora' }
       await tryHandleTaskUsage(ctx)
       return out
     }
