@@ -37,6 +37,13 @@ import { DEFAULT_PROJECT_ID, listProjects, projectRepos, projectResolver, repoFi
 import { callerOfContext } from '../field-gate.js'
 import { json, readBody } from '../http-helpers.js'
 import { claimActor, tokenAgent } from '../actor-claims.js'
+import { basename } from 'node:path'
+import { MAIN_AGENT_ID } from '../../config.js'
+import { afterMergedEvent, type MergedRestartDeps } from '../../merged-restart.js'
+import { restartAgentProcess } from '../agent-process.js'
+import { gatherGateInputs } from '../context-restart-gate-runner.js'
+import { isMainChannelsAgent } from '../main-agent.js'
+import { newestTranscript } from './agent-conversation.js'
 import type { RouteContext } from './types.js'
 
 // Per-task token measurement (acrovelIQ token brief, item 1). See
@@ -85,6 +92,37 @@ if (startMode.problem) logger.error(startMode.problem)
 /** Replaceable in tests; the route never talks to GitHub in a unit test. */
 const startProjectMode = parseTaskCoreMode(PROJECT_CHECK_MODE_SETTING)
 if (startProjectMode.problem) logger.error(startProjectMode.problem.replace('TASK_CORE_MODE', 'PROJECT_CHECK_MODE'))
+
+/**
+ * The merged-restart's I/O, replaceable in tests. OFF until the running server turns it on
+ * (web.ts, beside the context-restart gate): a test posting `merged` on this machine must
+ * never reach a live agent's tmux session.
+ */
+export const mergedRestart: { enabled: boolean; deps: () => MergedRestartDeps } = {
+  enabled: false,
+  deps: () => ({
+    db: getDb(),
+    mainAgent: MAIN_AGENT_ID,
+    isMainAgent: isMainChannelsAgent,
+    gatherLive: (name) => {
+      try {
+        return gatherGateInputs(name, Date.now()).inputs
+      } catch {
+        return null
+      }
+    },
+    restart: (name) => restartAgentProcess(name, { fresh: true }),
+  }),
+}
+const mergedRestartDeps = (): MergedRestartDeps => mergedRestart.deps()
+
+/** The caller's current session id: its newest transcript. Replaceable in tests. */
+export const startedSession: { find: (agent: string) => string | null } = {
+  find: (agent) => {
+    const file = newestTranscript(agent)
+    return file ? basename(file, '.jsonl') : null
+  },
+}
 
 export const taskCoreSettings: { mode: TaskCoreMode; projectMode: TaskCoreMode; probe: () => MergeProbe } = {
   mode: startMode.mode,
@@ -208,6 +246,15 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
     const stored = getDb().prepare('SELECT verification_profile, type, project FROM tasks WHERE id = ?').get(id) as
       | { verification_profile: string | null; type: string | null; project: string }
       | undefined
+    // A NEW TASK NAMES WHAT ITS `done` MUST PROVE (Balázs, 2026-10-24 18:04 UTC): without a
+    // profile the done guard can only mark it, never check it. An update keeps the stored one.
+    if (!stored && !profile && taskCoreSettings.mode !== 'off') {
+      json(res, {
+        error: 'invalid task',
+        missing: [`verification_profile (${VERIFICATION_PROFILES.join('|')}); a new task needs one: fleet-api.sh task-new <id> - < feladat.json`],
+      }, 400)
+      return true
+    }
     if (profile && stored?.verification_profile && stored.verification_profile !== profile) {
       json(res, { error: `verification_profile is ${stored.verification_profile} and cannot be changed` }, 409)
       return true
@@ -441,6 +488,37 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
         stored = { ...(stored ?? {}), would_reject: true, would_reject_reason: wouldReject }
       }
     }
+    // A STARTED BINDS THE CALLER'S SESSION (Balázs, 2026-10-24 18:04 UTC): the agent that
+    // starts its own task has its newest transcript registered for it, so its calls are the
+    // task's. Only an agent token binds (the shared token says nobody's session), and never the
+    // main agent: its channel session spans every task, so after its first start every later
+    // one would be refused. A session already another task's, or none found, is marked in
+    // naplo and refused in kenyszerit, like the guards above.
+    let bindSession: { agent: string; sessionId: string } | null = null
+    if (kind === 'started' && taskCoreSettings.mode !== 'off') {
+      const caller = tokenAgent(ctx.auth)
+      if (caller && caller === actor && !isMainChannelsAgent(caller)) {
+        const sessionId = startedSession.find(caller)
+        const owner = sessionId
+          ? (db.prepare('SELECT task_id FROM task_sessions WHERE agent = ? AND session_id = ?').get(caller, sessionId) as
+              | { task_id: string }
+              | undefined)
+          : undefined
+        const reason = !sessionId
+          ? 'started: the caller has no readable session to bind'
+          : owner && owner.task_id !== taskId
+            ? `started: session ${sessionId} already belongs to task ${owner.task_id}; start this task in a fresh session`
+            : null
+        if (reason && taskCoreSettings.mode === 'kenyszerit') {
+          json(res, { error: 'started refused', reason }, 409)
+          return true
+        }
+        if (reason) {
+          wouldReject = wouldReject ? `${wouldReject}; ${reason}` : reason
+          stored = { ...(stored ?? {}), would_reject: true, would_reject_reason: wouldReject }
+        } else bindSession = { agent: caller, sessionId: sessionId! }
+      }
+    }
     const added = addTaskEvent(
       db,
       { task_id: taskId, kind: kind as TaskEventKind, actor: actor!, at: at!, ref: text(b.ref), data: stored, idem_key: idemKey },
@@ -451,6 +529,9 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       json(res, added.same ? { id: added.id, repeated: true } : { error: `idem_key already used by event ${added.id}, a different event`, id: added.id }, added.same ? 200 : 409)
       return true
     }
+    if (bindSession) addTaskSession(db, taskId, bindSession.agent, bindSession.sessionId, now)
+    // after the answer is decided, not awaited: a restart takes seconds, and it decides itself
+    if (kind === 'merged' && mergedRestart.enabled) void afterMergedEvent(taskId, mergedRestartDeps())
     json(res, wouldReject ? { id: added.id, would_reject: true, reason: wouldReject } : { id: added.id }, 201)
     return true
   }

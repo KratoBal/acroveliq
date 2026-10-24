@@ -47,7 +47,8 @@ const task = (id: string, project?: string) =>
   upsertTask(getDb(), { id, project, type: null, parent_task: null, variant: null, brief_ref: null, title: id, goal: 'g', assignee: 'murena' }, NOW() - 100)
 const projectOf = (id: string) => (getDb().prepare('SELECT project FROM tasks WHERE id = ?').get(id) as { project: string }).project
 const events = (id: string, kind: string) => getDb().prepare('SELECT * FROM task_events WHERE task_id = ? AND kind = ?').all(id, kind) as any[]
-const postTask = (b: Record<string, unknown>, who: Auth = ACRO) => call(tryHandleTaskUsage, 'POST', '/api/tasks', b, who)
+const postTask = (b: Record<string, unknown>, who: Auth = ACRO) =>
+  call(tryHandleTaskUsage, 'POST', '/api/tasks', { verification_profile: 'docs', ...b }, who)
 const event = (id: string, kind: string, ref: string, data?: Record<string, unknown>) =>
   call(tryHandleTaskUsage, 'POST', `/api/tasks/${id}/events`, { kind, actor: 'murena', ref, ...(data ? { data } : {}) }, MURENA)
 

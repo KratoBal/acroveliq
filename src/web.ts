@@ -65,7 +65,7 @@ import { tryHandleOpenMatters } from './web/routes/open-matters.js'
 import { tryHandleDecisions } from './web/routes/decisions.js'
 import { tryHandleTitokUrlap } from './web/routes/titok-urlap.js'
 import { tryHandleTaskActions } from './web/routes/task-actions.js'
-import { tryHandleTaskUsage } from './web/routes/task-usage.js'
+import { mergedRestart, tryHandleTaskUsage } from './web/routes/task-usage.js'
 import { tryHandleDebates } from './web/routes/debates.js'
 import { startDebatePoller } from './web/debates-discord.js'
 import { tryHandleSchedules } from './web/routes/schedules.js'
@@ -497,6 +497,8 @@ export function startWebServer(port = 3420): http.Server {
   if (!webOnly) {
     startContextRestartGateRunner()
     logger.info('Context-restart gate runner started (per-agent poll, 3min initial delay)')
+    // the merged-restart restarts agents: only the running server turns it on, never a test
+    mergedRestart.enabled = true
   }
 
   const updateCheckerInterval = webOnly ? undefined : startUpdateChecker()
