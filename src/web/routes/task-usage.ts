@@ -424,6 +424,16 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    // A MERGED IS THE MERGER'S RECORD, AND IT RESTARTS AN AGENT (barracuda, #302 note a; acrobot
+    // 35974): pr-beolvaszt.sh writes it with the main agent's own token. From any other token an
+    // agent could set off another, idle agent's fresh restart. Every mode, as the verdict rule.
+    if (kind === 'merged') {
+      const agent = tokenAgent(ctx.auth)
+      if (!agent || !isMainChannelsAgent(agent)) {
+        json(res, { error: "a merged event is written with the main agent's own token only (the merge path)" }, 403)
+        return true
+      }
+    }
     const db = getDb()
     // a repeat is answered before the guard: the first one was already judged
     if (idemKey) {

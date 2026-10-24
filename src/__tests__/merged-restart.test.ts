@@ -175,17 +175,23 @@ describe('the route', () => {
     expect([noSession.status, String(noSession.body.reason)]).toEqual([409, expect.stringMatching(/no readable session/)])
   })
 
-  it('ROUTE-MERGED: a merged event reaches the restart only when the server turned it on', async () => {
+  it('ROUTE-MERGED: only the main agent writes a merged, and it reaches the restart only when the server turned it on', async () => {
     initDatabase(':memory:')
     ensureTaskHandoffSchema(getDb())
     await post('/api/tasks', { id: 'm1', verification_profile: 'docs', assignee: 'nautilus' })
     const d = deps(getDb())
     mergedRestart.deps = () => d.deps
     mergedRestart.enabled = false
-    await post('/api/tasks/m1/events', { kind: 'merged', actor: 'acrobot' })
+    // only the main agent's own token writes a merged (#302 note a, acrobot 35974)
+    const fromAgent = await post('/api/tasks/m1/events', { kind: 'merged', actor: 'murena' }, 'murena')
+    const fromShared = await post('/api/tasks/m1/events', { kind: 'merged', actor: MAIN_AGENT_ID }, null)
+    expect([fromAgent.status, fromShared.status, getDb().prepare("SELECT COUNT(*) AS n FROM task_events WHERE kind = 'merged'").get()]).toEqual([
+      403, 403, { n: 0 },
+    ])
+    await post('/api/tasks/m1/events', { kind: 'merged', actor: MAIN_AGENT_ID }, MAIN_AGENT_ID)
     expect(d.notes).toEqual([])
     mergedRestart.enabled = true
-    await post('/api/tasks/m1/events', { kind: 'merged', actor: 'acrobot', idem_key: 'merged-0002' })
+    await post('/api/tasks/m1/events', { kind: 'merged', actor: MAIN_AGENT_ID, idem_key: 'merged-0002' }, MAIN_AGENT_ID)
     await new Promise((r) => setTimeout(r, 0))
     // no handoff on m1: told, not restarted
     expect([d.restarted, d.notes.length]).toEqual([[], 1])

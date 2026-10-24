@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { json } from '../http-helpers.js'
 import { agentDir } from '../agent-config.js'
-import { resolveAgentConfigDir } from '../claude-plans.js'
+import { resolveAgentConfigDirForRead } from '../claude-plans.js'
 import { projectsDirFor } from '../active-model.js'
 import { isMainChannelsAgent } from '../main-agent.js'
 import { PROJECT_ROOT } from '../../config.js'
@@ -36,7 +36,10 @@ function workingDirFor(name: string): string {
 
 /** The agent's newest transcript file, or null (also read by the task route's session binding). */
 export function newestTranscript(name: string): string | null {
-  const configDir = isMainChannelsAgent(name) ? undefined : (resolveAgentConfigDir(name).configDir ?? undefined)
+  // the reader's resolver: an agent under its own OS user writes into agents/<name>/.claude-config,
+  // which resolveAgentConfigDir does not name (measured 2026-10-24 on the live #302: a started
+  // found "no readable session" for nautilus, its transcripts sat in the isolated dir)
+  const configDir = isMainChannelsAgent(name) ? undefined : (resolveAgentConfigDirForRead(name) ?? undefined)
   const dir = projectsDirFor(workingDirFor(name), configDir)
   try {
     if (!existsSync(dir)) return null
