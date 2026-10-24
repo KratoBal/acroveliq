@@ -7,5 +7,7 @@
     "acropora-ai-agent",
     "caparium-napplo"
   ],
-  "reviewers": []
+  "reviewers": [
+    "flotta-bot-acro"
+  ]
 }
