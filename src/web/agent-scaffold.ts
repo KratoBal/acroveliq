@@ -668,7 +668,11 @@ export function ensureEgressGate(name: string): boolean {
 // viszont PYTHON -- egy node-dal inditott .py 127-tel csendben elhalna.
 // A minta a provenance-gate.py / staleness-guard.py paroseval egyezik.
 const _readonlyCommandGateScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'readonly-command-gate.py')
-const READONLY_COMMAND_GATE_CMD = `bash -c '[ -f ${_readonlyCommandGateScript} ] && exec python3 ${_readonlyCommandGateScript}; exit 0'`
+// NO `exec`, and `-r` not `-f` (barracuda, #306 review; the same fix as the deny-rule gate): with `exec` the
+// hook's exit status is python's own, and a script that EXISTS but cannot be read by this agent's user makes
+// python3 exit 2, which Claude Code takes for a BLOCK of every Bash call. The gate speaks on stdout (an "allow"
+// decision), so `exit 0` loses nothing.
+const READONLY_COMMAND_GATE_CMD = `bash -c '[ -r ${_readonlyCommandGateScript} ] && python3 ${_readonlyCommandGateScript}; exit 0'`
 
 // Which agents get the gate: driven by the profile's OWN permissionMode,
 // never a hardcoded agent name (acrobot's explicit condition, 2026-09-23).
@@ -714,7 +718,10 @@ export function ensureReadonlyCommandGate(name: string): boolean {
     ? settings.hooks as Record<string, unknown>
     : {}
   const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
-  if (JSON.stringify(ptu).includes('readonly-command-gate.py')) return false
+  // already wired with the CURRENT launcher: nothing to do. An entry of the older `[ -f ] && exec` shape is
+  // replaced in place (inject drops every entry that names the script), so the fix reaches agents that were
+  // wired before it.
+  if (hookCommandWired(JSON.stringify(ptu), READONLY_COMMAND_GATE_CMD)) return false
   if (isUnsafeHookCommand(READONLY_COMMAND_GATE_CMD)) return false
   injectReadonlyCommandGate(settings)
   mkdirSync(join(agentDir(name), '.claude'), { recursive: true })

@@ -224,8 +224,32 @@ describe('injectReadonlyCommandGate', () => {
     expect(entry).toBeTruthy()
     expect(entry!.matcher).toBe('Bash')
     const cmd = entry!.hooks[0].command
-    // fail-open wrapper: a missing script must exit 0, never block a prompt.
-    expect(cmd).toMatch(/^bash -c '\[ -f .*readonly-command-gate\.py ] && exec python3 .*readonly-command-gate\.py; exit 0'$/)
+    // fail-open wrapper: a missing OR unreadable script must exit 0, never block a prompt. No `exec`
+    // (python's own exit status must not become the hook's), readability not existence, closing `exit 0`
+    // (barracuda, #306).
+    expect(cmd).toMatch(/^bash -c '\[ -r .*readonly-command-gate\.py ] && python3 .*readonly-command-gate\.py; exit 0'$/)
+    expect(cmd).not.toContain('exec')
+  })
+
+  it('an existing script this user cannot read ends in exit 0, never in the 2 that blocks every Bash call', () => {
+    const dir = join(testAgentDir, 'unreadable-readonly-hook')
+    mkdirSync(dir, { recursive: true })
+    const script = join(dir, 'readonly-command-gate.py')
+    writeFileSync(script, 'print("x")\n')
+    chmodSync(script, 0)
+    try {
+      const s: Record<string, unknown> = {}
+      injectReadonlyCommandGate(s)
+      const cmd = ptuCommands(s).find((c) => c.includes('readonly-command-gate.py'))!
+      const real = join(PROJECT_ROOT, 'scripts', 'hooks', 'readonly-command-gate.py')
+      const r = spawnSync('bash', ['-c', cmd.replace(/^bash -c '/, '').replace(/'$/, '').split(real).join(script)], { encoding: 'utf-8' })
+      // a root user reads everything, so the unreadable case cannot be built there
+      if (process.getuid && process.getuid() !== 0) {
+        expect({ status: r.status, stdout: r.stdout }).toEqual({ status: 0, stdout: '' })
+      }
+    } finally {
+      chmodSync(script, 0o600)
+    }
   })
 
   it('replaces an existing entry in place, never duplicates (idempotent merge shape)', () => {
@@ -246,6 +270,23 @@ describe('ensureReadonlyCommandGate', () => {
     const written = JSON.parse(readFileSync(join(testAgentDir, '.claude', 'settings.json'), 'utf-8'))
     const commands = ptuCommands(written)
     expect(commands.some((c) => c.includes('readonly-command-gate.py'))).toBe(true)
+  })
+
+  it('upgrades an agent wired with the older `[ -f ] && exec` launcher, in place, then settles', () => {
+    mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+    writeAgentSecurityProfile(TEST_AGENT, 'researcher-reader')
+    const script = join(PROJECT_ROOT, 'scripts', 'hooks', 'readonly-command-gate.py')
+    const old = `bash -c '[ -f ${script} ] && exec python3 ${script}; exit 0'`
+    writeFileSync(
+      join(testAgentDir, '.claude', 'settings.json'),
+      JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: old, timeout: 10 }] }] } }),
+    )
+    expect(ensureReadonlyCommandGate(TEST_AGENT)).toBe(true)
+    const written = JSON.parse(readFileSync(join(testAgentDir, '.claude', 'settings.json'), 'utf-8'))
+    const gate = ptuCommands(written).filter((c) => c.includes('readonly-command-gate.py'))
+    expect(gate).toHaveLength(1)
+    expect(gate[0]).not.toContain('exec')
+    expect(ensureReadonlyCommandGate(TEST_AGENT)).toBe(false)
   })
 
   it('does NOT wire the gate for a permissive-profile agent', () => {
