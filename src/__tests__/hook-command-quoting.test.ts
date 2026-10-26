@@ -18,6 +18,10 @@ import {
   agentGetsReadonlyCommandGate,
   injectDenyNormalizingGate,
   ensureDenyNormalizingGate,
+  ensureAgentStalenessHook,
+  ensureAgentProvenanceHook,
+  ensurePermissionApprovalHook,
+  injectPermissionApprovalHook,
 } from '../web/agent-scaffold.js'
 import { writeAgentSecurityProfile } from '../web/agent-config.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
@@ -367,5 +371,86 @@ describe('the deny-rule gate (tiltott-osszetett-parancs)', () => {
 
   it('never wires the gate for MAIN_AGENT_ID', () => {
     expect(ensureDenyNormalizingGate(MAIN_AGENT_ID)).toBe(false)
+  })
+})
+
+/*
+  THE THREE LAUNCHERS THAT WERE LEFT (task tiltott-osszetett-parancs; acrobot's approval 2026-10-26 18:40, after #306
+  and #307): the staleness guard and the provenance gate (UserPromptSubmit, where exit 2 blocks the PROMPT itself)
+  and the permission-approval hook (PermissionRequest). MI PIROSIT: a launcher with `exec` or `[ -f ]` again; a
+  script that exists but cannot be read by this user ending in anything but status 0 and no output; an agent wired
+  with the older shape that is not upgraded in place, once, then left alone.
+*/
+describe('the staleness, provenance and permission-approval launchers', () => {
+  const HOOKS = [
+    { name: 'staleness-guard.py', event: 'UserPromptSubmit', ensure: ensureAgentStalenessHook, strict: false },
+    { name: 'provenance-gate.py', event: 'UserPromptSubmit', ensure: ensureAgentProvenanceHook, strict: false },
+    { name: 'permission-approval.py', event: 'PermissionRequest', ensure: ensurePermissionApprovalHook, strict: true },
+  ] as const
+
+  const commandsOf = (settings: Record<string, unknown>, event: string, name: string): string[] => {
+    const entries = ((settings.hooks as Record<string, unknown>)?.[event] ?? []) as { hooks: { command: string }[] }[]
+    return entries.flatMap((e) => e.hooks.map((h) => h.command)).filter((c) => c.includes(name))
+  }
+  const settingsOf = () => JSON.parse(readFileSync(join(testAgentDir, '.claude', 'settings.json'), 'utf-8')) as Record<string, unknown>
+  const scriptPath = (name: string) => join(PROJECT_ROOT, 'scripts', 'hooks', name)
+
+  for (const hook of HOOKS) {
+    it(`${hook.name}: [ -r ] && python3, no exec, ends in exit 0`, () => {
+      mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+      writeAgentSecurityProfile(TEST_AGENT, hook.strict ? 'researcher-reader' : 'default')
+      expect(hook.ensure(TEST_AGENT)).toBe(true)
+      const cmds = commandsOf(settingsOf(), hook.event, hook.name)
+      expect(cmds).toHaveLength(1)
+      const script = scriptPath(hook.name)
+      expect(cmds[0]).toBe(`bash -c '[ -r ${script} ] && python3 ${script}; exit 0'`)
+      expect(cmds[0]).not.toContain('exec')
+    })
+
+    it(`${hook.name}: an existing script this user cannot read ends in exit 0, no output`, () => {
+      const dir = join(testAgentDir, `unreadable-${hook.name}`)
+      mkdirSync(dir, { recursive: true })
+      const script = join(dir, hook.name)
+      writeFileSync(script, 'print("x")\n')
+      chmodSync(script, 0)
+      try {
+        mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+        writeAgentSecurityProfile(TEST_AGENT, hook.strict ? 'researcher-reader' : 'default')
+        hook.ensure(TEST_AGENT)
+        const cmd = commandsOf(settingsOf(), hook.event, hook.name)[0]!
+        const inner = cmd.replace(/^bash -c '/, '').replace(/'$/, '').split(scriptPath(hook.name)).join(script)
+        const r = spawnSync('bash', ['-c', inner], { encoding: 'utf-8' })
+        // a root user reads everything, so the unreadable case cannot be built there
+        if (process.getuid && process.getuid() !== 0) {
+          expect({ status: r.status, stdout: r.stdout }).toEqual({ status: 0, stdout: '' })
+        }
+      } finally {
+        chmodSync(script, 0o600)
+      }
+    })
+
+    it(`${hook.name}: an agent wired with the older [ -f ] && exec shape is upgraded in place, once`, () => {
+      mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+      writeAgentSecurityProfile(TEST_AGENT, hook.strict ? 'researcher-reader' : 'default')
+      const script = scriptPath(hook.name)
+      const old = `bash -c '[ -f ${script} ] && exec python3 ${script}; exit 0'`
+      const entry = { hooks: [{ type: 'command', command: old, timeout: 10 }] }
+      writeFileSync(
+        join(testAgentDir, '.claude', 'settings.json'),
+        JSON.stringify({ hooks: { [hook.event]: [hook.event === 'PermissionRequest' ? { matcher: 'Bash', ...entry } : entry] } }),
+      )
+      expect(hook.ensure(TEST_AGENT)).toBe(true)
+      const cmds = commandsOf(settingsOf(), hook.event, hook.name)
+      expect(cmds).toHaveLength(1)
+      expect(cmds[0]).not.toContain('exec')
+      expect(hook.ensure(TEST_AGENT)).toBe(false)
+    })
+  }
+
+  it('injectPermissionApprovalHook still replaces rather than duplicates', () => {
+    const s: Record<string, unknown> = {}
+    injectPermissionApprovalHook(s)
+    injectPermissionApprovalHook(s)
+    expect(commandsOf(s, 'PermissionRequest', 'permission-approval.py')).toHaveLength(1)
   })
 })

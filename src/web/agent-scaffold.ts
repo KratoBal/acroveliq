@@ -315,13 +315,32 @@ export function ensureAgentHooks(name: string): boolean {
 // <channel ts="..."> message was delivered long after it was sent (a lagged /
 // re-delivered message that may be stale), so it re-confirms before irreversible
 // actions. Re-running is a no-op once the entry exists (matched by command path).
-// Fail-open wrapper: if the script file is missing (e.g. after a /tmp checkout is
-// cleaned up), the bash test exits 0 instead of letting python3 exit non-zero and
-// blocking the prompt. Intentional policy blocks (the script exists and returns
-// non-zero) are still propagated via exec. The script path appears twice so the
-// guard regex below can still match it.
+// Fail-open wrapper: if the script file is missing OR UNREADABLE (e.g. after a /tmp checkout is
+// cleaned up, or a permissions swap during an install), the launcher exits 0 instead of letting
+// python3 exit 2 ("can't open file"), which Claude Code takes for a BLOCK of the prompt. NO `exec`
+// and `-r` not `-f` (barracuda, #306 / #307; acrobot's approval 2026-10-26 18:40). This hook never
+// blocks on purpose (always exit 0, see its header), so nothing intentional is lost. The script
+// path appears twice so the guard regex below can still match it.
 const _stalenessScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'staleness-guard.py')
-const STALENESS_HOOK_CMD = `bash -c '[ -f ${_stalenessScript} ] && exec python3 ${_stalenessScript}; exit 0'`
+const STALENESS_HOOK_CMD = `bash -c '[ -r ${_stalenessScript} ] && python3 ${_stalenessScript}; exit 0'`
+
+/**
+ * Replace, in place, the launcher of every hook entry that names `scriptName`, when it is not the
+ * CURRENT command. Returns whether anything changed. The ensure* migrations below settle only when
+ * the current launcher is wired, so a fix to the launcher shape reaches agents wired before it.
+ */
+function replaceLauncherInPlace(entries: unknown[], scriptName: string, command: string): boolean {
+  let changed = false
+  for (const entry of entries as HookEntry[]) {
+    for (const hook of entry.hooks ?? []) {
+      if (hook.command && hook.command.includes(scriptName) && hook.command !== command) {
+        hook.command = command
+        changed = true
+      }
+    }
+  }
+  return changed
+}
 
 export function ensureAgentStalenessHook(name: string): boolean {
   // agentSettingsPath() maps MAIN_AGENT_ID to ~/.claude/settings.json; using
@@ -336,9 +355,17 @@ export function ensureAgentStalenessHook(name: string): boolean {
     ? settings.hooks as Record<string, unknown>
     : {}
   const ups = Array.isArray(hooks.UserPromptSubmit) ? hooks.UserPromptSubmit as unknown[] : []
-  // Idempotency: already wired if any command entry references the guard script.
+  // Idempotency: already wired if any command entry references the guard script. An entry of an
+  // older launcher shape is replaced in place (and written), not left behind.
   const already = JSON.stringify(ups).includes('staleness-guard.py')
-  if (already) return false
+  if (already) {
+    if (isUnsafeHookCommand(STALENESS_HOOK_CMD)) return false
+    if (!replaceLauncherInPlace(ups, 'staleness-guard.py', STALENESS_HOOK_CMD)) return false
+    hooks.UserPromptSubmit = ups
+    settings.hooks = hooks
+    atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+    return true
+  }
   // Registration guard: don't write a /tmp or non-existent path into shared settings.
   if (isUnsafeHookCommand(STALENESS_HOOK_CMD)) return false
   ups.push({ hooks: [{ type: 'command', command: STALENESS_HOOK_CMD, timeout: 10 }] })
@@ -363,7 +390,8 @@ export function ensureAgentStalenessHook(name: string): boolean {
 // line reached an agent's pane and triggered an unintended session restart.
 // FLAG, never block -- Viktor's decision, 2026-07-22 (kanban b241f29e).
 const _provenanceScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'provenance-gate.py')
-const PROVENANCE_HOOK_CMD = `bash -c '[ -f ${_provenanceScript} ] && exec python3 ${_provenanceScript}; exit 0'`
+// Launcher shape: see the staleness guard above (no `exec`, `-r`; the gate flags, it never blocks).
+const PROVENANCE_HOOK_CMD = `bash -c '[ -r ${_provenanceScript} ] && python3 ${_provenanceScript}; exit 0'`
 
 export function ensureAgentProvenanceHook(name: string): boolean {
   const settingsPath = agentSettingsPath(name)
@@ -375,9 +403,17 @@ export function ensureAgentProvenanceHook(name: string): boolean {
     ? settings.hooks as Record<string, unknown>
     : {}
   const ups = Array.isArray(hooks.UserPromptSubmit) ? hooks.UserPromptSubmit as unknown[] : []
-  // Idempotency: already wired if any command entry references the gate script.
+  // Idempotency: already wired if any command entry references the gate script; an older launcher
+  // shape is replaced in place.
   const already = JSON.stringify(ups).includes('provenance-gate.py')
-  if (already) return false
+  if (already) {
+    if (isUnsafeHookCommand(PROVENANCE_HOOK_CMD)) return false
+    if (!replaceLauncherInPlace(ups, 'provenance-gate.py', PROVENANCE_HOOK_CMD)) return false
+    hooks.UserPromptSubmit = ups
+    settings.hooks = hooks
+    atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+    return true
+  }
   // Registration guard: don't write a /tmp or non-existent path into shared settings.
   if (isUnsafeHookCommand(PROVENANCE_HOOK_CMD)) return false
   ups.push({ hooks: [{ type: 'command', command: PROVENANCE_HOOK_CMD, timeout: 10 }] })
@@ -841,7 +877,9 @@ export function ensureB29ShadowHook(name: string, on: boolean): boolean {
 // The timeout is above the hook's own 14-minute approval window plus a poll,
 // so the hook denies by itself instead of being killed.
 const _permissionApprovalScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'permission-approval.py')
-const PERMISSION_APPROVAL_CMD = `bash -c '[ -f ${_permissionApprovalScript} ] && exec python3 ${_permissionApprovalScript}; exit 0'`
+// Launcher shape: no `exec`, `-r` (see the staleness guard). The hook answers on stdout (a
+// behavior decision) and returns 0 in every path, so the closing `exit 0` loses nothing.
+const PERMISSION_APPROVAL_CMD = `bash -c '[ -r ${_permissionApprovalScript} ] && python3 ${_permissionApprovalScript}; exit 0'`
 export const PERMISSION_APPROVAL_TIMEOUT_SECONDS = 900
 
 export function injectPermissionApprovalHook(existing: Record<string, unknown>): void {
@@ -873,7 +911,9 @@ export function ensurePermissionApprovalHook(name: string): boolean {
     ? settings.hooks as Record<string, unknown>
     : {}
   const pr = Array.isArray(hooks.PermissionRequest) ? hooks.PermissionRequest as unknown[] : []
-  if (JSON.stringify(pr).includes('permission-approval.py')) return false
+  // settle only on the CURRENT launcher: an older shape is replaced in place (inject drops every
+  // entry that names the script)
+  if (hookCommandWired(JSON.stringify(pr), PERMISSION_APPROVAL_CMD)) return false
   if (isUnsafeHookCommand(PERMISSION_APPROVAL_CMD)) return false
   injectPermissionApprovalHook(settings)
   mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
