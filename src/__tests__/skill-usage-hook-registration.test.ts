@@ -30,10 +30,12 @@ describe('skill-usage-capture registration', () => {
 
   it('uses the fail-open wrapper so a missing file never blocks the tool call', () => {
     const cmd = commandsOf('PostToolUse').find((c) => c.includes('skill-usage-capture.py'))!
-    // Same shape as the other guarded hooks: file-existence test, exec on hit,
-    // exit 0 otherwise. A bare `python3 <path>` would exit 2 after the checkout
-    // moves and a non-zero hook surfaces as an error on every matched tool.
-    expect(cmd).toMatch(/^bash -c '\[ -f [^']*skill-usage-capture\.py \] && exec python3 /)
+    // Same shape as the other guarded hooks: a READABILITY test, then python3, exit 0 otherwise. A
+    // bare `python3 <path>` would exit 2 after the checkout moves and a non-zero hook surfaces as
+    // an error on every matched tool; `exec` would hand python's own status to the hook, so a script
+    // that exists but cannot be read (also exit 2) would do the same (barracuda #306 to #308).
+    expect(cmd).toMatch(/^bash -c '\[ -r [^']*skill-usage-capture\.py \] && python3 /)
+    expect(cmd).not.toContain('exec')
     expect(cmd).toMatch(/; exit 0'$/)
   })
 

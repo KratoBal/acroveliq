@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/skill-usage-capture.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/skill-usage-capture.py; exit 0'",
+            "command": "bash -c '[ -r {{PROJECT_ROOT}}/scripts/hooks/skill-usage-capture.py ] && python3 {{PROJECT_ROOT}}/scripts/hooks/skill-usage-capture.py; exit 0'",
             "timeout": 10
           }
         ]
@@ -55,12 +55,12 @@
           },
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/channel-inbox-drain.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/channel-inbox-drain.py; exit 0'",
+            "command": "bash -c '[ -r {{PROJECT_ROOT}}/scripts/hooks/channel-inbox-drain.py ] && python3 {{PROJECT_ROOT}}/scripts/hooks/channel-inbox-drain.py; exit 0'",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py; exit 0'",
+            "command": "bash -c '[ -r {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py ] && python3 {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py; exit 0'",
             "timeout": 60
           }
         ]
