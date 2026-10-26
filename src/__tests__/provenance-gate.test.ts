@@ -251,7 +251,9 @@ describe('provenance-gate wiring (static)', () => {
   it('uses the fail-open wrapper so a missing script cannot block prompts', () => {
     const src = readFileSync(join(ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf-8')
     expect(src).toContain('const PROVENANCE_HOOK_CMD')
-    expect(src).toMatch(/PROVENANCE_HOOK_CMD = `bash -c '\[ -f \$\{_provenanceScript\} \] && exec python3/)
+    // no `exec`, readability instead of existence, a closing `exit 0` (barracuda #306/#307; the gate
+    // flags and never blocks, so nothing intentional is lost)
+    expect(src).toMatch(/PROVENANCE_HOOK_CMD = `bash -c '\[ -r \$\{_provenanceScript\} \] && python3 \$\{_provenanceScript\}; exit 0'`/)
   })
 
   it('is backfilled into existing agents on startup', () => {
