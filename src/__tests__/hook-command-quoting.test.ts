@@ -22,6 +22,10 @@ import {
   ensureAgentProvenanceHook,
   ensurePermissionApprovalHook,
   injectPermissionApprovalHook,
+  measureStatusLineCommand,
+  injectMeasureStatusLine,
+  upgradeLegacyHookCommands,
+  resolveTemplatePlaceholders,
 } from '../web/agent-scaffold.js'
 import { writeAgentSecurityProfile } from '../web/agent-config.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
@@ -452,5 +456,97 @@ describe('the staleness, provenance and permission-approval launchers', () => {
     injectPermissionApprovalHook(s)
     injectPermissionApprovalHook(s)
     expect(commandsOf(s, 'PermissionRequest', 'permission-approval.py')).toHaveLength(1)
+  })
+})
+
+/*
+  THE LAST FOUR LAUNCHERS (acrobot's approval 2026-10-26 18:55, after #306, #307, #308): the settings template's
+  skill-usage-capture (PostToolUse), channel-inbox-drain and voice-reply-directive (both UserPromptSubmit, where exit
+  2 blocks the incoming message) and the measurement statusLine. MI PIROSIT: any `exec` or `[ -f ]` launcher back in
+  the template (a GUARD over the whole template, so a sixth cannot slip in); a statusLine on an unreadable script
+  ending in anything but status 0 and no output; a legacy entry the template merge does not move to the new shape.
+*/
+describe('the settings template launchers and the measurement statusLine', () => {
+  const template = JSON.parse(
+    resolveTemplatePlaceholders(readFileSync(join(PROJECT_ROOT, 'templates', 'settings.json.template'), 'utf-8')),
+  ) as { hooks: Record<string, { hooks?: { command?: string }[] }[]> }
+
+  const launchers = Object.entries(template.hooks).flatMap(([event, entries]) =>
+    entries.flatMap((e) =>
+      (e.hooks ?? []).flatMap((h) => (h.command?.startsWith("bash -c '[ -") ? [{ event, command: h.command }] : [])),
+    ),
+  )
+
+  it('no launcher in the template uses exec or an existence test, and each ends in exit 0', () => {
+    // a floor, so a template that quietly lost its launchers does not pass by having none to check
+    expect(launchers.length).toBeGreaterThanOrEqual(5)
+    for (const { event, command } of launchers) {
+      expect([event, command.includes('exec ')]).toEqual([event, false])
+      expect([event, /^bash -c '\[ -r \S+ \] && python3 \S+; exit 0'$/.test(command)]).toEqual([event, true])
+    }
+  })
+
+  it('the three that were left are among them', () => {
+    for (const name of ['skill-usage-capture.py', 'channel-inbox-drain.py', 'voice-reply-directive.py'])
+      expect(launchers.some((l) => l.command.includes(name))).toBe(true)
+  })
+
+  it('the template merge moves an older-shape entry to the new one, once', () => {
+    const names = ['skill-usage-capture.py', 'channel-inbox-drain.py', 'voice-reply-directive.py']
+    const old = (n: string) => {
+      const script = join(PROJECT_ROOT, 'scripts', 'hooks', n)
+      return `bash -c '[ -f ${script} ] && exec python3 ${script}; exit 0'`
+    }
+    const existing: Record<string, unknown> = {
+      PostToolUse: [{ hooks: [{ type: 'command', command: old(names[0]!) }] }],
+      UserPromptSubmit: [
+        { hooks: [{ type: 'command', command: old(names[1]!) }] },
+        { hooks: [{ type: 'command', command: old(names[2]!) }] },
+      ],
+    }
+    expect(upgradeLegacyHookCommands(existing, template.hooks)).toBe(true)
+    const now = JSON.stringify(existing)
+    expect(now).not.toContain('exec python3')
+    for (const n of names) expect(now).toContain(`[ -r ${join(PROJECT_ROOT, 'scripts', 'hooks', n)} ]`)
+    expect(upgradeLegacyHookCommands(existing, template.hooks)).toBe(false)
+  })
+
+  it('the statusLine is [ -r ] && NAME=agent python3, no exec, and keeps the flag and the agent', () => {
+    const script = join(PROJECT_ROOT, 'scripts', 'measure-statusline.py')
+    expect(measureStatusLineCommand('murena', true)).toBe(
+      `bash -c '[ -r ${script} ] && MEASURE_AGENT=murena python3 ${script} --export-usage; exit 0'`,
+    )
+    expect(measureStatusLineCommand('murena', false)).toBe(
+      `bash -c '[ -r ${script} ] && MEASURE_AGENT=murena python3 ${script}; exit 0'`,
+    )
+  })
+
+  it('a statusLine on an unreadable script ends in status 0 with no output', () => {
+    const dir = join(testAgentDir, 'unreadable-measure')
+    mkdirSync(dir, { recursive: true })
+    const script = join(dir, 'measure-statusline.py')
+    writeFileSync(script, 'print("x")\n')
+    chmodSync(script, 0)
+    try {
+      const real = join(PROJECT_ROOT, 'scripts', 'measure-statusline.py')
+      const inner = measureStatusLineCommand('murena', true).replace(/^bash -c '/, '').replace(/'$/, '').split(real).join(script)
+      const r = spawnSync('bash', ['-c', inner], { encoding: 'utf-8' })
+      // a root user reads everything, so the unreadable case cannot be built there
+      if (process.getuid && process.getuid() !== 0) {
+        expect({ status: r.status, stdout: r.stdout }).toEqual({ status: 0, stdout: '' })
+      }
+    } finally {
+      chmodSync(script, 0o600)
+    }
+  })
+
+  it('an agent whose statusLine has the older shape is upgraded in place, once', () => {
+    const real = join(PROJECT_ROOT, 'scripts', 'measure-statusline.py')
+    const settings: Record<string, unknown> = {
+      statusLine: { type: 'command', command: `bash -c '[ -f ${real} ] && MEASURE_AGENT=murena exec python3 ${real} --export-usage; exit 0'`, padding: 0 },
+    }
+    expect(injectMeasureStatusLine(settings, 'murena', true)).toBe(true)
+    expect(JSON.stringify(settings)).not.toContain('exec')
+    expect(injectMeasureStatusLine(settings, 'murena', true)).toBe(false)
   })
 })
