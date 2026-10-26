@@ -17,11 +17,19 @@
 #   - off mellett a lejarat-fejlec figyelese, valtozatlanul: LEJARAT_ELOTT_NAP nappal elotte RIASZT,
 #     hianyzo fejlecnel HIBA (barracuda, #188 review).
 #
-# Hasznalat: ci-el-or.sh [tulajdonos/repo ...]   (alapertelmezes: KratoBal/acroveliq)
+# A JOB-SZINTU NEM INDULAS (2026-10-26, murena 36332): a caparium#60 d76867c fejen mind az ot job
+# "The job was not started because recent account payments have failed or your spending limit needs to
+# be increased" uzenettel bukott, a futas viszont LETREJOTT, ezert a fenti fejlec-meres OK-t irt. Egy job,
+# ami nem indult el, "completed / failure", NULLA lepessel (a steps ures, a runner_id 0); egy valodi
+# bukasnak van "Set up job" lepese. A legutobbi futas jobjait is nezi, es RIASZT, ha ilyen van, az ok
+# (a check-run annotacio szovege) a sorban; es RIASZT, ha a futas QUEUED a szokasos idon (30 perc) tul.
+# Csak GET, semmit nem indit ujra.
+#
+# Hasznalat: ci-el-or.sh [tulajdonos/repo ...]   (alapertelmezes: KratoBal/acroveliq KratoBal/caparium-napplo)
 # Kimenet soronkent: OK | RIASZT | HIBA. Kilepesi kod 1, ha barmelyik RIASZT.
 set -uo pipefail
 ROOT=/home/marveen/marveen
-[ "$#" -gt 0 ] || set -- KratoBal/acroveliq
+[ "$#" -gt 0 ] || set -- KratoBal/acroveliq KratoBal/caparium-napplo
 CI_ELOR_LIB="$ROOT/scripts/lib" python3 - "$@" <<'PY'
 import json, os, sys, urllib.error, urllib.request
 from datetime import datetime, timedelta, timezone
@@ -29,6 +37,7 @@ sys.path.insert(0, os.environ["CI_ELOR_LIB"])
 from github_token import GithubTokenError, github_token
 OWNER = os.environ.get("FLEET_GITHUB_APP", "on") == "off"  # the lib's own rule: only exactly off
 LEJARAT_ELOTT_NAP = 14
+SORBAN_PERC = 30  # a queued run older than this with no job started is stuck (billing, runners)
 expiry = []  # the expiration header of the first answer that carried one (owner token only)
 answered = []  # at least one call came back: only then is a missing header a fact
 rejected = []  # 401, or 403 "Bad credentials": the token itself is refused
@@ -43,6 +52,31 @@ def g(p, t):
         return json.load(resp)
 def ts(s): return datetime.fromisoformat(s.replace("Z", "+00:00"))
 now = datetime.now(timezone.utc)
+def job_problem(repo, t, run, now):
+    """A line about the latest run's jobs that never started, or None. A run without a status (old
+    fixtures, odd answers) is not judged."""
+    status = run.get("status")
+    if status in ("queued", "waiting", "pending"):
+        wait = (now - ts(run["created_at"])).total_seconds() / 60
+        if wait > SORBAN_PERC:
+            return f"a legutobbi futas ({run['created_at']}) {wait:.0f} perce sorban all, a jobok nem indultak el"
+        return None
+    if status != "completed" or run.get("conclusion") != "failure" or not run.get("id"):
+        return None
+    jobs = g(f"{repo}/actions/runs/{run['id']}/jobs?per_page=100", t).get("jobs", [])
+    # never started: finished as a failure with no step at all (a started job has "Set up job")
+    dead = [j for j in jobs if j.get("status") == "completed" and j.get("conclusion") == "failure" and not j.get("steps")]
+    if not dead:
+        return None
+    reason = "ok ismeretlen (a check-run annotacio nem olvashato)"
+    try:
+        for a in g(f"{repo}/check-runs/{dead[0]['id']}/annotations", t):
+            if a.get("annotation_level") == "failure" and a.get("message"):
+                reason = a["message"].strip()[:200]
+                break
+    except Exception:
+        pass
+    return f"a legutobbi futas ({run['created_at']}) {len(dead)}/{len(jobs)} jobja el sem indult: {reason}"
 bad = 0
 for repo in sys.argv[1:]:
     try:
@@ -54,6 +88,7 @@ for repo in sys.argv[1:]:
         head = g(repo + "/commits/main", t)
         htime = ts(head["commit"]["committer"]["date"])
         runs = g(repo + "/actions/runs?per_page=1", t)["workflow_runs"]
+        stuck = job_problem(repo, t, runs[0], now) if runs else None
     except urllib.error.HTTPError as e:
         # after the expiry every call is a 401: without this the watcher would go quiet exactly when
         # merging has stopped (barracuda, #188 review)
@@ -69,7 +104,10 @@ for repo in sys.argv[1:]:
         print(f"HIBA {repo}: {e}"); continue
     last = ts(runs[0]["created_at"]) if runs else None
     age = (now - htime).total_seconds() / 60
-    if last is None or (last < htime and age > 60):
+    if stuck:
+        bad += 1
+        print(f"RIASZT {repo}: {stuck}. Nezd a repo Actions lapjat es a fiok Billing & plans oldalat a webes feluleten.")
+    elif last is None or (last < htime and age > 60):
         bad += 1
         print(f"RIASZT {repo}: a fo ag feje {head['sha'][:8]} {age:.0f} perce all, utana EGY futas sem keletkezett "
               f"(legutobbi futas: {runs[0]['created_at'] if runs else 'nincs'}). Nezd a repo Actions lapjat a webes feluleten.")

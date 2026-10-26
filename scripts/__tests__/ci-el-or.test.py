@@ -6,6 +6,10 @@
 # With the default (the broker, 2026-10-16): the broker not asked for exactly the repository and olvas;
 # a broker token's one-hour expiry reported as an alarm; a broker refusal silent or without its reason;
 # a 401 on the broker's token not an alarm.
+# The job-level not-started check (murena 36332, 2026-10-26): a completed/failure latest run whose jobs
+# have NO steps not alarmed (or alarmed without the annotation's reason); a failure with real steps
+# alarmed as not started; a queued run past 30 minutes silent, or a fresh queued one alarmed; a run
+# without a status judged; the default list missing caparium-napplo.
 # The real script runs in a copy of the tree with a fake token; GitHub is a stub of
 # urllib.request.urlopen, loaded through sitecustomize (test-only, no seam in the script).
 import json, os, shutil, subprocess, sys, tempfile
@@ -37,8 +41,13 @@ def urlopen(req, timeout=None):
     hdr = H({"github-authentication-token-expiration": FX["expiry"]} if FX.get("expiry") else {})
     if url.endswith("/commits/main"):
         return Resp({"sha": "abcdef1234567890", "commit": {"committer": {"date": FX["head"]}}}, hdr)
+    if "/actions/runs/" in url and "/jobs" in url:
+        FX.setdefault("asked", []).append(url)
+        return Resp({"jobs": FX.get("jobs", [])}, hdr)
+    if "/check-runs/" in url and url.split("?")[0].endswith("/annotations"):
+        return Resp(FX.get("annotations", []), hdr)
     if "/actions/runs" in url:
-        return Resp({"workflow_runs": [{"created_at": FX["run"]}]}, hdr)
+        return Resp({"workflow_runs": [{"created_at": FX["run"], **FX.get("run_extra", {})}]}, hdr)
     raise AssertionError("unexpected " + url)
 urllib.request.urlopen = urlopen
 """
@@ -129,6 +138,40 @@ try:
     rc, out = run({**healthy, "http": [401, "Bad credentials"]}, switch=None)
     check("a 401 on the broker's token: RIASZT token naming the App, exit 1",
           (1, True), (rc, any(l.startswith("RIASZT token: a GitHub elutasitja a broker tokenjet") for l in out)))
+
+    print("the job-level not-started check (murena 36332)")
+    dead = {"id": 11, "status": "completed", "conclusion": "failure", "steps": []}
+    real = {"id": 12, "status": "completed", "conclusion": "failure", "steps": [{"name": "Set up job"}]}
+    msg = "The job was not started because recent account payments have failed or your spending limit needs to be increased."
+    ann = [{"annotation_level": "notice", "message": "The ubuntu-latest label will migrate"},
+           {"annotation_level": "failure", "message": msg}]
+    failed_run = {"id": 7, "status": "completed", "conclusion": "failure"}
+    rc, out = run({**healthy, "run_extra": failed_run, "jobs": [dead, dead], "annotations": ann}, switch=None)
+    check("every job without steps: RIASZT with the count and the annotation's reason, exit 1",
+          (1, True), (rc, any(l.startswith("RIASZT KratoBal/acroveliq:") and "2/2 jobja el sem indult" in l and "payments have failed" in l for l in out)))
+    check("... and no OK line for the same repo", False, any(l.startswith("OK KratoBal/acroveliq") for l in out))
+    rc, out = run({**healthy, "run_extra": failed_run, "jobs": [dead, real], "annotations": ann}, switch=None)
+    check("one of two jobs never started: still RIASZT (1/2)", (1, True), (rc, any("1/2 jobja el sem indult" in l for l in out)))
+    rc, out = run({**healthy, "run_extra": failed_run, "jobs": [dead], "annotations": []}, switch=None)
+    check("no readable annotation: RIASZT naming the unknown reason",
+          (1, True), (rc, any(l.startswith("RIASZT") and "ok ismeretlen" in l for l in out)))
+    rc, out = run({**healthy, "run_extra": failed_run, "jobs": [real, real]}, switch=None)
+    check("a genuine failure (the jobs ran, with steps) is no not-started alarm: OK, exit 0",
+          (0, True), (rc, any(l.startswith("OK KratoBal/acroveliq") for l in out)))
+    rc, out = run({**healthy, "run_extra": {"id": 8, "status": "completed", "conclusion": "success"}, "jobs": [dead]}, switch=None)
+    check("a successful run's jobs are not even judged (a skipped job has no steps): OK", (0, True),
+          (rc, any(l.startswith("OK KratoBal/acroveliq") for l in out)))
+    rc, out = run({**healthy, "run": iso(now - timedelta(minutes=45)), "run_extra": {"id": 9, "status": "queued", "conclusion": None}}, switch=None)
+    check("queued for 45 minutes: RIASZT, exit 1", (1, True), (rc, any(l.startswith("RIASZT KratoBal/acroveliq:") and "sorban all" in l for l in out)))
+    rc, out = run({**healthy, "run": iso(now - timedelta(minutes=5)), "run_extra": {"id": 9, "status": "queued", "conclusion": None}}, switch=None)
+    check("queued for 5 minutes: no alarm", 0, rc)
+    rc, out = run({**healthy, "run": iso(now - timedelta(minutes=5)), "run_extra": {"id": 9, "status": "in_progress", "conclusion": None}}, switch=None)
+    check("in progress: no alarm", 0, rc)
+    rc, out = run({**healthy, "run_extra": failed_run, "http": [404, "Not Found"]}, switch=None)
+    check("an API error is a HIBA line, not a silent OK", (True, False), (any(l.startswith("HIBA") for l in out), any(l.startswith("OK") for l in out)))
+    default = open(SCRIPT).read()
+    check("the default list names both repositories", (1, 1),
+          (default.count("set -- KratoBal/acroveliq KratoBal/caparium-napplo"), default.count("[ \"$#\" -gt 0 ] ||")))
 finally:
     shutil.rmtree(T, ignore_errors=True)
 
