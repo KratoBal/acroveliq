@@ -15,6 +15,8 @@ import {
   injectReadonlyCommandGate,
   ensureReadonlyCommandGate,
   agentGetsReadonlyCommandGate,
+  injectDenyNormalizingGate,
+  ensureDenyNormalizingGate,
 } from '../web/agent-scaffold.js'
 import { writeAgentSecurityProfile } from '../web/agent-config.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
@@ -264,5 +266,40 @@ describe('ensureReadonlyCommandGate', () => {
     // profile resolution is attempted, so this must not throw either.
     expect(() => ensureReadonlyCommandGate(MAIN_AGENT_ID)).not.toThrow()
     expect(ensureReadonlyCommandGate(MAIN_AGENT_ID)).toBe(false)
+  })
+})
+
+describe('the deny-rule gate (tiltott-osszetett-parancs)', () => {
+  it('injectDenyNormalizingGate writes one Bash PreToolUse entry, fail-open, idempotent', () => {
+    const s: Record<string, unknown> = {}
+    injectDenyNormalizingGate(s)
+    injectDenyNormalizingGate(s)
+    const cmds = ptuCommands(s).filter((c) => c.includes('deny-normalizing-gate.py'))
+    expect(cmds).toHaveLength(1)
+    expect(cmds[0]).toMatch(/^bash -c '\[ -f .*deny-normalizing-gate\.py ] && exec python3 .*deny-normalizing-gate\.py; exit 0'$/)
+    const ptu = (s.hooks as Record<string, unknown>).PreToolUse as { matcher: string }[]
+    expect(ptu.find((e) => JSON.stringify(e).includes('deny-normalizing-gate.py'))!.matcher).toBe('Bash')
+  })
+
+  it('keeps the other PreToolUse hooks (it adds, it does not replace)', () => {
+    const s: Record<string, unknown> = {}
+    injectReadonlyCommandGate(s)
+    injectDenyNormalizingGate(s)
+    const cmds = ptuCommands(s)
+    expect(cmds.some((c) => c.includes('readonly-command-gate.py'))).toBe(true)
+    expect(cmds.some((c) => c.includes('deny-normalizing-gate.py'))).toBe(true)
+  })
+
+  it('ensureDenyNormalizingGate wires a non-main agent whatever its profile, then settles', () => {
+    mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+    writeAgentSecurityProfile(TEST_AGENT, 'default')
+    expect(ensureDenyNormalizingGate(TEST_AGENT)).toBe(true)
+    expect(ensureDenyNormalizingGate(TEST_AGENT)).toBe(false)
+    const written = JSON.parse(readFileSync(join(testAgentDir, '.claude', 'settings.json'), 'utf-8'))
+    expect(ptuCommands(written).some((c) => c.includes('deny-normalizing-gate.py'))).toBe(true)
+  })
+
+  it('never wires the gate for MAIN_AGENT_ID', () => {
+    expect(ensureDenyNormalizingGate(MAIN_AGENT_ID)).toBe(false)
   })
 })
