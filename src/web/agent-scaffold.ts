@@ -448,6 +448,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   }
   injectEgressGate(existing)
   if (agentGetsReadonlyCommandGate(profile)) injectReadonlyCommandGate(existing)
+  if (name !== MAIN_AGENT_ID) injectDenyNormalizingGate(existing)
   if (name !== MAIN_AGENT_ID) injectMeasureStatusLine(existing, name, true)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
@@ -716,6 +717,57 @@ export function ensureReadonlyCommandGate(name: string): boolean {
   if (JSON.stringify(ptu).includes('readonly-command-gate.py')) return false
   if (isUnsafeHookCommand(READONLY_COMMAND_GATE_CMD)) return false
   injectReadonlyCommandGate(settings)
+  mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// The deny-rule gate (task tiltott-osszetett-parancs, kanban 2935ed32, Balazs 2026-10-26 16:28 UTC):
+// the permission engine matches a Bash deny rule on the literal command prefix, so `bash -c '...'`,
+// `sh -c`, `git -C <path> push --force` and `/usr/bin/git ...` walked around `Bash(git push --force:*)`
+// (murena's measurement, Claude Code 2.1.310). This hook takes the command apart (wrappers, git
+// global options, basename) and DENIES only what the agent's OWN deny rules name. It never allows,
+// never asks, and stays silent when it cannot take a command apart or the agent has no deny rules.
+// Every non-main agent gets it: the hook itself reads the agent's settings, so a profile without
+// Bash deny rules costs one silent no-op. See scripts/hooks/deny-normalizing-gate.py.
+const _denyNormalizingGateScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'deny-normalizing-gate.py')
+// NO `exec`, and `-r` not `-f` (barracuda, #306 review): with `exec` the hook's exit status is python's own, and a
+// script that EXISTS but cannot be read by this agent's user makes python3 exit 2, which Claude Code takes for a
+// BLOCK of every Bash call. A denial travels on stdout (permissionDecision: deny), so `exit 0` loses nothing.
+const DENY_NORMALIZING_GATE_CMD = `bash -c '[ -r ${_denyNormalizingGateScript} ] && python3 ${_denyNormalizingGateScript}; exit 0'`
+
+export function injectDenyNormalizingGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  if (isUnsafeHookCommand(DENY_NORMALIZING_GATE_CMD)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command: DENY_NORMALIZING_GATE_CMD, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('deny-normalizing-gate.py')),
+    entry,
+  ]
+}
+
+// Idempotent migration: a non-main agent's settings.json carries the deny-rule gate. The main agent
+// is not profile-managed and is left alone, as for the read-only gate.
+export function ensureDenyNormalizingGate(name: string): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  if (JSON.stringify(ptu).includes('deny-normalizing-gate.py')) return false
+  if (isUnsafeHookCommand(DENY_NORMALIZING_GATE_CMD)) return false
+  injectDenyNormalizingGate(settings)
   mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true

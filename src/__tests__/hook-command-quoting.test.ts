@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, chmodSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import {
   HOOK_NODE_BIN,
@@ -15,6 +16,8 @@ import {
   injectReadonlyCommandGate,
   ensureReadonlyCommandGate,
   agentGetsReadonlyCommandGate,
+  injectDenyNormalizingGate,
+  ensureDenyNormalizingGate,
 } from '../web/agent-scaffold.js'
 import { writeAgentSecurityProfile } from '../web/agent-config.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
@@ -264,5 +267,64 @@ describe('ensureReadonlyCommandGate', () => {
     // profile resolution is attempted, so this must not throw either.
     expect(() => ensureReadonlyCommandGate(MAIN_AGENT_ID)).not.toThrow()
     expect(ensureReadonlyCommandGate(MAIN_AGENT_ID)).toBe(false)
+  })
+})
+
+describe('the deny-rule gate (tiltott-osszetett-parancs)', () => {
+  it('injectDenyNormalizingGate writes one Bash PreToolUse entry, fail-open, idempotent', () => {
+    const s: Record<string, unknown> = {}
+    injectDenyNormalizingGate(s)
+    injectDenyNormalizingGate(s)
+    const cmds = ptuCommands(s).filter((c) => c.includes('deny-normalizing-gate.py'))
+    expect(cmds).toHaveLength(1)
+    // barracuda, #306: no `exec` (python's own exit status must not become the hook's), readability not
+    // existence, and a closing `exit 0`
+    expect(cmds[0]).toMatch(/^bash -c '\[ -r .*deny-normalizing-gate\.py ] && python3 .*deny-normalizing-gate\.py; exit 0'$/)
+    expect(cmds[0]).not.toContain('exec')
+    const ptu = (s.hooks as Record<string, unknown>).PreToolUse as { matcher: string }[]
+    expect(ptu.find((e) => JSON.stringify(e).includes('deny-normalizing-gate.py'))!.matcher).toBe('Bash')
+  })
+
+  it('an existing script this user cannot read ends in exit 0, never in the 2 that blocks every Bash call', () => {
+    const dir = join(testAgentDir, 'unreadable-hook')
+    mkdirSync(dir, { recursive: true })
+    const script = join(dir, 'deny-normalizing-gate.py')
+    writeFileSync(script, 'print("x")\n')
+    chmodSync(script, 0)
+    try {
+      const s: Record<string, unknown> = {}
+      injectDenyNormalizingGate(s)
+      const cmd = ptuCommands(s).find((c) => c.includes('deny-normalizing-gate.py'))!
+      const real = join(PROJECT_ROOT, 'scripts', 'hooks', 'deny-normalizing-gate.py')
+      const r = spawnSync('bash', ['-c', cmd.replace(/^bash -c '/, '').replace(/'$/, '').split(real).join(script)], { encoding: 'utf-8' })
+      // a root user reads everything, so the unreadable case cannot be built there
+      if (process.getuid && process.getuid() !== 0) {
+        expect({ status: r.status, stdout: r.stdout }).toEqual({ status: 0, stdout: '' })
+      }
+    } finally {
+      chmodSync(script, 0o600)
+    }
+  })
+
+  it('keeps the other PreToolUse hooks (it adds, it does not replace)', () => {
+    const s: Record<string, unknown> = {}
+    injectReadonlyCommandGate(s)
+    injectDenyNormalizingGate(s)
+    const cmds = ptuCommands(s)
+    expect(cmds.some((c) => c.includes('readonly-command-gate.py'))).toBe(true)
+    expect(cmds.some((c) => c.includes('deny-normalizing-gate.py'))).toBe(true)
+  })
+
+  it('ensureDenyNormalizingGate wires a non-main agent whatever its profile, then settles', () => {
+    mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+    writeAgentSecurityProfile(TEST_AGENT, 'default')
+    expect(ensureDenyNormalizingGate(TEST_AGENT)).toBe(true)
+    expect(ensureDenyNormalizingGate(TEST_AGENT)).toBe(false)
+    const written = JSON.parse(readFileSync(join(testAgentDir, '.claude', 'settings.json'), 'utf-8'))
+    expect(ptuCommands(written).some((c) => c.includes('deny-normalizing-gate.py'))).toBe(true)
+  })
+
+  it('never wires the gate for MAIN_AGENT_ID', () => {
+    expect(ensureDenyNormalizingGate(MAIN_AGENT_ID)).toBe(false)
   })
 })
