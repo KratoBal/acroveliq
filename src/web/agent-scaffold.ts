@@ -342,6 +342,27 @@ function replaceLauncherInPlace(entries: unknown[], scriptName: string, command:
   return changed
 }
 
+/**
+ * Upgrade, in place, an entry that is ALREADY in an agent's settings.json (never adds one). For the hooks
+ * that are wired only for some profiles (the read-only gate and the approval hook are strict-only): an
+ * agent whose profile changed later keeps the entry it was wired with, and the strict-only ensure* returned
+ * before ever looking at it, so a launcher fix never reached it (measured 2026-10-26 19:07: murena and
+ * nautilus still carried the old `[ -f ] && exec` read-only gate after #307 and the boot backfill).
+ */
+function upgradeExistingLauncher(name: string, event: string, scriptName: string, command: string): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown>
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object') ? settings.hooks as Record<string, unknown> : {}
+  const entries = Array.isArray(hooks[event]) ? hooks[event] as unknown[] : []
+  if (isUnsafeHookCommand(command)) return false
+  if (!replaceLauncherInPlace(entries, scriptName, command)) return false
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 export function ensureAgentStalenessHook(name: string): boolean {
   // agentSettingsPath() maps MAIN_AGENT_ID to ~/.claude/settings.json; using
   // agentDir() directly here would create a spurious agents/<main> dir and make
@@ -432,6 +453,27 @@ export function ensureAgentProvenanceHook(name: string): boolean {
 // channel, message_id 1553791029549998101). The helpers live in
 // measure-statusline.ts so the worker provisioning installs the same line.
 export { measureStatusLineCommand, injectMeasureStatusLine } from './measure-statusline.js'
+
+/**
+ * Boot backfill for the measurement statusLine: UPGRADE one that already points at the measurement script
+ * (never add one, never touch a statusLine somebody set on purpose). Until now a sub-agent's statusLine was
+ * written only by writeAgentSettingsFromProfile, i.e. when the agent STARTS, so a launcher fix reached it
+ * only at its next start (measured 2026-10-26 19:07: all six agents still carried the old shape after the
+ * dashboard restart). The main agent's statusLine is written at its own start (agent-process.ts).
+ */
+export function ensureMeasureStatusLineUpgrade(name: string): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown>
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const cur = settings.statusLine as { command?: unknown } | undefined
+  if (!cur || typeof cur.command !== 'string' || !cur.command.includes('measure-statusline.py')) return false
+  if (isUnsafeHookCommand(cur.command)) return false
+  if (!injectMeasureStatusLine(settings, name, true)) return false
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
 
 export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate): void {
   const agentRoot = agentDir(name)
@@ -744,7 +786,9 @@ export function injectReadonlyCommandGate(existing: Record<string, unknown>): vo
 export function ensureReadonlyCommandGate(name: string): boolean {
   if (name === MAIN_AGENT_ID) return false
   const profile = loadProfileTemplate(resolveAgentSecurityProfile(name))
-  if (!agentGetsReadonlyCommandGate(profile)) return false
+  // a non-strict profile gets no NEW entry, but an entry it already carries is upgraded in place
+  if (!agentGetsReadonlyCommandGate(profile))
+    return upgradeExistingLauncher(name, 'PreToolUse', 'readonly-command-gate.py', READONLY_COMMAND_GATE_CMD)
   const settingsPath = agentSettingsPath(name)
   let settings: Record<string, unknown> = {}
   if (existsSync(settingsPath)) {
@@ -901,7 +945,9 @@ export function injectPermissionApprovalHook(existing: Record<string, unknown>):
 export function ensurePermissionApprovalHook(name: string): boolean {
   if (name === MAIN_AGENT_ID) return false
   const profile = loadProfileTemplate(resolveAgentSecurityProfile(name))
-  if (!agentGetsReadonlyCommandGate(profile)) return false
+  // a non-strict profile gets no NEW entry, but an entry it already carries is upgraded in place
+  if (!agentGetsReadonlyCommandGate(profile))
+    return upgradeExistingLauncher(name, 'PermissionRequest', 'permission-approval.py', PERMISSION_APPROVAL_CMD)
   const settingsPath = agentSettingsPath(name)
   let settings: Record<string, unknown> = {}
   if (existsSync(settingsPath)) {
