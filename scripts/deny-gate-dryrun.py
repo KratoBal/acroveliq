@@ -12,6 +12,10 @@ prints the count and every call the hook WOULD have denied, tagged:
   already   the plain (un-normalised) command is denied by the same rule: the engine refuses it today too
   NEW       only the normalised form matches: a call the engine lets through and the hook would stop
 A NEW line is the one to read: it is either the bypass we mean to close or a false block.
+COVERAGE (acrobot 36401, 2026-10-26): a transcript this user cannot read is NOT "zero calls". The
+script counts the files and folders it could not open and prints them on a COVERAGE line; when it
+could read no transcript at all, or no Bash call, it stops with exit code 3 instead of reporting a 0
+that looks like a clean result. A partial read exits 0 with the unreadable count in plain sight.
 Read-only: it never runs a command and prints no more than 160 characters of one.
 """
 import importlib.util
@@ -39,21 +43,28 @@ def load_rules(path):
     return out
 
 
+UNREADABLE = []  # (path, why): files and folders that could not be opened
+
+
 def transcripts(paths):
     for p in paths:
         if os.path.isfile(p):
             yield p
-        else:
-            for root, _, files in os.walk(p):
+        elif os.path.isdir(p):
+            for root, _, files in os.walk(p, onerror=lambda e: UNREADABLE.append((str(e.filename), "folder"))):
                 for f in files:
                     if f.endswith(".jsonl"):
                         yield os.path.join(root, f)
+        else:
+            UNREADABLE.append((p, "missing"))
 
 
 def bash_commands(path):
+    """Yields the Bash commands of one transcript; None once if the file could not be opened."""
     try:
         f = open(path, encoding="utf-8", errors="replace")
     except OSError:
+        UNREADABLE.append((path, "file"))
         return
     with f:
         for line in f:
@@ -101,7 +112,7 @@ def main(argv):
         print(__doc__)
         return 2
     rules = load_rules(rules_path)
-    total = files = 0
+    total = files = readable = 0
     hits = []
     for t in transcripts(args):
         files += 1
@@ -110,11 +121,23 @@ def main(argv):
             hit = dng.find_denied(cmd, rules)
             if hit:
                 hits.append((("already" if literal_denied(cmd, rules) else "NEW"), hit[0], cmd))
+        if (t, "file") not in UNREADABLE:
+            readable += 1
     print(f"rules: {len(rules)} from {os.path.normpath(rules_path)}")
     print(f"transcripts: {files}, Bash calls: {total}, the hook would deny: {len(hits)} "
           f"(NEW: {sum(1 for h in hits if h[0] == 'NEW')}, already denied today: {sum(1 for h in hits if h[0] == 'already')})")
     for tag, rule, cmd in hits:
         print(f"  [{tag}] {rule} <- {' '.join(cmd.split())[:160]}")
+    print(f"COVERAGE: transcripts found {files}, read {readable}, NOT readable {len(UNREADABLE)} "
+          f"(files or folders this user cannot open)")
+    for path, why in UNREADABLE[:10]:
+        print(f"  [unreadable {why}] {path}")
+    if len(UNREADABLE) > 10:
+        print(f"  ... and {len(UNREADABLE) - 10} more")
+    if readable == 0 or total == 0:
+        print("NO RESULT: no transcript could be read (or none held a Bash call), so the 0 above is NOT "
+              "'nothing would be denied'. Run it as a user that can read the transcripts.")
+        return 3
     return 0
 
 
