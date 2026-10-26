@@ -731,7 +731,10 @@ export function ensureReadonlyCommandGate(name: string): boolean {
 // Every non-main agent gets it: the hook itself reads the agent's settings, so a profile without
 // Bash deny rules costs one silent no-op. See scripts/hooks/deny-normalizing-gate.py.
 const _denyNormalizingGateScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'deny-normalizing-gate.py')
-const DENY_NORMALIZING_GATE_CMD = `bash -c '[ -f ${_denyNormalizingGateScript} ] && exec python3 ${_denyNormalizingGateScript}; exit 0'`
+// NO `exec`, and `-r` not `-f` (barracuda, #306 review): with `exec` the hook's exit status is python's own, and a
+// script that EXISTS but cannot be read by this agent's user makes python3 exit 2, which Claude Code takes for a
+// BLOCK of every Bash call. A denial travels on stdout (permissionDecision: deny), so `exit 0` loses nothing.
+const DENY_NORMALIZING_GATE_CMD = `bash -c '[ -r ${_denyNormalizingGateScript} ] && python3 ${_denyNormalizingGateScript}; exit 0'`
 
 export function injectDenyNormalizingGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'

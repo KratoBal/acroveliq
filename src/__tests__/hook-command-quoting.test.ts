@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, chmodSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import {
   HOOK_NODE_BIN,
@@ -276,9 +277,33 @@ describe('the deny-rule gate (tiltott-osszetett-parancs)', () => {
     injectDenyNormalizingGate(s)
     const cmds = ptuCommands(s).filter((c) => c.includes('deny-normalizing-gate.py'))
     expect(cmds).toHaveLength(1)
-    expect(cmds[0]).toMatch(/^bash -c '\[ -f .*deny-normalizing-gate\.py ] && exec python3 .*deny-normalizing-gate\.py; exit 0'$/)
+    // barracuda, #306: no `exec` (python's own exit status must not become the hook's), readability not
+    // existence, and a closing `exit 0`
+    expect(cmds[0]).toMatch(/^bash -c '\[ -r .*deny-normalizing-gate\.py ] && python3 .*deny-normalizing-gate\.py; exit 0'$/)
+    expect(cmds[0]).not.toContain('exec')
     const ptu = (s.hooks as Record<string, unknown>).PreToolUse as { matcher: string }[]
     expect(ptu.find((e) => JSON.stringify(e).includes('deny-normalizing-gate.py'))!.matcher).toBe('Bash')
+  })
+
+  it('an existing script this user cannot read ends in exit 0, never in the 2 that blocks every Bash call', () => {
+    const dir = join(testAgentDir, 'unreadable-hook')
+    mkdirSync(dir, { recursive: true })
+    const script = join(dir, 'deny-normalizing-gate.py')
+    writeFileSync(script, 'print("x")\n')
+    chmodSync(script, 0)
+    try {
+      const s: Record<string, unknown> = {}
+      injectDenyNormalizingGate(s)
+      const cmd = ptuCommands(s).find((c) => c.includes('deny-normalizing-gate.py'))!
+      const real = join(PROJECT_ROOT, 'scripts', 'hooks', 'deny-normalizing-gate.py')
+      const r = spawnSync('bash', ['-c', cmd.replace(/^bash -c '/, '').replace(/'$/, '').split(real).join(script)], { encoding: 'utf-8' })
+      // a root user reads everything, so the unreadable case cannot be built there
+      if (process.getuid && process.getuid() !== 0) {
+        expect({ status: r.status, stdout: r.stdout }).toEqual({ status: 0, stdout: '' })
+      }
+    } finally {
+      chmodSync(script, 0o600)
+    }
   })
 
   it('keeps the other PreToolUse hooks (it adds, it does not replace)', () => {
