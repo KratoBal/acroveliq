@@ -56,7 +56,8 @@ def job_problem(repo, t, run, now):
     """A line about the latest run's jobs that never started, or None. A run without a status (old
     fixtures, odd answers) is not judged."""
     status = run.get("status")
-    if status in ("queued", "waiting", "pending"):
+    # "waiting" is left out: it is mostly an environment approval, which may stand for hours on purpose
+    if status in ("queued", "pending"):
         wait = (now - ts(run["created_at"])).total_seconds() / 60
         if wait > SORBAN_PERC:
             return f"a legutobbi futas ({run['created_at']}) {wait:.0f} perce sorban all, a jobok nem indultak el"
@@ -68,12 +69,20 @@ def job_problem(repo, t, run, now):
     dead = [j for j in jobs if j.get("status") == "completed" and j.get("conclusion") == "failure" and not j.get("steps")]
     if not dead:
         return None
+    # the annotation is GitHub text that ends up in an agent's context: it never goes on in raw form,
+    # only mapped onto our own sentence for a known pattern (barracuda, #304 review)
     reason = "ok ismeretlen (a check-run annotacio nem olvashato)"
     try:
         for a in g(f"{repo}/check-runs/{dead[0]['id']}/annotations", t):
-            if a.get("annotation_level") == "failure" and a.get("message"):
-                reason = a["message"].strip()[:200]
-                break
+            m = (a.get("message") or "") if a.get("annotation_level") == "failure" else ""
+            if not m:
+                continue
+            low = m.lower()
+            if "payments have failed" in low or "spending limit" in low:
+                reason = "szamlazasi vagy koltesi korlat (a GitHub fiok Billing & plans oldala)"
+            else:
+                reason = "az ok nem ismert minta, az annotacio a GitHub check-run lapjan olvashato"
+            break
     except Exception:
         pass
     return f"a legutobbi futas ({run['created_at']}) {len(dead)}/{len(jobs)} jobja el sem indult: {reason}"
