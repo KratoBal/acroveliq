@@ -26,6 +26,7 @@ import {
   injectMeasureStatusLine,
   upgradeLegacyHookCommands,
   resolveTemplatePlaceholders,
+  ensureMeasureStatusLineUpgrade,
 } from '../web/agent-scaffold.js'
 import { writeAgentSecurityProfile } from '../web/agent-config.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
@@ -548,5 +549,88 @@ describe('the settings template launchers and the measurement statusLine', () =>
     expect(injectMeasureStatusLine(settings, 'murena', true)).toBe(true)
     expect(JSON.stringify(settings)).not.toContain('exec')
     expect(injectMeasureStatusLine(settings, 'murena', true)).toBe(false)
+  })
+})
+
+/*
+  THE TWO PATHS THE BACKFILL MISSED (measured 2026-10-26 19:07, after #309 and the dashboard restart): murena and
+  nautilus still carried the old `[ -f ] && exec` read-only gate (their profile is no longer strict, the strict-only
+  ensure returned before looking at it), and all six agents still carried the old statusLine (it was written only when
+  an agent STARTS). MI PIROSIT: a non-strict agent's existing entry left on the old shape; a non-strict agent given an
+  entry it never had; a statusLine left old at the boot backfill, or one somebody set on purpose being overwritten, or
+  one added where there was none.
+*/
+describe('the upgrade paths of the read-only gate, the approval hook and the statusLine', () => {
+  const settingsPathOf = () => join(testAgentDir, '.claude', 'settings.json')
+  const readSettings = () => JSON.parse(readFileSync(settingsPathOf(), 'utf-8')) as Record<string, unknown>
+  const oldLauncher = (n: string) => {
+    const script = join(PROJECT_ROOT, 'scripts', 'hooks', n)
+    return `bash -c '[ -f ${script} ] && exec python3 ${script}; exit 0'`
+  }
+  const hookCmds = (event: string) => {
+    const entries = ((readSettings().hooks as Record<string, unknown>)?.[event] ?? []) as { hooks: { command: string }[] }[]
+    return entries.flatMap((e) => e.hooks.map((h) => h.command))
+  }
+
+  const CASES = [
+    { name: 'readonly-command-gate.py', event: 'PreToolUse', ensure: ensureReadonlyCommandGate },
+    { name: 'permission-approval.py', event: 'PermissionRequest', ensure: ensurePermissionApprovalHook },
+  ] as const
+
+  for (const c of CASES) {
+    it(`${c.name}: a NON-strict agent's old entry is upgraded in place, once`, () => {
+      mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+      writeAgentSecurityProfile(TEST_AGENT, 'default')
+      writeFileSync(
+        settingsPathOf(),
+        JSON.stringify({ hooks: { [c.event]: [{ matcher: 'Bash', hooks: [{ type: 'command', command: oldLauncher(c.name), timeout: 10 }] }] } }),
+      )
+      expect(c.ensure(TEST_AGENT)).toBe(true)
+      const cmds = hookCmds(c.event).filter((cmd) => cmd.includes(c.name))
+      expect(cmds).toHaveLength(1)
+      expect(cmds[0]).not.toContain('exec')
+      expect(cmds[0]).toContain('[ -r ')
+      expect(c.ensure(TEST_AGENT)).toBe(false)
+    })
+
+    it(`${c.name}: a NON-strict agent without the entry is not given one`, () => {
+      mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+      writeAgentSecurityProfile(TEST_AGENT, 'default')
+      writeFileSync(settingsPathOf(), JSON.stringify({ hooks: {} }))
+      expect(c.ensure(TEST_AGENT)).toBe(false)
+      expect(JSON.stringify(readSettings())).not.toContain(c.name)
+    })
+  }
+
+  const statusLine = (command: string) => ({ statusLine: { type: 'command', command, padding: 0 } })
+  const real = join(PROJECT_ROOT, 'scripts', 'measure-statusline.py')
+
+  it('the boot backfill upgrades an old-shape measurement statusLine, once', () => {
+    mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+    writeFileSync(
+      settingsPathOf(),
+      JSON.stringify(statusLine(`bash -c '[ -f ${real} ] && MEASURE_AGENT=${TEST_AGENT} exec python3 ${real} --export-usage; exit 0'`)),
+    )
+    expect(ensureMeasureStatusLineUpgrade(TEST_AGENT)).toBe(true)
+    const cmd = (readSettings().statusLine as { command: string }).command
+    expect(cmd).toBe(`bash -c '[ -r ${real} ] && MEASURE_AGENT=${TEST_AGENT} python3 ${real} --export-usage; exit 0'`)
+    expect(ensureMeasureStatusLineUpgrade(TEST_AGENT)).toBe(false)
+  })
+
+  it('a statusLine somebody set on purpose is left alone, and none is added where there was none', () => {
+    mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+    writeFileSync(settingsPathOf(), JSON.stringify(statusLine('echo my own line')))
+    expect(ensureMeasureStatusLineUpgrade(TEST_AGENT)).toBe(false)
+    expect((readSettings().statusLine as { command: string }).command).toBe('echo my own line')
+
+    writeFileSync(settingsPathOf(), JSON.stringify({ hooks: {} }))
+    expect(ensureMeasureStatusLineUpgrade(TEST_AGENT)).toBe(false)
+    expect(readSettings().statusLine).toBeUndefined()
+  })
+
+  it('never for the main agent, and the boot backfill calls it', () => {
+    expect(ensureMeasureStatusLineUpgrade(MAIN_AGENT_ID)).toBe(false)
+    const web = readFileSync(join(PROJECT_ROOT, 'src', 'web.ts'), 'utf-8')
+    expect(web).toContain('ensureMeasureStatusLineUpgrade(agentName)')
   })
 })

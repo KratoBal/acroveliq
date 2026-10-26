@@ -21,7 +21,7 @@ import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-o
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureReadonlyCommandGate, ensureDenyNormalizingGate, ensurePermissionApprovalHook, ensureB29ShadowHook, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureReadonlyCommandGate, ensureDenyNormalizingGate, ensurePermissionApprovalHook, ensureMeasureStatusLineUpgrade, ensureB29ShadowHook, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -610,6 +610,7 @@ export function startWebServer(port = 3420): http.Server {
       const readonlyPatched: string[] = []
       const denyGatePatched: string[] = []
       const approvalPatched: string[] = []
+      const statusLinePatched: string[] = []
       const govPatched: string[] = []
       const pruned: string[] = []
       // Include the main agent (MAIN_AGENT_ID) so the voice hook is also seeded
@@ -633,6 +634,7 @@ export function startWebServer(port = 3420): http.Server {
         if (ensureReadonlyCommandGate(agentName)) readonlyPatched.push(agentName)
         if (ensureDenyNormalizingGate(agentName)) denyGatePatched.push(agentName)
         if (ensurePermissionApprovalHook(agentName)) approvalPatched.push(agentName)
+        if (ensureMeasureStatusLineUpgrade(agentName)) statusLinePatched.push(agentName)
         // B29 step 2: the main agent's shadow hook, wired while B29_ARNYEK_HOOK=1, removed otherwise
         if (ensureB29ShadowHook(agentName, readEnvFile(['B29_ARNYEK_HOOK']).B29_ARNYEK_HOOK === '1')) {
           logger.info({ agent: agentName }, 'B29 shadow hook (PreToolUse) wiring changed in agent settings.json')
@@ -656,6 +658,7 @@ export function startWebServer(port = 3420): http.Server {
       if (egressPatched.length) logger.info({ patched: egressPatched }, 'egress-gate WebFetch hook backfilled into agent settings.json')
       if (readonlyPatched.length) logger.info({ patched: readonlyPatched }, 'readonly-command-gate Bash hook backfilled into agent settings.json')
       if (denyGatePatched.length) logger.info({ patched: denyGatePatched }, 'deny-normalizing-gate Bash hook backfilled into agent settings.json')
+      if (statusLinePatched.length) logger.info({ patched: statusLinePatched }, 'measurement statusLine upgraded in place in agent settings.json')
       if (approvalPatched.length) logger.info({ patched: approvalPatched }, 'permission-approval PermissionRequest hook backfilled into agent settings.json')
       if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')
     } catch (err) {
