@@ -330,9 +330,10 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // 2.1): the session's user, an agent token's name. Only the shared token
     // and a device still declare it, and in an enforcing position neither
     // reaches this route (the matrix: only the session decides).
-    const decider = ctx.auth?.kind === 'session' && ctx.auth.user
-      ? ctx.auth.user
-      : claimActor(ctx.auth, ctx.accessMode ?? 'naplo', resolved_by, 'approvals.resolved_by').value
+    const claim = ctx.auth?.kind === 'session' && ctx.auth.user
+      ? { value: ctx.auth.user, verified: true }
+      : claimActor(ctx.auth, ctx.accessMode ?? 'naplo', resolved_by, 'approvals.resolved_by')
+    const decider = claim.value
     if (!decider) {
       json(res, { error: 'resolved_by is required' }, 400)
       return true
@@ -345,6 +346,16 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const target = getApproval(idMatch[1])
     if (target && decider === target.agent_id) {
       json(res, { error: 'The requesting agent cannot approve its own request' }, 403)
+      return true
+    }
+
+    // A command stop (bash_command) is let through by the permission-approval hook
+    // when the row's resolved_by is the main agent, so that field must be the
+    // credential's word, never the body's: the shared token and a device only
+    // declare it, and a self-declared "main agent" would let any holder approve
+    // a sub-agent's command. An agent token or a session names its holder.
+    if (target?.category === BASH_COMMAND_CATEGORY && !claim.verified) {
+      json(res, { error: 'a bash_command row is decided by a credential that names its holder (an agent token or a session), not by a declared resolved_by' }, 403)
       return true
     }
 

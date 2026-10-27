@@ -32,10 +32,17 @@ THE LIVE PATH AND ITS BINDINGS (barracuda 32016, 32022):
     whitespace) is denied with that reason, never shortened;
   - a command with anything secret-shaped (scripts/futtat.py's masker) is
     denied and nothing goes to Discord;
-  - allow only if THIS hook's approval row is approved, decided from Discord
-    (decision_ref "discord:..."), and its description is letter for letter the
-    one built from the running tool_input. A row resolved over the API, by an
-    agent token, does not count: that is the key acrobot must not have;
+  - allow only if THIS hook's approval row is approved AND its description is
+    letter for letter the one built from the running tool_input, AND it was
+    decided by one of two parties: the owner on Discord (decision_ref
+    "discord:..."), or the MAIN agent over the API (resolved_by is the id in
+    store/.main-agent-id), and then only for a SUB-agent's row. Owner decision
+    2026-10-27 09:17 UTC: a sub-agent's command stop is judged by the main
+    agent. The server writes resolved_by from the credential (an agent token
+    names its holder; the shared token and a device cannot decide a
+    bash_command row at all), so a sub-agent cannot pass as the main agent in
+    the body. The main agent's OWN stops stay Discord-only: nobody else judges
+    its commands;
   - the deny says who decided: the owner's rejection and a timeout are two
     different texts, because the agent writes on the card what it gets;
   - the output is behavior and message only, never updatedPermissions: a "yes"
@@ -219,8 +226,27 @@ def _cache_write(path: str, cache: dict, now: float) -> None:
         pass  # a lost cache costs one more request, never a wrong decision
 
 
-def _verdict(row: dict, text: str, agent: str):
+def main_agent_id() -> str:
+    try:
+        with open(os.path.join(BASE, "store", ".main-agent-id")) as f:
+            return f.read().strip() or "acrobot"
+    except Exception:
+        return "acrobot"
+
+
+def _decider(row: dict, main_agent: str) -> str:
+    """Who decided, in words the agent writes on its card: the owner, the main agent, or someone who does not count."""
+    who = row.get("resolved_by")
+    if str(row.get("decision_ref") or "").startswith("discord:"):
+        return "%s (Discord, a gazda)" % who
+    if who == main_agent:
+        return "%s (a fo agens, NEM a gazda)" % who
+    return "%s (nem Discord, nem a fo agens)" % who
+
+
+def _verdict(row: dict, text: str, agent: str, main_agent: str = None):
     """allow/deny for a decided row, None while it is pending."""
+    main_agent = main_agent or main_agent_id()
     # the row must be THIS agent's, on every path: a cached id is the agent's own
     # writable file, and could point at another agent's row with the same text
     # (barracuda, #219 review 1)
@@ -231,20 +257,21 @@ def _verdict(row: dict, text: str, agent: str):
         return None
     if row.get("action_description") != text or row.get("category") != CATEGORY:
         return deny("a jovahagyas sora nem ezt a parancsot irja le, nem futtatom")
+    on_discord = str(row.get("decision_ref") or "").startswith("discord:")
+    by_main_agent = row.get("resolved_by") == main_agent and agent != main_agent
     if status == "approved":
-        if not str(row.get("decision_ref") or "").startswith("discord:"):
-            return deny("a jovahagyas nem Discordon szuletett (dontott: %s); csak a gazda Discord-valasza ad engedelyt" % row.get("resolved_by"))
+        if not (on_discord or by_main_agent):
+            return deny("a jovahagyas nem a gazda Discord-valaszabol es nem a fo agenstol (%s) szuletett (dontott: %s); a sub-agens parancsat a fo agens vagy a gazda donti el" % (main_agent, row.get("resolved_by")))
         return output("allow")
     if status == "rejected":
-        via = "Discord" if str(row.get("decision_ref") or "").startswith("discord:") else "nem Discord"
-        return deny("elutasitva, dontott: %s (%s). Jelentsd, es ne probald ujra ugyanigy." % (row.get("resolved_by"), via))
+        return deny("elutasitva, dontott: %s. Jelentsd a kartyan pontosan igy, ne probald ujra ugyanigy." % _decider(row, main_agent))
     if status == "timeout":
-        return deny("nem jott valasz %d percen belul. Ez NEM emberi dontes: jelentsd, hogy a parancs jovahagyasra var." % (APPROVAL_SECONDS // 60))
+        return deny("nem jott valasz %d percen belul (a fo agens sem dontott). Senki nem utasitotta el, ez NEM emberi dontes: jelentsd, hogy a parancs jovahagyasra var." % (APPROVAL_SECONDS // 60))
     return deny("ismeretlen jovahagyasi allapot: %s" % status)
 
 
 def live(command: str, cwd: str, agent: str, api: Api, cache_path: str,
-         now=time.time, sleep=time.sleep) -> dict:
+         now=time.time, sleep=time.sleep, main_agent: str = None) -> dict:
     text, why = description(command, cwd)
     if text is None:
         return deny(why)
@@ -279,7 +306,7 @@ def live(command: str, cwd: str, agent: str, api: Api, cache_path: str,
         _cache_write(cache_path, cache, now())
     deadline = now() + APPROVAL_SECONDS + POLL_SECONDS
     while True:
-        verdict = _verdict(row, text, agent)
+        verdict = _verdict(row, text, agent, main_agent)
         if verdict is not None:
             outcome = row.get("status")
             cache[key] = {"id": row.get("id"), "at": now(), "outcome": outcome}
@@ -304,7 +331,7 @@ def shadow_note(command: str, cwd: str, agent: str) -> str:
     else:
         head = " ".join(command.split()[:2])[:60]
         text, why = description(command, cwd)
-        would = "Discord-kerdes Balazsnak" if text else "deny: " + why
+        would = "a fo agens biralja (APPROVAL_REQUEST), a gazdahoz nem megy" if text else "deny: " + why
     return (
         "[ARNYEK] permission-approval: %s engedelyt kerne. eleje='%s' hossz=%d sha=%s cwd=%s. Elesben: %s."
         % (agent, head, len(command), hashlib.sha256(command.encode()).hexdigest()[:8], cwd, would)
@@ -342,8 +369,7 @@ def main() -> int:
     agent, token_file = whoami()
     if mode() != "eles":
         try:
-            with open(os.path.join(BASE, "store", ".main-agent-id")) as f:
-                main_agent = f.read().strip() or "acrobot"
+            main_agent = main_agent_id()
             subprocess.run(
                 ["bash", os.path.join(BASE, "scripts", "agent-msg.sh"), agent or "ismeretlen", main_agent, "-"],
                 input=shadow_note(command, cwd, agent or "?"), capture_output=True, text=True, timeout=20,
