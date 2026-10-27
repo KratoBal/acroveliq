@@ -68,6 +68,21 @@ def broker_token(repo, api):
     return tok
 
 
+def optional_token(repo, api):
+    """A public repo is read WITH the broker's READ token when one is given, anonymously otherwise.
+    Why: anonymous GitHub reads share a 60-per-hour budget per IP, and the whole fleet sits behind one
+    address; measured 2026-10-27 11:4x, barracuda's --fej on public acropora-commerce PRs got HTTP 403
+    three times in a row while the App's own budget stood at 4780/5000. The token goes only to the real
+    GitHub api (or to a test helper named in REVIEW_FEJ_BROKER), never to another host. A refusal is not
+    a stop here: the anonymous read is still tried, as before."""
+    if api != 'https://api.github.com' and not (api.startswith('http://127.0.0.1:') and os.environ.get('REVIEW_FEJ_BROKER')):
+        return None
+    try:
+        return broker_token(repo, api)
+    except Stop:
+        return None
+
+
 def get(url, accept, token=None):
     headers = {'Accept': accept, 'User-Agent': 'review-fej-diff', 'X-GitHub-Api-Version': '2022-11-28'}
     if token:
@@ -245,7 +260,7 @@ def run(argv):
     except FileNotFoundError:
         pass
     lines = []
-    token = broker_token(repo, api) if repo in PRIVATE_REPOS else None
+    token = broker_token(repo, api) if repo in PRIVATE_REPOS else optional_token(repo, api)
     p = json.loads(get(f'{api}/repos/{repo}/pulls/{pr}', 'application/vnd.github+json', token).decode() or '{}')
     now = (p.get('head') or {}).get('sha') or ''
     base = (p.get('base') or {}).get('ref') or ''
