@@ -4,7 +4,8 @@
 A stub GitHub on 127.0.0.1 answers the private repo only with the right Bearer token (404 otherwise,
 as GitHub does), and the public repo without one. A stub broker (REVIEW_FEJ_BROKER, honoured only
 against 127.0.0.1) prints the token. Checked: the private repo is read with the token and reaches
-EGYEZIK; the token is in no output and no file; a public repo asks no token; a broker refusal stops
+EGYEZIK; the token is in no output and no file; a public repo is read with the token when the broker
+gives one and anonymously when it refuses; a broker refusal on a private repo stops
 the run without a marker; and the real-GitHub path ignores the test helper.
 Run: python3 -I scripts/__tests__/review-fej-diff-private.test.py
 """
@@ -83,6 +84,17 @@ with tempfile.TemporaryDirectory() as t:
     code, text = run(API, 'KratoBal/acroveliq', os.path.join(t, 'o2'), patch, good)
     check('public repo -> 0', 0, code)
     check('... asked with no token', [None, None], [a for _, a in seen_auth])
+
+    # a public repo IS read with the token when the broker gives one (the shared anonymous budget of
+    # 60/hour per IP ran out for the whole fleet on 2026-10-27 11:4x: three 403s in a row)
+    anyrepo = os.path.join(t, 'broker-any.sh')
+    open(anyrepo, 'w').write(f'#!/bin/sh\n[ "$2" = olvas ] && echo {TOKEN}\n')
+    os.chmod(anyrepo, 0o755)
+    seen_auth.clear()
+    code, text = run(API, 'KratoBal/acroveliq', os.path.join(t, 'o2b'), patch, anyrepo)
+    check('public repo, broker gives a token -> 0', 0, code)
+    check('... both calls carried the token', [f'Bearer {TOKEN}'] * 2, [a for _, a in seen_auth])
+    check('... the token is in no output', False, TOKEN in text)
 
     out3 = os.path.join(t, 'o3')
     code, text = run(API, 'KratoBal/caparium-napplo', out3, patch, bad)
