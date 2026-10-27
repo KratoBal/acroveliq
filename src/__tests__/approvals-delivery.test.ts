@@ -16,10 +16,12 @@ import { fileURLToPath } from 'node:url'
 import {
   computeTimeoutAt,
   buildOwnerApprovalText,
+  isMainAgentJudged,
   DEFAULT_TIMEOUT_MINUTES,
   MAX_TIMEOUT_SECONDS,
 } from '../web/routes/approvals.js'
 import type { Approval } from '../db.js'
+import { MAIN_AGENT_ID } from '../config.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROUTE = readFileSync(join(__dirname, '../../src/web/routes/approvals.ts'), 'utf-8')
@@ -133,5 +135,29 @@ describe('degraded-delivery fallback (review finding on #1026)', () => {
     expect(guard).toBeGreaterThan(0)
     expect(send).toBeGreaterThan(guard)
     expect(fn).toContain('[OWNER_UNREACHED')
+  })
+})
+
+// Owner decision 2026-10-27 09:17 UTC: a sub-agent's command stop (bash_command)
+// is judged by the main agent and never reaches the owner's Telegram or Discord.
+describe('a sub-agent bash_command stop stays with the main agent', () => {
+  it('only bash_command from a non-main requester is main-agent-judged', () => {
+    expect(isMainAgentJudged('barracuda', 'bash_command')).toBe(true)
+    expect(isMainAgentJudged('murena', 'bash_command')).toBe(true)
+  })
+
+  it('the main agent\'s own request and every other category still go to the owner', () => {
+    expect(isMainAgentJudged(MAIN_AGENT_ID, 'bash_command')).toBe(false)
+    for (const category of ['permission_change', 'email_send', 'VEGREHAJTO', 'bash_command_x', 'Bash_command', '']) {
+      expect(isMainAgentJudged('barracuda', category)).toBe(false)
+    }
+  })
+
+  it('the POST handler gates BOTH owner legs (Telegram and Discord) on it, the main-agent notice stays unconditional', () => {
+    const post = ROUTE.slice(ROUTE.indexOf("path === '/api/approvals' && method === 'POST'"))
+    expect(post).toContain('!isMainAgentJudged(approval.agent_id, approval.category)')
+    expect(post).toContain('if (ownerNotified) notifyOwner(approval)')
+    expect(post).toContain('if (ownerNotified) notifyDiscord(approval)')
+    expect(post).toMatch(/\n\s+notifyMainAgent\(approval\)\n/)
   })
 })

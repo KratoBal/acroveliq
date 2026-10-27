@@ -146,6 +146,19 @@ function notifyDiscord(approval: Approval): void {
   )
 }
 
+// The category the permission-approval hook files for a command-level stop
+// (scripts/hooks/permission-approval.py). Owner decision 2026-10-27 09:17 UTC:
+// a sub-agent's command stop is judged by the main agent, so it never reaches
+// the owner's Telegram or Discord. Everything else, and the main agent's own
+// requests, still goes to the owner.
+export const BASH_COMMAND_CATEGORY = 'bash_command'
+
+// Pure + exported for tests. `agentId` and `category` are the values the row is
+// stored with (already trimmed).
+export function isMainAgentJudged(agentId: string, category: string): boolean {
+  return category === BASH_COMMAND_CATEGORY && agentId !== MAIN_AGENT_ID
+}
+
 function notifyMainAgent(approval: Approval): void {
   // APPROVALVAK821 (b): when the requester IS the main agent, this used to
   // deliver the notification back to the requester itself -- which counted as
@@ -243,9 +256,12 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // thread (or, when the main agent asked, nothing: it posts it itself). No Telegram,
     // no in-band fallback to the requester, no Discord code: the code path would let a
     // reply decide outside the session (survey 4c; Balázs's requirement 1).
-    if (!isDecision) notifyOwner(approval)
+    // A sub-agent's command stop (bash_command) is judged by the main agent: it
+    // gets the in-band notice only, the owner gets neither Telegram nor Discord.
+    const ownerNotified = !isDecision && !isMainAgentJudged(approval.agent_id, approval.category)
+    if (ownerNotified) notifyOwner(approval)
     notifyMainAgent(approval)
-    if (!isDecision) notifyDiscord(approval)
+    if (ownerNotified) notifyDiscord(approval)
     logger.info({ id, agent_id, category }, 'Approval request created')
     json(res, approval, 201)
     return true

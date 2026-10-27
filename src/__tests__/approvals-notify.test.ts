@@ -75,6 +75,25 @@ describe('approvals notification target', () => {
   })
 })
 
+describe('approvals bash_command routing', () => {
+  beforeEach(() => {
+    initDatabase(':memory:')
+  })
+
+  it('a sub-agent bash_command request still reaches the main agent in-band', async () => {
+    const { ctx, out } = fakePost('/api/approvals', {
+      agent_id: 'agent-b',
+      category: 'bash_command',
+      action_description: 'cat /tmp/x',
+    })
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(201)
+    const pending = getPendingMessages('agent-a')
+    expect(pending.length).toBe(1)
+    expect(pending[0].content).toContain('category=bash_command')
+  })
+})
+
 describe('approvals self-approval guard', () => {
   beforeEach(() => {
     initDatabase(':memory:')
