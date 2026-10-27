@@ -1,8 +1,11 @@
 """permission-approval.py (B48 pótlás). What turns these red:
   - the output carrying anything but behavior and message (an
     updatedPermissions would make a one-time "yes" a standing rule);
-  - an allow from a row that is not approved FROM DISCORD, or whose text is not
-    the running command letter for letter;
+  - an allow from a row that was neither approved on Discord nor decided by the
+    MAIN agent for a SUB-agent's command, or whose text is not the running
+    command letter for letter;
+  - a sub-agent's yes (resolved_by another sub-agent, or the owner's name over
+    the API) allowing, or the main agent approving its OWN command;
   - the owner's rejection and a timeout reading the same (the agent writes on
     the card what it gets);
   - a command shown shortened or altered on Discord, or a secret-shaped one sent;
@@ -84,6 +87,15 @@ def approve_api(row):
     row.update(status="approved", resolved_by="acrobot", decision_ref=None)
 
 
+def approve_peer(row):
+    """Another sub-agent's token decided: the server records the token's owner, never the body's claim."""
+    row.update(status="approved", resolved_by="polip", decision_ref=None)
+
+
+def reject_main(row):
+    row.update(status="rejected", resolved_by="acrobot", decision_ref=None)
+
+
 def reject_discord(row):
     row.update(status="rejected", resolved_by="balazs", decision_ref=DISCORD_REF)
 
@@ -155,17 +167,63 @@ class Live(Base):
         self.run_live(api)
         self.assertEqual(api.posts, 2)
 
-    def test_a_yes_not_given_on_discord_does_not_allow(self):
-        out = self.run_live(FakeApi(approve_api))
-        d = out["hookSpecificOutput"]["decision"]
+    def test_the_main_agents_yes_allows_a_sub_agents_command_once(self):
+        api = FakeApi(approve_api)
+        out = pa.live(CMD, CWD, "barracuda", api, self.cache, now=self.clock.now, sleep=self.clock.sleep, main_agent="acrobot")
+        self.assertEqual(out["hookSpecificOutput"]["decision"]["behavior"], "allow")
+        # one-time, like the owner's yes
+        pa.live(CMD, CWD, "barracuda", api, self.cache, now=self.clock.now, sleep=self.clock.sleep, main_agent="acrobot")
+        self.assertEqual(api.posts, 2)
+
+    def test_a_yes_from_a_sub_agent_does_not_allow(self):
+        for answer in (approve_peer,):
+            d = pa.live(CMD, CWD, "barracuda", FakeApi(answer), self.cache, now=self.clock.now, sleep=self.clock.sleep,
+                        main_agent="acrobot")["hookSpecificOutput"]["decision"]
+            self.assertEqual(d["behavior"], "deny")
+            self.assertIn("polip", d["message"])
+
+    def test_a_yes_in_the_owners_name_over_the_api_does_not_allow(self):
+        def owner_name(row):
+            row.update(status="approved", resolved_by="balazs", decision_ref=None)
+        d = pa.live(CMD, CWD, "barracuda", FakeApi(owner_name), self.cache, now=self.clock.now, sleep=self.clock.sleep,
+                    main_agent="acrobot")["hookSpecificOutput"]["decision"]
         self.assertEqual(d["behavior"], "deny")
-        self.assertIn("nem Discordon", d["message"])
+
+    def test_the_main_agent_never_approves_its_own_command_over_the_api(self):
+        # the main agent's own stop is the owner's, Discord only
+        d = pa.live(CMD, CWD, "acrobot", FakeApi(approve_api), self.cache, now=self.clock.now, sleep=self.clock.sleep,
+                    main_agent="acrobot")["hookSpecificOutput"]["decision"]
+        self.assertEqual(d["behavior"], "deny")
+        again = pa.live(CMD, CWD, "acrobot", FakeApi(approve_discord), tempfile.mkdtemp() + "/c.json",
+                        now=self.clock.now, sleep=self.clock.sleep, main_agent="acrobot")
+        self.assertEqual(again["hookSpecificOutput"]["decision"]["behavior"], "allow")
+
+    def test_the_main_agent_id_comes_from_the_store_file_with_acrobot_as_fallback(self):
+        self.assertTrue(pa.main_agent_id())  # whatever store/.main-agent-id holds, or acrobot
+        d = tempfile.mkdtemp()
+        old = pa.BASE
+        try:
+            pa.BASE = d
+            self.assertEqual(pa.main_agent_id(), "acrobot")
+            os.makedirs(os.path.join(d, "store"))
+            with open(os.path.join(d, "store", ".main-agent-id"), "w") as f:
+                f.write("foagens\n")
+            self.assertEqual(pa.main_agent_id(), "foagens")
+        finally:
+            pa.BASE = old
+            shutil.rmtree(d)
+
+    def test_a_main_agent_rejection_is_named_as_the_main_agents_not_the_owners(self):
+        d = pa.live(CMD, CWD, "barracuda", FakeApi(reject_main), self.cache, now=self.clock.now, sleep=self.clock.sleep,
+                    main_agent="acrobot")["hookSpecificOutput"]["decision"]
+        self.assertEqual(d["behavior"], "deny")
+        self.assertIn("acrobot (a fo agens, NEM a gazda)", d["message"])
 
     def test_a_rejection_names_the_decider_and_is_not_asked_again(self):
         api = FakeApi(reject_discord)
         d = self.run_live(api)["hookSpecificOutput"]["decision"]
         self.assertEqual(d["behavior"], "deny")
-        self.assertIn("elutasitva, dontott: balazs (Discord)", d["message"])
+        self.assertIn("elutasitva, dontott: balazs (Discord, a gazda)", d["message"])
         again = self.run_live(api)["hookSpecificOutput"]["decision"]
         self.assertEqual(again["behavior"], "deny")
         self.assertIn("mar elbiraltak (rejected)", again["message"])
@@ -272,7 +330,8 @@ class Shadow(unittest.TestCase):
         note = pa.shadow_note("git push origin feat/x --force-with-lease", CWD, "barracuda")
         self.assertIn("eleje='git push'", note)
         self.assertNotIn("force", note)
-        self.assertIn("Discord-kerdes", note)
+        self.assertIn("a fo agens biralja", note)
+        self.assertNotIn("Discord-kerdes", note)
         secret = pa.shadow_note("echo " + FAKE_GH, CWD, "barracuda")
         self.assertNotIn(FAKE_GH[:4], secret)
         self.assertIn("titok-minta", secret)

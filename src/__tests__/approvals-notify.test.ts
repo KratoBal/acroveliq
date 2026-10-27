@@ -28,7 +28,7 @@ function fakePost(path: string, body: unknown): { ctx: RouteContext; out: { stat
   return { ctx: { req, res, path: url.pathname, method: 'POST', url } as RouteContext, out }
 }
 
-function fakePatch(id: string, body: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
+function fakePatch(id: string, body: unknown, auth?: RouteContext['auth']): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
@@ -43,7 +43,7 @@ function fakePatch(id: string, body: unknown): { ctx: RouteContext; out: { statu
       if (event === 'end') cb()
     },
   }
-  return { ctx: { req, res, path, method: 'PATCH', url } as RouteContext, out }
+  return { ctx: { req, res, path, method: 'PATCH', url, auth } as RouteContext, out }
 }
 
 describe('approvals notification target', () => {
@@ -72,6 +72,25 @@ describe('approvals notification target', () => {
     // Regression guard: no message may land on a different target.
     const wrongTarget = getPendingMessages('agent-b')
     expect(wrongTarget.length).toBe(0)
+  })
+})
+
+describe('approvals bash_command routing', () => {
+  beforeEach(() => {
+    initDatabase(':memory:')
+  })
+
+  it('a sub-agent bash_command request still reaches the main agent in-band', async () => {
+    const { ctx, out } = fakePost('/api/approvals', {
+      agent_id: 'agent-b',
+      category: 'bash_command',
+      action_description: 'cat /tmp/x',
+    })
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(201)
+    const pending = getPendingMessages('agent-a')
+    expect(pending.length).toBe(1)
+    expect(pending[0].content).toContain('category=bash_command')
   })
 })
 
@@ -120,5 +139,60 @@ describe('approvals self-approval guard', () => {
     expect(handled).toBe(true)
     expect(patchOut.status).toBe(200)
     expect(patchOut.body.status).toBe('approved')
+  })
+})
+
+// The permission-approval hook lets a sub-agent's command through when the row's
+// resolved_by is the main agent, so that field must be the credential's word.
+describe('approvals bash_command decider is the credential, not the body', () => {
+  beforeEach(() => {
+    initDatabase(':memory:')
+  })
+
+  async function bashRow(): Promise<string> {
+    const { ctx, out } = fakePost('/api/approvals', {
+      agent_id: 'agent-b',
+      category: 'bash_command',
+      action_description: 'cat /tmp/x',
+    })
+    await tryHandleApprovals(ctx)
+    return out.body.id
+  }
+
+  it('another sub-agent\'s token claiming to be the main agent is recorded under its own name', async () => {
+    const id = await bashRow()
+    const { ctx, out } = fakePatch(id, { status: 'approved', resolved_by: 'agent-a' }, { kind: 'token', actor: 'agent-c' } as RouteContext['auth'])
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.resolved_by).toBe('agent-c')
+  })
+
+  it('the main agent\'s own token is recorded as the main agent, whatever the body says', async () => {
+    const id = await bashRow()
+    const { ctx, out } = fakePatch(id, { status: 'approved', resolved_by: 'somebody-else' }, { kind: 'token', actor: 'agent-a' } as RouteContext['auth'])
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.resolved_by).toBe('agent-a')
+  })
+
+  it('the shared token and a missing credential cannot decide it with a declared resolved_by, and the row stays pending', async () => {
+    const id = await bashRow()
+    for (const auth of [{ kind: 'token', actor: 'legacy' }, undefined] as RouteContext['auth'][]) {
+      const { ctx, out } = fakePatch(id, { status: 'approved', resolved_by: 'agent-a' }, auth)
+      await tryHandleApprovals(ctx)
+      expect(out.status).toBe(403)
+      expect(out.body.error).toMatch(/names its holder/)
+    }
+    const { ctx: get, out: got } = fakePatch(id, { status: 'timeout', resolved_by: 'x' }, { kind: 'token', actor: 'agent-a' } as RouteContext['auth'])
+    await tryHandleApprovals(get)
+    expect(got.status).toBe(200) // it was still pending: the refusals changed nothing
+  })
+
+  it('every other category still takes a declared resolved_by from the shared token', async () => {
+    const { ctx: postCtx, out: postOut } = fakePost('/api/approvals', { agent_id: 'agent-b', category: 'email_send', action_description: 'x' })
+    await tryHandleApprovals(postCtx)
+    const { ctx, out } = fakePatch(postOut.body.id, { status: 'approved', resolved_by: 'telegram_text' }, { kind: 'token', actor: 'legacy' } as RouteContext['auth'])
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(200)
   })
 })

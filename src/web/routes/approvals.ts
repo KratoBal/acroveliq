@@ -146,6 +146,19 @@ function notifyDiscord(approval: Approval): void {
   )
 }
 
+// The category the permission-approval hook files for a command-level stop
+// (scripts/hooks/permission-approval.py). Owner decision 2026-10-27 09:17 UTC:
+// a sub-agent's command stop is judged by the main agent, so it never reaches
+// the owner's Telegram or Discord. Everything else, and the main agent's own
+// requests, still goes to the owner.
+export const BASH_COMMAND_CATEGORY = 'bash_command'
+
+// Pure + exported for tests. `agentId` and `category` are the values the row is
+// stored with (already trimmed).
+export function isMainAgentJudged(agentId: string, category: string): boolean {
+  return category === BASH_COMMAND_CATEGORY && agentId !== MAIN_AGENT_ID
+}
+
 function notifyMainAgent(approval: Approval): void {
   // APPROVALVAK821 (b): when the requester IS the main agent, this used to
   // deliver the notification back to the requester itself -- which counted as
@@ -243,9 +256,12 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // thread (or, when the main agent asked, nothing: it posts it itself). No Telegram,
     // no in-band fallback to the requester, no Discord code: the code path would let a
     // reply decide outside the session (survey 4c; Balázs's requirement 1).
-    if (!isDecision) notifyOwner(approval)
+    // A sub-agent's command stop (bash_command) is judged by the main agent: it
+    // gets the in-band notice only, the owner gets neither Telegram nor Discord.
+    const ownerNotified = !isDecision && !isMainAgentJudged(approval.agent_id, approval.category)
+    if (ownerNotified) notifyOwner(approval)
     notifyMainAgent(approval)
-    if (!isDecision) notifyDiscord(approval)
+    if (ownerNotified) notifyDiscord(approval)
     logger.info({ id, agent_id, category }, 'Approval request created')
     json(res, approval, 201)
     return true
@@ -314,9 +330,10 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // 2.1): the session's user, an agent token's name. Only the shared token
     // and a device still declare it, and in an enforcing position neither
     // reaches this route (the matrix: only the session decides).
-    const decider = ctx.auth?.kind === 'session' && ctx.auth.user
-      ? ctx.auth.user
-      : claimActor(ctx.auth, ctx.accessMode ?? 'naplo', resolved_by, 'approvals.resolved_by').value
+    const claim = ctx.auth?.kind === 'session' && ctx.auth.user
+      ? { value: ctx.auth.user, verified: true }
+      : claimActor(ctx.auth, ctx.accessMode ?? 'naplo', resolved_by, 'approvals.resolved_by')
+    const decider = claim.value
     if (!decider) {
       json(res, { error: 'resolved_by is required' }, 400)
       return true
@@ -329,6 +346,16 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const target = getApproval(idMatch[1])
     if (target && decider === target.agent_id) {
       json(res, { error: 'The requesting agent cannot approve its own request' }, 403)
+      return true
+    }
+
+    // A command stop (bash_command) is let through by the permission-approval hook
+    // when the row's resolved_by is the main agent, so that field must be the
+    // credential's word, never the body's: the shared token and a device only
+    // declare it, and a self-declared "main agent" would let any holder approve
+    // a sub-agent's command. An agent token or a session names its holder.
+    if (target?.category === BASH_COMMAND_CATEGORY && !claim.verified) {
+      json(res, { error: 'a bash_command row is decided by a credential that names its holder (an agent token or a session), not by a declared resolved_by' }, 403)
       return true
     }
 
