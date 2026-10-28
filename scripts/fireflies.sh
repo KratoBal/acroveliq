@@ -65,8 +65,9 @@ seen=set(l.strip() for l in open(sys.argv[1]))
 d=json.load(sys.stdin)
 # as gcal.sh untrusted(): every C0/C1 control and the two Unicode separators first (a tab would
 # split this tab-separated line, a line break would start a line that looks like ours), then any
-# security tag inside the title, replaced by a marker the sender cannot pre-write
-tag=re.compile(r"<\s*/?\s*(untrusted|trusted-peer|scheduled-task)\b[^>]*>",re.I)
+# security tag inside the title, replaced by a marker the sender cannot pre-write; the closing ">" is
+# optional, else an unclosed one (or one cut at 120) would take the closing tag of the envelope (barracuda, #315)
+tag=re.compile(r"<\s*/?\s*(untrusted|trusted-peer|scheduled-task)\b[^>]*>?",re.I)
 mark="[[SECURITY_TAG_REMOVED_%s]]"%secrets.token_hex(4)
 def untrusted(text):
     t=re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+"," ",str(text))
