@@ -76,6 +76,9 @@ describe('the registry', () => {
       .toEqual([null, null, true])
     expect([projectRepos(getDb(), 'reefclub'), repoFits(getDb(), 'os', 'KratoBal/marveen') !== null, repoFits(getDb(), 'acropora-os', 'KratoBal/acropora-os')])
       .toEqual([['KratoBal/acropora-commerce', 'KratoBal/acropora-os'], true, null])
+    // the AI service is the OS's (card 760eadce): an os task's ai-agent PR fits, and it stays the wide project's too
+    expect([repoFits(getDb(), 'os', 'KratoBal/acropora-ai-agent'), repoFits(getDb(), 'acropora', 'KratoBal/acropora-ai-agent'), repoFits(getDb(), 'commerce', 'KratoBal/acropora-ai-agent') !== null])
+      .toEqual([null, null, true])
   })
 
   it('GET /api/projects: the four, repos expanded; the AcrovelIQ host reads it, and the change route is not on it', async () => {
@@ -103,6 +106,29 @@ describe('the reefclub repos on an existing database (barracuda, #237 review)', 
     ensureProjectsSchema(db)
     expect([migrated, again, reef(), logged() - before], 'REEFCLUB-OS-MIGRATION').toEqual([
       [['KratoBal/acropora-commerce', 'KratoBal/acropora-os'], 1], 1, byHand, 1,
+    ])
+  })
+})
+
+describe('the os repos on an existing database (card 760eadce)', () => {
+  it('OS-AI-MIGRATION: a row with exactly the old repo gets acropora-ai-agent, once and logged; a row changed by hand is left alone', () => {
+    const db = getDb()
+    ensureProjectsSchema(db)
+    const os = () => (db.prepare("SELECT repos FROM projects WHERE id = 'os'").get() as { repos: string }).repos
+    const logged = () => db.prepare("SELECT old_value, new_value, actor FROM config_change_log WHERE key = 'projects.os.repos'").all()
+    // the live database's state before this change: the row the old SEED wrote
+    db.prepare("UPDATE projects SET repos = ? WHERE id = 'os'").run(JSON.stringify(['KratoBal/acropora-os']))
+    const before = logged().length
+    ensureProjectsSchema(db)
+    const migrated = JSON.parse(os())
+    ensureProjectsSchema(db) // a second start: nothing more to do, nothing logged again
+    const again = logged().length - before
+    const byHand = JSON.stringify(['KratoBal/acropora-os', 'KratoBal/valami-mas'])
+    db.prepare("UPDATE projects SET repos = ? WHERE id = 'os'").run(byHand)
+    ensureProjectsSchema(db)
+    expect([migrated, again, os(), logged().slice(before)], 'OS-AI-MIGRATION').toEqual([
+      ['KratoBal/acropora-os', 'KratoBal/acropora-ai-agent'], 1, byHand,
+      [{ old_value: '["KratoBal/acropora-os"]', new_value: '["KratoBal/acropora-os","KratoBal/acropora-ai-agent"]', actor: 'migration:os-repo-ai-agent' }],
     ])
   })
 })
