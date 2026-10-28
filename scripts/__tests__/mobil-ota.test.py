@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-# Guard for scripts/mobil-ota.sh: the fleet publishes no production OTA update (Balázs's D5 decision,
-# variant A, 2026-10-15 12:24 UTC; task t-20261015-mobil-ota-eles-zar). WHAT TURNS THIS RED:
-#   - `kiadas` on any branch but `preview` (production, the default; orzo-meres; a misspelt name)
-#     reaching npx, the clone or the token instead of stopping with exit 5;
+# Guard for scripts/mobil-ota.sh: the fleet publishes OTA updates to `preview` and, since 2026-10-21
+# 12:44 UTC, to `production` too (Balázs raised the Expo robot to Release Manager; before it, his D5
+# decision of 2026-10-15 kept production his). WHAT TURNS THIS RED:
+#   - `kiadas` on any other branch (orzo-meres; a misspelt name) reaching npx, the clone or the token
+#     instead of stopping with exit 5;
 #   - the printed line for Balázs missing, or not pinned to eas-cli@24.8.0;
-#   - `kiadas` on `preview`, or the dry run, stopped by the guard (they must go on);
+#   - `kiadas` on `preview` or `production`, or the dry run, stopped by the guard (they must go on);
 #   - an `eas-cli@latest` anywhere in the script;
 #   - the caller's text reaching the printed line raw (barracuda, #199): a branch or environment
 #     outside the name pattern must print no command at all, the message must come back as ONE
@@ -37,20 +38,19 @@ try:
         r = subprocess.run(["bash", SCRIPT, *args], capture_output=True, text=True, env=e)
         return r.returncode, r.stdout + r.stderr, os.path.exists(marker)
 
-    print("kiadas outside preview: exit 5, nothing runs, the line for Balázs is printed")
+    print("kiadas outside preview and production: exit 5, nothing runs, the line for Balázs is printed")
     for name, args, env in [
-        ("the default branch (production)", ["kiadas", "javitas"], {}),
-        ("production, named", ["kiadas", "javitas"], {"OTA_AG": "production"}),
         ("the unbound orzo-meres branch", ["kiadas", "javitas"], {"OTA_AG": "orzo-meres"}),
         ("a misspelt preview", ["kiadas", "javitas"], {"OTA_AG": "Preview"}),
-        ("production without a message", ["kiadas"], {}),
+        ("a misspelt production", ["kiadas", "javitas"], {"OTA_AG": "Production"}),
+        ("orzo-meres without a message", ["kiadas"], {"OTA_AG": "orzo-meres"}),
     ]:
         rc, out, called = run(args, **env)
         check(name, (5, False, False, True, True),
               (rc, called, "NINCS KLON" in out, "npx eas-cli@24.8.0 update --branch" in out, out.startswith("MEGALLOK:")))
-    rc, out, _ = run(["kiadas", "javitas"])
+    rc, out, _ = run(["kiadas", "javitas"], OTA_AG="orzo-meres")
     check("the printed line names the branch, the environment and the message",
-          True, "--branch production --environment production" in out and "--message 'javitas'" in out)
+          True, "--branch orzo-meres --environment orzo-meres" in out and "--message 'javitas'" in out)
     for name, env in [("preview with the production environment", {"OTA_AG": "preview", "OTA_VALTOZAT": "production"}),
                       ("production with the preview environment", {"OTA_AG": "production", "OTA_VALTOZAT": "preview"})]:
         rc, out, called = run(["kiadas", "javitas"], **env)
@@ -67,16 +67,21 @@ try:
             check("%s (%s): exit 5, no command printed, nothing runs" % (name, mode[0] if mode else "szaraz"),
                   (5, False, False, False), (rc, "eas-cli@" in out, called, "NINCS KLON" in out))
     nasty = "proba\" ; touch /tmp/pwn ; echo \"$(id)` x\\ 'y"
-    rc, out, _ = run(["kiadas", nasty])
+    rc, out, _ = run(["kiadas", nasty], OTA_AG="orzo-meres")
     line = [l for l in out.splitlines() if l.strip().startswith("--message ")]
     check("a message with quotes, $(...) and a backtick comes back as one shell word, letter for letter",
           [["--message", nasty]], [shlex.split(l) for l in line])
 
-    print("preview and the dry run pass the guard")
+    print("preview, production and the dry run pass the guard")
     rc, out, called = run(["kiadas", "javitas"], OTA_AG="preview")
     # it passes the pair rule, so its environment defaulted to preview (production would stop it, see above)
     check("kiadas on preview goes on to the clone (no clone here: exit 1): its environment is preview",
           (1, True, False), (rc, "NINCS KLON" in out, called))
+    for name, args, env in [("the default branch (production)", ["kiadas", "javitas"], {}),
+                            ("production, named", ["kiadas", "javitas"], {"OTA_AG": "production"}),
+                            ("production without a message", ["kiadas"], {})]:
+        rc, out, called = run(args, **env)
+        check("kiadas on %s goes on to the clone (no clone here: exit 1)" % name, (1, True, False), (rc, "NINCS KLON" in out, called))
     rc, out, called = run([])
     check("the dry run goes on to the clone", (1, True, False), (rc, "NINCS KLON" in out, called))
 
