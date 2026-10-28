@@ -112,18 +112,20 @@
 #
 #   bash .../mobil-ota.sh                                  <- SZARAZ: csak szamol, NEM ad ki
 #   OTA_AG=preview bash .../mobil-ota.sh kiadas "uzenet"   <- valodi kiadas a preview agra
-#   bash .../mobil-ota.sh kiadas "az uzenet"               <- NEM ad ki: kiirja Balazsnak a sort
+#   bash .../mobil-ota.sh kiadas "az uzenet"               <- valodi kiadas a production agra (2026-10-21 ota)
+#   OTA_AG=mas-ag bash .../mobil-ota.sh kiadas "uzenet"    <- NEM ad ki: kiirja Balazsnak a sort
 #
-# === ELESRE A FLOTTA NEM AD KI (Balazs D5 dontese, A valtozat, 2026-10-15 12:24 UTC) ===
+# === A FLOTTA A PREVIEW ES A PRODUCTION AGRA AD KI (2026-10-21 12:44 UTC ota) ===
 #
-# A flotta eles frissitest (production csatorna) NEM ad ki, csak tesztre (preview),
-# akkor sem, ha a csatorna az Expoban meg nem vedett. Az elest Balazs futtatja, a sajat
-# Expo-belepesevel. Ezert a `kiadas` CSAK a `preview` agra fut le; minden mas agnal
-# (production, orzo-meres, barmi ismeretlen) a szkript a token olvasasa es barmilyen
-# hivas ELOTT megall, kiirja a Balazs gepen futtatando sort, es 5-tel lep ki.
+# Balazs D5 dontese (A valtozat, 2026-10-15 12:24 UTC) szerint az elest eleinte o futtatta, a sajat
+# Expo-belepesevel, es a flotta csak a preview agra adott ki. 2026-10-21 12:44 UTC-kor az Expo robotot
+# (eas-submit) Release Managerre emelte, mert a sajat gepe ketszer idegen runtime-ot szamolt: azota a
+# flotta a production agra is kiad. A `kiadas` tehat a `preview` es a `production` agra fut le; minden
+# mas agnal (orzo-meres, barmi ismeretlen, egy elirt nev) a szkript a token olvasasa es barmilyen hivas
+# ELOTT megall, kiirja a Balazs gepen futtatando sort, es 5-tel lep ki.
 # Engedelylista, nem tiltolista: egy uj vagy elirt agnev is a megallasra esik.
 #
-# Az engedely a PARRA szol: preview ag ES preview kornyezet (a preview build is
+# Az engedely a PARRA szol: az ag ES az azonos nevu kornyezet (a preview build is
 # `environment: preview`, `APP_VARIANT=preview` mellett epul, apps/mobile/eas.json).
 # A kornyezet alaperteke ezert az ag neve: OTA_AG=preview -> --environment preview.
 # Egy preview ag production kornyezettel az eles valtozokkal epulne (barracuda, #199).
@@ -160,8 +162,8 @@ case "$MIT" in
     ;;
 esac
 
-# D5 (lasd fent): kiadni csak a preview agra, preview kornyezettel. Ez az ELSO lepes:
-# elotte nincs klon, token, npx, tehat egy eles kiadasnak semmilyen resze nem indul el.
+# (lasd fent) kiadni csak a listan allo agra, az aggal azonos nevu kornyezettel. Ez az ELSO lepes:
+# elotte nincs klon, token, npx, tehat egy nem engedett kiadasnak semmilyen resze nem indul el.
 # 2026-10-21 12:44 UTC: Balazs raised the Expo robot (eas-submit) to Release Manager so the fleet publishes
 # production too (his Mac computed a foreign runtime twice). The branch and its environment must still match.
 KIADHATO_AGAK="preview production"
@@ -181,7 +183,7 @@ if ! [[ "$AG_NEV" =~ $NEV_MINTA ]] || ! [[ "$VALTOZAT" =~ $NEV_MINTA ]]; then
 fi
 
 if [ "$MIT" = "kiadas" ] && { [[ " $KIADHATO_AGAK " != *" $AG_NEV "* ]] || [ "$VALTOZAT" != "$AG_NEV" ]; }; then
-  echo "MEGALLOK: a(z) '$AG_NEV' ag '$VALTOZAT' kornyezettel nem adhato ki a flottabol (Balazs D5 dontese, 2026-10-15)."
+  echo "MEGALLOK: a(z) '$AG_NEV' ag '$VALTOZAT' kornyezettel nem adhato ki a flottabol (csak a listan allo ag, azonos nevu kornyezettel; Balazs, 2026-10-21)."
   echo "   A flotta ezekre az agakra ad ki, az aggal azonos nevu kornyezettel: $KIADHATO_AGAK"
   echo
   echo "--- Balazsnak: a friss main-en, a sajat gepeden ---"
@@ -325,7 +327,7 @@ fi
 
 if [ "$MIT" = "szaraz" ]; then
   echo
-  echo "--- a parancs, ami KIADASKOR futna (production agnal Balazs futtatja, D5) ---"
+  echo "--- a parancs, ami KIADASKOR futna ---"
   echo "  npx --yes eas-cli@24.8.0 update \\"
   echo "    --branch $AG_NEV --environment $VALTOZAT \\"
   echo "    --message \"<uzenet>\" --non-interactive"

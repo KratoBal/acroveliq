@@ -154,7 +154,10 @@ a = sys.argv[1:]
 
 import re as _re_u, secrets as _secrets
 # the same tag names and shape as src/prompt-safety.ts (SECURITY_TAG_NAMES, SECURITY_TAG_RX)
-_SECURITY_TAG = _re_u.compile(r"<\s*/?\s*(untrusted|trusted-peer|scheduled-task)\b[^>]*>", _re_u.I)
+# the closing ">" is optional: an unclosed tag in a subject or a title would take ours, the
+# envelope's own closing tag, and read as an open trusted-peer block (barracuda on #315); one
+# without it is taken to the end of the field
+_SECURITY_TAG = _re_u.compile(r"<\s*/?\s*(untrusted|trusted-peer|scheduled-task)\b[^>]*>?", _re_u.I)
 # random per run, like STRIPPED_SENTINEL: a sender cannot pre-write the replacement
 _STRIPPED = "[[SECURITY_TAG_REMOVED_%s]]" % _secrets.token_hex(4)
 
