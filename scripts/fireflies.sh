@@ -63,8 +63,10 @@ case "${1:-}" in
 import json,sys,datetime
 # the envelope gcal.sh uses too (scripts/lib/untrusted_envelope.py): controls first (a tab would
 # split this tab-separated line), then any security tag, closed or not, by a per-run marker
-sys.path.insert(0,sys.argv[2])
-from untrusted_envelope import untrusted
+# loaded from its file, not through sys.path (barracuda on #316)
+import importlib.util as ilu
+spec=ilu.spec_from_file_location("untrusted_envelope",sys.argv[2]+"/untrusted_envelope.py")
+mod=ilu.module_from_spec(spec); spec.loader.exec_module(mod); untrusted=mod.untrusted
 seen=set(l.strip() for l in open(sys.argv[1]))
 d=json.load(sys.stdin)
 for t in (d.get("data") or {}).get("transcripts") or []:

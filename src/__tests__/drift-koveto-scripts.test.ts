@@ -79,6 +79,34 @@ printf 200
   })
 })
 
+describe('the shared envelope (scripts/lib/untrusted_envelope.py)', () => {
+  const MOD = join(REPO_ROOT, 'scripts', 'lib', 'untrusted_envelope.py')
+
+  it('ENVELOPE-SEPARATORS: the two Unicode separators stand as escapes in the source, and still become spaces', () => {
+    const src = readFileSync(MOD, 'utf8')
+    expect([src.includes('\u2028'), src.includes('\u2029')], 'a literal separator in the source').toEqual([false, false])
+    const py = `import importlib.util as u,sys\ns=u.spec_from_file_location("e",sys.argv[1]);m=u.module_from_spec(s);s.loader.exec_module(m)\nprint(m.untrusted("a\\u2028b\\u2029c\\u0085d","t"))`
+    const r = spawnSync('python3', ['-I', '-c', py, MOD], { encoding: 'utf8' })
+    expect([r.status, r.stdout.trim()], r.stderr).toEqual([0, '<untrusted source="t">a b c d</untrusted>'])
+  })
+
+  it('ENVELOPE-LOADED-BY-PATH: a module of the same name in the working directory does not stand in for it', () => {
+    // gcal.sh runs "python3 -", whose sys.path starts with the working directory
+    const cwd = join(tmp, 'fake-cwd')
+    mkdirSync(cwd, { recursive: true })
+    writeFileSync(join(cwd, 'untrusted_envelope.py'), 'def untrusted(text, source):\n    return "HAMIS " + str(text)\n')
+    const root = join(tmp, 'gc')
+    mkdirSync(join(root, 'scripts', 'lib'), { recursive: true })
+    writeFileSync(join(root, 'scripts', 'lib', 'untrusted_envelope.py'), readFileSync(MOD))
+    const gcal = readFileSync(join(REPO_ROOT, 'scripts', 'gcal.sh'), 'utf8')
+    const block = gcal.slice(gcal.indexOf('import importlib.util as _ilu'), gcal.indexOf('_envelope = _mod.untrusted') + '_envelope = _mod.untrusted'.length)
+    expect(block.length).toBeGreaterThan(50)
+    const py = `import os\nROOT=${JSON.stringify(root)}\n${block}\nprint(_envelope("x","gcal"))`
+    const r = spawnSync('python3', ['-'], { input: py, cwd, encoding: 'utf8' })
+    expect([r.status, r.stdout.trim()], r.stderr).toEqual([0, '<untrusted source="gcal">x</untrusted>'])
+  })
+})
+
 describe('the daily invoice summary: the bank line', () => {
   // the summary's own Python, read from the script: the test runs the code that ships
   const script = readFileSync(join(REPO_ROOT, 'scripts', 'napi-szamla-ellenorzes.sh'), 'utf8')
