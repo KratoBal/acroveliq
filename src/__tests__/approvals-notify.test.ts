@@ -159,12 +159,36 @@ describe('approvals bash_command decider is the credential, not the body', () =>
     return out.body.id
   }
 
-  it('another sub-agent\'s token claiming to be the main agent is recorded under its own name', async () => {
+  it('PEER-CLOSE: another sub-agent\'s token closes no peer\'s row, in any status; the row stays for the main agent (card 6378217b)', async () => {
     const id = await bashRow()
-    const { ctx, out } = fakePatch(id, { status: 'approved', resolved_by: 'agent-a' }, { kind: 'token', actor: 'agent-c' } as RouteContext['auth'])
+    for (const status of ['approved', 'rejected', 'timeout']) {
+      // it claims the main agent in the body, too: the credential names it, and it is not the one who judges
+      const { ctx, out } = fakePatch(id, { status, resolved_by: 'agent-a' }, { kind: 'token', actor: 'agent-c' } as RouteContext['auth'])
+      await tryHandleApprovals(ctx)
+      expect([status, out.status, out.body.error]).toEqual([status, 403, expect.stringMatching(/main agent or the owner's session/)])
+    }
+    const { ctx, out } = fakePatch(id, { status: 'approved' }, { kind: 'token', actor: 'agent-a' } as RouteContext['auth'])
     await tryHandleApprovals(ctx)
-    expect(out.status).toBe(200)
-    expect(out.body.resolved_by).toBe('agent-c')
+    expect([out.status, out.body.status, out.body.resolved_by]).toEqual([200, 'approved', 'agent-a'])
+  })
+
+  it('PEER-CLOSE: the owner\'s session decides a sub-agent\'s row; the main agent\'s own row only the session decides', async () => {
+    const id = await bashRow()
+    const { ctx, out } = fakePatch(id, { status: 'rejected' }, { kind: 'session', user: 'owner' } as RouteContext['auth'])
+    await tryHandleApprovals(ctx)
+    expect([out.status, out.body.resolved_by]).toEqual([200, 'owner'])
+
+    const { ctx: postCtx, out: postOut } = fakePost('/api/approvals', { agent_id: 'agent-a', category: 'bash_command', action_description: 'ls /tmp' })
+    await tryHandleApprovals(postCtx)
+    const own = postOut.body.id
+    for (const actor of ['agent-c', 'agent-a']) {
+      const { ctx: c, out: o } = fakePatch(own, { status: 'approved' }, { kind: 'token', actor } as RouteContext['auth'])
+      await tryHandleApprovals(c)
+      expect([actor, o.status]).toEqual([actor, 403])
+    }
+    const { ctx: s, out: so } = fakePatch(own, { status: 'approved' }, { kind: 'session', user: 'owner' } as RouteContext['auth'])
+    await tryHandleApprovals(s)
+    expect(so.status).toBe(200)
   })
 
   it('the main agent\'s own token is recorded as the main agent, whatever the body says', async () => {

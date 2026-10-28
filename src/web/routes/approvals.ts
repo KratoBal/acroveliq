@@ -358,6 +358,15 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'a bash_command row is decided by a credential that names its holder (an agent token or a session), not by a declared resolved_by' }, 403)
       return true
     }
+    // ...and that holder must be one who judges it: the main agent (a sub-agent's row; its own is the self guard
+    // above) or the owner's session. Another sub-agent's token named itself truly, but closing a peer's row, even as
+    // "approved" (which the hook then refuses), ends the request: the main agent can no longer decide it (409),
+    // and a "rejected" reads as a verdict (card 6378217b, barracuda's follow-up to #311). The Discord path does not
+    // come through here.
+    if (target?.category === BASH_COMMAND_CATEGORY && ctx.auth?.kind !== 'session' && decider !== MAIN_AGENT_ID) {
+      json(res, { error: 'a bash_command row is decided by the main agent or the owner\'s session, not by another agent' }, 403)
+      return true
+    }
 
     const updated = resolveApproval(idMatch[1], status, decider, msgId)
     if (!updated) {
