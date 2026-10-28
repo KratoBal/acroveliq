@@ -25,6 +25,7 @@ APP="$OUT_DIR/$NAP-app.json"
 timeout 90 python3 "$ROOT/scripts/os-hianyzo-honapok.py" > "$APP" 2>/dev/null || : > "$APP"
 python3 - "$NYERS" "$APP" <<'PY'
 import json, sys
+from decimal import Decimal, ROUND_HALF_UP
 rows = {}
 for line in open(sys.argv[1], encoding='utf-8'):
     parts = line.rstrip('\n').split('|', 2)
@@ -39,13 +40,24 @@ try:
     months = json.load(open(sys.argv[2], encoding='utf-8'))['months']
 except Exception:
     months = None
+def bank_line(m):
+    # the amount as the app sends it: a whole number in text today ("1239297", measured 2026-10-28), a
+    # decimal ("12345.00") or a number tomorrow; int("12345.00") would take the whole summary down
+    # (barracuda on #314), so it is read as a Decimal and rounded to forints
+    amount = f'{int(Decimal(str(m["missingAmountHuf"])).quantize(Decimal(1), ROUND_HALF_UP)):,}'.replace(',', ' ')
+    return (f'• Banki terhelések ({m["month"]}, a Hiányzó számlák lap szerint): {m["debitCount"]} terhelés, {m["found"]} párosítva, '
+            f'{m["notMatched"]} még nem párosodott, {m["noInvoice"]} számla nélkül, {m["noInvoiceNeeded"]} nem kér számlát; hiányzik {amount} Ft')
+bank, why = None, 'lapot most nem értem el'
 if months:
-    m = months[0]
-    amount = f'{int(m["missingAmountHuf"]):,}'.replace(',', ' ')
+    try:
+        bank = bank_line(months[0])
+    except Exception:
+        why = 'lap válaszát most nem tudtam olvasni'
+if bank:
     lines.append(f'• Olvasatlan dokumentum: {g("olvasatlan_dokumentum")[0]}')
-    lines.append(f'• Banki terhelések ({m["month"]}, a Hiányzó számlák lap szerint): {m["debitCount"]} terhelés, {m["found"]} párosítva, '
-                 f'{m["notMatched"]} még nem párosodott, {m["noInvoice"]} számla nélkül, {m["noInvoiceNeeded"]} nem kér számlát; hiányzik {amount} Ft')
+    lines.append(bank)
 else:
-    lines.append(f'• Olvasatlan dokumentum: {g("olvasatlan_dokumentum")[0]}; számla nélküli banki terhelés: {g("terheles_szamla_nelkul")[0]} (a Hiányzó számlák lapot most nem értem el, ezért ez a régi felső becslés: csak a kézi párosítást látja)')
+    # the other lines stand either way: one unreadable answer does not take the summary down
+    lines.append(f'• Olvasatlan dokumentum: {g("olvasatlan_dokumentum")[0]}; számla nélküli banki terhelés: {g("terheles_szamla_nelkul")[0]} (a Hiányzó számlák {why}, ezért ez a régi felső becslés: csak a kézi párosítást látja)')
 print('\n'.join(lines))
 PY
