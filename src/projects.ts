@@ -38,7 +38,9 @@ const SEED: readonly Project[] = [
     id: 'acropora', name: 'Flotta és közös', repos: ['*'], legacyMixed: true,
     aliases: ['marveen', 'token-proba', 'acroveliq', 'seo', 'seo-p1'],
   },
-  { id: 'os', name: 'Acropora OS', repos: ['KratoBal/acropora-os'], aliases: ['acropora-os'], legacyMixed: false },
+  // the AI service is OS work since 2026-10-28 (acrobot, card 760eadce): the OS research pilot's
+  // claim extraction runs in acropora-ai-agent, and its PRs read as would_reject under an os task
+  { id: 'os', name: 'Acropora OS', repos: ['KratoBal/acropora-os', 'KratoBal/acropora-ai-agent'], aliases: ['acropora-os'], legacyMixed: false },
   { id: 'commerce', name: 'Acropora Commerce', repos: ['KratoBal/acropora-commerce'], aliases: [], legacyMixed: false },
   // until it has a repo of its own (Balázs's approval). acropora-os since 2026-10-19: the approved
   // v6.1 plan builds ReefClub in the OS API (apps/api, /rc/v1), and its first slice, an OS PR, read
@@ -82,20 +84,27 @@ export function ensureProjectsSchema(db: Database.Database): void {
   for (const p of SEED) insert.run(p.id, p.name, JSON.stringify(p.repos), JSON.stringify(p.aliases), p.legacyMixed ? 1 : 0, now)
   // THE SEED IS INSERT OR IGNORE, so a changed SEED row never reaches a database that already has the
   // row (barracuda, #237 review): the live reefclub row kept ['KratoBal/acropora-commerce']. One narrow,
-  // logged update: the reefclub row only, and only while it holds exactly the old value, so a later
-  // hand-made change is never overwritten. A project does not change unnoticed (Projektek V1): the
-  // change goes to the config-change ledger, where the dashboard's other setting changes are.
-  const reefOld = JSON.stringify(['KratoBal/acropora-commerce'])
-  const reefNew = JSON.stringify(SEED.find((p) => p.id === 'reefclub')!.repos)
-  const moved = db.prepare("UPDATE projects SET repos = ? WHERE id = 'reefclub' AND repos = ?").run(reefNew, reefOld)
-  if (moved.changes === 1) {
+  // logged update per row: only while it holds exactly the old value, so a later hand-made change is
+  // never overwritten. A project does not change unnoticed (Projektek V1): the change goes to the
+  // config-change ledger, where the dashboard's other setting changes are.
+  for (const move of REPO_MOVES) {
+    const from = JSON.stringify(move.from)
+    const to = JSON.stringify(SEED.find((p) => p.id === move.id)!.repos)
+    const moved = db.prepare('UPDATE projects SET repos = ? WHERE id = ? AND repos = ?').run(to, move.id, from)
+    if (moved.changes !== 1) continue
     const ledger = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'config_change_log'").get()
     if (ledger) {
       db.prepare('INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?)')
-        .run('projects.reefclub.repos', reefOld, reefNew, 'migration:reefclub-repo-os', now)
+        .run(`projects.${move.id}.repos`, from, to, move.actor, now)
     }
   }
 }
+
+/** A SEED row's repos changed after it was written: the value it had, moved to the SEED's. */
+const REPO_MOVES: readonly { id: string; from: string[]; actor: string }[] = [
+  { id: 'reefclub', from: ['KratoBal/acropora-commerce'], actor: 'migration:reefclub-repo-os' },
+  { id: 'os', from: ['KratoBal/acropora-os'], actor: 'migration:os-repo-ai-agent' },
+]
 
 const parseList = (raw: string): string[] => {
   try {
