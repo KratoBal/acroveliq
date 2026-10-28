@@ -85,8 +85,11 @@ def os_get(args: dict) -> str:
     calls += 1
     if calls > MAX_CALLS:
         return f"HIBA: egy kérdésre legfeljebb {MAX_CALLS} lekérdezés fér. Válaszolj abból, ami már megvan, és mondd meg, mi hiányzik."
+    # The model writes queries in plain Hungarian ("?label=sókeverő"); urllib refuses
+    # non-ASCII and spaces outright. Percent-encode them, keep the URL syntax and any
+    # escape the model already wrote.
     req = urllib.request.Request(
-        OS_BASE + path,
+        OS_BASE + urllib.parse.quote(path, safe="/?&=%:,+;@-._~"),
         method="GET",
         headers={"Authorization": "Bearer " + OS_TOKEN, "Accept": "application/json"},
     )
@@ -142,22 +145,43 @@ def os_get(args: dict) -> str:
     return f"{header}:\n{text}"
 
 
+def _stem(word: str) -> str:
+    """A crude Hungarian stem: inflected forms share their first letters
+    ("számlák", "számlákat" -> "száml"), so a word matches on its first
+    max(4, len-3) letters. Without it "számlák" never matched the keyword
+    "számla", and five catalogue searches in a row came back empty
+    (barracuda, 2026-10-06)."""
+    return word if len(word) <= 4 else word[: max(4, len(word) - 3)]
+
+
 def os_endpoints(args: dict) -> str:
     term = str(args.get("kereses", "")).lower().strip()
-    rows = []
-    for r in catalog["routes"]:
-        hay = " ".join([r["path"], r["handler"], r.get("note", ""), r.get("keywords", "")]).lower()
-        if term and not all(t in hay for t in term.split()):
-            continue
-        line = r["path"]
-        if r["query"]:
-            line += "  ?" + ",".join(r["query"])
-        if term and r.get("note"):
-            line += "  -- " + r["note"][:160]
-        rows.append(line)
+    stems = [_stem(t) for t in term.split()]
+
+    def rows_for(match) -> list[str]:
+        rows = []
+        for r in catalog["routes"]:
+            hay = " ".join([r["path"], r["handler"], r.get("note", ""), r.get("keywords", "")]).lower()
+            if stems and not match(s in hay for s in stems):
+                continue
+            line = r["path"]
+            if r["query"]:
+                line += "  ?" + ",".join(r["query"])
+            if term and r.get("note"):
+                line += "  -- " + r["note"][:160]
+            rows.append(line)
+        return rows
+
+    rows, mode = rows_for(all), "es"
+    if not rows and len(stems) > 1:
+        # every word at once found nothing: fall back to any of them
+        rows, mode = rows_for(any), "vagy"
+    # logged like os_get, so a "not found" answer can be traced to its search
+    log({"tool": "os_endpoints", "kereses": term, "mod": mode, "talalat": len(rows)})
     if not rows:
         return "Nincs találat erre a szóra. Próbálj rövidebb vagy angol szót (pl. worksheet, invoice, asset, aquarium, purchasing)."
-    return f"{len(rows)} olvasható GET végpont:\n" + "\n".join(rows)
+    prefix = "" if mode == "es" else "(Minden szóra együtt nem volt találat, ezek legalább az egyikre illenek.)\n"
+    return prefix + f"{len(rows)} olvasható GET végpont:\n" + "\n".join(rows)
 
 
 def acrobot_atadas(args: dict) -> str:

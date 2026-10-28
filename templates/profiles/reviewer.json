@@ -39,6 +39,7 @@
       "Bash(stat:*)",
       "Bash(file:*)",
       "Bash(md5sum:*)",
+      "Bash(sha256sum:*)",
       "WebFetch(*)",
       "WebSearch(*)",
       "Bash(bash ${HOME}/marveen/scripts/agent-msg.sh:*)",
@@ -81,6 +82,8 @@
       "Bash(/usr/bin/stat:*)",
       "Bash(/bin/md5sum:*)",
       "Bash(/usr/bin/md5sum:*)",
+      "Bash(/bin/sha256sum:*)",
+      "Bash(/usr/bin/sha256sum:*)",
       "Bash(/bin/date:*)",
       "Bash(/usr/bin/date:*)",
       "Bash(/bin/nl:*)",
@@ -102,7 +105,13 @@
       "Bash(sudo -u marveen ${HOME}/marveen/scripts/is-paired.sh:*)",
       "Bash(bash ${HOME}/marveen/scripts/git-olvas.sh:*)",
       "Bash(bash ${HOME}/marveen/scripts/review-olvas.sh:*)",
-      "Bash(bash ${HOME}/marveen/scripts/review-ellenoriz.sh:*)"
+      "Bash(bash ${HOME}/marveen/scripts/review-ellenoriz.sh:*)",
+      "Bash(bash ${HOME}/marveen/scripts/patch-azonos.sh:*)",
+      "Bash(bash ${HOME}/marveen/scripts/pr-allapot.sh:*)",
+      "Bash(bash ${HOME}/marveen/scripts/medusa-stage.sh:*)",
+      "Bash(bash ${HOME}/marveen/scripts/karanten-olvas.sh:*)",
+      "Read(${HOME}/work/acropora-commerce/**)",
+      "Read(/${HOME}/work/acropora-commerce/**)"
     ],
     "deny": [
       "Read(${HOME}/marveen/.channels-config/**)",
