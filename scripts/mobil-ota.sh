@@ -162,7 +162,9 @@ esac
 
 # D5 (lasd fent): kiadni csak a preview agra, preview kornyezettel. Ez az ELSO lepes:
 # elotte nincs klon, token, npx, tehat egy eles kiadasnak semmilyen resze nem indul el.
-KIADHATO_AG="preview"
+# 2026-10-21 12:44 UTC: Balazs raised the Expo robot (eas-submit) to Release Manager so the fleet publishes
+# production too (his Mac computed a foreign runtime twice). The branch and its environment must still match.
+KIADHATO_AGAK="preview production"
 # az elso karakter betu vagy szam: egy `-`-tel kezdodo nev a kiirt sorban uj kapcsolonak latszana
 NEV_MINTA='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 
@@ -178,9 +180,9 @@ if ! [[ "$AG_NEV" =~ $NEV_MINTA ]] || ! [[ "$VALTOZAT" =~ $NEV_MINTA ]]; then
   exit 5
 fi
 
-if [ "$MIT" = "kiadas" ] && { [ "$AG_NEV" != "$KIADHATO_AG" ] || [ "$VALTOZAT" != "$KIADHATO_AG" ]; }; then
+if [ "$MIT" = "kiadas" ] && { [[ " $KIADHATO_AGAK " != *" $AG_NEV "* ]] || [ "$VALTOZAT" != "$AG_NEV" ]; }; then
   echo "MEGALLOK: a(z) '$AG_NEV' ag '$VALTOZAT' kornyezettel nem adhato ki a flottabol (Balazs D5 dontese, 2026-10-15)."
-  echo "   A flotta csak a '$KIADHATO_AG' agra, '$KIADHATO_AG' kornyezettel ad ki; az elest Balazs futtatja, a sajat Expo-belepesevel."
+  echo "   A flotta ezekre az agakra ad ki, az aggal azonos nevu kornyezettel: $KIADHATO_AGAK"
   echo
   echo "--- Balazsnak: a friss main-en, a sajat gepeden ---"
   echo "  cd acropora-os && git pull --ff-only origin main && cd apps/mobile && \\"

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# ANSWERS: Rendben van-e a honap konyveloi csomagja: parosodtak-e a szamlak, megvan-e a PDF, ki vannak-e toltve az adatok?
+#
+# Balazs kerese, 2026-10-21 14:15 UTC (Acropora OS szal): a ho vegere a konyvelo egy csomagot kapjon, amiben lehetoseg
+# szerint minden benne van, es minden nap fusson egy ellenorzes. Ez az ellenorzes: csak olvas (psql-ro, fleet_ro), a
+# kerdesek az exchange/havi-elszamolas/napi-ellenorzes.sql fajlban allnak. Kimenet: egy rovid magyar osszesito a
+# stdout-on (ezt kuldi a reggeli utemezes a Havi elszamolasok szalba), es a nyers sorok a store/napi-szamla-ellenorzes/
+# alatt, napi fajlban, hogy a valtozas napra visszakeresheto legyen.
+#
+#   bash /home/marveen/marveen/scripts/napi-szamla-ellenorzes.sh
+set -uo pipefail
+ROOT=/home/marveen/marveen
+SQL="$ROOT/exchange/havi-elszamolas/napi-ellenorzes.sql"
+OUT_DIR="$ROOT/store/napi-szamla-ellenorzes"
+KEY=/home/marveen/.ssh/id_ed25519_acropora_monitor
+mkdir -p "$OUT_DIR"
+NAP=$(bash "$ROOT/scripts/local-now.sh" full | cut -c1-10)
+NYERS="$OUT_DIR/$NAP.txt"
+if ! ssh -i "$KEY" fleet@162.55.216.28 psql-ro iwm34jaqp9xmwb72qkrqkwhy acropora tuples-pipe < "$SQL" > "$NYERS" 2>&1 || ! grep -q '^ki_osszes|' "$NYERS"; then
+  echo "HIBA: a napi szamla-ellenorzes nem futott le ($NYERS)"; exit 1
+fi
+# The bank line comes from the app's own verdict (GET /missing-invoices/months, the flotta@ OS account, finance.view
+# since 2026-10-21 20:33 UTC). If that call fails, the line falls back to the old upper bound and says so.
+APP="$OUT_DIR/$NAP-app.json"
+timeout 90 python3 "$ROOT/scripts/os-hianyzo-honapok.py" > "$APP" 2>/dev/null || : > "$APP"
+python3 - "$NYERS" "$APP" <<'PY'
+import json, sys
+rows = {}
+for line in open(sys.argv[1], encoding='utf-8'):
+    parts = line.rstrip('\n').split('|', 2)
+    if len(parts) == 3:
+        rows[parts[0]] = (int(parts[1]), parts[2])
+g = lambda k: rows.get(k, (0, ''))
+lines = ['Napi számla-ellenőrzés, a hónap állása:']
+lines.append(f'• Kimenő: {g("ki_osszes")[0]} számla, PDF nélkül {g("ki_pdf_nelkul")[0]}')
+lines.append(f'• Bejövő: {g("be_osszes")[0]} számla, a tárolt jelző szerint PDF nélkül {g("be_pdf_nelkul")[0]}, de ebből {g("be_pdf_megvan_de_nincs_kotve")[0]} esetben a levélből jött PDF megvan, és a felület azt mutatja')
+lines.append(f'• Átnézésre vár: {g("atnezesre_var")[0]}; hiányos összeg: {g("be_hianyos_osszeg")[0]}; határidő nélkül: {g("be_hatarido_nelkul")[0]}')
+try:
+    months = json.load(open(sys.argv[2], encoding='utf-8'))['months']
+except Exception:
+    months = None
+if months:
+    m = months[0]
+    amount = f'{int(m["missingAmountHuf"]):,}'.replace(',', ' ')
+    lines.append(f'• Olvasatlan dokumentum: {g("olvasatlan_dokumentum")[0]}')
+    lines.append(f'• Banki terhelések ({m["month"]}, a Hiányzó számlák lap szerint): {m["debitCount"]} terhelés, {m["found"]} párosítva, '
+                 f'{m["notMatched"]} még nem párosodott, {m["noInvoice"]} számla nélkül, {m["noInvoiceNeeded"]} nem kér számlát; hiányzik {amount} Ft')
+else:
+    lines.append(f'• Olvasatlan dokumentum: {g("olvasatlan_dokumentum")[0]}; számla nélküli banki terhelés: {g("terheles_szamla_nelkul")[0]} (a Hiányzó számlák lapot most nem értem el, ezért ez a régi felső becslés: csak a kézi párosítást látja)')
+print('\n'.join(lines))
+PY

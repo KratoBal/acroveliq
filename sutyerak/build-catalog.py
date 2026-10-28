@@ -35,6 +35,40 @@ def first_string(arg: str) -> str:
     return m.group(1) if m else ""
 
 
+def class_fields(block: str) -> list[str]:
+    """Property names of a DTO body.
+
+    Decorators often sit on the SAME line as the property
+    (`@IsString() @IsOptional() search?: string;`) and carry object
+    arguments (`{ message: ... }`). Matching `name:` at line start therefore
+    missed the inline properties and picked up decorator keys instead: the
+    catalog told Sutyerák to send `message` and `category=<id>` to
+    /service/assets (barracuda, 2026-10-06). So comments and decorator calls
+    are stripped first, and only what is left at statement start counts.
+    """
+    block = re.sub(r"/\*.*?\*/", " ", block, flags=re.S)
+    block = re.sub(r"//[^\n]*", " ", block)
+    # A literal @IsIn([...]) list is the field's allowed values: name them,
+    # or the model guesses (it sent label=astral, 2026-10-06).
+    allowed = {}
+    for m in re.finditer(
+        r"@IsIn\(\s*\[([^\]]*)\]\s*\)((?:\s*@[\w.]+\s*\((?:[^()]|\([^()]*\))*\))*)\s*(?:readonly\s+)?(\w+)",
+        block,
+    ):
+        values = re.findall(r'["\']([^"\']+)["\']', m.group(1))
+        if values:
+            allowed[m.group(3)] = "|".join(values)
+    prev = None
+    while prev != block:  # innermost parentheses first, so nesting unwinds
+        prev = block
+        block = re.sub(r"@[\w.]+\s*\([^()]*\)", " ", block)
+        block = re.sub(r"\([^()]*\)", " ", block)
+    block = re.sub(r"@[\w.]+", " ", block)
+    names = re.findall(r"(?:^|[;{}\n])\s*(?:readonly\s+)?(\w+)[?!]?\s*(?::|=(?!>))", block)
+    names = sorted(set(n for n in names if n not in ("constructor", "return")))
+    return [f"{n} ({allowed[n]})" if n in allowed else n for n in names]
+
+
 dto_fields = {}
 for file in src.rglob("*.ts"):
     if file.name.endswith(".spec.ts"):
@@ -42,8 +76,7 @@ for file in src.rglob("*.ts"):
     body = file.read_text()
     for cm in re.finditer(r"export class (\w+)[^{]*\{", body):
         end = body.find("\n}", cm.end())
-        fields = re.findall(r"\n\s+(?:readonly\s+)?(\w+)[?!]?\s*:", body[cm.end(): end])
-        dto_fields[cm.group(1)] = sorted(set(fields))
+        dto_fields[cm.group(1)] = class_fields(body[cm.end(): end])
 
 routes = []
 for file in sorted(src.rglob("*.controller.ts")):
@@ -95,16 +128,16 @@ for file in sorted(src.rglob("*.controller.ts")):
 
 # Hungarian words per API area, so a Hungarian search term finds the route.
 KEYWORDS = {
-    "billing": "számla számlázás kimenő kiállított vevő bizonylat nyugta",
-    "purchasing": "beszerzés bejövő számla szállító várható beérkezés rendelés",
+    "billing": "számla számlázás kimenő kiállított vevő bizonylat nyugta számlák kiállítás forgalom bevétel árbevétel kimutatás pdf invoice document",
+    "purchasing": "beszerzés bejövő számla szállító várható beérkezés rendelés számlák pdf invoice",
     "integrations/nav": "nav bejövő számla adóhatóság",
     "missing-invoices": "hiányzó számla könyvelő",
     "service/worksheets": "munkalap",
     "service/jobs": "hibajegy szerviz",
-    "service/assets": "eszköz eszköznyilvántartás",
+    "service/assets": "eszköz eszköznyilvántartás lámpa szivattyú szűrő matrica dokumentum kézikönyv alkatrész típus",
     "service/material-requests": "anyagigény",
     "maintenance": "karbantartás ütemezés",
-    "aquariums": "akvárium vízérték mérés",
+    "aquariums": "akvárium vízérték mérés medence",
     "partners": "partner ügyfél szerződés",
     "customers": "vevő ügyfél",
     "products": "termék cikkszám készlet",
@@ -126,14 +159,24 @@ menu = []
 nav = repo / "apps/web/src/components/navigation.ts"
 if nav.exists():
     text = nav.read_text()
-    for m in re.finditer(r'href:\s*"([^"]+)"', text):
+    # Some entries point at a constant (href: MISSING_INVOICES_PATH) defined
+    # elsewhere in the web app; a literal-only match dropped three menu items
+    # (barracuda, 2026-10-06). Resolve such names from the web sources.
+    consts = {}
+    for f in (repo / "apps/web/src").rglob("*.ts*"):
+        for cm in re.finditer(r'(?:export\s+)?const\s+([A-Z][A-Z0-9_]*)\s*=\s*"(/[^"]*)"', f.read_text(errors="ignore")):
+            consts.setdefault(cm.group(1), cm.group(2))
+    for m in re.finditer(r'href:\s*(?:"([^"]+)"|([A-Z][A-Z0-9_]*)\b)', text):
+        href = m.group(1) or consts.get(m.group(2))
+        if not href:
+            continue
         win = text[max(0, m.start() - 300): m.end() + 300]
         best, dist = None, 1e9
         for lm in re.finditer(r'label:\s*"([^"]+)"', win):
             if abs(lm.start() - 300) < dist:
                 dist, best = abs(lm.start() - 300), lm.group(1)
         if best:
-            menu.append({"href": m.group(1), "label": best})
+            menu.append({"href": href, "label": best})
 
 out.write_text(json.dumps({"denied_prefixes": denied_prefixes, "denied_exact": sorted(denied_exact), "routes": routes, "menu": menu}, ensure_ascii=False, indent=1))
 print(f"{len(routes)} GET routes written to {out}")

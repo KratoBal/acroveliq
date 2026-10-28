@@ -190,3 +190,6 @@ logs/
 
 # deploy executor build output (deploy-executor/tsconfig.build.json)
 /out/
+
+# review packages (review-csomag.sh): generated, 50 MB on 2026-10-28, never committed
+/review-csomagok/

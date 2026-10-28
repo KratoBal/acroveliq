@@ -93,6 +93,13 @@ if ACCOUNT == "info":
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.send",
     ])
+elif ACCOUNT == "balazs":
+    # balazs@ (2026-10-20, "Balazs sajat dolgai" thread): mail AND calendar, both read-only, for the
+    # Fireflies reminder before an in-person meeting. Reading only, like every account but info@.
+    SCOPES = " ".join([
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/calendar.readonly",
+    ])
 else:
     SCOPES = "https://www.googleapis.com/auth/gmail.readonly"
 
@@ -367,7 +374,13 @@ elif CMD == "events":
         start = (it.get("start", {}).get("dateTime") or it.get("start", {}).get("date"))
         # the title is the organiser's text (an invitation from outside sets it): data, like a
         # mail's subject (P1-00f, section 2 row 5); the start is Google's own RFC 3339 value
-        print("%s | %s" % (start, untrusted(it.get("summary", "(cim nelkul)"), "gcal")))
+        # FIREFLIES-KEZI: fred@fireflies.ai is invited but there is no meeting link, so the notetaker
+        # cannot join and the recording has to be started by hand in the app (2026-10-20, Balazs).
+        att = [x.get("email", "").lower() for x in it.get("attendees", [])]
+        link = it.get("hangoutLink") or it.get("conferenceData") or any(
+            s in (it.get("location") or "") for s in ("zoom.us", "teams.microsoft", "meet.google"))
+        mark = " | FIREFLIES-KEZI" if "fred@fireflies.ai" in att and not link else ""
+        print("%s | %s%s" % (start, untrusted(it.get("summary", "(cim nelkul)"), "gcal"), mark))
 
 elif CMD == "search":
     # READ ONLY. Gmail search syntax, e.g. 'from:hertlein.de' or 'hertlein has:attachment'.
