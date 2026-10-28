@@ -154,8 +154,13 @@ a = sys.argv[1:]
 
 # the envelope is shared with fireflies.sh: scripts/lib/untrusted_envelope.py (controls first, then
 # the security tags with or without their closing ">", a per-run marker; barracuda #170, #173, #315)
-sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
-from untrusted_envelope import untrusted as _envelope
+# loaded from its file, not through sys.path: nothing earlier on the path (the working directory of
+# "python3 -", a json.py or re.py dropped into scripts/lib) can stand in for it (barracuda on #316)
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location("untrusted_envelope", os.path.join(ROOT, "scripts", "lib", "untrusted_envelope.py"))
+_mod = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+_envelope = _mod.untrusted
 
 
 def untrusted(text, source="gmail"):

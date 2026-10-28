@@ -19,7 +19,9 @@ import secrets
 
 SECURITY_TAG = re.compile(r"<\s*/?\s*(untrusted|trusted-peer|scheduled-task)\b(?:[^<>]*>)?", re.I)
 STRIPPED = "[[SECURITY_TAG_REMOVED_%s]]" % secrets.token_hex(4)
-_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f  ]+")
+# the two separators as escapes, never as the characters: an editor or a copy can turn those into
+# spaces without a trace, and the line-break guard would go with them (barracuda on #316)
+_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
 
 
 def untrusted(text, source):
