@@ -152,27 +152,16 @@ def get(url, token):
 
 a = sys.argv[1:]
 
-import re as _re_u, secrets as _secrets
-# the same tag names and shape as src/prompt-safety.ts (SECURITY_TAG_NAMES, SECURITY_TAG_RX)
-# the closing ">" is optional: an unclosed tag in a subject or a title would take ours, the
-# envelope's own closing tag, and read as an open trusted-peer block (barracuda on #315); one
-# without it is taken to the end of the field
-_SECURITY_TAG = _re_u.compile(r"<\s*/?\s*(untrusted|trusted-peer|scheduled-task)\b[^>]*>?", _re_u.I)
-# random per run, like STRIPPED_SENTINEL: a sender cannot pre-write the replacement
-_STRIPPED = "[[SECURITY_TAG_REMOVED_%s]]" % _secrets.token_hex(4)
+# the envelope is shared with fireflies.sh: scripts/lib/untrusted_envelope.py (controls first, then
+# the security tags with or without their closing ">", a per-run marker; barracuda #170, #173, #315)
+sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
+from untrusted_envelope import untrusted as _envelope
 
 
 def untrusted(text, source="gmail"):
     # One envelope per field, on ONE line: the listings are line-based, and a line break in a
     # header must not start a line that looks like ours.
-    # every C0 and C1 control (CR, LF, VT, FF, the separators U+001C..U+001E, ESC of an ANSI
-    # code, U+0085) and the two Unicode separators: splitlines() and many displays break a line
-    # on more than CR and LF, and the output may reach a terminal (barracuda, #170 review).
-    # FIRST, then the tags: a control the tag pattern's \s does not cover (U+0001, ESC) inside a
-    # tag hid it from the tag replacement, and its space then made it one (barracuda, #173)
-    t = _re_u.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+", " ", str(text))
-    t = _SECURITY_TAG.sub(_STRIPPED, t)
-    return '<untrusted source="%s">%s</untrusted>' % (source, t)
+    return _envelope(text, source)
 
 # ---- THE RELAY PATH (GCAL_KOZVETITO=1; task level-kozvetito) -------------------------------------------------
 # Every call goes through scripts/level-kozvetito.sh, which holds the one HTTP client. The relay already wraps

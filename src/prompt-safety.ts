@@ -41,8 +41,12 @@ const SECURITY_TAG_NAMES = ['untrusted', 'trusted-peer', 'scheduled-task'] as co
 // turns every control into a space (busy-pane-emit.ts typedLine), so a tag hidden by one from a
 // plain \s here would arrive in the receiver's pane as a spaced tag (barracuda, #173 review).
 const TAG_GAP = '[\\s\\x00-\\x1f\\x7f-\\x9f]*'
+// The closing ">" is optional (barracuda on acroveliq #315): an unclosed tag, or one cut by a length
+// limit, would take the wrapper's own closing tag and read as an open block. A ">" before the next
+// "<" takes the whole tag as before; without one only the opening part goes, so a message that
+// mentions the tag in prose keeps the rest of its text.
 const SECURITY_TAG_RX = new RegExp(
-  `<${TAG_GAP}\\/?${TAG_GAP}(${SECURITY_TAG_NAMES.join('|')})\\b[^>]*>`,
+  `<${TAG_GAP}\\/?${TAG_GAP}(${SECURITY_TAG_NAMES.join('|')})\\b(?:[^<>]*>)?`,
   'gi',
 )
 

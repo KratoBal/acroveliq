@@ -60,22 +60,17 @@ case "${1:-}" in
     b="$(body '{ transcripts(limit: 20) { id title date } }')"
     resp="$(gql "$b")" || { rm -f "$b"; exit 1; }; rm -f "$b"
     printf '%s' "$resp" | python3 -I -c '
-import json,re,secrets,sys,datetime
+import json,sys,datetime
+# the envelope gcal.sh uses too (scripts/lib/untrusted_envelope.py): controls first (a tab would
+# split this tab-separated line), then any security tag, closed or not, by a per-run marker
+sys.path.insert(0,sys.argv[2])
+from untrusted_envelope import untrusted
 seen=set(l.strip() for l in open(sys.argv[1]))
 d=json.load(sys.stdin)
-# as gcal.sh untrusted(): every C0/C1 control and the two Unicode separators first (a tab would
-# split this tab-separated line, a line break would start a line that looks like ours), then any
-# security tag inside the title, replaced by a marker the sender cannot pre-write; the closing ">" is
-# optional, else an unclosed one (or one cut at 120) would take the closing tag of the envelope (barracuda, #315)
-tag=re.compile(r"<\s*/?\s*(untrusted|trusted-peer|scheduled-task)\b[^>]*>?",re.I)
-mark="[[SECURITY_TAG_REMOVED_%s]]"%secrets.token_hex(4)
-def untrusted(text):
-    t=re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+"," ",str(text))
-    return "<untrusted source=\"fireflies\">%s</untrusted>"%tag.sub(mark,t)
 for t in (d.get("data") or {}).get("transcripts") or []:
     if t["id"] in seen: continue
     dt=datetime.datetime.fromtimestamp((t.get("date") or 0)/1000).strftime("%Y-%m-%d %H:%M")
-    print(t["id"]+"\t"+dt+"\t"+untrusted((t.get("title") or "")[:120]))' "$DIR/seen.txt" > "$DIR/.new.txt" || exit 1
+    print(t["id"]+"\t"+dt+"\t"+untrusted((t.get("title") or "")[:120],"fireflies"))' "$DIR/seen.txt" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib" > "$DIR/.new.txt" || exit 1
     while IFS=$'\t' read -r id dt title; do
       [ -n "$id" ] || continue
       fetch "$id" >/dev/null && echo "$id" >> "$DIR/seen.txt" && printf '%s\t%s\t%s\n' "$id" "$dt" "$title"
