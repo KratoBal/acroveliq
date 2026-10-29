@@ -4,6 +4,8 @@
 What this pins:
   1. Only a caller other than the shared token on the `kikenyszerit` list alerts. Remaining
      `legacy` rows are counted in the report and stay quiet.
+  1d. A route no rule answers (`unknown_routes`, the 2026-10-28 `:ismeretlen` rows) is listed apart
+     as a caller's wrong path: never JELZES by itself, never the "matrix hianya" line, never dropped.
   1c. The control call (nautilus GET /api/fleet-reads/...) is the run's positive control: seen, it
      is a fact of its own and not a hole; missing, the run is JELZES (an empty list alone proves
      nothing). Its look-alikes (another agent, another method, a route that only starts the same)
@@ -66,9 +68,9 @@ FAKE_SEND = '#!/usr/bin/env bash\n{{ printf "%s|" "$@"; echo; cat; echo "--END--
 DB = {'path': None}  # set per Env: the store database the wrapper expects
 
 
-def answer(mode, rows, rc=None, database=None):
+def answer(mode, rows, rc=None, database=None, unknown=()):
     return {'rc': (0 if not rows else 1) if rc is None else rc,
-            'out': json.dumps({'mode': mode, 'since': '2026-10-14', 'rows': rows,
+            'out': json.dumps({'mode': mode, 'since': '2026-10-14', 'rows': rows, 'unknown_routes': list(unknown),
                                'database': database or DB['path'], 'newest': 1791900000})}
 
 
@@ -209,6 +211,31 @@ check('a control row with a zero count is not a seen control (verdict and report
 check('two control rows (a window spanning two days) are counted together',
       napi.classify({'legacy-szukitett': [], 'kikenyszerit': [CTRL, dict(CTRL, count=2)]})[1]['kontroll'] == 3)
 
+print('1d. a route no rule answers is listed apart, and moves no verdict')
+# the two rows of the 2026-10-28 preflight (task p01-preflight-ismeretlen-utvonalak)
+UNKNOWN = [dict(row('acrobot', ':ismeretlen /api/kanban', 'POST', 1), reason='no rule for this route: default-deny'),
+           dict(row('acrobot', ':ismeretlen /api/tasks', 'GET', 1), reason='no rule for this route: default-deny')]
+e = Env()
+r = e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [CTRL], unknown=UNKNOWN)})
+log = e.sent('naplo')
+check('the control and two unknown routes: exit 0, RENDBEN, no message',
+      r.returncode == 0 and ' RENDBEN ' in e.last() and 'nevvel 0' in e.last() and e.sent('uzenet') == '')
+check('the unknown routes are listed in their own block, as data, not as a hole in the matrix',
+      'Szabaly nelkuli ut (2 par)' in log and '  "acrobot" "POST" ":ismeretlen /api/kanban" (1x)' in log
+      and '  "acrobot" "GET" ":ismeretlen /api/tasks" (1x)' in log and 'kodban javitando' not in log)
+e.done()
+e = Env()
+r = e.run({'legacy-szukitett': answer('legacy-szukitett', []),
+           'kikenyszerit': answer('kikenyszerit', [CTRL, row('murena')], unknown=UNKNOWN[:1])})
+check('an agent hole beside an unknown route: JELZES for the hole, the unknown route still apart',
+      r.returncode == 1 and 'nevvel 1' in e.last() and '"murena"' in e.sent('uzenet')
+      and 'Szabaly nelkuli ut (1 par)' in e.sent('uzenet'))
+e.done()
+e = Env()
+e.run({'legacy-szukitett': answer('legacy-szukitett', []), 'kikenyszerit': answer('kikenyszerit', [CTRL])})
+check('no unknown route: no such block', 'Szabaly nelkuli ut' not in e.sent('naplo'))
+e.done()
+
 print('the window (task preflight-ablak): from the previous GOOD run, never a calendar day that leaves a gap')
 e = Env()
 argv_log = os.path.join(e.bin, 'argv.log')
@@ -265,6 +292,9 @@ cases = {  # built after each Env, so the database path is that Env's
     'exit 1 with an empty list': lambda: answer('kikenyszerit', [], rc=1),
     'the JSON of another mode': lambda: answer('legacy-szukitett', []),
     'another database (an empty list there is no proof)': lambda: answer('kikenyszerit', [], database='/tmp/masik.db'),
+    'no unknown_routes (an older preflight: its rows would drop out unseen)': lambda: {
+        'rc': 0, 'out': json.dumps({'mode': 'kikenyszerit', 'since': '2026-10-14', 'rows': [],
+                                    'database': DB['path'], 'newest': 1791900000})},
 }
 for name, bad in cases.items():
     e = Env()

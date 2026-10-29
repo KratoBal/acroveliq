@@ -3,7 +3,8 @@
 // logged; legacy-szukitett lists another caller than the shared token; an
 // already enforced denial or an old day is listed as new; --since-ts (the daily run's window, task
 // preflight-ablak) dropping a row last seen after its start because its DAY is yesterday, or keeping one
-// last seen before it.
+// last seen before it; a route no rule answers (`:ismeretlen ...`) holding the switch, being listed as a
+// hole in the matrix, or dropping out of the output (task p01-preflight-ismeretlen-utvonalak).
 import { describe, it, expect, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -53,12 +54,14 @@ describe('access preflight', () => {
     put('murena', '/api/x', 'would-deny', now) // today
     put('korall', '/api/y', 'denied', now - 3600) // already enforced: never new
     db.close()
-    const json = (r: { out: string }) => JSON.parse(r.out.trim().split('\n').at(-1)!) as { since_ts: number | null; rows: Array<{ actor: string; path: string }> }
+    type Listed = Array<{ actor: string; path: string }>
+    const json = (r: { out: string }) => JSON.parse(r.out.trim().split('\n').at(-1)!) as { since_ts: number | null; rows: Listed; unknown_routes: Listed }
+    const both = (r: { out: string }) => [...json(r).rows, ...json(r).unknown_routes].map((x) => `${x.actor} ${x.path}`).sort()
     const win = preflight(file, '--since-ts', String(start), '--json')
     const oneDay = preflight(file, '--napok', '1', '--json')
     expect([
-      win.code, json(win).since_ts, json(win).rows.map((r) => `${r.actor} ${r.path}`),
-      json(oneDay).rows.some((r) => r.path === ':ismeretlen /api/memories'),
+      win.code, json(win).since_ts, both(win),
+      both(oneDay).includes('acrobot :ismeretlen /api/memories'),
       preflight(file, '--since-ts', String(start), '--napok', '1').code,
       preflight(file, '--since-ts', 'tegnap').code,
       preflight(file, '--since-ts', '0').code,
@@ -87,6 +90,37 @@ describe('access preflight', () => {
       'ACCESS-PREFLIGHT',
     ).toEqual([1, ['legacy', 'murena'], 1, ['legacy'], ['legacy', 'murena', 'korall'], 0])
   })
+
+  it('ACCESS-PREFLIGHT-UNKNOWN: a route no rule answers is listed apart, never held as a hole, never dropped', () => {
+    // the 2026-10-28 rows: acrobot's two unknown routes beside the control
+    const db = database([
+      ['acrobot', 'POST', ':ismeretlen /api/kanban', 'would-deny', 0],
+      ['acrobot', 'GET', ':ismeretlen /api/tasks', 'would-deny', 0],
+      ['legacy', 'GET', ':ismeretlen', 'would-deny', 0],
+    ])
+    const hole = database([
+      ['acrobot', 'POST', ':ismeretlen /api/kanban', 'would-deny', 0],
+      ['murena', 'PATCH', '/api/approvals/:id', 'would-deny', 0],
+    ])
+    const last = (r: { out: string }) => JSON.parse(r.out.trim().split('\n').at(-1)!) as { rows: Array<{ path: string }>; unknown_routes: Array<{ actor: string; method: string; path: string }> }
+    const only = preflight(db, '--json')
+    const onlyText = preflight(db)
+    const legacy = preflight(db, '--mode', 'legacy-szukitett', '--json')
+    const mixed = preflight(hole, '--json')
+    expect([
+      only.code, last(only).rows, last(only).unknown_routes.map((r) => `${r.actor} ${r.method} ${r.path}`),
+      onlyText.code, onlyText.out.includes('nincs tiltandó hívás'), onlyText.out.includes('Szabály nélküli út (3 pár)'),
+      onlyText.out.includes('  acrobot            POST   :ismeretlen /api/kanban'),
+      legacy.code, last(legacy).unknown_routes.map((r) => r.actor),
+      mixed.code, last(mixed).rows.map((r) => r.path), last(mixed).unknown_routes.map((r) => r.path),
+    ], 'ACCESS-PREFLIGHT-UNKNOWN').toEqual([
+      0, [], ['acrobot POST :ismeretlen /api/kanban', 'acrobot GET :ismeretlen /api/tasks', 'legacy GET :ismeretlen'],
+      0, true, true,
+      true,
+      0, ['legacy'],
+      1, ['/api/approvals/:id'], [':ismeretlen /api/kanban'],
+    ])
+  }, 60_000) // four tsx starts
 
   it('ACCESS-PREFLIGHT-JSON: --json gives the same rows as one JSON line, with the same exit code', () => {
     const db = database([
