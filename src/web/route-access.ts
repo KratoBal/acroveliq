@@ -43,7 +43,14 @@ export type OwnerSource =
  * schedule's agent, a message's recipient, a memory's writer; a message's
  * participants (either may read it).
  */
-export type LookupRecord = 'kanban-card' | 'schedule' | 'message-participants' | 'message-recipient' | 'message-closer' | 'memory'
+export type LookupRecord =
+  | 'kanban-card' | 'schedule' | 'message-participants' | 'message-recipient' | 'message-closer' | 'memory' | 'approval-decider'
+
+/**
+ * A sub-agent's command stop (an approval row of this category) is judged by the main agent (owner decision
+ * 2026-10-27 09:17 UTC, #311). Here, not in routes/approvals.ts, so the access check reads it without the route module.
+ */
+export const BASH_COMMAND_CATEGORY = 'bash_command'
 
 export interface Access {
   grants: Record<Column, Grant>
@@ -87,8 +94,9 @@ const GROUPS: Group[] = [
   {
     name: 'approval-decide',
     match: is('PATCH', '/api/approvals/:id'),
-    grants: g('yes', 'no', 'no', 'no', 'no'),
-    why: 'a human decides, not a language model: only from the session (plan 2.4); the owner\'s Discord reply is checked on the server and decides as the session (PR 4, approval-discord.ts)',
+    grants: g('yes', 'own', 'no', 'no', 'no'),
+    owner: { from: 'lookup', record: 'approval-decider', param: 'id' },
+    why: 'a human decides, not a language model: only from the session (plan 2.4); the owner\'s Discord reply is checked on the server and decides as the session (PR 4, approval-discord.ts). The one exception is the owner\'s later, narrower decision (2026-10-27 09:17 UTC, #311): the main agent decides a sub-agent\'s bash_command row, never its own and no other category',
   },
   {
     name: 'decision-decide',
@@ -365,7 +373,8 @@ const BEFORE_ENFORCING = [
   '   szöveges válasza után. A PR 4 óta a szerver maga olvassa és ellenőrzi a Discord-választ (egyszer használható,',
   '   a kéréshez kötött kód, lejárattal), és S-ként dönt; ez az `APPROVAL_DISCORD_CHANNEL_ID`, `_USER_IDS` és',
   '   `_DECIDER` beállításával kapcsol be. A kikényszerítés csak akkor fordulhat, ha ez be van állítva és egy',
-  '   valódi jóváhagyáson mérten működött, különben a jóváhagyási lánc megáll.',
+  '   valódi jóváhagyáson mérten működött, különben a jóváhagyási lánc megáll. Egy kivétel: egy alágens',
+  '   `bash_command` sorát az A dönti el (Balázs döntése, 2026-10-27 09:17 UTC, #311), a sajátját és más kategóriát nem.',
   '3. **A régi token (L) kritikus útjai.** Amit ma a közös token kritikus úton hív, az a kikényszerítéskor',
   '   eltörik (például a `POST /api/schedules`). A kapcsoló csak akkor fordul, ha az',
   '   `npx tsx scripts/access-preflight.ts` listája üres (kilépési kód 0): ez a naplóból sorolja fel, mit',

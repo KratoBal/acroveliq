@@ -21,7 +21,8 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
    szöveges válasza után. A PR 4 óta a szerver maga olvassa és ellenőrzi a Discord-választ (egyszer használható,
    a kéréshez kötött kód, lejárattal), és S-ként dönt; ez az `APPROVAL_DISCORD_CHANNEL_ID`, `_USER_IDS` és
    `_DECIDER` beállításával kapcsol be. A kikényszerítés csak akkor fordulhat, ha ez be van állítva és egy
-   valódi jóváhagyáson mérten működött, különben a jóváhagyási lánc megáll.
+   valódi jóváhagyáson mérten működött, különben a jóváhagyási lánc megáll. Egy kivétel: egy alágens
+   `bash_command` sorát az A dönti el (Balázs döntése, 2026-10-27 09:17 UTC, #311), a sajátját és más kategóriát nem.
 3. **A régi token (L) kritikus útjai.** Amit ma a közös token kritikus úton hív, az a kikényszerítéskor
    eltörik (például a `POST /api/schedules`). A kapcsoló csak akkor fordul, ha az
    `npx tsx scripts/access-preflight.ts` listája üres (kilépési kód 0): ez a naplóból sorolja fel, mit
@@ -228,7 +229,7 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | POST | `/api/approvals` | KRITIKUS | ✓ | ✓ | ✓ | ✗ | ✓ | approval-request |  |
 | GET | `/api/approvals` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
 | GET | `/api/approvals/:id` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
-| PATCH | `/api/approvals/:id` | KRITIKUS | ✓ | ✗ | ✗ | ✗ | ✗ | approval-decide |  |
+| PATCH | `/api/approvals/:id` | KRITIKUS | ✓ | saját | ✗ | ✗ | ✗ | approval-decide | rekord: approval-decider (:id) |
 | POST | `/api/messages` | KRITIKUS | ✓ | ✓ | ✓ | ✗ | ✓ | message-send |  |
 | GET | `/api/messages/threads` | OLVASO | ✓ | ✓ | saját | ✗ | ✓ | message-read | query: agent |
 | GET | `/api/messages/backlog` | OLVASO | ✓ | ✓ | saját | ✗ | ✓ | message-read | query: agent |
@@ -393,7 +394,7 @@ Az L oszlopban csak ezek ✓, akármit ad a csoport vagy az osztály (a többi s
 
 ## A csoportok indoka
 
-- **approval-decide**: a human decides, not a language model: only from the session (plan 2.4); the owner's Discord reply is checked on the server and decides as the session (PR 4, approval-discord.ts)
+- **approval-decide**: a human decides, not a language model: only from the session (plan 2.4); the owner's Discord reply is checked on the server and decides as the session (PR 4, approval-discord.ts). The one exception is the owner's later, narrower decision (2026-10-27 09:17 UTC, #311): the main agent decides a sub-agent's bash_command row, never its own and no other category
 - **decision-decide**: Dontéseim V1: the owner decides from the owner's own session (Balázs, 2026-10-14 08:52:26 UTC, requirement 1); the handler holds it in every access mode
 - **decision-discord-reply**: Dontéseim V1: the main agent attaches the Discord message the owner answered in; it decides nothing, the owner confirms on the page
 - **approval-request**: anyone may ask; the decision is the gate

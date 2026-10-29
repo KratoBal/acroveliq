@@ -22,7 +22,7 @@ import type Database from 'better-sqlite3'
 import { ACTOR_LOG_DAYS, DEFAULT_PROJECT, localDay, type Principal } from './auth-principals.js'
 import { json, primeBody } from './http-helpers.js'
 import { logger } from '../logger.js'
-import { accessOf, decide, type Caller, type Decision, type OwnerSource } from './route-access.js'
+import { accessOf, BASH_COMMAND_CATEGORY, decide, type Caller, type Decision, type OwnerSource } from './route-access.js'
 import { matchRouteRule, ruleParams, unknownRouteKey } from './route-match.js'
 import type { RouteRule } from './route-rules.js'
 import { safeJoin, sanitizeScheduleName } from './sanitize.js'
@@ -175,6 +175,15 @@ export async function resolveOwner(
         | undefined
       if (!row) return null
       return source.record === 'message-recipient' ? row.to_agent : [row.from_agent, row.to_agent]
+    }
+    case 'approval-decider': {
+      // WHO MAY DECIDE AN APPROVAL ROW BESIDE THE SESSION: the main agent, on a sub-agent's bash_command row only (owner
+      // decision 2026-10-27 09:17 UTC, #311; acrobot 38009). Its own row is the owner's (the self guard in the handler
+      // holds it too), and every other category stays with the session, so no owner there and the main agent is refused.
+      const row = deps.db.prepare('SELECT agent_id, category FROM approvals WHERE id = ?').get(id) as
+        | { agent_id: string; category: string }
+        | undefined
+      return row && row.category === BASH_COMMAND_CATEGORY && row.agent_id !== deps.mainAgent ? deps.mainAgent : null
     }
     case 'memory': {
       const row = deps.db.prepare('SELECT agent_id FROM memories WHERE id = ?').get(id) as { agent_id: string } | undefined
