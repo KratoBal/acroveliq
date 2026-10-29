@@ -255,7 +255,42 @@ describe('access enforcement: through the gate', () => {
     expect(wrong, 'ACCESS-PREFLIGHT-1023').toEqual([])
   })
 
-  it('ACCESS-SWITCH-PROBES: what the switch step expects of the running mode (403 or let through) is what the gate does, mode by mode', async () => {
+  it('ACCESS-APPROVAL-BASH: the main agent decides a sub-agent\'s bash_command row, and nothing else; no other token decides any', async () => {
+    // owner decision 2026-10-27 09:17 UTC (#311), the matrix narrowed to it (acrobot 38009): the 2026-10-28 preflight's
+    // two acrobot PATCH rows were this shape
+    getDb().prepare(`INSERT OR REPLACE INTO approvals (id, agent_id, category, action_description) VALUES
+      ('ap-murena-bash', 'murena', 'bash_command', 'x'), ('ap-acrobot-bash', 'acrobot', 'bash_command', 'x'),
+      ('ap-murena-perm', 'murena', 'permission_change', 'x'), ('ap-murena-dontes', 'murena', 'dontes', 'x'),
+      ('ap-murena-Bash', 'murena', 'Bash_command', 'x')`).run()
+    const decide = { status: 'approved' }
+    const cases: Array<[string, CallerSource, string, number]> = [
+      ['the main agent on a sub-agent\'s bash_command row', A, 'ap-murena-bash', 200],
+      ['the main agent on its own bash_command row (the owner\'s)', A, 'ap-acrobot-bash', 403],
+      ['the main agent on another category', A, 'ap-murena-perm', 403],
+      ['the main agent on a decision row', A, 'ap-murena-dontes', 403],
+      ['the main agent on a look-alike category', A, 'ap-murena-Bash', 403],
+      ['the main agent on a row that does not exist', A, 'ap-nincs', 403],
+      ['the requester itself', G, 'ap-murena-bash', 403],
+      ['another sub-agent', G3, 'ap-murena-bash', 403],
+      ['the shared token', L, 'ap-murena-bash', 403],
+      ['a device', D, 'ap-murena-bash', 403],
+      ['the session on the main agent\'s own row', S, 'ap-acrobot-bash', 200],
+      ['the session on another category', S, 'ap-murena-perm', 200],
+    ]
+    mode = 'kikenyszerit'
+    const wrong: string[] = []
+    for (const [what, as, id, expected] of cases) {
+      const r = await call(as, 'PATCH', `/api/approvals/${id}`, decide)
+      if (r.status !== expected) wrong.push(`${what}: ${r.status}, expected ${expected}`)
+    }
+    mode = 'naplo'
+    getDb().prepare('DELETE FROM access_decisions').run()
+    await call(A, 'PATCH', '/api/approvals/ap-murena-bash', decide)
+    const logged = getDb().prepare('SELECT COUNT(*) AS n FROM access_decisions').get() as { n: number }
+    expect([wrong, logged.n], 'ACCESS-APPROVAL-BASH').toEqual([[], 0]) // the 10-28 shape is no longer a would-deny row
+  })
+
+  it('ACCESS-SWITCH-PROBES:what the switch step expects of the running mode (403 or let through) is what the gate does, mode by mode', async () => {
     // the real dashboard answers a let-through unruled route with 404; this harness has one handler that says 200
     const letThrough = (expected: number) => (expected === 403 ? 403 : 200)
     for (const m of ['naplo', 'legacy-szukitett', 'kikenyszerit'] as const) {
