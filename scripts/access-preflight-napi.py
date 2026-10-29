@@ -26,6 +26,13 @@ not RENDBEN. The control is reported as its own fact, never as a hole in the mat
 day without the control call is never RENDBEN, so the call has to be made in every window that
 should count as clean.
 
+A route no rule answers (`:ismeretlen ...`, the preflight's `unknown_routes`; task
+p01-preflight-ismeretlen-utvonalak, 2026-10-29) is a fact of its own as well, when every logged call
+of it got a 404 (measured by the gate, not inferred: no handler served it). It is listed in the
+report as a caller's wrong path, never as a hole in the matrix, and it never moves the verdict. An
+unknown route with any other answer stays among the rows, and holds. A preflight JSON without
+`unknown_routes` is no readable output: the rows would drop out of the report unseen.
+
 Window (task preflight-ablak, 2026-10-19): every run reads from the START of the previous run whose
 window was delivered: both modes evaluated, the daily-log entry sent, and on JELZES the message too
 (store/access-preflight/napi.since, written only then), not a calendar day.
@@ -100,7 +107,8 @@ def window_of(since_file, now):
 
 
 def run_mode(args, mode, out, window=('--napok', '2')):
-    """One preflight run. Returns (rows, error): rows is the list, error a sentence or None."""
+    """One preflight run. Returns (rows, unknown, error): rows is the list, unknown the routes no rule
+    answers (listed apart, they hold no switch), error a sentence or None."""
     cmd = [args.tsx, args.preflight, '--mode', mode, *window, '--json']
     out.write(f'$ {" ".join(cmd)}\n')
     out.flush()
@@ -108,32 +116,34 @@ def run_mode(args, mode, out, window=('--napok', '2')):
         r = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT, text=True, timeout=args.timeout, cwd=args.root)
     except subprocess.TimeoutExpired:
-        return None, f'{mode}: a futas {args.timeout} mp utan leallitva'
+        return None, None, f'{mode}: a futas {args.timeout} mp utan leallitva'
     except OSError as e:
-        return None, f'{mode}: nem indult ({e.strerror})'
+        return None, None, f'{mode}: nem indult ({e.strerror})'
     out.write(r.stdout + f'(kilepes {r.returncode})\n\n')
     if r.returncode not in (0, 1):
-        return None, f'{mode}: a kilepesi kod {r.returncode} (nem definialt)'
+        return None, None, f'{mode}: a kilepesi kod {r.returncode} (nem definialt)'
     # the last line is the JSON: the database layer may log before it
     lines = [line for line in r.stdout.splitlines() if line.strip()]
     try:
         data = json.loads(lines[-1]) if lines else None
     except ValueError:
         data = None
-    if not isinstance(data, dict) or data.get('mode') != mode or not isinstance(data.get('rows'), list):
+    # unknown_routes is required: without it a route no rule answers would drop out of the report unseen
+    if (not isinstance(data, dict) or data.get('mode') != mode or not isinstance(data.get('rows'), list)
+            or not isinstance(data.get('unknown_routes'), list)):
         # a crash (an unreadable database) also exits 1: only the JSON tells a list from a failure
-        return None, f'{mode}: nincs olvashato JSON-kimenet (kilepes {r.returncode})'
+        return None, None, f'{mode}: nincs olvashato JSON-kimenet (kilepes {r.returncode})'
     rows = data['rows']
     if (r.returncode == 0) != (len(rows) == 0):
-        return None, f'{mode}: a kilepesi kod ({r.returncode}) es a lista ({len(rows)} sor) ellentmond'
+        return None, None, f'{mode}: a kilepesi kod ({r.returncode}) es a lista ({len(rows)} sor) ellentmond'
     # an empty list from another database is no proof (barracuda, #102): the open creates a
     # missing file empty, and then "nothing denied" is only "nothing logged here"
     want = os.path.realpath(os.path.join(args.root, 'store', 'claudeclaw.db'))
     got = data.get('database')
     if not isinstance(got, str) or os.path.realpath(got) != want:
-        return None, f'{mode}: nem a vezerlopult adatbazisat olvasta ({adat(got)})'
+        return None, None, f'{mode}: nem a vezerlopult adatbazisat olvasta ({adat(got)})'
     args.newest = data.get('newest') if isinstance(data.get('newest'), (int, float)) else None
-    return rows, None
+    return rows, data['unknown_routes'], None
 
 
 # The control call's shape: who makes it and on which route. The fleet-reads routes are for the session
@@ -149,8 +159,10 @@ def is_control(row):
             and (path == prefix or path.startswith(prefix + '/')))
 
 
-def classify(results):
-    """results: {mode: rows}. Returns (verdict, facts)."""
+def classify(results, unknown=None):
+    """results: {mode: rows}; unknown: {mode: the routes no rule answers}. Returns (verdict, facts).
+    A route no rule answers whose every logged call got a 404 (measured, scripts/access-preflight.ts) is a
+    fact of its own and never moves the verdict; any other unknown route is among the rows."""
     enforce = results['kikenyszerit']
     control = [row for row in enforce if is_control(row)]
     named = [row for row in enforce if row.get('actor') != 'legacy' and not is_control(row)]
@@ -166,6 +178,7 @@ def classify(results):
         'kikenyszerit': len(enforce),
         'nevvel': named,
         'legacy_maradek': len(enforce) - len(named) - len(control),
+        'ismeretlen': list((unknown or {}).get('kikenyszerit') or []),
     }
     # the count, not the row: the verdict and the report's "kontroll:" fact read the same number
     return ('JELZES' if named or not facts['kontroll'] else 'RENDBEN'), facts
@@ -207,6 +220,14 @@ def report_text(verdict, facts, errors, out_txt, previous=None, newest=None, win
                          f"({int(row.get('count') or 0)}x, {adat(row.get('reason'))})")
         if len(facts['nevvel']) > 20:
             lines.append(f"  ... es meg {len(facts['nevvel']) - 20} sor")
+    if facts.get('ismeretlen'):
+        lines.append(f"Szabaly nelkuli ut ({len(facts['ismeretlen'])} par): minden naplozott hivasa 404-et kapott (mert). "
+                     'A hivo utja hibas, NEM a matrix hianya, es a kapcsolot nem tartja. ADATOK:')
+        for row in facts['ismeretlen'][:20]:
+            lines.append(f"  {adat(row.get('actor'))} {adat(row.get('method'))} {adat(row.get('path'))} "
+                         f"({int(row.get('count') or 0)}x)")
+        if len(facts['ismeretlen']) > 20:
+            lines.append(f"  ... es meg {len(facts['ismeretlen']) - 20} sor")
     if facts['legacy_utvonalak']:
         lines.append('A kozos token (legacy) hivasai utvonalankent, az elmult napon (ADATOK):')
         for row in facts['legacy_utvonalak'][:30]:
@@ -271,20 +292,21 @@ def futtat(args):
     now = time.time()
     stamp = datetime.datetime.fromtimestamp(now).strftime('%Y-%m-%d-%H%M%S')
     out_txt = os.path.join(p['dir'], f'futas-{stamp}.txt')
-    results, errors = {}, []
+    results, unknown, errors = {}, {}, []
     window, window_words = window_of(p['since'], now)
     with open(out_txt, 'w') as out:
         for mode in MODES:
-            rows, err = run_mode(args, mode, out, window)
+            rows, unknown_rows, err = run_mode(args, mode, out, window)
             if err:
                 errors.append(err)
             else:
                 results[mode] = rows
+                unknown[mode] = unknown_rows
     facts = None
     if errors:
         verdict = 'JELZES'
     else:
-        verdict, facts = classify(results)
+        verdict, facts = classify(results, unknown)
     text = report_text(verdict, facts, errors, out_txt, previous_legacy(p['last']), getattr(args, 'newest', None), window_words)
     first = text.splitlines()[0]
     # .last: epoch first, so a shell can read it with `read` and nothing else

@@ -77,6 +77,9 @@ const RULE_FAMILIES: ReadonlySet<string> = new Set(
   ROUTE_RULES.map((rule) => rule.path.split('/').slice(0, 3).join('/')).filter((family) => /^\/api\/[a-z0-9-]+$/.test(family)),
 )
 
+/** The key a request no rule answers is logged under, bare or with its family (unknownRouteKey). */
+export const UNKNOWN_ROUTE = ':ismeretlen'
+
 /**
  * How a log keeps a request no rule answers: `:ismeretlen`, with its family
  * (`:ismeretlen /api/kanban`) when its first segment under /api is one the
@@ -87,8 +90,11 @@ const RULE_FAMILIES: ReadonlySet<string> = new Set(
  */
 export function unknownRouteKey(path: string): string {
   const family = path.split('/').slice(0, 3).join('/')
-  return RULE_FAMILIES.has(family) ? `:ismeretlen ${family}` : ':ismeretlen'
+  return RULE_FAMILIES.has(family) ? `${UNKNOWN_ROUTE} ${family}` : UNKNOWN_ROUTE
 }
+
+/** True for a logged path that is unknownRouteKey's, not a rule's pattern (no rule pattern starts with `:`). */
+export const isUnknownRouteKey = (key: string): boolean => key === UNKNOWN_ROUTE || key.startsWith(`${UNKNOWN_ROUTE} `)
 
 /**
  * The `:param` values of a concrete path under a rule pattern, decoded; null

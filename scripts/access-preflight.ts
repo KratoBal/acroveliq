@@ -22,11 +22,21 @@
 // caller's except the session. Denials already enforced are not new. Exit 1 while
 // the list holds anything (barracuda, #22: the switch does not turn until it
 // is empty), 0 when it is empty. Reads only.
+//
+// A ROUTE NO RULE ANSWERS (`:ismeretlen ...`) WHOSE EVERY CALL GOT A 404 IS LISTED APART, AND DOES
+// NOT HOLD THE SWITCH (task p01-preflight-ismeretlen-utvonalak, 2026-10-29). The 404 is measured, not
+// inferred: the gate counts the dashboard's 404 answers to such a call in not_found (barracuda's
+// CHANGES on #319: the route inventory test is a static claim, and a handler wider than its rule's
+// pattern would have answered). Such a call was a 404 before the switch and is a 403 after it: a
+// caller's wrong path, and the switch breaks nothing that worked. It is shown, never dropped:
+// `unknown_routes` in the JSON, its own block in the text. An unknown row with any other answer, none
+// yet, or from before the count (not_found below count) stays in `rows` and holds the switch.
 
 import { initDatabase, getDb } from '../src/db.js'
 import { localDay } from '../src/web/auth-principals.js'
+import { isUnknownRouteKey } from '../src/web/route-match.js'
 
-interface Row { day: string; actor: string; method: string; path: string; reason: string; count: number }
+interface Row { day: string; actor: string; method: string; path: string; reason: string; count: number; not_found: number }
 
 function arg(name: string, fallback: string): string {
   const i = process.argv.indexOf(name)
@@ -50,13 +60,16 @@ initDatabase(dbPath || undefined)
 const since = sinceTs !== null
   ? new Date(sinceTs * 1000).toISOString()
   : localDay(Math.floor(Date.now() / 1000) - (days - 1) * 86400)
-const rows = getDb()
+const logged = getDb()
   .prepare(
-    `SELECT day, actor, method, path, reason, SUM(count) AS count FROM access_decisions
+    `SELECT day, actor, method, path, reason, SUM(count) AS count, SUM(not_found) AS not_found FROM access_decisions
      WHERE ${sinceTs !== null ? 'last_seen >= ?' : 'day >= ?'} AND outcome = 'would-deny' AND actor NOT LIKE 'session:%' ${mode === 'legacy-szukitett' ? "AND actor = 'legacy'" : ''}
      GROUP BY actor, method, path ORDER BY actor, path, method`,
   )
   .all(sinceTs !== null ? sinceTs : since) as Row[]
+const allNotFound = (r: Row) => isUnknownRouteKey(r.path) && r.count > 0 && r.not_found === r.count
+const rows = logged.filter((r) => !allNotFound(r))
+const unknownRoutes = logged.filter(allNotFound)
 
 // The daily run reads this, not the text: a text format is for a person and may change.
 // `database` and `newest` are the heartbeat (barracuda, #102): access_decisions holds only
@@ -64,13 +77,18 @@ const rows = getDb()
 // check off, or another database: a missing file is created empty by the open).
 if (process.argv.includes('--json')) {
   const newest = (getDb().prepare('SELECT MAX(last_seen) AS t FROM access_decisions').get() as { t: number | null }).t
-  console.log(JSON.stringify({ mode, since, since_ts: sinceTs, rows, database: getDb().name, newest }))
+  console.log(JSON.stringify({ mode, since, since_ts: sinceTs, rows, unknown_routes: unknownRoutes, database: getDb().name, newest }))
   process.exit(rows.length === 0 ? 0 : 1)
 }
+const line = (r: Row) => `  ${r.actor.padEnd(18)} ${r.method.padEnd(6)} ${r.path}  (${r.count}x; ${r.reason})`
 if (rows.length === 0) {
   console.log(`${mode}: nincs tiltandó hívás ${since} óta. A kapcsoló ebből a szempontból átállítható.`)
-  process.exit(0)
+} else {
+  console.log(`${mode}: ${rows.length} útvonal-szereplő pár kapna 403-at (${since} óta):`)
+  for (const r of rows) console.log(line(r))
 }
-console.log(`${mode}: ${rows.length} útvonal-szereplő pár kapna 403-at (${since} óta):`)
-for (const r of rows) console.log(`  ${r.actor.padEnd(18)} ${r.method.padEnd(6)} ${r.path}  (${r.count}x; ${r.reason})`)
-process.exit(1)
+if (unknownRoutes.length) {
+  console.log(`Szabály nélküli út (${unknownRoutes.length} pár): minden naplózott hívása 404-et kapott (mérve); a hívó útja hibás, nem a mátrix hiánya:`)
+  for (const r of unknownRoutes) console.log(line(r))
+}
+process.exit(rows.length === 0 ? 0 : 1)
