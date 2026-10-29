@@ -12,6 +12,7 @@ import { readBody, json } from '../http-helpers.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
 import { sendTelegramMessage } from '../telegram.js'
 import { claimActor } from '../actor-claims.js'
+import { BASH_COMMAND_CATEGORY } from '../route-access.js'
 import { callerOfContext } from '../field-gate.js'
 import { checkDecisionPayload, decide, decisionOwner, DECISION_CATEGORY, DECISION_TIMEOUT_SECONDS } from '../../decisions.js'
 import {
@@ -151,7 +152,7 @@ function notifyDiscord(approval: Approval): void {
 // a sub-agent's command stop is judged by the main agent, so it never reaches
 // the owner's Telegram or Discord. Everything else, and the main agent's own
 // requests, still goes to the owner.
-export const BASH_COMMAND_CATEGORY = 'bash_command'
+export { BASH_COMMAND_CATEGORY }
 
 // Pure + exported for tests. `agentId` and `category` are the values the row is
 // stored with (already trimmed).
