@@ -248,6 +248,14 @@ export function ensureAccessDecisionSchema(db: Database.Database): void {
       PRIMARY KEY (day, project, actor, method, path, outcome)
     )
   `)
+  // How many of a row's logged calls the dashboard answered with a 404 (task p01-preflight-ismeretlen-utvonalak,
+  // barracuda's CHANGES on #319). Written only for a route no rule answers, in the position that only logs: the
+  // preflight lets such a row go only when every call of it was a 404, so a row from before this column holds.
+  try {
+    db.exec('ALTER TABLE access_decisions ADD COLUMN not_found INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    // the column is there already
+  }
 }
 
 let lastPrunedDay = ''
@@ -260,7 +268,7 @@ const logReason = (reason: string) => reason.replace(/ \(owner [^)]*\)$/, '')
  * is the rule's pattern (`:ismeretlen` when no rule, with the route family
  * where the rules know it), never a value from the path. Must never throw: the log describes the request, it cannot fail it.
  */
-export function recordAccessDenial(db: Database.Database, verdict: AccessVerdict, mode: AccessMode, method: string, now: number): void {
+export function recordAccessDenial(db: Database.Database, verdict: AccessVerdict, mode: AccessMode, method: string, now: number): DecisionKey | null {
   try {
     const day = localDay(now)
     if (day !== lastPrunedDay) {
@@ -269,12 +277,35 @@ export function recordAccessDenial(db: Database.Database, verdict: AccessVerdict
     }
     const [project, actor] = verdict.caller.name.includes('/') ? verdict.caller.name.split('/', 2) : [DEFAULT_PROJECT, verdict.caller.name]
     const label = verdict.caller.column === 'F' ? `federation:${actor}` : actor
+    const key: DecisionKey = [day, project, label, method, verdict.rule?.path ?? unknownRouteKey(verdict.requestPath ?? ''), verdict.enforced ? 'denied' : 'would-deny']
     db.prepare(
       `INSERT INTO access_decisions (day, project, actor, method, path, outcome, mode, reason, count, first_seen, last_seen)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
        ON CONFLICT (day, project, actor, method, path, outcome)
        DO UPDATE SET count = count + 1, last_seen = excluded.last_seen, mode = excluded.mode, reason = excluded.reason`,
-    ).run(day, project, label, method, verdict.rule?.path ?? unknownRouteKey(verdict.requestPath ?? ''), verdict.enforced ? 'denied' : 'would-deny', mode, logReason(verdict.decision.reason), now, now)
+    ).run(...key, mode, logReason(verdict.decision.reason), now, now)
+    return key
+  } catch {
+    // the log is a measurement, not a gate
+    return null
+  }
+}
+
+/** A logged row's primary key: day, project, actor, method, path, outcome. */
+export type DecisionKey = [string, string, string, string, string, string]
+
+/**
+ * The answer a logged call on a route no rule answers got, once it is sent: a 404 counts in not_found. Any
+ * other answer, or none (an aborted request), leaves the count below the calls, so the row keeps holding the
+ * switch. Must never throw.
+ */
+export function recordUnruledAnswer(db: Database.Database, key: DecisionKey, status: number): void {
+  if (status !== 404) return
+  try {
+    db.prepare(
+      `UPDATE access_decisions SET not_found = not_found + 1
+       WHERE day = ? AND project = ? AND actor = ? AND method = ? AND path = ? AND outcome = ?`,
+    ).run(...key)
   } catch {
     // the log is a measurement, not a gate
   }
@@ -295,8 +326,16 @@ export async function accessGate(
   try {
     const verdict = await checkAccess(request, mode, deps)
     if (!verdict || verdict.decision.allowed) return false
-    recordAccessDenial(deps.db, verdict, mode, request.method, Math.floor(Date.now() / 1000))
-    if (!verdict.enforced) return false
+    const key = recordAccessDenial(deps.db, verdict, mode, request.method, Math.floor(Date.now() / 1000))
+    if (!verdict.enforced) {
+      // a route no rule answers, let through: what the dashboard answers is the measurement the preflight needs
+      // (a 404: no handler; anything else: a handler the rules miss, and the switch would break it)
+      if (key && !verdict.rule) {
+        const db = deps.db
+        request.res.once('finish', () => recordUnruledAnswer(db, key, request.res.statusCode))
+      }
+      return false
+    }
     // without the owner: a 403 must not tell an outsider whose record it is (barracuda, #25)
     json(request.res, { error: 'Forbidden', reason: logReason(verdict.decision.reason) }, 403)
     return true

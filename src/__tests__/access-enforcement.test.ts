@@ -72,7 +72,8 @@ beforeAll(async () => {
     void (async () => {
       if (await accessGate({ auth, method: req.method ?? 'GET', path: url.pathname, url, req, res }, mode, deps)) return
       const body = (await readBody(req)).toString()
-      res.writeHead(200, { 'Content-Type': 'application/json' })
+      // ?valasz=404: a path no handler serves, as the dashboard answers it
+      res.writeHead(url.searchParams.get('valasz') === '404' ? 404 : 200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ handled: true, body }))
     })()
   })
@@ -151,6 +152,24 @@ describe('access enforcement: through the gate', () => {
     expect(log, 'ACCESS-UNKNOWN-FAMILY').toEqual([
       { actor: 'murena', method: 'GET', path: ':ismeretlen', outcome: 'would-deny' },
       { actor: 'murena', method: 'GET', path: ':ismeretlen /api/kanban', outcome: 'would-deny' },
+    ])
+  })
+
+  it('ACCESS-UNKNOWN-ANSWER: a let-through call on a route no rule answers counts its 404 answers, and only those', async () => {
+    // barracuda's CHANGES on #319: whether such a call was a 404 is measured here, not inferred from the route inventory
+    mode = 'naplo'
+    await call(G, 'GET', '/api/kanban/x/y?valasz=404')
+    await call(G, 'GET', '/api/kanban/x/z?valasz=404')
+    await call(G, 'GET', '/api/tasks/x/y') // a handler answered: 200
+    await call(G, 'GET', '/api/kanban') // a rule answers: not logged at all
+    await new Promise((resolve) => setTimeout(resolve, 50)) // the finish events
+    const log = getDb().prepare('SELECT path, count, not_found FROM access_decisions ORDER BY path').all()
+    mode = 'kikenyszerit'
+    await call(G, 'GET', '/api/kanban/x/q?valasz=404') // enforced: the gate answers, nothing to measure
+    const denied = getDb().prepare("SELECT path, count, not_found FROM access_decisions WHERE outcome = 'denied'").all()
+    expect([log, denied], 'ACCESS-UNKNOWN-ANSWER').toEqual([
+      [{ path: ':ismeretlen /api/kanban', count: 2, not_found: 2 }, { path: ':ismeretlen /api/tasks', count: 1, not_found: 0 }],
+      [{ path: ':ismeretlen /api/kanban', count: 1, not_found: 0 }],
     ])
   })
 

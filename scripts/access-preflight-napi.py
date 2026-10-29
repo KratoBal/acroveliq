@@ -27,10 +27,11 @@ day without the control call is never RENDBEN, so the call has to be made in eve
 should count as clean.
 
 A route no rule answers (`:ismeretlen ...`, the preflight's `unknown_routes`; task
-p01-preflight-ismeretlen-utvonalak, 2026-10-29) is a fact of its own as well: no handler serves it,
-so it was a 404 before the switch too. It is listed in the report as a caller's wrong path, never as
-a hole in the matrix, and it never moves the verdict. A preflight JSON without `unknown_routes` is no
-readable output: the rows would drop out of the report unseen.
+p01-preflight-ismeretlen-utvonalak, 2026-10-29) is a fact of its own as well, when every logged call
+of it got a 404 (measured by the gate, not inferred: no handler served it). It is listed in the
+report as a caller's wrong path, never as a hole in the matrix, and it never moves the verdict. An
+unknown route with any other answer stays among the rows, and holds. A preflight JSON without
+`unknown_routes` is no readable output: the rows would drop out of the report unseen.
 
 Window (task preflight-ablak, 2026-10-19): every run reads from the START of the previous run whose
 window was delivered: both modes evaluated, the daily-log entry sent, and on JELZES the message too
@@ -160,8 +161,8 @@ def is_control(row):
 
 def classify(results, unknown=None):
     """results: {mode: rows}; unknown: {mode: the routes no rule answers}. Returns (verdict, facts).
-    A route no rule answers is a fact of its own and never moves the verdict: no handler serves it, so
-    it was a 404 before the switch as well (scripts/access-preflight.ts)."""
+    A route no rule answers whose every logged call got a 404 (measured, scripts/access-preflight.ts) is a
+    fact of its own and never moves the verdict; any other unknown route is among the rows."""
     enforce = results['kikenyszerit']
     control = [row for row in enforce if is_control(row)]
     named = [row for row in enforce if row.get('actor') != 'legacy' and not is_control(row)]
@@ -220,7 +221,7 @@ def report_text(verdict, facts, errors, out_txt, previous=None, newest=None, win
         if len(facts['nevvel']) > 20:
             lines.append(f"  ... es meg {len(facts['nevvel']) - 20} sor")
     if facts.get('ismeretlen'):
-        lines.append(f"Szabaly nelkuli ut ({len(facts['ismeretlen'])} par): nincs kezeloje, a kapcsolo elott is 404 volt. "
+        lines.append(f"Szabaly nelkuli ut ({len(facts['ismeretlen'])} par): minden naplozott hivasa 404-et kapott (mert). "
                      'A hivo utja hibas, NEM a matrix hianya, es a kapcsolot nem tartja. ADATOK:')
         for row in facts['ismeretlen'][:20]:
             lines.append(f"  {adat(row.get('actor'))} {adat(row.get('method'))} {adat(row.get('path'))} "

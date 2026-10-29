@@ -17,16 +17,17 @@ import { localDay } from '../web/auth-principals.js'
 const root = mkdtempSync(join(tmpdir(), 'access-preflight-'))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
-function database(rows: Array<[string, string, string, 'denied' | 'would-deny', number]>): string {
+// the sixth value: how many of the row's 2 calls the dashboard answered with a 404 (not_found)
+function database(rows: Array<[string, string, string, 'denied' | 'would-deny', number, number?]>): string {
   const file = join(root, `${Math.random().toString(36).slice(2)}.db`)
   const db = new Database(file)
   ensureAccessDecisionSchema(db)
   const now = Math.floor(Date.now() / 1000)
-  for (const [actor, method, path, outcome, daysAgo] of rows) {
+  for (const [actor, method, path, outcome, daysAgo, notFound = 0] of rows) {
     db.prepare(
-      `INSERT INTO access_decisions (day, project, actor, method, path, outcome, mode, reason, count, first_seen, last_seen)
-       VALUES (?, 'acropora', ?, ?, ?, ?, 'naplo', 'csoport', 2, ?, ?)`,
-    ).run(localDay(now - daysAgo * 86400), actor, method, path, outcome, now, now)
+      `INSERT INTO access_decisions (day, project, actor, method, path, outcome, mode, reason, count, first_seen, last_seen, not_found)
+       VALUES (?, 'acropora', ?, ?, ?, ?, 'naplo', 'csoport', 2, ?, ?, ?)`,
+    ).run(localDay(now - daysAgo * 86400), actor, method, path, outcome, now, now, notFound)
   }
   db.close()
   return file
@@ -91,15 +92,16 @@ describe('access preflight', () => {
     ).toEqual([1, ['legacy', 'murena'], 1, ['legacy'], ['legacy', 'murena', 'korall'], 0])
   })
 
-  it('ACCESS-PREFLIGHT-UNKNOWN: a route no rule answers is listed apart, never held as a hole, never dropped', () => {
-    // the 2026-10-28 rows: acrobot's two unknown routes beside the control
+  it('ACCESS-PREFLIGHT-UNKNOWN: a route no rule answers is listed apart only when every call got a 404; otherwise it holds', () => {
+    // the 2026-10-28 shapes: every call a 404 (apart), none (a handler answered, or a row from before the count:
+    // holds), one of two (holds); barracuda's CHANGES on #319
     const db = database([
-      ['acrobot', 'POST', ':ismeretlen /api/kanban', 'would-deny', 0],
-      ['acrobot', 'GET', ':ismeretlen /api/tasks', 'would-deny', 0],
-      ['legacy', 'GET', ':ismeretlen', 'would-deny', 0],
+      ['acrobot', 'POST', ':ismeretlen /api/kanban', 'would-deny', 0, 2],
+      ['acrobot', 'GET', ':ismeretlen /api/tasks', 'would-deny', 0, 0],
+      ['legacy', 'GET', ':ismeretlen', 'would-deny', 0, 1],
     ])
     const hole = database([
-      ['acrobot', 'POST', ':ismeretlen /api/kanban', 'would-deny', 0],
+      ['acrobot', 'POST', ':ismeretlen /api/kanban', 'would-deny', 0, 2],
       ['murena', 'PATCH', '/api/approvals/:id', 'would-deny', 0],
     ])
     const last = (r: { out: string }) => JSON.parse(r.out.trim().split('\n').at(-1)!) as { rows: Array<{ path: string }>; unknown_routes: Array<{ actor: string; method: string; path: string }> }
@@ -108,16 +110,16 @@ describe('access preflight', () => {
     const legacy = preflight(db, '--mode', 'legacy-szukitett', '--json')
     const mixed = preflight(hole, '--json')
     expect([
-      only.code, last(only).rows, last(only).unknown_routes.map((r) => `${r.actor} ${r.method} ${r.path}`),
-      onlyText.code, onlyText.out.includes('nincs tiltandó hívás'), onlyText.out.includes('Szabály nélküli út (3 pár)'),
+      only.code, last(only).rows.map((r) => r.path), last(only).unknown_routes.map((r) => `${r.actor} ${r.method} ${r.path}`),
+      onlyText.code, onlyText.out.includes('nincs tiltandó hívás'), onlyText.out.includes('Szabály nélküli út (1 pár)'),
       onlyText.out.includes('  acrobot            POST   :ismeretlen /api/kanban'),
       legacy.code, last(legacy).unknown_routes.map((r) => r.actor),
       mixed.code, last(mixed).rows.map((r) => r.path), last(mixed).unknown_routes.map((r) => r.path),
     ], 'ACCESS-PREFLIGHT-UNKNOWN').toEqual([
-      0, [], ['acrobot POST :ismeretlen /api/kanban', 'acrobot GET :ismeretlen /api/tasks', 'legacy GET :ismeretlen'],
-      0, true, true,
+      1, [':ismeretlen /api/tasks', ':ismeretlen'], ['acrobot POST :ismeretlen /api/kanban'],
+      1, false, true,
       true,
-      0, ['legacy'],
+      1, [],
       1, ['/api/approvals/:id'], [':ismeretlen /api/kanban'],
     ])
   }, 60_000) // four tsx starts
