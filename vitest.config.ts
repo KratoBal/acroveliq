@@ -23,6 +23,7 @@ export default defineConfig({
       './src/__tests__/setup/assert-not-live-install.ts',
       './src/__tests__/setup/assert-supported-node.ts',
       './src/__tests__/setup/agent-profile-store.ts',
+      './src/__tests__/setup/agent-launch-settings.ts',
     ],
   },
 })

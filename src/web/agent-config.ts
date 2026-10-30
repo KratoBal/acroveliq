@@ -5,6 +5,7 @@ import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../
 import { atomicWriteFileSync } from './atomic-write.js'
 import { LOCKED_RECORD, writeTrustedRecord } from './agent-profile-store.js'
 import { safeJoin } from './sanitize.js'
+import { trustedLaunchSettings, writeLaunchSettings, type LaunchSettings } from './agent-launch-settings.js'
 import { isValidModelId, InvalidModelIdError } from '../model-id.js'
 import {
   resolveAgentModelFromConfig,
@@ -269,9 +270,20 @@ export function resolveClaudeConfigDir(
 // agent use a different login (credentials, plugins, sessions) than the host
 // default. When null, no env var is injected and Claude Code uses its built-in
 // default location (`~/.claude/` on macOS/Linux).
+//
+// The value comes from the trusted record (agent-launch-settings.ts), NOT from the agent's own config: an agent can write
+// that file. The config seeds the record once; after that a line written there has no effect.
 export function readAgentClaudeConfigDir(name: string): string | null {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  return resolveClaudeConfigDir(readFileOr(configPath, '{}'), homedir())
+  const raw = trustedLaunchSettings(name, () => configLaunchSeed(name)).claudeConfigDir
+  return raw === null ? null : expandAndValidateConfigDir(raw, homedir())
+}
+
+/** What the agent's own config says about its login: the baseline an agent with no trusted entry yet is seeded from. */
+function configLaunchSeed(name: string): LaunchSettings {
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(join(agentDir(name), 'agent-config.json'), '{}')) } catch { /* no baseline */ }
+  const t = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null)
+  return { claudeConfigDir: t(config.claudeConfigDir), claudePlan: t(config.claudePlan) }
 }
 
 // --- The permission flag of the launch command (auto-mode trial) ---
@@ -668,13 +680,8 @@ export function writeAgentSecurityProfile(name: string, profileId: string): void
 // path. When unset (null), launch falls back to the raw claudeConfigDir and
 // then to Claude Code's default -- fully backwards-compatible.
 export function readAgentClaudePlan(name: string): string | null {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  try {
-    const config = JSON.parse(readFileOr(configPath, '{}'))
-    const value = config.claudePlan
-    if (typeof value === 'string' && value.trim()) return value.trim()
-  } catch { /* fall through */ }
-  return null
+  // the trusted record, not the agent's own config (agent-launch-settings.ts)
+  return trustedLaunchSettings(name, () => configLaunchSeed(name)).claudePlan
 }
 
 // Set (non-empty string) or clear (empty/whitespace) the per-agent plan id.
@@ -688,6 +695,8 @@ export function writeAgentClaudePlan(name: string, planId: string): void {
   if (trimmed) config.claudePlan = trimmed
   else delete config.claudePlan
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+  // the config keeps the plan for display; the record is what the launch reads (agent-launch-settings.ts)
+  writeLaunchSettings(name, { claudePlan: trimmed || null }, () => configLaunchSeed(name))
 }
 
 // Sentinel filename. A subdirectory under agents/ that contains this empty

@@ -149,6 +149,7 @@ import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { acroveliqActivityView, acroveliqAgentsView } from '../acroveliq-host.js'
 import { removeTrustedRecord } from '../agent-profile-store.js'
+import { removeLaunchSettings } from '../agent-launch-settings.js'
 
 const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord', 'googlechat', 'teams'])
 
@@ -2243,6 +2244,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     cleanupTeamReferences(name)
     // the trusted profile goes with the agent: a new agent under this name starts from its own create
     removeTrustedRecord(name)
+    removeLaunchSettings(name)
     json(res, { ok: true })
     return true
   }
