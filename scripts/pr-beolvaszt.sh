@@ -42,7 +42,11 @@ GEPI_OK=""
 # (az elso meres a beolvadas utan egy nyitott PR-on, a ruleset bekapcsolasa ELOTT). 1 = kenyszerit: a
 # jovahagyott fejen GitHub-review nelkul a beolvasztas nem indul. A ruleset Required approvals szamanak
 # bekapcsolasakor UGYANABBAN a lepesben 1-re kell allitani (acrobot, b25-gepi-review).
-GEPI_REVIEW_KENYSZERIT=0
+# 2026-10-30: 1. caparium-napplo #157 merged without barracuda's verdict while this was 0; the login
+# comes from the first real review (flotta-bot-acro, APPROVED on #158 c10e74d). This guards against the
+# merger forgetting, not against a hostile agent: this file and gepi-review.json are agent-writable,
+# the hostile case is the GitHub ruleset's job (Required approvals).
+GEPI_REVIEW_KENYSZERIT=1
 while :; do
   case "${1:-}" in
     --nez) NEZ=1; shift ;;

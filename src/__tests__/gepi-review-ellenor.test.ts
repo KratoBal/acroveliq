@@ -293,8 +293,8 @@ describe('gepi-review-ellenor.py: is there a review on this head', () => {
 describe('pr-beolvaszt.sh: where the gate stands and what it does', () => {
   const src = readFileSync(join(REPO_ROOT, 'scripts', 'pr-beolvaszt.sh'), 'utf8')
 
-  it('the mode line is one line, and today it is LOG mode (the ruleset day flips it, and this test with it)', () => {
-    expect(src.match(/^GEPI_REVIEW_KENYSZERIT=\d$/gm)).toEqual(['GEPI_REVIEW_KENYSZERIT=0'])
+  it('the mode line is one line, and it is ENFORCE mode since 2026-10-30 (#157 merged without a verdict in log mode)', () => {
+    expect(src.match(/^GEPI_REVIEW_KENYSZERIT=\d$/gm)).toEqual(['GEPI_REVIEW_KENYSZERIT=1'])
     expect(src).toContain('"$GEPI_REVIEW" "$GEPI_OK" "$GEPI_REVIEW_KENYSZERIT" << \'PYEOF\'')
   })
 
@@ -399,7 +399,7 @@ describe('the one list (scripts/gepi-review.json) and the fleet-approve config i
     expect(real.repos.filter((r) => !template.repos.includes(r))).toEqual(KNOWN_EXTRA)
   })
 
-  it('the reviewers are a list of strings (today empty: the first real measurement names the login)', () => {
+  it('the reviewers are a list of strings (filled from the first real review, caparium-napplo #158)', () => {
     expect(Array.isArray(real.reviewers)).toBe(true)
     expect(real.reviewers.every((x) => typeof x === 'string' && x.length > 0)).toBe(true)
   })
