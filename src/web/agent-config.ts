@@ -274,6 +274,25 @@ export function readAgentClaudeConfigDir(name: string): string | null {
   return resolveClaudeConfigDir(readFileOr(configPath, '{}'), homedir())
 }
 
+// --- The permission flag of the launch command (auto-mode trial) ---
+//
+// A STRICT profile launches claude with no permission flag, so every command outside the allow list stops on a prompt.
+// The auto-mode trial lets ONE strict agent start with `--permission-mode auto` instead. The override comes from
+// agent-permission-overrides.ts (store/, which no agent can write), NOT from this agent's agent-config.json: an agent
+// writes its own config (rw-rw-r--+ marveen:fleet, measured by barracuda), so a switch there would be a loosening the
+// agent gives itself. Only the exact string "auto" is an override.
+//
+// What it does NOT change: the profile's deny and allow lists, the hooks, the outgoing gate and the readonly command
+// gate. A permissive profile keeps --dangerously-skip-permissions and ignores the override: it replaces "no flag" only,
+// never a stronger flag.
+export type PermissionModeOverride = 'auto'
+
+/** The permission flag of the launch command, with its trailing space (or ''), from the profile and the override. */
+export function permissionFlagFor(profileMode: string, override: PermissionModeOverride | null): string {
+  if (profileMode !== 'strict') return '--dangerously-skip-permissions '
+  return override === 'auto' ? '--permission-mode auto ' : ''
+}
+
 // --- Remote agent config (remoteHost + remoteWorkdir) ---
 //
 // When BOTH a valid host and a valid absolute workdir are present, the agent's
