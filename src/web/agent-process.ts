@@ -27,7 +27,7 @@ import {
   type FirstRunGateKind,
   liveBoxIsFree,
 } from '../pane-state.js'
-import { AGENTS_BASE_DIR, agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentPermissionModeOverride, permissionFlagFor, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, agentConfigHasIgnoredRemoteHost, readAgentRunAsUser, readAgentConfiguredRunAsUser, readAgentRunIdentity, readAgentMemoryIsolation, resolveRunAsUser, readAgentConfigGroupGid, agentConfigGroupName } from './agent-config.js'
+import { AGENTS_BASE_DIR, agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, permissionFlagFor, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, agentConfigHasIgnoredRemoteHost, readAgentRunAsUser, readAgentConfiguredRunAsUser, readAgentRunIdentity, readAgentMemoryIsolation, resolveRunAsUser, readAgentConfigGroupGid, agentConfigGroupName } from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
@@ -55,6 +55,7 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
+import { readAgentPermissionModeOverride } from './agent-permission-overrides.js'
 import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureSkillsPathTrapSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { clearAbandonedPrompt, recordAbandonedPrompt, recordInjectedPrompt } from './injected-prompt-registry.js'
@@ -1723,7 +1724,7 @@ export async function startAgentProcess(name: string, opts: LaunchOpts = {}): Pr
         logger.warn({ err, name }, 'Could not scope channel plugins for sub-agent')
       }
     }
-    // The profile decides; a strict agent may carry `permissionModeOverride: "auto"` (agent-config.ts) for the auto-mode trial.
+    // The profile decides; a strict agent that the host file lists (agent-permission-overrides.ts) starts in auto mode for the trial.
     const skipFlag = permissionFlagFor(profile.permissionMode, readAgentPermissionModeOverride(name))
     // Optional per-agent CLAUDE_CONFIG_DIR (alternate Claude Code config dir,
     // e.g. for routing this agent to a separate Anthropic login). When the

@@ -80,8 +80,7 @@ const CHANNEL_SECRET_DIRS = ['approved'] as const
 // CLAUDE_CONFIG_DIR point at paths/credentials that only exist on the source
 // machine. Stripped on import so an imported agent starts as a clean local
 // agent the operator can re-point if needed.
-// `permissionModeOverride` is a per-install trial switch for one agent: it must not ride along to another host.
-const MACHINE_SPECIFIC_CONFIG_KEYS = ['remoteHost', 'remoteWorkdir', 'claudeConfigDir', 'permissionModeOverride'] as const
+const MACHINE_SPECIFIC_CONFIG_KEYS = ['remoteHost', 'remoteWorkdir', 'claudeConfigDir'] as const
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix))
