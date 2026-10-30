@@ -16,7 +16,8 @@
 // config is not looked at for these two keys: a line written there has no effect.
 //
 // THE FILE'S STATES:
-//   - missing: each agent is seeded on its first read, and the file is created;
+//   - missing: each agent is seeded on its first read, and the file is created (when it cannot be written, the seed is not
+//     used either: the agent reads the default login until it can);
 //   - damaged (unparseable or the wrong shape) or not trusted (a link, not ours, writable by group or others): never
 //     overwritten, and every agent reads "no config dir, no plan" (Claude Code's default login), loudly. Fail closed:
 //     the agents come up on the default login, none on a value a stranger wrote.
@@ -55,7 +56,11 @@ const defaultLog: StoreLog = {
   error: (o, m) => logger.error(o, m),
 }
 
-/** AGENT_LAUNCH_SETTINGS overrides the place (tests). */
+/**
+ * AGENT_LAUNCH_SETTINGS overrides the place (tests). It moves the file in production too, as AGENT_PROFILE_STORE does: the
+ * variable belongs to the server's own environment, which no agent writes, and the file it names must pass the same trust
+ * check, so an agent cannot put a file of its own there.
+ */
 export function agentLaunchSettingsPath(): string {
   return process.env.AGENT_LAUNCH_SETTINGS || join(STORE_DIR, 'agent-launch-settings.json')
 }
@@ -117,8 +122,10 @@ export function trustedLaunchSettings(
     write(path, loaded.store)
     log.warn({ name, claudeConfigDir: seeded.claudeConfigDir, claudePlan: seeded.claudePlan }, 'agent launch settings seeded once from the agent config')
   } catch (err) {
-    // not writable: this read still answers the seed, and the next read seeds again (the agent's config is the baseline)
-    log.error({ path, name, err }, 'agent launch settings store not writable while seeding')
+    // not writable: the seed is NOT used. Answering it would make the agent's own config live on every read for as long as the
+    // write fails (nautilus on #322); the default login is the closed answer, and the next read tries to seed again
+    log.error({ path, name, err }, 'agent launch settings store not writable while seeding: the default login is used')
+    return { ...NO_LAUNCH_SETTINGS }
   }
   return seeded
 }

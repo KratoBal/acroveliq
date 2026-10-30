@@ -59,9 +59,18 @@ describe('the trusted launch settings', () => {
     expect(trustedLaunchSettings('a', seedOf({ claudePlan: 'new' }), path, quiet).claudePlan).toBe('new')
   })
 
+  it('when the seed cannot be written the seed is not used: the default login, and the next read tries again', () => {
+    const unwritable = join(dir, 'no-such-dir', 'agent-launch-settings.json')
+    const evil = seedOf({ claudePlan: 'evil', claudeConfigDir: '/x' })
+    expect(trustedLaunchSettings('a', evil, unwritable, quiet)).toEqual({ claudeConfigDir: null, claudePlan: null })
+    expect(trustedLaunchSettings('a', evil, unwritable, quiet)).toEqual({ claudeConfigDir: null, claudePlan: null })
+  })
+
   describe('a file that cannot be trusted answers the default login and is left as it is', () => {
     const DEFAULT: LaunchSettings = { claudeConfigDir: null, claudePlan: null }
     const good = JSON.stringify({ agents: { a: { claudePlan: 'team-1' } } })
+    // what an agent would write into its own config: a fall back to the seed would show it (nautilus on #322)
+    const EVIL = seedOf({ claudePlan: 'evil', claudeConfigDir: '/x' })
 
     it('damaged: not JSON, the wrong shape', () => {
       for (const content of ['not json', '[]', '{"agents": []}', '{"agents": "x"}', '{}']) {
@@ -78,7 +87,7 @@ describe('the trusted launch settings', () => {
       for (const mode of [0o664, 0o660, 0o666, 0o646]) {
         writeFileSync(path, good)
         chmodSync(path, mode)
-        expect(trustedLaunchSettings('a', seedOf({}), path, quiet), mode.toString(8)).toEqual(DEFAULT)
+        expect(trustedLaunchSettings('a', EVIL, path, quiet), mode.toString(8)).toEqual(DEFAULT)
       }
     })
 
@@ -87,7 +96,7 @@ describe('the trusted launch settings', () => {
       writeFileSync(real, good)
       chmodSync(real, 0o600)
       symlinkSync(real, path)
-      expect(trustedLaunchSettings('a', seedOf({}), path, quiet)).toEqual(DEFAULT)
+      expect(trustedLaunchSettings('a', EVIL, path, quiet)).toEqual(DEFAULT)
     })
 
     it('the same content in a file of ours is read: the faults above are the file\'s, not the content\'s', () => {
@@ -112,6 +121,14 @@ describe('the launch path reads the record, not the agent\'s own config', () => 
     expect(plan).not.toContain('agent-config.json')
     const dirReader = cfg.slice(cfg.indexOf('export function readAgentClaudeConfigDir'), cfg.indexOf('function configLaunchSeed'))
     expect(dirReader).not.toContain('agent-config.json')
+  })
+
+  it('the plan write records first, leaves the config alone when it cannot, and the PUT says so', () => {
+    const w = cfg.slice(cfg.indexOf('export function writeAgentClaudePlan'))
+    expect(w.indexOf('if (!writeLaunchSettings(')).toBeGreaterThan(-1)
+    expect(w.indexOf('return false')).toBeGreaterThan(w.indexOf('if (!writeLaunchSettings('))
+    expect(w.indexOf('atomicWriteFileSync')).toBeGreaterThan(w.indexOf('return false'))
+    expect(src('routes/agents.ts')).toMatch(/if \(!writeAgentClaudePlan\(name, planId\)\) \{[\s\S]{0,400}500/)
   })
 
   it('the plan PUT updates the record, the measurement reads it, and a deleted agent loses its entry', () => {

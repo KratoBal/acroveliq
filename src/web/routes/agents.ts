@@ -2200,7 +2200,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         json(res, { error: `Ismeretlen Claude plan id: ${planId}` }, 400)
         return true
       }
-      writeAgentClaudePlan(name, planId)
+      if (!writeAgentClaudePlan(name, planId)) {
+        // an unusable store/agent-launch-settings.json: nothing was changed (agent-launch-settings.ts)
+        json(res, { error: 'A plan nem rögzíthető: a store/agent-launch-settings.json nem használható (sérült vagy nem megbízható).' }, 500)
+        return true
+      }
     }
     json(res, { ok: true })
     return true

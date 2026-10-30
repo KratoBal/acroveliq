@@ -687,16 +687,19 @@ export function readAgentClaudePlan(name: string): string | null {
 // Set (non-empty string) or clear (empty/whitespace) the per-agent plan id.
 // Clearing removes the key so the agent reverts to the raw-configDir/default
 // resolution path.
-export function writeAgentClaudePlan(name: string, planId: string): void {
+export function writeAgentClaudePlan(name: string, planId: string): boolean {
+  const trimmed = planId.trim()
+  // the record first: it is what the launch reads (agent-launch-settings.ts). When it cannot be written (an unusable file) the
+  // plan is not recorded, the config is left alone, and the caller says so, instead of a PUT that reports success and changes nothing
+  if (!writeLaunchSettings(name, { claudePlan: trimmed || null }, () => configLaunchSeed(name))) return false
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
-  const trimmed = planId.trim()
   if (trimmed) config.claudePlan = trimmed
   else delete config.claudePlan
+  // the config keeps the plan for display
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
-  // the config keeps the plan for display; the record is what the launch reads (agent-launch-settings.ts)
-  writeLaunchSettings(name, { claudePlan: trimmed || null }, () => configLaunchSeed(name))
+  return true
 }
 
 // Sentinel filename. A subdirectory under agents/ that contains this empty
