@@ -153,6 +153,7 @@ describe('agent bundle export/import', () => {
       remoteHost: 'devbox',
       remoteWorkdir: '/home/user/proj',
       claudeConfigDir: '/home/user/.claude-alt',
+      permissionModeOverride: 'auto',
       displayName: 'Keep me',
     }))
     sanitizeImportedConfig(stagedAgent)
@@ -160,6 +161,8 @@ describe('agent bundle export/import', () => {
     expect(cfg.remoteHost).toBeUndefined()
     expect(cfg.remoteWorkdir).toBeUndefined()
     expect(cfg.claudeConfigDir).toBeUndefined()
+    // the auto-mode trial switch of one install does not travel with an imported agent
+    expect(cfg.permissionModeOverride).toBeUndefined()
     expect(cfg.model).toBe('claude-sonnet-5')
     expect(cfg.displayName).toBe('Keep me')
   })

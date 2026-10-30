@@ -27,7 +27,7 @@ import {
   type FirstRunGateKind,
   liveBoxIsFree,
 } from '../pane-state.js'
-import { AGENTS_BASE_DIR, agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, agentConfigHasIgnoredRemoteHost, readAgentRunAsUser, readAgentConfiguredRunAsUser, readAgentRunIdentity, readAgentMemoryIsolation, resolveRunAsUser, readAgentConfigGroupGid, agentConfigGroupName } from './agent-config.js'
+import { AGENTS_BASE_DIR, agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentPermissionModeOverride, permissionFlagFor, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, agentConfigHasIgnoredRemoteHost, readAgentRunAsUser, readAgentConfiguredRunAsUser, readAgentRunIdentity, readAgentMemoryIsolation, resolveRunAsUser, readAgentConfigGroupGid, agentConfigGroupName } from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
@@ -1723,7 +1723,8 @@ export async function startAgentProcess(name: string, opts: LaunchOpts = {}): Pr
         logger.warn({ err, name }, 'Could not scope channel plugins for sub-agent')
       }
     }
-    const skipFlag = profile.permissionMode === 'strict' ? '' : '--dangerously-skip-permissions '
+    // The profile decides; a strict agent may carry `permissionModeOverride: "auto"` (agent-config.ts) for the auto-mode trial.
+    const skipFlag = permissionFlagFor(profile.permissionMode, readAgentPermissionModeOverride(name))
     // Optional per-agent CLAUDE_CONFIG_DIR (alternate Claude Code config dir,
     // e.g. for routing this agent to a separate Anthropic login). When the
     // agent-config field is missing or blank, claudeConfigDir is null and we

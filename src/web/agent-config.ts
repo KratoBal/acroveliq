@@ -274,6 +274,37 @@ export function readAgentClaudeConfigDir(name: string): string | null {
   return resolveClaudeConfigDir(readFileOr(configPath, '{}'), homedir())
 }
 
+// --- Per-agent permission mode override (auto-mode trial) ---
+//
+// A STRICT profile launches claude with no permission flag, so every command outside the allow list stops on a
+// prompt. `"permissionModeOverride": "auto"` in the agent's agent-config.json asks Claude Code's auto mode to
+// decide those prompts instead (`--permission-mode auto`). It is a trial switch for ONE agent, written by the host
+// operator only: it is not in the PUT /api/agents writable fields, and it does not survive a bundle move.
+//
+// What it does NOT change, on purpose: the profile's deny list and allow list (written to settings.json at every
+// spawn), the hooks, the outgoing gate and the readonly command gate all stay; the profile still says "strict".
+// Only the exact string "auto" counts; anything else (a typo, "bypassPermissions", a number) is ignored, so a
+// misspelling can never loosen anything. A permissive profile keeps --dangerously-skip-permissions and ignores the
+// field: the override only replaces "no flag", never a stronger flag.
+export type PermissionModeOverride = 'auto'
+
+export function resolvePermissionModeOverride(rawConfigJson: string): PermissionModeOverride | null {
+  let config: unknown
+  try { config = JSON.parse(rawConfigJson) } catch { return null }
+  if (!config || typeof config !== 'object') return null
+  return (config as Record<string, unknown>).permissionModeOverride === 'auto' ? 'auto' : null
+}
+
+export function readAgentPermissionModeOverride(name: string): PermissionModeOverride | null {
+  return resolvePermissionModeOverride(readFileOr(join(agentDir(name), 'agent-config.json'), '{}'))
+}
+
+/** The permission flag of the launch command, with its trailing space (or ''), from the profile and the override. */
+export function permissionFlagFor(profileMode: string, override: PermissionModeOverride | null): string {
+  if (profileMode !== 'strict') return '--dangerously-skip-permissions '
+  return override === 'auto' ? '--permission-mode auto ' : ''
+}
+
 // --- Remote agent config (remoteHost + remoteWorkdir) ---
 //
 // When BOTH a valid host and a valid absolute workdir are present, the agent's
