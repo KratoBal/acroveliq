@@ -37,6 +37,7 @@ import { pathToFileURL } from 'node:url'
 import { knownSecretValues, secretIn } from './gpt-package.js'
 import { DEFAULT_DEPS, letolt, type DownloadDeps } from './karanten-letolt.js'
 import { wrapUntrusted } from './prompt-safety.js'
+import { htmlToText, readerWouldNotSee } from './karanten-szoveg.js'
 
 /** The reader's fixed flags. See the header: a change here is a permission change. */
 export const READER_ARGS = Object.freeze(['-p', '--restricted', '--tools', 'Read', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'text'])
@@ -145,12 +146,30 @@ export async function karantenOlvas(o: KarantenOptions, env: NodeJS.ProcessEnv =
 
 export interface KarantenUrlOptions extends Omit<KarantenOptions, 'file'> { url: string; deps?: DownloadDeps }
 
+/**
+ * The file the reader gets for a downloaded page. A PDF or a plain text goes as it is. An HTML page that the
+ * reader's Read tool could not see through (large, or a line past its limit: a modern page is ONE line of
+ * hundreds of KB, measured 2026-10-31 on bambulab.com) goes as its visible TEXT, with the page's address on
+ * the first line; the text is as untrusted as the HTML was, and the reader is the same quarantined one.
+ * A page with no text of its own goes as the HTML, as before.
+ */
+export function pageInput(d: { body: Buffer; contentType: string; finalUrl: string }): { name: string; body: Buffer; source: string } {
+  if (/pdf/i.test(d.contentType)) return { name: 'bemenet-oldal.pdf', body: d.body, source: 'karanten-url' }
+  if (!/html/i.test(d.contentType)) return { name: 'bemenet-oldal.txt', body: d.body, source: 'karanten-url' }
+  const html = d.body.toString('utf8')
+  if (readerWouldNotSee(html, d.body.length)) {
+    const text = htmlToText(html)
+    if (text.trim()) return { name: 'bemenet-oldal.txt', body: Buffer.from(`URL: ${d.finalUrl}\n\n${text}\n`, 'utf8'), source: 'karanten-url-szoveg' }
+  }
+  return { name: 'bemenet-oldal.html', body: d.body, source: 'karanten-url' }
+}
+
 /** Reads one web page through the quarantine reader: the command downloads it, the reader reads a file. */
 export async function karantenOlvasUrl(o: KarantenUrlOptions, env: NodeJS.ProcessEnv = process.env): Promise<KarantenResult> {
   const d = await letolt(o.url, o.deps ?? DEFAULT_DEPS)
   if (!d.ok) return { code: 2, out: `KARANTEN: az oldal nem toltodott le (${d.why}); a tartalom nem jott at.` }
-  const name = /pdf/i.test(d.contentType) ? 'bemenet-oldal.pdf' : /html/i.test(d.contentType) ? 'bemenet-oldal.html' : 'bemenet-oldal.txt'
-  return inFreshFolder((dir) => writeFileSync(join(dir, name), d.body, { mode: 0o600 }), name, 'karanten-url', o, env)
+  const input = pageInput(d)
+  return inFreshFolder((dir) => writeFileSync(join(dir, input.name), input.body, { mode: 0o600 }), input.name, input.source, o, env)
 }
 
 /** A fresh folder (0700) holding ONLY the one input: the reader's file tools are confined to it. */
