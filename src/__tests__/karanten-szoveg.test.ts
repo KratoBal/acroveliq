@@ -15,6 +15,10 @@ describe('htmlToText', () => {
     expect(t).toBe('Cím & más\n\nLátható')
   })
 
+  it('SZ-ZEROWIDTH: a zero-width spacer (literal or as an entity) between lines is gone, not a line of its own', () => {
+    expect(htmlToText('<div>X2D</div><div>\u200b</div><div>&#8203;$699 USD</div>')).toBe('X2D\n$699 USD')
+  })
+
   it('SZ-TABLE: a table keeps its rows and its cells apart (a tab between cells), a block is a line, a paragraph or a table is set off by a blank line, entities are decoded', () => {
     const t = htmlToText('<table><tr><td>Max Nozzle Temperature</td><td>300&nbsp;&deg;C</td></tr><tr><th>Súly</th><td>16,25&#32;kg</td></tr></table><div>egy</div><div>két&#x20;sor<br>harmadik</div><p>5 &lt; 6 &amp;&amp; &unknown; &#0;</p>')
     expect(t).toBe('Max Nozzle Temperature\t300 °C\nSúly\t16,25 kg\n\negy\nkét sor\nharmadik\n\n5 < 6 && &unknown;')

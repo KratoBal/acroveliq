@@ -105,7 +105,8 @@ function strip(html: string): string {
 export function htmlToText(html: string): string {
   const title = titleOf(html)
   // a run of marks (with the blanks between them) is one break: a paragraph break if any of them is one
-  const s = decodeEntities(strip(html)).replace(/[\u0001\u0002](?:[\u0001\u0002]|[ \t])*/g, (run) => (run.includes(MARK_PARA) ? '\n\n' : '\n'))
+  // zero-width characters (a page's spacer between a name and its price) are not text and only add noise
+  const s = decodeEntities(strip(html)).replace(/[\u200b-\u200d\u2060\ufeff]/g, '').replace(/[\u0001\u0002](?:[\u0001\u0002]|[ \t])*/g, (run) => (run.includes(MARK_PARA) ? '\n\n' : '\n'))
   const lines = s
     .split('\n')
     .map((l) => l.replace(/[ \u00a0\r\f\v]+/g, ' ').replace(/ ?\t ?/g, '\t').replace(/^\t+|\t+$/g, '').trim())

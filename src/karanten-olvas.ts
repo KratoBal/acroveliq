@@ -18,7 +18,9 @@
 //                        (barracuda, #172; the flag measured in the same help)
 // URL mode (`--url`, P1-00f point 3): the COMMAND downloads the page (src/karanten-letolt.ts: the
 // egress gate's quarantine decision, pinned addresses, no internal range, size and time limits)
-// and the reader gets it as a file; the reader itself never gets WebFetch.
+// and the reader gets it as a file; the reader itself never gets WebFetch. A page the reader's Read tool
+// could not see through (large, or one line of hundreds of KB, as modern pages are) goes as its visible
+// TEXT (src/karanten-szoveg.ts), not as the HTML: pageInput.
 // The reader logs in like the main agent (scripts/channels.sh: CLAUDE_CODE_OAUTH_TOKEN or
 // ANTHROPIC_API_KEY from .env, else store/.claude-oauth-token; acrobot 31077: without it the reader
 // said "Not logged in"). The token goes ONLY into the reader's own environment, never to an output.
