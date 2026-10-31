@@ -30,8 +30,8 @@ describe('htmlToText', () => {
     expect(htmlToText('<noscript><p>marad is</p>')).toBe('marad is')
   })
 
-  it('SZ-FAST: five MB of unclosed tags, bare < signs and unclosed comments finishes in well under a second (no quadratic scan)', () => {
-    for (const bad of ['<svg '.repeat(1_000_000), '<'.repeat(5_000_000), '<a '.repeat(1_600_000), '<b>x'.repeat(1_000_000), '<!-- '.repeat(1_000_000), '<p>&amp;'.repeat(600_000)]) {
+  it('SZ-FAST: millions of unclosed svg and noscript tags, bare < signs and unclosed comments finish in seconds, not minutes (no quadratic scan)', () => {
+    for (const bad of ['<svg>'.repeat(1_000_000), '<noscript>x'.repeat(500_000), '<'.repeat(5_000_000), '<a '.repeat(1_600_000), '<a>x'.repeat(1_200_000), '<!-- '.repeat(1_000_000), '<p>&amp;'.repeat(600_000)]) {
       const t0 = Date.now()
       htmlToText(bad)
       expect(Date.now() - t0).toBeLessThan(2500)
