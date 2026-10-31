@@ -49,9 +49,18 @@ const CELL = new Set(['td', 'th'])
 // inline elements that a page lays out apart with its styles (a footer's links): a space keeps the words apart
 const APART = new Set(['a', 'button', 'label'])
 
+/**
+ * The markup lowercased with the SAME length: only A-Z change. toLowerCase() makes some letters longer (the
+ * Turkish dotted capital I becomes two code units), and every index into the lowered copy would then be
+ * off against the original (barracuda, #326). Tag names are ASCII, so nothing else needs to change.
+ */
+function asciiLower(s: string): string {
+  return s.replace(/[A-Z]+/g, (m) => m.toLowerCase())
+}
+
 /** The page's title (the head is dropped from the body text), or ''. Looked up with indexOf and a size cap, never a regex over the page. */
 function titleOf(html: string): string {
-  const lower = html.toLowerCase()
+  const lower = asciiLower(html)
   for (let from = 0; ; ) {
     const open = lower.indexOf('<title', from)
     if (open === -1) return ''
@@ -85,7 +94,7 @@ function findClose(lower: string, name: string, from: number): number {
  * tags cannot make the command quadratic.
  */
 function strip(html: string): string {
-  const lower = html.toLowerCase()
+  const lower = asciiLower(html)
   const out: string[] = []
   const noClose = new Set<string>()
   const n = html.length
