@@ -84,7 +84,22 @@ export function blockedAddress(ip: string): boolean {
   return V6.check(ip, 'ipv6')
 }
 
-export interface Response { status: number; location?: string; contentType?: string; body: Buffer }
+export interface Response { status: number; location?: string; contentType?: string; server?: string; cfMitigated?: string; body: Buffer }
+
+/**
+ * True for a Cloudflare challenge page ("Just a moment..."): Cloudflare's own header on a challenge (cf-mitigated); a 403 that carries the
+ * challenge's marks or comes from a Cloudflare server; a 429 or 503 with the marks; or a SMALL 200 page with the marks. A normal page that
+ * merely mentions the words is not one: a 200 needs the challenge's title or script, and has to be small.
+ */
+export function looksLikeChallenge(status: number, res: { server?: string; cfMitigated?: string }, body: Buffer): boolean {
+  if ((res.cfMitigated ?? '').toLowerCase().includes('challenge')) return true
+  const text = body.subarray(0, 120_000).toString('utf8').toLowerCase()
+  const marker = /<title>\s*just a moment|cf-chl-|challenge-platform|performing security verification/.test(text)
+  if (status === 403) return marker || (res.server ?? '').toLowerCase().includes('cloudflare')
+  // a 429 or 503 is a challenge only with the marks of one (an origin that is down also answers 503 behind Cloudflare)
+  if (status === 429 || status === 503) return marker
+  return status === 200 && marker && body.length < 120_000
+}
 
 export interface DownloadDeps {
   allowed(url: string): boolean
@@ -92,23 +107,33 @@ export interface DownloadDeps {
   isBlocked(ip: string): boolean
   /** One GET to `url`, connecting ONLY to `pinned`; must enforce `maxBytes` on the arriving bytes. */
   get(url: URL, pinned: string, timeoutMs: number, maxBytes: number): Promise<Response>
+  /** One POST, pinned the same way (the Firecrawl fallback); the tests replace it, the default is pinnedPost. */
+  post?(url: URL, pinned: string, headers: Record<string, string>, body: string, timeoutMs: number, maxBytes: number): Promise<Response>
 }
 
-export type DownloadResult = { ok: true; body: Buffer; finalUrl: string; contentType: string } | { ok: false; why: string }
+/** `challenge` on a 200 page: it is a Cloudflare challenge, not the page. A failure carries the status and the address that answered, and `challenge`. */
+export type DownloadResult =
+  | { ok: true; body: Buffer; finalUrl: string; contentType: string; challenge: boolean }
+  | { ok: false; why: string; status?: number; url?: string; challenge?: boolean }
 
 async function resolveAll(host: string): Promise<string[]> {
   const r = await dnsLookup(host, { all: true, verbatim: true })
   return r.map((a) => a.address)
 }
 
-/** A GET over a socket pinned to one address; the bytes are counted as they arrive. */
-export function pinnedGet(url: URL, pinned: string, timeoutMs: number, maxBytes: number): Promise<Response> {
+export interface RequestInit { method?: 'GET' | 'POST'; headers?: Record<string, string>; body?: string }
+
+/** One request over a socket pinned to one address; the bytes are counted as they arrive. */
+export function pinnedRequest(url: URL, pinned: string, timeoutMs: number, maxBytes: number, init: RequestInit = {}): Promise<Response> {
   return new Promise((resolve, reject) => {
     const family = net.isIP(pinned)
     const mod = url.protocol === 'https:' ? https : http
+    const method = init.method ?? 'GET'
+    const headers: Record<string, string> = init.headers ?? { 'user-agent': 'acroveliq-karanten/1', accept: 'text/html,text/plain,application/pdf,*/*;q=0.5' }
+    if (init.body != null) headers['content-length'] = String(Buffer.byteLength(init.body))
     const req = mod.request(url, {
-      method: 'GET',
-      headers: { 'user-agent': 'acroveliq-karanten/1', accept: 'text/html,text/plain,application/pdf,*/*;q=0.5' },
+      method,
+      headers,
       // the ONLY address this socket may use (TLS still checks the certificate against the name)
       lookup: ((_host: string, opts: { all?: boolean }, cb: (...a: unknown[]) => void) =>
         opts?.all ? cb(null, [{ address: pinned, family }]) : cb(null, pinned, family)) as never,
@@ -117,15 +142,20 @@ export function pinnedGet(url: URL, pinned: string, timeoutMs: number, maxBytes:
     }, (res) => {
       const chunks: Buffer[] = []
       let size = 0
+      let over = false
       res.on('data', (c: Buffer) => {
         size += c.length
-        if (size > maxBytes) { req.destroy(new Error('tul nagy')); return }
+        if (size > maxBytes) { over = true; res.destroy(); req.destroy(); done(() => reject(new Error('tul nagy'))); return }
         chunks.push(c)
       })
-      res.on('end', () => done(() => resolve({
+      const h = (k: string) => (typeof res.headers[k] === 'string' ? (res.headers[k] as string) : undefined)
+      // a single chunk past the limit ends the response too: it must not come back as a short, complete-looking body
+      res.on('end', () => done(() => over ? reject(new Error('tul nagy')) : resolve({
         status: res.statusCode ?? 0,
-        location: typeof res.headers.location === 'string' ? res.headers.location : undefined,
-        contentType: typeof res.headers['content-type'] === 'string' ? res.headers['content-type'] : undefined,
+        location: h('location'),
+        contentType: h('content-type'),
+        server: h('server'),
+        cfMitigated: h('cf-mitigated'),
         body: Buffer.concat(chunks),
       })))
       res.on('error', (e) => done(() => reject(e)))
@@ -136,8 +166,19 @@ export function pinnedGet(url: URL, pinned: string, timeoutMs: number, maxBytes:
     const done = (f: () => void) => { clearTimeout(whole); f() }
     req.on('timeout', () => req.destroy(new Error('idotullepes')))
     req.on('error', (e) => done(() => reject(e)))
+    if (init.body != null) req.write(init.body)
     req.end()
   })
+}
+
+/** A GET over a socket pinned to one address. */
+export function pinnedGet(url: URL, pinned: string, timeoutMs: number, maxBytes: number): Promise<Response> {
+  return pinnedRequest(url, pinned, timeoutMs, maxBytes)
+}
+
+/** A POST over a socket pinned to one address (the Firecrawl call: the key goes only to a checked public address). */
+export function pinnedPost(url: URL, pinned: string, headers: Record<string, string>, body: string, timeoutMs: number, maxBytes: number): Promise<Response> {
+  return pinnedRequest(url, pinned, timeoutMs, maxBytes, { method: 'POST', headers, body })
 }
 
 export const DEFAULT_DEPS: DownloadDeps = { allowed: (u) => gateAllows(u), resolve: resolveAll, isBlocked: blockedAddress, get: pinnedGet }
@@ -168,8 +209,8 @@ export async function letolt(start: string, deps: DownloadDeps = DEFAULT_DEPS, l
       try { url = new URL(res.location, url) } catch { return { ok: false, why: 'hibas atiranyitas' } }
       continue
     }
-    if (res.status !== 200) return { ok: false, why: `a valasz ${res.status}` }
-    return { ok: true, body: res.body, finalUrl: url.href, contentType: res.contentType ?? '' }
+    if (res.status !== 200) return { ok: false, why: `a valasz ${res.status}`, status: res.status, url: url.href, challenge: looksLikeChallenge(res.status, res, res.body) }
+    return { ok: true, body: res.body, finalUrl: url.href, contentType: res.contentType ?? '', challenge: looksLikeChallenge(200, res, res.body) }
   }
   return { ok: false, why: `tobb, mint ${MAX_REDIRECTS} atiranyitas` }
 }
