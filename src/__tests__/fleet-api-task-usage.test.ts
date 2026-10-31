@@ -693,6 +693,7 @@ describe('fleet-api.sh deployed (TC-03 minimum)', () => {
 //     filter would stay empty: barracuda, 30541), or stops an EXISTING task's update for it;
 //   - the server's project_warning is swallowed;
 //   - task-project does not go to POST /api/tasks/:id/project;
+//   - task-profile does not go to POST /api/tasks/:id/profile, sends without a reason, or a refusal is 0;
 //   - project-repo stays silent on a repo outside the project, or does not say an unknown project.
 describe('fleet-api.sh, Projektek V1', () => {
   const PROJ = [
@@ -706,6 +707,8 @@ describe('fleet-api.sh, Projektek V1', () => {
       if (method === 'GET' && path === '/api/projects') return [200, PROJ]
       if (method === 'POST' && path === '/api/tasks') return [201, postBody]
       if (method === 'POST' && path === '/api/tasks/p1/project') return [200, { id: 'p1', project: 'os', from: 'acropora' }]
+      if (method === 'POST' && path === '/api/tasks/p1/profile') return [409, { error: 'profile change refused', reason: 'kodos feladat' }]
+      if (method === 'POST' && path === '/api/tasks/p2/profile') return [200, { id: 'p2', verification_profile: 'docs', from: 'code_fleet' }]
       return [599, { error: `unexpected ${method} ${path}` }]
     }
   }
@@ -726,6 +729,19 @@ describe('fleet-api.sh, Projektek V1', () => {
     const existing = await run(['task-new', 'p1', '-'], JSON.stringify({ title: 'y' }))
     expect([json.code, jsonPosts, /projekt kell.*acropora\|os/.test(json.out), positional.code, positionalPosts, ok.code, okBody?.project, existing.code, /FIGYELEM \(projekt\): project kept/.test(existing.out)],
       'PROJ-TASK-NEW').toEqual([4, 0, true, 4, 0, 0, 'os', 0, true])
+  })
+
+  it('TASK-PROFILE: the change goes to its route with its reason; no reason sends nothing; a 409 is a failure', async () => {
+    fake(true)
+    const ok = await run(['task-profile', 'p2', 'docs', 'a vegtermek kartya-komment'])
+    const okPost = posts()
+    fake(true)
+    const noReason = await run(['task-profile', 'p2', 'docs'])
+    const noReasonPosts = posts().length
+    fake(true)
+    const refused = await run(['task-profile', 'p1', 'docs', 'x'])
+    expect([ok.code, okPost, noReason.code !== 0, noReasonPosts, refused.code, /FAIL http=409/.test(refused.out)], 'TASK-PROFILE')
+      .toEqual([0, [['/api/tasks/p2/profile', { verification_profile: 'docs', reason: 'a vegtermek kartya-komment' }]], true, 0, 1, true])
   })
 
   it('PROJ-TASK-PROJECT and PROJ-REPO: the change goes to its route; the repo check says in, out and unknown', async () => {

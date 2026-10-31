@@ -55,6 +55,7 @@
 #         (egy feladat kiadasa, megismetelheto; kilepes: 3 atado rekord, 4 feladat, 5 foglalt,
 #          6 restart, 7 uzenet, 8 a panel nem tetlen)
 #   bash scripts/fleet-api.sh task-project <task_id> <projekt> [indok]   # a projekt-csere egyetlen utja
+#   bash scripts/fleet-api.sh task-profile <task_id> <profil> <indok>    # a verification_profile cserejenek egyetlen utja
 #   bash scripts/fleet-api.sh project-repo <task_id> <owner/repo>        # a repo a feladat projektjee-e
 #   bash scripts/fleet-api.sh deployed [--nez] marveen <task_id> [--commit <cherry-pick sha>]
 #   bash scripts/fleet-api.sh deployed [--nez] acropora <task_id> --app api|web|partner|commerce [--app ...]
@@ -477,6 +478,16 @@ if ig:
     TASK="${1:?task id required}"; PROJ="${2:?projekt kell (acropora|os|commerce|reefclub|caparium)}"
     TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
     post "/tasks/${TASK_URL}/project" "$(json_obj project "$PROJ" reason "${3:-}")"
+    ;;
+  task-profile)
+    # task-core-doc-would-reject: egy feladat verification_profile mezojenek EGYETLEN cserelesi utja
+    # (a task-new 409-cel elutasitja). A fo agens sajat tokenjevel megy, az indok kotelezo; a szerver
+    # profile_changed esemenyt ir melle. Kodos profilrol nem enged le, ha a feladat mar repot nevezett meg.
+    argc_max 3 "$#" "fleet-api.sh task-profile <task_id> <profil> <indok>"
+    TASK="${1:?task id required}"; PROF="${2:?profil kell (docs|code_fleet|code_app|migration|prod_data_write|ops)}"
+    REASON="${3:?indok kell: miert volt rossz a profil}"
+    TASK_URL="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$TASK")"
+    post "/tasks/${TASK_URL}/profile" "$(json_obj verification_profile "$PROF" reason "$REASON")"
     ;;
   project-repo)
     # PROJEKTEK V1: a repo a feladat projektjee-e (a pr-beolvaszt.sh hivja a beolvasztas elott).
@@ -1590,7 +1601,7 @@ if d.get("action_description"):
 '
     ;;
   *)
-    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|agents|kanban-keres|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-comment|kanban-comments|kanban-archive|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart|kiadas|deployed|task-project|project-repo)"
+    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|agents|kanban-keres|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-comment|kanban-comments|kanban-archive|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart|kiadas|deployed|task-project|task-profile|project-repo)"
     exit 1
     ;;
 esac

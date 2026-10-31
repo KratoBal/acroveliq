@@ -355,6 +355,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'GET', path: '/api/tasks/:id/timeline', module: 'task-usage', class: 'OLVASO' },
   { method: 'GET', path: '/api/projects', module: 'task-usage', class: 'OLVASO', note: 'Projektek V1: the project registry, repos expanded' },
   { method: 'POST', path: '/api/tasks/:id/project', module: 'task-usage', class: 'ERZEKENY', note: 'Projektek V1: the one way a task\'s project changes; the main agent\'s token or the owner\'s session only (the handler), with a project_changed event' },
+  { method: 'POST', path: '/api/tasks/:id/profile', module: 'task-usage', class: 'ERZEKENY', note: 'task-core-doc-would-reject: the one way a task\'s verification profile changes; the main agent\'s token or the owner\'s session only (the handler), with a reason and a profile_changed event; a code task that named a repo keeps its profile' },
   // after the inventory: Dontéseim V1 (task dontesek-v1-backend, 2026-10-14)
   { method: 'POST', path: '/api/decisions/:id', module: 'decisions', class: 'KRITIKUS', note: 'the owner\'s answer on a decision row (approve, reject, discuss): session only in every access mode (the handler), the one write on the AcrovelIQ host' },
   { method: 'POST', path: '/api/task-actions', module: 'task-actions', class: 'KRITIKUS', note: 'the owner creates a task (Feladatkezelés V1): session only in every access mode (the handler), Idempotency-Key required, a message to the main agent; an AcrovelIQ host write' },

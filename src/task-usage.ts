@@ -82,6 +82,9 @@ export const TASK_EVENT_KINDS = [
   // Projektek V1: a task's project changed, the one way it may (POST /api/tasks/:id/project,
   // or the owner's task action). Written by the server only; not a state.
   'project_changed',
+  // task-core-doc-would-reject: a task's verification profile changed, the one way it may
+  // (POST /api/tasks/:id/profile). Written by the server only; not a state.
+  'profile_changed',
 ] as const
 export type TaskEventKind = (typeof TASK_EVENT_KINDS)[number]
 
@@ -937,6 +940,46 @@ export function setTaskProject(
     return { changed: true, from: row.project }
   })()
 }
+
+export type ProfileChange =
+  | { changed: boolean; from: string | null }
+  /** Leaving a code profile, after the task named a PR or a repo: the event that did. */
+  | { refused: string }
+
+/**
+ * A task's verification profile changed (task-core-doc-would-reject). The profile is
+ * chosen when the task is created, before its end product is known, and two measured
+ * tasks ended as a document under a profile that asks for a PR: murena's caparium-2
+ * (no profile, msg 31737) and nautilus's p01-kikenyszerit-keszseg (code_fleet, msg
+ * 39265). The field and a profile_changed event in one transaction; `to` must be a
+ * profile, the caller checks who may do it. LEAVING a code profile (or none, which the
+ * done guard holds to the code rule) for another is refused once the task has named a repo (a review, a verdict, a merge or a deploy): then it has
+ * code, and its done keeps asking for the merge. Events already stored are not touched.
+ */
+export function setTaskProfile(
+  db: Database.Database, taskId: string, to: VerificationProfile, actor: string, reason: string, now: number,
+): ProfileChange {
+  return db.transaction((): ProfileChange => {
+    const row = db.prepare('SELECT verification_profile FROM tasks WHERE id = ?').get(taskId) as
+      | { verification_profile: string | null }
+      | undefined
+    if (!row) throw new Error(`no task ${taskId}`)
+    const from = row.verification_profile
+    if (from === to) return { changed: false, from }
+    // a task without a profile is held to the code rule, as the done guard holds it (barracuda, #325)
+    if ((!from || CODE_PROFILES.has(from)) && !CODE_PROFILES.has(to)) {
+      const code = loadTaskEvents(db, taskId).find((e) => REPO_KINDS.has(e.kind) && eventRepo(e.ref, e.data))
+      if (code)
+        return { refused: `a feladat ${from ?? 'profil nélküli'}${from ? ' profilú' : ''}, és a ${code.id}. esemény (${code.kind}) már repót nevez meg (${eventRepo(code.ref, code.data)}): kódos feladat PR-követelménye nem lazul` }
+    }
+    db.prepare('UPDATE tasks SET verification_profile = ?, updated_at = ? WHERE id = ?').run(to, now, taskId)
+    addTaskEvent(db, {
+      task_id: taskId, kind: 'profile_changed', actor, at: now,
+      ref: `profile ${from ?? '-'} -> ${to}`, data: { from, to, reason },
+    }, now)
+    return { changed: true, from }
+  })()
+}
 const REF_PATH = /(?<![\w./-])[\w.-]+(?:\/[\w.-]+)+(?![\w#])/
 
 /**
@@ -1049,7 +1092,7 @@ const BUSY_KINDS: ReadonlySet<string> = new Set(['assigned', 'started', 'fix_sta
   is therefore the latest STATE event; a task with no state event at all (a coordination
   unit, only coord marks) keeps its latest event, so what it shows does not change.
 */
-export const NON_STATE_KINDS: readonly TaskEventKind[] = ['decision', 'coord_open', 'coord_close', 'owner_action', 'project_changed']
+export const NON_STATE_KINDS: readonly TaskEventKind[] = ['decision', 'coord_open', 'coord_close', 'owner_action', 'project_changed', 'profile_changed']
 /** Every other kind, named: a new kind must be put in one of the two lists (a test holds it; barracuda, #110 and #113). */
 export const STATE_KINDS: readonly TaskEventKind[] = [
   'assigned', 'started', 'review_requested', 'verdict', 'fix_started', 'done', 'merged',
