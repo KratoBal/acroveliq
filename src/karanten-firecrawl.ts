@@ -95,8 +95,8 @@ export async function firecrawlScrape(target: string, key: string, deps: Downloa
   const finalUrl = typeof meta.url === 'string' ? meta.url : typeof meta.sourceURL === 'string' ? meta.sourceURL : url.href
   let finalParsed: URL
   try { finalParsed = new URL(finalUrl) } catch { return { ok: false, why: 'a Firecrawl hibas veg-cimet adott' } }
-  if (finalParsed.protocol !== 'http:' && finalParsed.protocol !== 'https:') return { ok: false, why: `a Firecrawl nem http(s) veg-cimet adott: ${finalParsed.protocol}` }
-  if (!deps.allowed(finalParsed.href)) return { ok: false, why: `a Firecrawl atiranyitasa nem engedelyezett helyre vitt: ${finalParsed.hostname}` }
+  if (finalParsed.protocol !== 'http:' && finalParsed.protocol !== 'https:') return { ok: false, why: 'a Firecrawl nem http(s) veg-cimet adott' }
+  if (!deps.allowed(finalParsed.href)) return { ok: false, why: 'a Firecrawl atiranyitasa nem engedelyezett helyre vitt' }  // no host name: it comes from the page, and this text stands outside the envelope
   const markdown = j.data.markdown.trim()
   if (!markdown) return { ok: false, why: 'a Firecrawl ures markdownt adott' }
   // a challenge page that Firecrawl returned as "the page"
