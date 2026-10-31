@@ -8,6 +8,8 @@
 #     through the egress gate's quarantine decision, pinned to checked public addresses; the reader
 #     reads it as a file and never gets WebFetch; a large or long-lined HTML page is handed over as its
 #     visible text, with its address on the first line)
+#     A page that answers 403 or a Cloudflare challenge goes to Firecrawl's scrape API instead (only for a host the egress gate allows;
+#     the key store/.firecrawl-key is read by the calling user; the envelope's source says karanten-url-firecrawl-403 or -kihivas).
 #   exit 0: the summary, wrapped as untrusted data; 2: nothing came through (why, no content);
 #   3: the summary held a secret shape, nothing came through
 #
