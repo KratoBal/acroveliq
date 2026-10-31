@@ -14,6 +14,12 @@ import { join } from 'node:path'
 import { blockedAddress, gateAllows, letolt, pinnedGet, type DownloadDeps } from '../karanten-letolt.js'
 import { karantenOlvasUrl } from '../karanten-olvas.js'
 
+/** A page as a modern site serves it: ONE line of 400 KB of inline script data, and the visible text inside it. */
+function modernPage(): string {
+  const data = JSON.stringify({ rows: Array.from({ length: 6000 }, (_, i) => ({ id: i, label: `sor-${i}`, flags: [i % 2, i % 3] })) })
+  return `<!DOCTYPE html><html><head><title>X2D adatok</title><style>.a{color:red}</style></head><body><nav><a href="/a">Termékek</a><a href="/b">Támogatás</a></nav><h1>Műszaki adatok</h1><table><tr><td>Max Nozzle Temperature</td><td>300 &deg;C</td></tr><tr><td>Net Weight</td><td>16.25 kg</td></tr></table><script id="__DATA__" type="application/json">${data}</script></body></html>`
+}
+
 let server: http.Server
 let port = 0
 let hits: string[] = []
@@ -26,6 +32,8 @@ beforeAll(async () => {
     if (req.url === '/hazug') { res.writeHead(200, { 'content-type': 'text/plain', 'content-length': '10' }); res.write('z'.repeat(5000)); res.end(); return }
     if (req.url === '/lassu') { res.writeHead(200); res.write('a'); return }
     if (req.url === '/csepeg') { res.writeHead(200); const t = setInterval(() => { if (res.destroyed) clearInterval(t); else res.write('c') }, 100); req.on('close', () => clearInterval(t)); return }
+    if (req.url === '/modern') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(modernPage()); return }
+    if (req.url === '/csak-kod') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(`<html><head><script src="/a.js"></script></head><body><div id="root"></div><script>${'x'.repeat(150_000)}</script></body></html>`); return }
     if (req.url === '/belsore') { res.writeHead(302, { location: `http://belso.test:${port}/ok` }); res.end(); return }
     if (req.url === '/kapura') { res.writeHead(302, { location: '/tiltott' }); res.end(); return }
     if (req.url === '/hurok') { res.writeHead(302, { location: '/hurok' }); res.end(); return }
@@ -152,6 +160,32 @@ describe('the URL mode through the reader', () => {
       const r = await karantenOlvasUrl({ url: url('/ok'), claude, storeDir: join(dir, 'nincs-store'), timeoutMs: 5000, auth: { CLAUDE_CODE_OAUTH_TOKEN: 'belepes-url' }, deps: deps({ internal: [] }) })
       const refused = await karantenOlvasUrl({ url: url('/ok'), claude, storeDir: join(dir, 'nincs-store'), timeoutMs: 5000, deps: deps({ allowed: () => false }) })
       expect([r.code, r.out.startsWith('<untrusted source="karanten-url:bemenet-oldalhtml">'), readFileSync(join(dir, 'lista'), 'utf8').trim(), readFileSync(join(dir, 'oauth'), 'utf8'), refused.code, refused.out.includes('az egress-kapu nem engedi')]).toEqual([0, true, 'bemenet-oldal.html', 'belepes-url', 2, true])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('LET-TEXT: a modern page (one line of 400 KB, the text inside) reaches the reader as its TEXT with the address on top, no line past the Read limit, no code; the label says so', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'karanten-url-'))
+    try {
+      const claude = join(dir, 'claude')
+      writeFileSync(claude, `#!/bin/bash\nls -A > "${join(dir, 'lista')}"\ncp ./bemenet-oldal.txt "${join(dir, 'latott')}"\necho "kivonat"\n`, { mode: 0o755 })
+      const r = await karantenOlvasUrl({ url: url('/modern'), claude, storeDir: join(dir, 'nincs-store'), timeoutMs: 5000, deps: deps({ internal: [] }) })
+      const seen = readFileSync(join(dir, 'latott'), 'utf8')
+      expect([r.code, r.out.startsWith('<untrusted source="karanten-url-szoveg:bemenet-oldaltxt">'), readFileSync(join(dir, 'lista'), 'utf8').trim()]).toEqual([0, true, 'bemenet-oldal.txt'])
+      expect(seen.startsWith(`URL: ${url('/modern')}\n`)).toBe(true)
+      expect(seen).toContain('Max Nozzle Temperature\t300 °C')
+      expect(seen).toContain('Net Weight\t16.25 kg')
+      expect(seen).not.toMatch(/__DATA__|<script|sor-5999/)
+      expect(Math.max(...seen.split('\n').map((l) => l.length))).toBeLessThan(2000)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('LET-CODE-ONLY: a large page with no text of its own (only code) is handed over as the HTML, as before, not as an empty text', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'karanten-url-'))
+    try {
+      const claude = join(dir, 'claude')
+      writeFileSync(claude, `#!/bin/bash\nls -A > "${join(dir, 'lista')}"\necho "kivonat"\n`, { mode: 0o755 })
+      const r = await karantenOlvasUrl({ url: url('/csak-kod'), claude, storeDir: join(dir, 'nincs-store'), timeoutMs: 5000, deps: deps({ internal: [] }) })
+      expect([r.code, readFileSync(join(dir, 'lista'), 'utf8').trim()]).toEqual([0, 'bemenet-oldal.html'])
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
