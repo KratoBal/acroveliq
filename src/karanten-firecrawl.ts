@@ -1,5 +1,9 @@
 // The quarantine reader's URL mode, the fallback for a Cloudflare-protected page (task karanten-firecrawl; acrobot 39370).
 //
+// WHO DECIDED WHAT: the Firecrawl account is Balázs's approval (3D printer thread, message 1566156417268719767, 2026-10-31 18:26:27 UTC; just
+// before it, 1566156023293681665, "Regisztralj te"). Where the key is kept (store/.firecrawl-key, mode 600, owner marveen, read by the
+// calling user) is acrobot's decision (39370): Balázs said nothing on the place of the storage.
+//
 // Measured 2026-10-31 (acrobot): four reef2reef threads answered 403 to the direct download and to a headless browser, and 200 with
 // 30-40 thousand characters of markdown to Firecrawl's /v2/scrape. When the direct download gets a 403 or a Cloudflare challenge, the
 // command asks Firecrawl to fetch the page, and the reader gets the markdown as a file, like the text of a long-line page.

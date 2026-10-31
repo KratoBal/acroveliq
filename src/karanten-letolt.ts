@@ -87,18 +87,22 @@ export function blockedAddress(ip: string): boolean {
 export interface Response { status: number; location?: string; contentType?: string; server?: string; cfMitigated?: string; body: Buffer }
 
 /**
- * True for a Cloudflare challenge page ("Just a moment..."): Cloudflare's own header on a challenge (cf-mitigated); a 403 that carries the
- * challenge's marks or comes from a Cloudflare server; a 429 or 503 with the marks; or a SMALL 200 page with the marks. A normal page that
- * merely mentions the words is not one: a 200 needs the challenge's title or script, and has to be small.
+ * True for a Cloudflare challenge page ("Just a moment..."). Two sets of marks, because Cloudflare also puts a script of its own into
+ * pages it serves NORMALLY (the "JavaScript detections" beacon, /cdn-cgi/challenge-platform/scripts/jsd/main.js: measured 2026-10-31 in
+ * all three bambulab.com pages that download fine): the challenge's OWN marks are its title, `cf-chl-`, `_cf_chl_opt` and the
+ * `challenge-platform/h/` path (the orchestrate script); the broad set adds the bare `challenge-platform` and the interstitial's text.
+ *   - cf-mitigated: challenge (Cloudflare's own header): a challenge, any status;
+ *   - a 403: the broad marks, or a Cloudflare server (the download failed anyway, nothing is lost by asking Firecrawl);
+ *   - a 429 or 503, and a SMALL 200: the challenge's own marks only (an origin that is down behind Cloudflare also answers 503, and a
+ *     normal small page may carry the jsd beacon).
  */
 export function looksLikeChallenge(status: number, res: { server?: string; cfMitigated?: string }, body: Buffer): boolean {
   if ((res.cfMitigated ?? '').toLowerCase().includes('challenge')) return true
   const text = body.subarray(0, 120_000).toString('utf8').toLowerCase()
-  const marker = /<title>\s*just a moment|cf-chl-|challenge-platform|performing security verification/.test(text)
-  if (status === 403) return marker || (res.server ?? '').toLowerCase().includes('cloudflare')
-  // a 429 or 503 is a challenge only with the marks of one (an origin that is down also answers 503 behind Cloudflare)
-  if (status === 429 || status === 503) return marker
-  return status === 200 && marker && body.length < 120_000
+  const own = /<title>\s*just a moment|cf-chl-|_cf_chl_opt|challenge-platform\/h\//.test(text)
+  if (status === 403) return own || /challenge-platform|performing security verification/.test(text) || (res.server ?? '').toLowerCase().includes('cloudflare')
+  if (status === 429 || status === 503) return own
+  return status === 200 && own && body.length < 120_000
 }
 
 export interface DownloadDeps {

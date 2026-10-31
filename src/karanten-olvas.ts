@@ -42,7 +42,7 @@ import { knownSecretValues, secretIn } from './gpt-package.js'
 import { DEFAULT_DEPS, letolt, type DownloadDeps } from './karanten-letolt.js'
 import { FIRECRAWL_ENDPOINT, firecrawlScrape, readFirecrawlKey, urlHasSecret, type Trigger } from './karanten-firecrawl.js'
 import { wrapUntrusted } from './prompt-safety.js'
-import { htmlToText, readerWouldNotSee } from './karanten-szoveg.js'
+import { htmlToText, readerWouldNotSee, wrapLongLines } from './karanten-szoveg.js'
 
 /** The reader's fixed flags. See the header: a change here is a permission change. */
 export const READER_ARGS = Object.freeze(['-p', '--restricted', '--tools', 'Read', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'text'])
@@ -177,7 +177,14 @@ export async function karantenOlvasUrl(o: KarantenUrlOptions, env: NodeJS.Proces
   const d = await letolt(o.url, deps)
   // a 403 or a Cloudflare challenge (on any status, a 200 included) is the ONLY thing that sends the page to Firecrawl
   const trigger: Trigger | null = d.ok ? (d.challenge ? 'kihivas' : null) : d.status === 403 ? '403' : d.challenge ? 'kihivas' : null
-  if (trigger) return viaFirecrawl(o, d.ok ? d.finalUrl : (d.url ?? o.url), trigger, deps, env)
+  if (trigger) {
+    const r = await viaFirecrawl(o, d.ok ? d.finalUrl : (d.url ?? o.url), trigger, deps, env)
+    // a page that DID download (a 200 taken for a challenge) is not lost when Firecrawl cannot help: it goes the old way, with the reason said
+    if (!d.ok || r.code !== 2) return r
+    const input = pageInput(d)
+    const read = await inFreshFolder((dir) => writeFileSync(join(dir, input.name), input.body, { mode: 0o600 }), input.name, input.source, o, env)
+    return read.code === 0 ? { code: 0, out: `${read.out}\n(KARANTEN: a Firecrawl-visszaesés nem adott tartalmat (${r.out.replace(/^KARANTEN: /, '').replace(/; a tartalom nem jott at\.$/, '')}); az oldal a kozvetlen letoltessel jott at)` } : read
+  }
   if (!d.ok) return { code: 2, out: `KARANTEN: az oldal nem toltodott le (${d.why}); a tartalom nem jott at.` }
   const input = pageInput(d)
   return inFreshFolder((dir) => writeFileSync(join(dir, input.name), input.body, { mode: 0o600 }), input.name, input.source, o, env)
@@ -197,7 +204,8 @@ async function viaFirecrawl(o: KarantenUrlOptions, target: string, trigger: Trig
   if (leak) return stop(`a cim titok-alakot tartalmaz (${leak}), ezt nem kuldom ki`)
   const r = await firecrawlScrape(target, key.key, deps, o.firecrawlEndpoint ?? FIRECRAWL_ENDPOINT)
   if (!r.ok) return stop(r.why)
-  const body = Buffer.from(`URL: ${r.finalUrl}\nForras: Firecrawl (${why})\n\n${r.markdown}\n`, 'utf8')
+  // the markdown's lines are broken like the page text's: the reader's Read tool shows a line only up to its limit
+  const body = Buffer.from(`URL: ${r.finalUrl}\nForras: Firecrawl (${why})\n\n${wrapLongLines(r.markdown)}\n`, 'utf8')
   const name = 'bemenet-oldal.md'
   return inFreshFolder((dir) => writeFileSync(join(dir, name), body, { mode: 0o600 }), name, `karanten-url-firecrawl-${trigger}`, { ...o, secrets: [...(o.secrets ?? []), key.key] }, env)
 }

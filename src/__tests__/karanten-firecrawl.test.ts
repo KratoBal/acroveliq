@@ -27,6 +27,9 @@ let store: string
 
 const CHALLENGE_HTML = '<!DOCTYPE html><html><head><title>Just a moment...</title></head><body><script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script></body></html>'
 
+// a normal, small page as Cloudflare serves it: its "JavaScript detections" beacon is in the HTML (measured 2026-10-31 in all three bambulab.com pages)
+const JSD_HTML = `<!DOCTYPE html><html><head><title>Termek</title></head><body><p>Egy rendes oldal.</p><script>(function(){var u='/cdn-cgi/challenge-platform/scripts/jsd/main.js?ray=a53463e6cfd6d808',a=document.createElement('script');a.src=u;document.head.appendChild(a)})()</script></body></html>`
+
 beforeAll(async () => {
   server = http.createServer((req, res) => {
     let body = ''
@@ -35,6 +38,7 @@ beforeAll(async () => {
       const u = req.url ?? ''
       if (u === '/ok') { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<p>oldal</p>'); return }
       if (u === '/szoveg') { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<html><head><title>Cikk</title></head><body><p>Just a moment, ahogy a szerkeszto irta: ez egy cikk.</p></body></html>'); return }
+      if (u === '/jsd200') { res.writeHead(200, { 'content-type': 'text/html', server: 'cloudflare' }); res.end(JSD_HTML); return }
       if (u === '/tiltott') { res.writeHead(403, { 'content-type': 'text/plain' }); res.end('forbidden'); return }
       if (u.startsWith('/tiltott?')) { res.writeHead(403); res.end('forbidden'); return }
       if (u === '/cf403') { res.writeHead(403, { server: 'cloudflare', 'content-type': 'text/html' }); res.end(CHALLENGE_HTML); return }
@@ -103,8 +107,10 @@ describe('when the fallback starts', () => {
     const d = deps()
     const ok = await run('/ok', d)
     const article = await run('/szoveg', d)
-    expect([ok.code, article.code, posts.length]).toEqual([0, 0, 0])
     expect(readFileSync(join(dir, 'minden'), 'utf8')).toContain('Just a moment, ahogy')
+    const beacon = await run('/jsd200', d)       // Cloudflare's jsd beacon is in normal pages: it is not a challenge (barracuda, #329)
+    expect([ok.code, article.code, beacon.code, posts.length]).toEqual([0, 0, 0, 0])
+    expect(readFileSync(join(dir, 'minden'), 'utf8')).toContain('Egy rendes oldal')
   })
 
   it('FC-NOT-OTHER: a 404, a 500, a plain 429 and an origin that is down (503 behind Cloudflare) stop with the download\'s own reason; Firecrawl is not asked', async () => {
@@ -153,7 +159,41 @@ describe('when the fallback starts', () => {
       looksLikeChallenge(200, {}, b(CHALLENGE_HTML + 'x'.repeat(130_000))),
       looksLikeChallenge(200, {}, b('<p>Just a moment, please read on</p>')),
       looksLikeChallenge(404, { server: 'cloudflare' }, b(CHALLENGE_HTML)),
-    ]).toEqual([true, true, false, true, false, true, true, false, false, false])
+      // the jsd beacon of a normal page (barracuda, #329): not a challenge on a 200, a 429 or a 503; on a 403 the broad marks still count
+      looksLikeChallenge(200, { server: 'cloudflare' }, b(JSD_HTML)),
+      looksLikeChallenge(429, { server: 'cloudflare' }, b(JSD_HTML)),
+      looksLikeChallenge(503, { server: 'cloudflare' }, b(JSD_HTML)),
+      looksLikeChallenge(403, { server: 'nginx' }, b(JSD_HTML)),
+      looksLikeChallenge(200, {}, b('<html><script>window._cf_chl_opt={cvId:"3"}</script></html>')),
+    ]).toEqual([true, true, false, true, false, true, true, false, false, false, false, false, false, true, true])
+  })
+})
+
+describe('a page that downloaded is not lost, and the markdown is wrapped', () => {
+  it('FC-PAGE-KEPT: a 200 page taken for a challenge, when Firecrawl cannot help (no key, no credit, a refusal), still reaches the reader the old way, with the reason said; a 403 has nothing to hand over and stops', async () => {
+    rmSync(join(store, '.firecrawl-key'))
+    const noKey = await run('/kihivas200', deps())
+    const listing = readFileSync(join(dir, 'lista'), 'utf8').trim()
+    writeFileSync(join(store, '.firecrawl-key'), KEY)
+    const noCredit = await run('/kihivas200', deps({ answer: () => reply(402, { error: 'PAYLOAD-X' }) }))
+    const stopped403 = await run('/tiltott', deps({ answer: () => reply(402, { error: 'PAYLOAD-X' }) }))
+    expect([noKey.code, listing, noCredit.code, stopped403.code]).toEqual([0, 'bemenet-oldal.html', 0, 2])
+    expect(noKey.out).toContain('(KARANTEN: a Firecrawl-visszaesés nem adott tartalmat (az oldal Cloudflare-kihivast adott, a Firecrawl-visszaesés nem adott tartalmat: nincs Firecrawl-kulcs')
+    expect(noKey.out).toContain('az oldal a kozvetlen letoltessel jott at)')
+    expect(noCredit.out).toContain('kredit elfogyott')
+    expect(noKey.out + noCredit.out).not.toContain('PAYLOAD-X')
+    expect(noKey.out.startsWith('<untrusted source="karanten-url:')).toBe(true)
+  })
+
+  it('FC-WRAP: the markdown reaches the reader with no line past the Read limit (a long table row or a paragraph is broken at blanks), nothing lost', async () => {
+    const words = Array.from({ length: 1500 }, (_, i) => `szo${i}`)
+    const md = `# Szal\n\n${words.join(' ')}\n\n| a | b |\n|---|---|\n| ${'x'.repeat(4000)} | y |\n`
+    const r = await run('/tiltott', deps({ answer: () => page(md) }))
+    const seen = readFileSync(join(dir, 'latott'), 'utf8')
+    expect(r.code).toBe(0)
+    expect(Math.max(...seen.split('\n').map((l) => l.length))).toBeLessThanOrEqual(1800)
+    for (const w of ['szo0', 'szo1499']) expect(seen).toContain(w)
+    expect(seen.replace(/\s+/g, '').includes('x'.repeat(4000))).toBe(true)
   })
 })
 
@@ -182,7 +222,7 @@ describe('what does not loosen', () => {
     rmSync(join(store, '.firecrawl-key'))
     const missing = await run('/tiltott', deps())
     writeFileSync(join(store, '.firecrawl-key'), 'ket szo\n')
-    const odd = await run('/kihivas200', deps())
+    const odd = await run('/kihivas503', deps())
     writeFileSync(join(store, '.firecrawl-key'), KEY)
     chmodSync(join(store, '.firecrawl-key'), 0o000)
     const unreadable = process.getuid?.() === 0 ? { code: 2, out: 'nem olvashato' } : await run('/tiltott', deps())
