@@ -34,14 +34,26 @@ describe('htmlToText', () => {
     expect(htmlToText('<noscript><p>marad is</p>')).toBe('marad is')
   })
 
-  it('SZ-FAST: millions of unclosed svg, noscript, head and title tags, cell tags in the middle of a line, bare < signs and unclosed comments finish in seconds, not minutes (no quadratic scan)', () => {
-    for (const bad of ['<svg>'.repeat(1_000_000), '<noscript>x'.repeat(500_000), '<'.repeat(5_000_000), '<a '.repeat(1_600_000), '<a>x'.repeat(1_200_000), '<!-- '.repeat(1_000_000), '<p>&amp;'.repeat(600_000),
-      // barracuda, #326: the tab trim, the title lookup unclosed, and a title full of bare < signs were quadratic
-      'x' + '<td>'.repeat(1_200_000) + 'x', '<title>'.repeat(700_000), '<title>' + '<'.repeat(4_000_000) + '</title>', '<head>' + '</header>'.repeat(500_000)]) {
-      const t0 = Date.now()
-      htmlToText(bad)
-      expect(Date.now() - t0).toBeLessThan(2500)
-    }
+  // one test per input: the whole list in one test took 4.8 s locally against vitest's 5 s limit (CI: more)
+  const BAD: Array<[string, () => string]> = [
+    ['unclosed svg', () => '<svg>'.repeat(1_000_000)],
+    ['unclosed noscript', () => '<noscript>x'.repeat(500_000)],
+    ['bare <', () => '<'.repeat(5_000_000)],
+    ['tags with no >', () => '<a '.repeat(1_600_000)],
+    ['inline tags', () => '<a>x'.repeat(1_200_000)],
+    ['unclosed comments', () => '<!-- '.repeat(1_000_000)],
+    ['entities in paragraphs', () => '<p>&amp;'.repeat(600_000)],
+    // barracuda, #326: the tab trim, the unclosed title lookup, and a title full of bare < signs were quadratic
+    ['cells in the middle of a line', () => 'x' + '<td>'.repeat(1_200_000) + 'x'],
+    ['unclosed titles', () => '<title>'.repeat(700_000)],
+    ['bare < in a title', () => '<title>' + '<'.repeat(4_000_000) + '</title>'],
+    ['unclosed head, header closes', () => '<head>' + '</header>'.repeat(500_000)],
+  ]
+  it.each(BAD)('SZ-FAST: %s (megabytes of it) finishes in seconds, not minutes (no quadratic scan)', (_name, make) => {
+    const bad = make()
+    const t0 = Date.now()
+    htmlToText(bad)
+    expect(Date.now() - t0).toBeLessThan(2500)
   })
 
   it('SZ-HEAD: a head that is never closed does not swallow the body up to the first header element (</header is not </head); a title is found, cleaned and bounded', () => {
