@@ -51,6 +51,14 @@ describe('htmlToText', () => {
     expect(htmlToText('<head><title>' + 'c'.repeat(3500) + '</title></head><p>x</p>').split('\n')[0]!.length).toBe(300)
   })
 
+  it('SZ-LENGTH: a letter whose lower case is longer (the Turkish capital dotted I) before a script, a comment or a head does not shift the markup lookups', () => {
+    const dotted = 'İ'.repeat(40)
+    expect(htmlToText(`<p>${dotted}</p><script>var a = 1;</script><p>marad</p>`)).toBe(`${dotted}\n\nmarad`)
+    expect(htmlToText(`<p>${dotted}</p><!-- megjegyzés --><style>p{color:red}</style><p>marad</p>`)).toBe(`${dotted}\n\nmarad`)
+    expect(htmlToText(`<title>${dotted}</title><head><meta></head><body><p>marad</p></body>`)).toBe(`${dotted}\n\nmarad`)
+    expect(htmlToText('<HEAD><TITLE>Cím</TITLE></HEAD><P>nagy</P><SCRIPT>var a</SCRIPT>')).toBe('Cím\n\nnagy')
+  })
+
   it('SZ-WRAP: a paragraph longer than the reader can see in one line is broken at blanks (no word cut), a word with no blank is cut at the limit; nothing is lost', () => {
     const words = Array.from({ length: 1200 }, (_, i) => `szo${i}`)
     const t = htmlToText(`<p>${words.join(' ')}</p>`)
