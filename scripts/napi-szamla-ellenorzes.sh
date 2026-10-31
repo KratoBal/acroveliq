@@ -34,7 +34,12 @@ for line in open(sys.argv[1], encoding='utf-8'):
 g = lambda k: rows.get(k, (0, ''))
 lines = ['Napi számla-ellenőrzés, a hónap állása:']
 lines.append(f'• Kimenő: {g("ki_osszes")[0]} számla, PDF nélkül {g("ki_pdf_nelkul")[0]}')
-lines.append(f'• Bejövő: {g("be_osszes")[0]} számla, a tárolt jelző szerint PDF nélkül {g("be_pdf_nelkul")[0]}, de ebből {g("be_pdf_megvan_de_nincs_kotve")[0]} esetben a levélből jött PDF megvan, és a felület azt mutatja')
+# the live tree's line since 2026-10-30 (acrobot): the query's fields are be_pdf_nelkul_tarolt, be_pdf_levelbol_van and
+# be_pdf_nincs_egyezes; the older be_pdf_nelkul and be_pdf_megvan_de_nincs_kotve are gone from napi-ellenorzes.sql, and g()
+# answers 0 for a missing key, so the old line would have printed zeros without a word (drift fixed, task drift-rogzites-1031)
+lines.append(f'• Bejövő: {g("be_osszes")[0]} számla. A tárolt jelző (csak a Számlázz.hu feed jelzése) szerint PDF nélkül {g("be_pdf_nelkul_tarolt")[0]}; '
+             f'ebből a begyűjtött levélben, Drive-on vagy feltöltésben megvan a PDF (számlaszám és adószám egyezik): {g("be_pdf_levelbol_van")[0]}; '
+             f'nincs egyező PDF: {g("be_pdf_nincs_egyezes")[0]} (a kézi csatolást a mérés nem látja, a felület ezeket még mutathatja)')
 lines.append(f'• Átnézésre vár: {g("atnezesre_var")[0]}; hiányos összeg: {g("be_hianyos_osszeg")[0]}; határidő nélkül: {g("be_hatarido_nelkul")[0]}')
 try:
     months = json.load(open(sys.argv[2], encoding='utf-8'))['months']
