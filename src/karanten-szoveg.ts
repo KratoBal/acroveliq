@@ -17,6 +17,11 @@ export const READ_LINE_LIMIT = 2000
 export const LARGE_HTML_BYTES = 100 * 1024
 /** The text handed to the reader is cut here (its answer is cut much lower anyway). */
 export const MAX_TEXT_CHARS = 1_500_000
+/** A title longer than this (in the HTML) is not looked at, and the one kept is cut to the second. */
+const MAX_TITLE_SOURCE = 4000
+const MAX_TITLE = 300
+/** A line of the text is broken at a blank before this many characters, so the reader's Read tool shows it whole. */
+export const MAX_LINE = 1800
 
 const NAMED: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', copy: '©', reg: '®', trade: '™', deg: '°', middot: '·', hellip: '…', ndash: '–', mdash: '—', laquo: '«', raquo: '»', times: '×', plusmn: '±', sup2: '²', sup3: '³', micro: 'µ' }
 
@@ -44,10 +49,34 @@ const CELL = new Set(['td', 'th'])
 // inline elements that a page lays out apart with its styles (a footer's links): a space keeps the words apart
 const APART = new Set(['a', 'button', 'label'])
 
-/** The page's title (the head is dropped from the body text), or ''. */
+/** The page's title (the head is dropped from the body text), or ''. Looked up with indexOf and a size cap, never a regex over the page. */
 function titleOf(html: string): string {
-  const m = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html)
-  return m ? decodeEntities(m[1]!.replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim() : ''
+  const lower = html.toLowerCase()
+  for (let from = 0; ; ) {
+    const open = lower.indexOf('<title', from)
+    if (open === -1) return ''
+    const c = lower[open + 6]
+    if (c !== '>' && c !== ' ' && c !== '\t' && c !== '\n' && c !== '\r' && c !== '/') { from = open + 6; continue }
+    const gt = lower.indexOf('>', open)
+    if (gt === -1) return ''
+    const close = lower.indexOf('</title', gt)
+    if (close === -1) return ''
+    // a title is a line, not a page: what is longer than this is not a title
+    if (close - gt > MAX_TITLE_SOURCE) return ''
+    return decodeEntities(html.slice(gt + 1, close).replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim().slice(0, MAX_TITLE)
+  }
+}
+
+/** The position of the closing mark `</name` that ends at a name boundary (not `</header` for `head`), or -1. Forward only. */
+function findClose(lower: string, name: string, from: number): number {
+  const needle = `</${name}`
+  for (let at = from; ; ) {
+    const i = lower.indexOf(needle, at)
+    if (i === -1) return -1
+    const c = lower[i + needle.length]
+    if (c === undefined || c === '>' || c === '/' || c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f') return i
+    at = i + needle.length
+  }
 }
 
 /**
@@ -85,7 +114,7 @@ function strip(html: string): string {
     const gt = html.indexOf('>', lt)
     if (gt === -1) { out.push(html.slice(lt).replace(/\s+/g, ' ')); break }
     if (!slash && DROP.has(name)) {
-      const close = noClose.has(name) ? -1 : lower.indexOf(`</${name}`, gt)
+      const close = noClose.has(name) ? -1 : findClose(lower, name, gt)
       if (close !== -1) {
         const end = html.indexOf('>', close)
         out.push(' ')
@@ -101,15 +130,39 @@ function strip(html: string): string {
   return out.join('')
 }
 
+/** One line: blanks squeezed, the cells' tabs kept, no blank or empty cell at the ends. No regex over the tabs: split and trim. */
+function cleanLine(raw: string): string {
+  const cells = raw.split('\t').map((c) => c.replace(/[ \u00a0\r\f\v]+/g, ' ').trim())
+  let a = 0
+  let b = cells.length
+  while (a < b && cells[a] === '') a++
+  while (b > a && cells[b - 1] === '') b--
+  return cells.slice(a, b).join('\t')
+}
+
+/** A line over MAX_LINE is broken at the last blank before it (at the limit when there is none): the reader sees every line whole. */
+function wrap(line: string): string[] {
+  if (line.length <= MAX_LINE) return [line]
+  const out: string[] = []
+  let rest = line
+  while (rest.length > MAX_LINE) {
+    const at = rest.lastIndexOf(' ', MAX_LINE)
+    const cut = at > MAX_LINE / 2 ? at : MAX_LINE
+    out.push(rest.slice(0, cut).trimEnd())
+    rest = rest.slice(cut).trimStart()
+  }
+  if (rest) out.push(rest)
+  return out
+}
+
 /** The visible text of an HTML page, line by line; '' when there is none. */
 export function htmlToText(html: string): string {
   const title = titleOf(html)
   // a run of marks (with the blanks between them) is one break: a paragraph break if any of them is one
   // zero-width characters (a page's spacer between a name and its price) are not text and only add noise
   const s = decodeEntities(strip(html)).replace(/[\u200b-\u200d\u2060\ufeff]/g, '').replace(/[\u0001\u0002](?:[\u0001\u0002]|[ \t])*/g, (run) => (run.includes(MARK_PARA) ? '\n\n' : '\n'))
-  const lines = s
-    .split('\n')
-    .map((l) => l.replace(/[ \u00a0\r\f\v]+/g, ' ').replace(/ ?\t ?/g, '\t').replace(/^\t+|\t+$/g, '').trim())
+  const lines: string[] = []
+  for (const raw of s.split('\n')) lines.push(...wrap(cleanLine(raw)))
   // an empty line stays only as one separator between blocks
   const out: string[] = []
   for (const l of lines) {
