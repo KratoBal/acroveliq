@@ -164,6 +164,11 @@ function wrap(line: string): string[] {
   return out
 }
 
+/** A text whose lines are all at most MAX_LINE long (a longer one broken at a blank): for text that does not come from htmlToText (Firecrawl's markdown). */
+export function wrapLongLines(text: string): string {
+  return text.split('\n').flatMap((l) => wrap(l)).join('\n')
+}
+
 /** The visible text of an HTML page, line by line; '' when there is none. */
 export function htmlToText(html: string): string {
   const title = titleOf(html)

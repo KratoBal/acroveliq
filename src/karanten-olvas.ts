@@ -21,6 +21,8 @@
 // and the reader gets it as a file; the reader itself never gets WebFetch. A page the reader's Read tool
 // could not see through (large, or one line of hundreds of KB, as modern pages are) goes as its visible
 // TEXT (src/karanten-szoveg.ts), not as the HTML: pageInput.
+// A page that answers 403 or a Cloudflare challenge goes to Firecrawl's scrape API instead (src/karanten-firecrawl.ts), only for a
+// host the egress gate allows; the reader gets the markdown as a file.
 // The reader logs in like the main agent (scripts/channels.sh: CLAUDE_CODE_OAUTH_TOKEN or
 // ANTHROPIC_API_KEY from .env, else store/.claude-oauth-token; acrobot 31077: without it the reader
 // said "Not logged in"). The token goes ONLY into the reader's own environment, never to an output.
@@ -38,8 +40,9 @@ import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { knownSecretValues, secretIn } from './gpt-package.js'
 import { DEFAULT_DEPS, letolt, type DownloadDeps } from './karanten-letolt.js'
+import { FIRECRAWL_ENDPOINT, firecrawlScrape, readFirecrawlKey, urlHasSecret, type Trigger } from './karanten-firecrawl.js'
 import { wrapUntrusted } from './prompt-safety.js'
-import { htmlToText, readerWouldNotSee } from './karanten-szoveg.js'
+import { htmlToText, readerWouldNotSee, wrapLongLines } from './karanten-szoveg.js'
 
 /** The reader's fixed flags. See the header: a change here is a permission change. */
 export const READER_ARGS = Object.freeze(['-p', '--restricted', '--tools', 'Read', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'text'])
@@ -86,6 +89,8 @@ export interface KarantenOptions {
   envFile?: string
   timeoutMs?: number
   maxOutputChars?: number
+  /** Values the reader's answer must not contain (besides the fleet's tokens and its own login): the Firecrawl key on that branch. */
+  secrets?: string[]
 }
 
 export interface KarantenResult { code: 0 | 2 | 3; out: string }
@@ -146,7 +151,7 @@ export async function karantenOlvas(o: KarantenOptions, env: NodeJS.ProcessEnv =
   return inFreshFolder((dir) => copyFileSync(o.file, join(dir, name)), name, 'karanten-fajl', o, env)
 }
 
-export interface KarantenUrlOptions extends Omit<KarantenOptions, 'file'> { url: string; deps?: DownloadDeps }
+export interface KarantenUrlOptions extends Omit<KarantenOptions, 'file'> { url: string; deps?: DownloadDeps; firecrawlEndpoint?: string }
 
 /**
  * The file the reader gets for a downloaded page. A PDF or a plain text goes as it is. An HTML page that the
@@ -168,10 +173,41 @@ export function pageInput(d: { body: Buffer; contentType: string; finalUrl: stri
 
 /** Reads one web page through the quarantine reader: the command downloads it, the reader reads a file. */
 export async function karantenOlvasUrl(o: KarantenUrlOptions, env: NodeJS.ProcessEnv = process.env): Promise<KarantenResult> {
-  const d = await letolt(o.url, o.deps ?? DEFAULT_DEPS)
+  const deps = o.deps ?? DEFAULT_DEPS
+  const d = await letolt(o.url, deps)
+  // a 403 or a Cloudflare challenge (on any status, a 200 included) is the ONLY thing that sends the page to Firecrawl
+  const trigger: Trigger | null = d.ok ? (d.challenge ? 'kihivas' : null) : d.status === 403 ? '403' : d.challenge ? 'kihivas' : null
+  if (trigger) {
+    const r = await viaFirecrawl(o, d.ok ? d.finalUrl : (d.url ?? o.url), trigger, deps, env)
+    // a page that DID download (a 200 taken for a challenge) is not lost when Firecrawl cannot help: it goes the old way, with the reason said
+    if (!d.ok || r.code !== 2) return r
+    const input = pageInput(d)
+    const read = await inFreshFolder((dir) => writeFileSync(join(dir, input.name), input.body, { mode: 0o600 }), input.name, input.source, o, env)
+    return read.code === 0 ? { code: 0, out: `${read.out}\n(KARANTEN: a Firecrawl-visszaesés nem adott tartalmat (${r.out.replace(/^KARANTEN: /, '').replace(/; a tartalom nem jott at\.$/, '')}); az oldal a kozvetlen letoltessel jott at)` } : read
+  }
   if (!d.ok) return { code: 2, out: `KARANTEN: az oldal nem toltodott le (${d.why}); a tartalom nem jott at.` }
   const input = pageInput(d)
   return inFreshFolder((dir) => writeFileSync(join(dir, input.name), input.body, { mode: 0o600 }), input.name, input.source, o, env)
+}
+
+/**
+ * The Firecrawl fallback (src/karanten-firecrawl.ts). `target` is the address that answered with the 403 or the challenge: every hop of
+ * the download passed the egress gate, and the gate is asked again right before the call. The envelope's source says that the page came
+ * through Firecrawl and what made the command ask (karanten-url-firecrawl-403, karanten-url-firecrawl-kihivas).
+ */
+async function viaFirecrawl(o: KarantenUrlOptions, target: string, trigger: Trigger, deps: DownloadDeps, env: NodeJS.ProcessEnv): Promise<KarantenResult> {
+  const why = trigger === '403' ? 'az oldal 403-at adott' : 'az oldal Cloudflare-kihivast adott'
+  const stop = (reason: string): KarantenResult => ({ code: 2, out: `KARANTEN: ${why}, a Firecrawl-visszaesés nem adott tartalmat: ${reason}; a tartalom nem jott at.` })
+  const key = readFirecrawlKey(o.storeDir)
+  if (!key.ok) return stop(key.why)
+  const leak = urlHasSecret(target, [...knownSecretValues(o.storeDir, o.envFile), ...Object.values(o.auth ?? {}), key.key])
+  if (leak) return stop(`a cim titok-alakot tartalmaz (${leak}), ezt nem kuldom ki`)
+  const r = await firecrawlScrape(target, key.key, deps, o.firecrawlEndpoint ?? FIRECRAWL_ENDPOINT)
+  if (!r.ok) return stop(r.why)
+  // the markdown's lines are broken like the page text's: the reader's Read tool shows a line only up to its limit
+  const body = Buffer.from(`URL: ${r.finalUrl}\nForras: Firecrawl (${why})\n\n${wrapLongLines(r.markdown)}\n`, 'utf8')
+  const name = 'bemenet-oldal.md'
+  return inFreshFolder((dir) => writeFileSync(join(dir, name), body, { mode: 0o600 }), name, `karanten-url-firecrawl-${trigger}`, { ...o, secrets: [...(o.secrets ?? []), key.key] }, env)
 }
 
 /** A fresh folder (0700) holding ONLY the one input: the reader's file tools are confined to it. */
@@ -185,7 +221,7 @@ async function inFreshFolder(put: (dir: string) => void, name: string, source: s
     const text = r.out.trim()
     if (!text) return { code: 2, out: 'KARANTEN: az olvaso ures valaszt adott; a tartalom nem jott at.' }
     // the login the reader got is checked too, even when it came from the environment, not a file
-    const hit = secretIn(text, [...knownSecretValues(o.storeDir, o.envFile), ...Object.values(o.auth ?? {})])
+    const hit = secretIn(text, [...knownSecretValues(o.storeDir, o.envFile), ...Object.values(o.auth ?? {}), ...(o.secrets ?? [])])
     if (hit) return { code: 3, out: `KARANTEN: a kivonat titok-alakot tartalmaz (${hit}); nem jott at.` }
     const max = o.maxOutputChars ?? MAX_OUTPUT_CHARS
     const cut = text.length > max
