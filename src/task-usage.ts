@@ -952,8 +952,8 @@ export type ProfileChange =
  * tasks ended as a document under a profile that asks for a PR: murena's caparium-2
  * (no profile, msg 31737) and nautilus's p01-kikenyszerit-keszseg (code_fleet, msg
  * 39265). The field and a profile_changed event in one transaction; `to` must be a
- * profile, the caller checks who may do it. LEAVING a code profile is refused once
- * the task has named a repo (a review, a verdict, a merge or a deploy): then it has
+ * profile, the caller checks who may do it. LEAVING a code profile (or none, which the
+ * done guard holds to the code rule) for another is refused once the task has named a repo (a review, a verdict, a merge or a deploy): then it has
  * code, and its done keeps asking for the merge. Events already stored are not touched.
  */
 export function setTaskProfile(
@@ -966,10 +966,11 @@ export function setTaskProfile(
     if (!row) throw new Error(`no task ${taskId}`)
     const from = row.verification_profile
     if (from === to) return { changed: false, from }
-    if (from && CODE_PROFILES.has(from) && !CODE_PROFILES.has(to)) {
+    // a task without a profile is held to the code rule, as the done guard holds it (barracuda, #325)
+    if ((!from || CODE_PROFILES.has(from)) && !CODE_PROFILES.has(to)) {
       const code = loadTaskEvents(db, taskId).find((e) => REPO_KINDS.has(e.kind) && eventRepo(e.ref, e.data))
       if (code)
-        return { refused: `a feladat ${from} profilú, és a ${code.id}. esemény (${code.kind}) már repót nevez meg (${eventRepo(code.ref, code.data)}): kódos feladat PR-követelménye nem lazul` }
+        return { refused: `a feladat ${from ?? 'profil nélküli'}${from ? ' profilú' : ''}, és a ${code.id}. esemény (${code.kind}) már repót nevez meg (${eventRepo(code.ref, code.data)}): kódos feladat PR-követelménye nem lazul` }
     }
     db.prepare('UPDATE tasks SET verification_profile = ?, updated_at = ? WHERE id = ?').run(to, now, taskId)
     addTaskEvent(db, {

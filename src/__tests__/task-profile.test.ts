@@ -112,6 +112,16 @@ describe('a code task keeps its PR rule', () => {
     expect([profileOf('c9'), marked(await event('c9', 'done', 'kesz'))]).toEqual(['code_fleet', true])
   })
 
+  it('PROFILE-CODE-NONE: a task without a profile that named a repo is held to the code rule: docs is 409, a code profile goes', async () => {
+    task('n1')
+    await event('n1', 'review_requested', 'KratoBal/acroveliq#76 fej abc1234')
+    const toDocs = await setProfile('n1', 'docs')
+    const toOps = await setProfile('n1', 'ops')
+    const toCode = await setProfile('n1', 'code_fleet')
+    expect([toDocs.status, /profil nélküli, és a \d+\. esemény \(review_requested\)/.test(toDocs.body.reason ?? ''), toOps.status, toCode.status, profileOf('n1'), marked(await event('n1', 'done', 'kesz'))])
+      .toEqual([409, true, 409, 200, 'code_fleet', true])
+  })
+
   it('PROFILE-CODE-OTHER: a change between code profiles, or towards one, is not a loosening and goes', async () => {
     task('k1', 'code_fleet')
     await event('k1', 'review_requested', 'KratoBal/acropora-os#1950 fej abc1234')
