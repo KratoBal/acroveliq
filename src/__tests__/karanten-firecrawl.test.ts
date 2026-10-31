@@ -206,6 +206,10 @@ describe('what does not loosen', () => {
     expect([r1.code, r1.out.includes('az egress-kapu nem engedi'), r2.code, r2.out.includes('nem engedelyezett helyre vitt')]).toEqual([2, true, 2, true])
     expect(posts.length).toBe(1)
     expect(r2.out).not.toContain('Tartalom')
+    // the text outside the envelope carries nothing the page chose: not the host name Firecrawl reported (barracuda, #329)
+    expect(r2.out).not.toContain('evil.test')
+    const odd = await run('/tiltott', deps({ answer: () => page('# x', { url: 'ftp://szornyu.test/x' }) }))
+    expect([odd.code, odd.out.includes('nem http(s) veg-cimet adott'), odd.out.includes('szornyu'), odd.out.includes('ftp')]).toEqual([2, true, false, false])
   })
 
   it('FC-URL-SECRET: an address that carries a secret shape or a fleet token is not sent, and the message names the shape, not the secret', async () => {
