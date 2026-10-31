@@ -16,6 +16,7 @@ import {
   doneGuard,
   eventRepo,
   REPO_KINDS,
+  setTaskProfile,
   setTaskProject,
   githubMergeProbe,
   isTaskPaused,
@@ -29,6 +30,7 @@ import {
   type MergeProbe,
   type TaskCoreMode,
   type TaskEventKind,
+  type VerificationProfile,
 } from '../../task-usage.js'
 import { CLOSED_KINDS, waitsOn } from '../../open-matters.js'
 import { DECISION_OWNER_USER } from '../../config.js'
@@ -59,6 +61,8 @@ import type { RouteContext } from './types.js'
 //   POST /api/tasks/<task>/events         an event: {kind, actor, at?, ref?, data?, idem_key?} (at: seconds or
 //                                         ISO, default now; the key also as an Idempotency-Key header)
 //   POST /api/tasks/<task>/sessions       a session of the task: {agent, session_id}
+//   POST /api/tasks/<task>/profile        its verification profile changed: {verification_profile, reason};
+//                                         the main agent or the owner only (setTaskProfile)
 //   GET  /api/tasks/<task>/usage          the task's usage; with ?variants=1 its variants beside it
 //   GET  /api/tasks/<task>/timeline       events, handoff records and sessions, in time order;
 //                                         `fields`: the task's title, goal, assignee, reviewer,
@@ -81,7 +85,7 @@ import type { RouteContext } from './types.js'
 // task may name the file. `naplo` marks the event, `kenyszerit` refuses it with
 // 409. Events already stored are not touched. See reviewRefGuard.
 
-const TASK_PATH = /^\/api\/tasks\/([^/]+)\/(events|sessions|usage|timeline|project)$/
+const TASK_PATH = /^\/api\/tasks\/([^/]+)\/(events|sessions|usage|timeline|project|profile)$/
 
 const IDEM_KEY = /^[\x21-\x7e]{8,200}$/
 const MAX_DATA = 16 * 1024
@@ -256,7 +260,7 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (profile && stored?.verification_profile && stored.verification_profile !== profile) {
-      json(res, { error: `verification_profile is ${stored.verification_profile} and cannot be changed` }, 409)
+      json(res, { error: `verification_profile is ${stored.verification_profile} and cannot be changed here (a change is POST /api/tasks/${id}/profile, with a reason)` }, 409)
       return true
     }
     // a coordination task holds its handoffs to the four fields (task-handoffs.ts); an
@@ -376,6 +380,39 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // task-core-doc-would-reject, the one way a task's verification profile changes: a task
+  // that ended as a document under a code profile (or under none) gets the right one. The
+  // same callers as the project's, a reason always, and a code task that named its PR keeps
+  // its profile (setTaskProfile). The task's own agent cannot loosen its own done.
+  if (match[2] === 'profile') {
+    const caller = callerOfContext(ctx.auth)
+    const owner = decisionOwner(ctx.auth, caller?.column, DECISION_OWNER_USER)
+    if (caller?.column !== 'A' && !owner.ok) {
+      json(res, { error: 'a verification profile is changed by the main agent\'s own token or the owner\'s session only' }, 403)
+      return true
+    }
+    const to = text(b.verification_profile)
+    const reason = text(b.reason)
+    if (!to || !(VERIFICATION_PROFILES as readonly string[]).includes(to) || !reason) {
+      json(res, {
+        error: 'invalid profile change',
+        missing: [
+          ...(to && (VERIFICATION_PROFILES as readonly string[]).includes(to) ? [] : [`verification_profile (${VERIFICATION_PROFILES.join('|')})`]),
+          ...(reason ? [] : ['reason (why the profile was wrong)']),
+        ],
+      }, 400)
+      return true
+    }
+    const actor = owner.ok ? owner.user : caller!.name
+    const out = setTaskProfile(getDb(), taskId, to as VerificationProfile, actor, reason, now)
+    if ('refused' in out) {
+      json(res, { error: 'profile change refused', reason: out.refused }, 409)
+      return true
+    }
+    json(res, out.changed ? { id: taskId, verification_profile: to, from: out.from } : { id: taskId, verification_profile: to, repeated: true })
+    return true
+  }
+
   if (match[2] === 'events') {
     const kind = text(b.kind)
     // who did it is the token's owner, not the body's: #18's measure counts these events (barracuda, #22)
@@ -404,6 +441,10 @@ export async function tryHandleTaskUsage(ctx: RouteContext): Promise<boolean> {
     }
     if (kind === 'project_changed') {
       json(res, { error: 'a project_changed event is written by POST /api/tasks/:id/project only' }, 403)
+      return true
+    }
+    if (kind === 'profile_changed') {
+      json(res, { error: 'a profile_changed event is written by POST /api/tasks/:id/profile only' }, 403)
       return true
     }
     if (kind === 'paused' || kind === 'resumed' || kind === 'owner_action') {
