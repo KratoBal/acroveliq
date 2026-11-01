@@ -8,7 +8,7 @@
 //   the calling agent, as its own user   scripts/gpt-csomag/t13-jelzo-os.mjs bemenet: the OS build ->
 //                                        inputs.json (no case id, no polarity) + key.json (stays with it)
 //   marveen (the runner token is his)    THIS module: reads inputs.json as DATA -> one prompt -> the
-//                                        secret check -> hatar.py -> one POST /futtat -> answer.txt
+//                                        secret check -> hatar.py on the data lines -> one POST /futtat -> answer.txt
 //   the calling agent again              t13-jelzo-os.mjs pontoz: answer.txt + key.json -> the OS's scoreFlags
 //
 // WHY THE SPLIT (barracuda): marveen is the widest user, and an OS checkout is a tree agents can write. Had this
@@ -68,7 +68,7 @@ export function parseInputs(raw: string): { ok: true; inputs: FlagInput[] } | { 
 
 export const CHECK_LIST = [
   'Független ellenőrző vagy egy kutatási tudásbázis mellett. Minden sor egy mondat és az az állítás, amire a mondat hivatkozik.',
-  'Sor: <azonosító> | <mondat> | <az állítás hatása> <iránya> <taxon>.',
+  'Sor: <azonosító>: <mondat> | <az állítás hatása> <iránya> <taxon>.',
   'Egyetlen kérdést nézz: a mondat UGYANARRÓL a hatásról szól-e, mint az állítás, vagy mellette vagy általa egy rokon, de MÁS hatást (más mért mennyiséget) is állít.',
   'Ha a mondat ugyanazt a hatást mondja más szóval (szinonima, üteme, rátája, erőssége), az nem eltérés.',
   'Ha a mondat bármilyen más hatást is állít, vagy bizonytalan vagy: JELEZ.',
@@ -77,10 +77,26 @@ export const CHECK_LIST = [
   'Válasz: minden sorra pontosan egy sor, `<azonosító> JELEZ` vagy `<azonosító> NEM`, más szöveg nélkül.',
 ].join('\n')
 
-/** The prompt: the check list, then one line per item. */
-export function buildPrompt(inputs: FlagInput[]): string {
-  const lines = inputs.map((i) => `${i.ref} | ${i.sentence} | ${i.claim.effectLabel} ${i.claim.direction} ${i.claim.taxa.join(',')}`)
-  return `${CHECK_LIST}\n\n${lines.join('\n')}\n`
+/**
+ * The data block: one line per item, in the two shapes the filter reads as plain text (acrobot 39476):
+ * - the keys in lower case: in the live T13 prompt the upper-case pair ("DECREASE ACROPORA") is an all-caps run the
+ *   filter masked as a PERSON, the lower-case one passed;
+ * - a colon after the ref: the filter takes a capital after "|" for a name inside a sentence and masks every
+ *   sentence's first word ("<PROPER_1> szerint"); after a colon it is a sentence start, read with the common-word
+ *   and name lists as everywhere else (a name there is still masked).
+ */
+export function dataLines(inputs: FlagInput[]): string {
+  const key = (k: string) => k.toLowerCase()
+  return inputs.map((i) => `${i.ref}: ${i.sentence} | ${i.claim.effectLabel} ${key(i.claim.direction)} ${i.claim.taxa.map(key).join(',')}`).join('\n')
+}
+
+/**
+ * The prompt: the check list, then the data block. Only the data block goes through the filter: the check list is
+ * this module's constant and carries no personal data, and in the live T13 prompt the filter masked two of its
+ * pieces ("Minden sor egy" as an ADDRESS, "Sor" as a PROPER; acrobot 39476).
+ */
+export function buildPrompt(data: string): string {
+  return `${CHECK_LIST}\n\n${data}\n`
 }
 
 export interface RunOptions {
@@ -111,22 +127,23 @@ export async function run(o: RunOptions, deps: RunDeps = {}): Promise<number> {
   try { raw = readFileSync(o.inputFile, 'utf8') } catch { say(`NINCS VALASZ: a bemenet nem olvashato (${o.inputFile}).`); return 1 }
   const parsed = parseInputs(raw)
   if (!parsed.ok) { say(`NINCS VALASZ: ${parsed.why}; nem ment ki semmi.`); return 1 }
-  const prompt = buildPrompt(parsed.inputs)
+  const data = dataLines(parsed.inputs)
 
-  // the prompt comes from a file another user wrote: the secret check before anything leaves (barracuda, #331)
-  const hit = secretIn(prompt, knownSecretValues(o.pkg.storeDir, o.pkg.envFile))
+  // the data comes from a file another user wrote: the secret check before anything leaves (barracuda, #331)
+  const hit = secretIn(buildPrompt(data), knownSecretValues(o.pkg.storeDir, o.pkg.envFile))
   if (hit) {
     log({ result: 'elutasitva', why: `titok-minta: ${hit}` })
     say(`NINCS VALASZ: a bemenetben titok-minta all (${hit}); nem ment ki semmi.`)
     return 1
   }
-  const red = await redactBody(prompt, o.pkg.boundary)
+  const red = await redactBody(data, o.pkg.boundary)
   if (!red.ok) {
     log({ result: 'elutasitva', why: red.why })
     say(`NINCS VALASZ: a szemelyesadat-szuro elutasitotta (${red.why}); nem ment ki semmi.`)
     return 1
   }
-  const sent = { prompt_sha256: sha256(red.text), prompt_bytes: Buffer.byteLength(red.text), counts: red.counts, items: parsed.inputs.length }
+  const prompt = buildPrompt(red.text)
+  const sent = { prompt_sha256: sha256(prompt), prompt_bytes: Buffer.byteLength(prompt), counts: red.counts, items: parsed.inputs.length }
   if (o.proba) {
     say(`PROBA: ${sent.items} tetel, a szurokon atment (${JSON.stringify(red.counts)}), sha256 ${sent.prompt_sha256}, ${sent.prompt_bytes} bajt; a futtatohoz nem ment ki.`)
     return 0
@@ -143,7 +160,7 @@ export async function run(o: RunOptions, deps: RunDeps = {}): Promise<number> {
     const res = await doFetch(endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: JSON.stringify({ prompt: red.text }),
+      body: JSON.stringify({ prompt }),
       signal: AbortSignal.timeout(o.runner.timeoutMs),
     })
     if (!res.ok) throw new Error(`a futtato ${res.status} valaszt adott`)
