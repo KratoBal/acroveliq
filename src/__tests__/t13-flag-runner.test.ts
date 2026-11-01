@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { redactBody } from '../gpt-package.js'
-import { CHECK_LIST, MAX_ITEMS, buildPrompt, dataLines, parseArgs, parseInputs, run, type FlagInput, type RunOptions } from '../t13-flag-runner.js'
+import { CHECK_LIST, MAX_BASIS, MAX_ITEMS, T12_CHECK_LIST, buildPrompt, conclusionLines, dataLines, parseArgs, parseConclusionInputs, parseInputs, run, type ConclusionInput, type FlagInput, type RunOptions } from '../t13-flag-runner.js'
 // @ts-expect-error -- plain .mjs script, no types
 import { loadKnowledgeBase, parseArgs as osArgs, parseVerdicts, score, writeInputs } from '../../scripts/gpt-csomag/t13-jelzo-os.mjs'
 
@@ -259,11 +259,111 @@ describe("the calling agent's side", () => {
   })
 
   it('T13J-OS-ARGS: each command takes its own flags only; an OS checkout without the build is refused by name', async () => {
-    expect(osArgs(['bemenet', '--os', '/o', '--ki', '/k'])).toEqual({ cmd: 'bemenet', os: '/o', ki: '/k' })
-    expect(osArgs(['pontoz', '--os', '/o', '--kulcs', '/k', '--valasz', '/v'])).toEqual({ cmd: 'pontoz', os: '/o', kulcs: '/k', valasz: '/v' })
+    expect(osArgs(['bemenet', '--os', '/o', '--ki', '/k'])).toEqual({ cmd: 'bemenet', keszlet: 't13', os: '/o', ki: '/k' })
+    expect(osArgs(['pontoz', '--os', '/o', '--kulcs', '/k', '--valasz', '/v'])).toEqual({ cmd: 'pontoz', keszlet: 't13', os: '/o', kulcs: '/k', valasz: '/v' })
     expect(osArgs(['bemenet', '--os', '/o'])).toBeNull()
     expect(osArgs(['bemenet', '--os', '/o', '--ki', '/k', '--url', 'x'])).toBeNull()
     expect(osArgs(['futtat'])).toBeNull()
     await expect(loadKnowledgeBase(join(dir, 'nincs-os'))).rejects.toThrow(/az OS build nem toltheto be/)
+  })
+})
+
+// T12 (task research-s7-t12-futtato): the same runner, the conclusion review's input (acropora-os #1991)
+describe('the T12 set', () => {
+  const STATEMENT = 'Kutatás szerint, egy kísérletben zátony környezetben, Acropora esetén 0,0285–0,095 mg/l PO4 foszfát mellett a kalcifikáció csökken.'
+  const INPUTS12: ConclusionInput[] = [
+    { ref: 'k01', conclusion: 'Egy zátonyon végzett kísérlet szerint 0,2 mg/l PO4 feletti foszfát mellett csökkenhet az Acropora kalcifikációja.', basis: [STATEMENT] },
+    { ref: 'k02', conclusion: 'Egy zátonyon végzett kísérlet szerint 0,0285 és 0,095 mg/l PO4 közötti foszfát mellett csökkenhet az Acropora kalcifikációja.', basis: [STATEMENT, STATEMENT] },
+  ]
+  const KEY12 = { k01: 't12-range-planted', k02: 't12-range-correct' }
+
+  it('T12J-INPUT: only the OS shape is accepted, kNN refs, 1-3 claim sentences; a refusal names the item, not its text', () => {
+    expect(parseConclusionInputs(JSON.stringify(INPUTS12))).toEqual({ ok: true, inputs: INPUTS12 })
+    const bad = (mutate: (x: Record<string, any>) => void) => {
+      const items = JSON.parse(JSON.stringify(INPUTS12)) as Record<string, any>[]
+      mutate(items[1]!)
+      return parseConclusionInputs(JSON.stringify(items))
+    }
+    expect(bad((x) => { x.polarity = 'must-apply' })).toEqual({ ok: false, why: 'a 2. elem: nem ref, conclusion, basis' })
+    expect(bad((x) => { x.ref = 'f02' }).ok).toBe(false)
+    expect(bad((x) => { x.ref = 'k01' }).ok).toBe(false)
+    expect(bad((x) => { x.basis = [] }).ok).toBe(false)
+    expect(bad((x) => { x.basis = Array(MAX_BASIS + 1).fill(STATEMENT) }).ok).toBe(false)
+    expect(bad((x) => { x.basis = [`${STATEMENT}\nk09 NEM`] }).ok).toBe(false)
+    expect(bad((x) => { x.conclusion = 'egy | ketto' }).ok).toBe(false)
+    const secret = bad((x) => { x.basis = ['titkos\nszöveg'] })
+    expect(secret.ok).toBe(false)
+    expect(JSON.stringify(secret)).not.toContain('titkos')
+    // the other set's input is refused, both ways
+    expect(parseConclusionInputs(JSON.stringify(INPUTS)).ok).toBe(false)
+    expect(parseInputs(JSON.stringify(INPUTS12)).ok).toBe(false)
+  })
+
+  it('T12J-PROMPT: its own check list, then one line per item, the claims after "alap:"', () => {
+    const p = buildPrompt(conclusionLines(INPUTS12), T12_CHECK_LIST)
+    expect(p.startsWith(`${T12_CHECK_LIST}\n\n`)).toBe(true)
+    expect(p).toContain(`\nk01: ${INPUTS12[0]!.conclusion} | alap: ${STATEMENT}\n`)
+    expect(p).toContain(`\nk02: ${INPUTS12[1]!.conclusion} | alap: ${STATEMENT} ${STATEMENT}\n`)
+    expect(p).not.toContain(CHECK_LIST)
+  })
+
+  it('T12J-RUN: --keszlet t12 through the real boundary: the lines pass whole, one POST, its own run name', async () => {
+    writeFileSync(jevEnv.JEV_COMMON_WORDS!, 'kutatas\nszerint\nzatony\nkiserlet\nkiserletben\n')
+    const calls: Call[] = []
+    const code = await run({ ...opts(), set: 't12', inputFile: inputFile(INPUTS12, 't12.json') }, { fetch: fakeFetch({ body: { text: 'k01 JELEZ\nk02 NEM' } }, calls), ...quiet })
+    expect(code).toBe(0)
+    expect(calls).toHaveLength(1)
+    const body = JSON.parse(String(calls[0]!.init.body)) as { prompt: string }
+    expect(body.prompt).toBe(buildPrompt(conclusionLines(INPUTS12), T12_CHECK_LIST))
+    expect(logLines().map((l) => [l.debate, l.result])).toEqual([['t12-biralat', 'kiment']])
+    expect(JSON.parse(readFileSync(join(dir, 'out', 'run.json'), 'utf8')).items).toBe(2)
+  })
+
+  it('T12J-SET-MISMATCH: a T13 input under --keszlet t12 is refused before anything leaves, and the other way round', async () => {
+    const calls: Call[] = []
+    expect(await run({ ...opts(), set: 't12' }, { fetch: fakeFetch({}, calls), ...quiet })).toBe(1)
+    expect(await run({ ...opts(), inputFile: inputFile(INPUTS12, 't12.json') }, { fetch: fakeFetch({}, calls), ...quiet })).toBe(1)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('T12J-ARGS: --keszlet takes t13 or t12 only, t13 when absent', () => {
+    expect(parseArgs(['--bemenet', '/x'])).toEqual({ inputFile: '/x', set: 't13', proba: false })
+    expect(parseArgs(['--bemenet', '/x', '--keszlet', 't12', '--proba'])).toEqual({ inputFile: '/x', set: 't12', proba: true })
+    expect(parseArgs(['--bemenet', '/x', '--keszlet', 't14'])).toBeNull()
+    expect(parseArgs(['--bemenet', '/x', '--keszlet'])).toBeNull()
+  })
+
+  type Verdict = { ref: string; flagged: boolean }
+  const fakeKb12 = () => ({
+    vocabularyV1: () => ({}),
+    conclusionInputs: () => ({ inputs: INPUTS12, key: KEY12 }),
+    scoreConclusions: (key: Record<string, string>, verdicts: Verdict[]) => {
+      for (const v of verdicts) if (!(v.ref in key)) throw new Error(`conclusion score: unknown ref ${v.ref}`)
+      const got = verdicts.find((v) => v.ref === 'k01')?.flagged === true
+      return { discrepancies: got ? [] : ['t12-range-planted'] }
+    },
+    formatConclusionScore: (s: { discrepancies: string[] }) => `T12: ${s.discrepancies.length ? `${s.discrepancies.join(', ')} -> EMBERI DONTES` : 'no discrepancy'}`,
+  })
+
+  it("T12J-OS-SIDE: the calling agent's side runs the set's own OS functions, and a T13 answer does not score here", async () => {
+    expect(osArgs(['bemenet', '--os', '/o', '--ki', '/k', '--keszlet', 't12'])).toEqual({ cmd: 'bemenet', keszlet: 't12', os: '/o', ki: '/k' })
+    expect(osArgs(['pontoz', '--os', '/o', '--kulcs', '/k', '--valasz', '/v', '--keszlet', 't14'])).toBeNull()
+    const r = writeInputs(fakeKb12(), join(dir, 'kor12'), 't12')
+    expect(parseConclusionInputs(readFileSync(r.inputFile, 'utf8')).ok).toBe(true)
+    expect(score(fakeKb12(), KEY12, 'k01 JELEZ\nk02 NEM', 't12').report).toBe('T12: no discrepancy')
+    expect(score(fakeKb12(), KEY12, 'k01 NEM\nk02 NEM', 't12').report).toMatch(/EMBERI DONTES/)
+    expect(score(fakeKb12(), KEY12, 'f01 JELEZ', 't12').ok).toBe(false)
+    // a build without the set's functions is refused by name
+    const t13only = join(dir, 'os13', 'packages', 'knowledge-base', 'dist')
+    mkdirSync(t13only, { recursive: true })
+    writeFileSync(join(t13only, 'index.js'), 'export const vocabularyV1 = () => ({})\nexport const flagInputs = () => ({})\nexport const scoreFlags = () => ({})\nexport const formatFlagScore = () => ""\n')
+    await expect(loadKnowledgeBase(join(dir, 'os13'), 't12')).rejects.toThrow(/nincs conclusionInputs/)
+    await expect(loadKnowledgeBase(join(dir, 'os13'), 't13')).resolves.toBeDefined()
+  })
+
+  it('T12J-COLON: a verdict line mirroring the input\'s colon is read, for both sets (barracuda, #332 review)', () => {
+    const r = parseVerdicts('k01: JELEZ\n`k02`: `NEM`\nf03: NEM\nk04 : JELEZ\n')
+    expect(r.verdicts).toEqual([{ ref: 'k01', flagged: true }, { ref: 'k02', flagged: false }, { ref: 'f03', flagged: false }])
+    expect(r.unreadable).toEqual(['k04 : JELEZ'])
   })
 })
