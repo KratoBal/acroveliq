@@ -29,7 +29,7 @@ import os
 import re
 import unicodedata
 
-REDACTION_VERSION = "r15"
+REDACTION_VERSION = "r16"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 KNOWN_ENTITIES_PATH = os.environ.get(
@@ -38,6 +38,7 @@ PRESERVE_PATH = os.path.join(_HERE, "preserve-terms.json")
 COMMON_WORDS_PATH = os.environ.get(
     "JEV_COMMON_WORDS", "/home/marveen/marveen/store/jev-common-words.txt")
 GIVEN_NAMES_PATH = os.path.join(_HERE, "hu-names.txt")
+EN_OPENERS_PATH = os.path.join(_HERE, "en-openers.txt")
 
 # Latin letter lookalikes that have been seen in our own text (Cyrillic and
 # Greek). Folding them lets the known-entity layer match a disguised name;
@@ -474,11 +475,17 @@ def _find_spans(text, known):
             continue
         if _is_name(base):
             spans.append((m.start(), m.end(), "PERSON"))
+        elif base in _FIGURE_REFS and _FIGURE_NUMBER.match(text, m.end()):
+            # "(Fig. 4c)", "Table 2", "Figure S3": a reference into the paper, not a name; only
+            # with the number after it, so a bare capitalised word before a number still masks
+            continue
         elif not _sentence_initial(text, m.start()):
             if base not in _OPENERS:
                 spans.append((m.start(), m.end(), "PROPER"))
                 proper_stems.add(_stem(base))
-        elif base not in _OPENERS:
+        elif base not in _OPENERS and base not in EN_OPENERS:
+            # EN_OPENERS: an English abstract's sentence opener ("Increased", "However") is not
+            # in our Hungarian common words, and was masked as a proper noun
             initial.append(m)
     # a sentence-initial capitalised word is masked when (a) it is addressed or
     # labelled ("Mohácsi, nézd", "Kerekes: a lámpa"), (b) the same stem shows
@@ -581,6 +588,12 @@ takács takacs juhász juhasz molnár molnar farkas varga lukács lukacs biró b
 """.split()}
 
 
+# A reference into a paper: the word, an optional dot, then a number ("Fig. 4c", "Table 2",
+# "Figure S3", "Eq. (5)"). Without the number the word is judged like any other.
+_FIGURE_REFS = {"fig", "figs", "figure", "figures", "table", "tables", "tab", "eq", "eqs", "equation"}
+_FIGURE_NUMBER = re.compile(r"\.?[ \t]?\(?S?\d")
+
+
 # Capitalised only because they open a sentence. Stripped from the FRONT of
 # a person-shaped run; everything else in the run stays masked. The safe
 # direction is over-masking: a surname at sentence start ("Kovács Péter
@@ -601,7 +614,10 @@ def _person_span(text, s, e):
     if frag[:1].islower() or frag.split()[0].rstrip(".") in ("dr", "Dr", "ifj", "id", "özv", "prof", "Prof", "Mr", "Mrs", "Ms"):
         return (s, e)
     words = list(re.finditer(r"\S+", frag))
-    while words and fold(words[0].group(0)) in _OPENERS:
+    while words and (fold(words[0].group(0)) in _OPENERS
+                     or fold(words[0].group(0).rstrip(",")) in EN_OPENERS):
+        # an English opener only at the front ("However, Kovács Péter"); inside a sentence the
+        # single-word pass still masks it as a proper noun
         words.pop(0)
     while words and _is_preserved(words[0].group(0)):
         words.pop(0)
@@ -660,6 +676,19 @@ def _strip_suffix(w, depth=0):
             if cand + "e" in GIVEN_NAMES:
                 return cand + "e"
     return w
+
+
+def _load_en_openers():
+    """en-openers.txt, minus every word the name list knows (a name never passes as an opener)."""
+    try:
+        with open(EN_OPENERS_PATH, encoding="utf-8") as f:
+            words = {fold(x) for line in f if not line.lstrip().startswith("#") for x in line.split()}
+    except OSError:
+        return frozenset()
+    return frozenset(w for w in words if not _is_name(w) and w not in _AMBIGUOUS)
+
+
+EN_OPENERS = _load_en_openers()
 
 
 _COUNCIL = re.compile(r"\b(?:PD|ACD|CH|[PDQCA])-\d{3}\b")

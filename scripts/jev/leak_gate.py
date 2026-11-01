@@ -34,7 +34,7 @@ STATUS = os.environ.get("JEV_LEAK_GATE_STATUS", "/home/marveen/marveen/store/jev
 # The GPT package's boundary (gpt-csomag/hatar.py) decides what the redactor sees: it swaps the
 # debate's participants for preserved tokens. A change there must close the gate too (barracuda,
 # #181 review; acrobot 31140), and the suite runs through that path as well (run(keep_names=...)).
-CODE_FILES = ["redact.py", "shadow.py", "offline.py", "hu-names.txt", "preserve-terms.json", "leak-suite.json",
+CODE_FILES = ["redact.py", "shadow.py", "offline.py", "hu-names.txt", "en-openers.txt", "preserve-terms.json", "leak-suite.json",
               "leak-suite-pairing.json", "../gpt-csomag/hatar.py"]
 # The pairing mode (redact.PAIRING_KEEP) keeps business data, so it has its own
 # suite: the gate is green only if BOTH runs leak nothing.

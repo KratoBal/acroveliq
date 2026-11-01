@@ -1,5 +1,5 @@
 {
- "suite_version": "hu-leak-v8",
+ "suite_version": "hu-leak-v9",
  "note": "Hand-written, fictional data only (no real person, account or address). A case passes when NONE of its leak strings survives in the redacted text, compared after folding (case, accents, homoglyphs). 'keep' strings are the semantics we want preserved; they are reported, not gated. v1: 50 cases by acrobot; b1-: 45 and b2-: 50 cases written blind by separate agents that never saw the redactor, 2026-09-28; b3-: 28 cases from barracuda's read-only review of r1; b4-: 50 cases written blind by a third agent, scored untuned first (8 of 50 leaked on r2). Reviewed by acrobot 2026-09-28; any edit bumps suite_version. v4: +10 cases from nautilus and barracuda reading 200 real texts on r5 (fictional analogues). v6 (nautilus, 2026-10-01): two email cases the r12 patterns missed: a domain broken across a PDF line, and a bare user@host. v7 (nautilus, 2026-10-15): two IPv4 cases at the end of a sentence, which r14 left readable (murena, 30893). v8 (nautilus, 2026-11-01): four cases with the coral genera and layer words preserve-terms.json now keeps (research-s7-t12, acrobot 39476): a person next to a kept genus is still masked; and one with the layer phrases' capitalised words (Akvarisztikai, Kutatások), kept too.",
  "cases": [
   {
@@ -2838,6 +2838,41 @@
    "keep": [
     "Akvarisztikai tapasztalat",
     "Kutatások szerint"
+   ]
+  },
+  {
+   "id": "v9-en-opener-then-surname",
+   "text": "f03: Smith reported more bleaching. Increased temperature followed (Fig. 4c).",
+   "leak": [
+    "Smith"
+   ],
+   "keep": [
+    "Increased temperature",
+    "Fig. 4c"
+   ]
+  },
+  {
+   "id": "v9-en-opener-before-name",
+   "text": "However, Kovács Péter disagreed. Wilson measured it, and these Taylor colonies died.",
+   "leak": [
+    "Kovács Péter",
+    "Kovács",
+    "Wilson",
+    "Taylor"
+   ],
+   "keep": [
+    "However, "
+   ]
+  },
+  {
+   "id": "v9-figure-word-needs-number",
+   "text": "Kérdezd meg Szabados 4 darabról, a Table szerint Jones 2 db, a Tab. 2 szerint több.",
+   "leak": [
+    "Szabados",
+    "Jones"
+   ],
+   "keep": [
+    "Tab. 2"
    ]
   }
  ]
