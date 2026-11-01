@@ -7,7 +7,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { CHECK_LIST, MAX_ITEMS, buildPrompt, parseArgs, parseInputs, run, type FlagInput, type RunOptions } from '../t13-flag-runner.js'
+import { redactBody } from '../gpt-package.js'
+import { CHECK_LIST, MAX_ITEMS, buildPrompt, dataLines, parseArgs, parseInputs, run, type FlagInput, type RunOptions } from '../t13-flag-runner.js'
 // @ts-expect-error -- plain .mjs script, no types
 import { loadKnowledgeBase, parseArgs as osArgs, parseVerdicts, score, writeInputs } from '../../scripts/gpt-csomag/t13-jelzo-os.mjs'
 
@@ -133,10 +134,10 @@ describe('the marveen side reads data, not code', () => {
     expect(parseInputs(JSON.stringify(Array.from({ length: MAX_ITEMS + 1 }, (_, i) => ({ ...INPUTS[0]!, ref: `f${String(i).padStart(2, '0')}` })))).ok).toBe(false)
   })
 
-  it('T13J-PROMPT: the check list, then one line per item', () => {
-    const p = buildPrompt(INPUTS)
-    expect(p.startsWith(CHECK_LIST)).toBe(true)
-    expect(p).toContain('f01 | Kutatás szerint a foszfát csökkentette az Acropora kalcifikációját és vázporozitását. | kalcifikáció DECREASE ACROPORA')
+  it('T13J-PROMPT: the check list, then one line per item, the keys in lower case', () => {
+    const p = buildPrompt(dataLines(INPUTS))
+    expect(p.startsWith(`${CHECK_LIST}\n\n`)).toBe(true)
+    expect(p).toContain('\nf01: Kutatás szerint a foszfát csökkentette az Acropora kalcifikációját és vázporozitását. | kalcifikáció decrease acropora\n')
   })
 })
 
@@ -152,6 +153,24 @@ describe('one run as marveen', () => {
     expect(readFileSync(join(dir, 'out', 'answer.txt'), 'utf8')).toBe('f01 JELEZ\nf02 NEM')
     expect(statSync(join(dir, 'out', 'answer.txt')).mode & 0o777).toBe(0o640)
     expect(logLines().map((l) => [l.debate, l.result])).toEqual([['t13-jelzo', 'kiment']])
+  })
+
+  it('T13J-FILTER-SHAPE: only the data lines go through the filter, and they pass it whole (acrobot 39476)', async () => {
+    // the live redactor's common-word list is what turns an all-caps pair into a PERSON; a small one here
+    writeFileSync(jevEnv.JEV_COMMON_WORDS!, 'kutatas\nszerint\nfoszfat\n')
+    const calls: Call[] = []
+    expect(await run(opts(), { fetch: fakeFetch({ body: { text: 'f01 JELEZ\nf02 NEM' } }, calls), ...quiet })).toBe(0)
+    const body = JSON.parse(String(calls[0]!.init.body)) as { prompt: string }
+    expect(body.prompt).toBe(buildPrompt(dataLines(INPUTS)))
+    // calibration: the same filter on the old shape (the check list inside, upper-case keys, "f01 |") masks all four
+    const old = `${CHECK_LIST.replace('<azonosító>: <mondat>', '<azonosító> | <mondat>')}\n\n${INPUTS.map((i) => `${i.ref} | ${i.sentence} | ${i.claim.effectLabel} ${i.claim.direction} ${i.claim.taxa.join(',')}`).join('\n')}\n`
+    const r = await redactBody(old, opts().pkg.boundary)
+    expect(r.ok).toBe(true)
+    const t = r.ok ? r.text : ''
+    expect(t).toContain('<ADDRESS_1> mondat')
+    expect(t).toMatch(/\n<PROPER_\d+>: <azonosító>/)
+    expect(t).toMatch(/\| kalcifikáció <PERSON_\d+>\n/)
+    expect(t).toMatch(/f01 \| <PROPER_\d+> szerint/)
   })
 
   it('T13J-SECRET: a token in the input stops the run before the boundary and the runner', async () => {
