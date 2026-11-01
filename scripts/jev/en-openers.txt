@@ -1,0 +1,32 @@
+# English words that open a sentence in a research abstract and are never a person's name
+# (redact.py EN_OPENERS; task jev-hatar-angol-mondatkezdo). Read ONLY for a capitalised word at
+# the start of a sentence: inside a sentence a capitalised word is still a proper noun, an
+# all-caps word is still judged by the common-word list.
+#
+# What may NOT come in: a word that is also a given name or a surname, in any language we see
+# ("Will", "May", "Mark", "Rose", "Brown", "Young", "King", "Long", "Field", "Light", "Waters",
+# "Small", "High", "Low"). The loader drops every word the Hungarian name list knows, and a test
+# keeps the English surname-words out. A word left out only costs meaning (it stays masked);
+# a word wrongly let in lets a name out, so when in doubt, leave it out.
+# One word per line or several on a line; lower case; the file is part of the leak gate's hash.
+
+the a an this that these those there here it its we our they their such
+some many several few all both each every either neither none another other any much more less
+in on at by for from with within without into onto over under between among across along around
+after before during since until upon through throughout toward towards against despite beyond via
+above below behind near
+and but or nor yet so because although though while whereas if unless when where whether once as than
+then thus therefore hence however moreover furthermore additionally also nevertheless nonetheless
+consequently accordingly meanwhile instead rather indeed only overall finally firstly secondly
+lastly notably similarly likewise conversely specifically generally typically importantly interestingly
+collectively together taken based compared using given following considering regarding according
+is are was were be been being has have had do does did can could should would must might not no
+increased decreased reduced elevated enhanced lowered higher lower greater increasing decreasing rising
+declining warming acute chronic prolonged repeated combined exposure exposed experimental
+corals reef reefs colony colonies fragment fragments species symbiont symbionts symbiosis
+results data samples experiment experiments treatment treatments control controls analysis
+analyses measurements rates levels concentrations effects changes values studies study research evidence
+findings previous recent current present mean average significant significantly total
+temperature temperatures thermal heat nutrient nutrients nitrate nitrogen phosphate phosphorus ammonium
+seawater water acidification calcification growth photosynthesis respiration bleaching mortality
+survival

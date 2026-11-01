@@ -173,6 +173,43 @@ describe('one run as marveen', () => {
     expect(t).toMatch(/f01 \| <PROPER_\d+> szerint/)
   })
 
+  it('T13J-EN-OPENER: an English sentence opener and a figure reference pass, a surname still masks (jev-hatar-angol-mondatkezdo)', async () => {
+    // a common-word list must exist, else the sentence-start rule this guards never fires; "still" is on the live
+    // one, so only the "et al." rule masks "Still et al."
+    writeFileSync(jevEnv.JEV_COMMON_WORDS!, 'kutatas\nszerint\nstill\n')
+    const text = 'f02: Increased temperature reduced calcification in Acropora (Fig. 4c). | kalcifikáció decrease acropora\n'
+      + 'f03: Smith reported more bleaching (Table 2), and Jones 4 colonies. However, Wilson disagreed. | fehéredés increase acropora\n'
+      + 'f04: Do Thi Lan reported more bleaching. Still et al. measured the rates. | fehéredés increase acropora'
+    const r = await redactBody(text, opts().pkg.boundary)
+    expect(r.ok).toBe(true)
+    const t = r.ok ? r.text : ''
+    expect(t).toContain('f02: Increased temperature reduced calcification in Acropora (Fig. 4c).')
+    expect(t).toContain('(Table 2)')
+    expect(t).toContain('However, ')
+    expect(t).toMatch(/f03: <PROPER_\d+> reported/)
+    expect(t).toMatch(/and <PROPER_\d+> 4 colonies/)
+    expect(t).toMatch(/However, <PROPER_\d+> disagreed/)
+    // a family name standing first is not trimmed as an opener without its comma, and "X et al." is an author
+    // (barracuda, #337 review)
+    expect(t).toMatch(/f04: <PERSON_\d+> reported more bleaching\. <PROPER_\d+> et al\. measured/)
+    // calibration: without the opener list and the figure rule the same redactor masks both, as on main (r15)
+    const jev = JSON.stringify(join(ROOT, 'scripts', 'jev'))
+    const code = `import sys, json; sys.path.insert(0, ${jev})
+import redact, leak_gate
+line = ${JSON.stringify(text.split('\n')[0])}
+on = redact.redact(line)["text"]
+redact.EN_OPENERS = frozenset(); redact._FIGURE_REFS = set()
+off = redact.redact(line)["text"]
+raw = {redact.fold(x) for l in open(redact.EN_OPENERS_PATH) if not l.lstrip().startswith("#") for x in l.split()}
+surnames = {"will", "may", "mark", "rose", "brown", "young", "king", "long", "field", "light", "waters", "small",
+            "high", "low", "smith", "white", "green", "black", "hall", "wood", "hill", "bell", "price", "coral", "per",
+            "still", "even", "daily", "most"}
+print(json.dumps([on == line, "Increased" in off, "(Fig." in off, len(raw) > 100, sorted(raw & surnames),
+                  sorted(w for w in raw if redact._is_name(w)), "en-openers.txt" in leak_gate.CODE_FILES]))`
+    const p = spawnSync('python3', ['-I', '-B', '-c', code], { env: { PATH: '/usr/bin:/bin', ...jevEnv }, encoding: 'utf8' })
+    expect(JSON.parse(p.stdout || 'null'), p.stderr).toEqual([true, false, false, true, [], [], true])
+  })
+
   it('T13J-SECRET: a token in the input stops the run before the boundary and the runner', async () => {
     const calls: Call[] = []
     const items = [INPUTS[0]!, { ...INPUTS[1]!, sentence: `Kutatás szerint ${GH} a meszesedését.` }]
