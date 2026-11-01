@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   MODEL_LABEL,
+  countByReason,
   SOURCE,
   flagsFrom,
   parseArgs,
@@ -82,7 +83,7 @@ const pendingOf = (items: (PendingClaim | PendingConclusion)[], targetType = 'CL
   targetType,
   items: items.map((i) => ({ targetType, ...i })),
   total: items.length,
-  notOffered: [],
+  notOffered: [] as unknown[],
 })
 
 describe('the module reads data, not code', () => {
@@ -122,13 +123,21 @@ describe('the OS answer and the runner input', () => {
     expect(parsePending(pendingOf([claim('c1', [P1], 'ABC')]), 't13').ok).toBe(false)
     expect(parsePending(pendingOf([claim('c 1', [P1])]), 't13').ok).toBe(false)
     expect(parsePending(null, 't13').ok).toBe(false)
+    // the OS's reasons are kept per item and counted, not reduced to a number
+    const body = { ...pendingOf([]), notOffered: [{ targetId: 'c9', reason: 'NO_TAXON' }, { targetId: 'c8', reason: 'NO_EFFECT' }, { targetId: 'c7', reason: 'NO_TAXON' }] }
+    const p = parsePending(body, 't13')
+    expect(p.ok && countByReason(p.notOffered)).toEqual({ NO_EFFECT: 1, NO_TAXON: 2 })
+    expect(parsePending({ ...body, notOffered: [{ targetId: 'c9', reason: 'nem kulcs' }] }, 't13').ok).toBe(false)
   })
 
   it('MFS-SHAPE-CLAIM: one line per passage, refs only; an item the runner would refuse is skipped by name', () => {
     const s = shape('t13', [claim('c1', [P1, P2]), claim('c2', ['x'.repeat(501)]), claim('c3', ['a | b']), claim('c4', [P1])])
     expect(s.inputs.map((i) => i.ref)).toEqual(['f01', 'f02', 'f03'])
     expect(s.key).toEqual({ f01: { targetId: 'c1', targetHash: H('a') }, f02: { targetId: 'c1', targetHash: H('a') }, f03: { targetId: 'c4', targetHash: H('a') } })
-    expect(s.skipped.map((x) => x.targetId)).toEqual(['c2', 'c3'])
+    expect(s.skipped).toEqual([
+      { targetId: 'c2', why: 'kivonat 501 karakter, a futtato legfeljebb 500-at visz' },
+      { targetId: 'c3', why: 'a 1. elem: a mondat ures, tul hosszu, vagy sortorest, | vagy ` jelet visel' },
+    ])
     expect(JSON.stringify(s.inputs)).not.toMatch(/c1|c4|aaaa/)
   })
 
@@ -138,6 +147,14 @@ describe('the OS answer and the runner input', () => {
     expect(s.inputs.length).toBe(MAX_ITEMS)
     expect(new Set(Object.values(s.key).map((k) => k.targetId)).size).toBe(MAX_ITEMS / 2)
     expect(s.deferred).toBe(MAX_ITEMS / 2)
+  })
+
+  it('MFS-SHAPE-ORDER: the first item that does not fit ends the input; a shorter one after it waits too (barracuda, #335)', () => {
+    const items = [...Array.from({ length: MAX_ITEMS - 1 }, (_, i) => claim(`c${i}`, [P1])), claim('long', [P1, P2]), claim('short', [P1])]
+    const s = shape('t13', items)
+    expect(s.inputs.length).toBe(MAX_ITEMS - 1)
+    expect(Object.values(s.key).some((k) => k.targetId === 'short')).toBe(false)
+    expect(s.deferred).toBe(2)
   })
 
   it('MFS-SHAPE-CONCLUSION: one line each; a fourth basis claim is skipped with its reason', () => {
@@ -197,6 +214,8 @@ describe('the round trip', () => {
         { targetType: 'CLAIM', targetId: 'c2', targetHash: H('c'), flagged: false },
       ],
     })
+    const summary = JSON.parse(readFileSync(join(dir, 'out', 'sync.json'), 'utf8')) as { flags: unknown }
+    expect(summary.flags).toEqual([{ targetId: 'c1', flagged: true }, { targetId: 'c2', flagged: false }])
     const out = said.join('\n') + readFileSync(join(dir, 'out', 'sync.json'), 'utf8') + readFileSync(join(dir, 'out', 'inputs.json'), 'utf8')
     expect(out).not.toContain(PASSWORD)
     expect(out).not.toContain(OS_TOKEN)

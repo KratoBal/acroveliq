@@ -27,6 +27,7 @@ import { pathToFileURL } from 'node:url'
 import {
   MAX_BASIS,
   MAX_ITEMS,
+  MAX_SENTENCE,
   parseConclusionInputs,
   parseInputs,
   run,
@@ -64,6 +65,17 @@ const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typ
 const ID = /^[A-Za-z0-9_-]{1,64}$/
 const SHA256 = /^[0-9a-f]{64}$/
 
+/** An item the OS cannot give to the model, with the OS's reason (e.g. NO_TAXON). */
+export interface NotOffered { targetId: string; reason: string }
+const REASON = /^[A-Z_]{1,40}$/
+
+/** How many items per reason, in a fixed order: the run's summary line and sync.json. */
+export function countByReason(list: readonly { reason: string }[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const { reason } of [...list].sort((a, b) => (a.reason < b.reason ? -1 : a.reason > b.reason ? 1 : 0))) out[reason] = (out[reason] ?? 0) + 1
+  return out
+}
+
 export interface PendingClaim {
   targetId: string
   targetHash: string
@@ -79,7 +91,7 @@ export interface PendingConclusion {
 
 /** The OS's pending answer, read as data: the shape is checked, nothing more is trusted. */
 export function parsePending(body: unknown, set: SetName):
-  | { ok: true; items: (PendingClaim | PendingConclusion)[]; total: number; notOffered: number }
+  | { ok: true; items: (PendingClaim | PendingConclusion)[]; total: number; notOffered: NotOffered[] }
   | { ok: false; why: string } {
   if (!isObject(body) || body.targetType !== TARGET[set] || !Array.isArray(body.items) || typeof body.total !== 'number' || !Array.isArray(body.notOffered))
     return { ok: false, why: 'az OS valasza nem a pending alak' }
@@ -97,7 +109,13 @@ export function parsePending(body: unknown, set: SetName):
       items.push({ targetId: it.targetId, targetHash: it.targetHash, conclusion: it.conclusion, basis: it.basis as string[] })
     }
   }
-  return { ok: true, items, total: body.total, notOffered: body.notOffered.length }
+  const notOffered: NotOffered[] = []
+  for (const n of body.notOffered) {
+    if (!isObject(n) || typeof n.targetId !== 'string' || !ID.test(n.targetId) || typeof n.reason !== 'string' || !REASON.test(n.reason))
+      return { ok: false, why: 'az OS nem-atadhato listaja nem a vart alak' }
+    notOffered.push({ targetId: n.targetId, reason: n.reason })
+  }
+  return { ok: true, items, total: body.total, notOffered }
 }
 
 /** Which item a ref belongs to. A claim has one ref per passage. */
@@ -125,22 +143,28 @@ export function shape(set: SetName, items: readonly (PendingClaim | PendingConcl
   const key: Record<string, KeyEntry> = {}
   const skipped: Shaped['skipped'] = []
   let deferred = 0
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
     let lines: (FlagInput | ConclusionInput)[]
     let why: string | null = null
     if (set === 't13') {
       const c = item as PendingClaim
       lines = c.passages.map((sentence, i) => ({ ref: ref(set, i + 1), sentence, claim: c.claim }))
       const p = lines.length === 0 ? { ok: false as const, why: 'nincs kivonat' } : parseInputs(JSON.stringify(lines))
-      if (!p.ok) why = p.why
+      const long = c.passages.find((x) => x.length > MAX_SENTENCE)
+      if (!p.ok) why = long ? `kivonat ${long.length} karakter, a futtato legfeljebb ${MAX_SENTENCE}-at visz` : p.why
     } else {
       const c = item as PendingConclusion
       lines = [{ ref: ref(set, 1), conclusion: c.conclusion, basis: c.basis }]
       const p = parseConclusionInputs(JSON.stringify(lines))
-      if (!p.ok) why = c.basis.length > MAX_BASIS ? `${c.basis.length} alap-allitas, a futtato legfeljebb ${MAX_BASIS}-at visz` : p.why
+      const long = [c.conclusion, ...c.basis].find((x) => x.length > MAX_SENTENCE)
+      if (!p.ok)
+        why = c.basis.length > MAX_BASIS
+          ? `${c.basis.length} alap-allitas, a futtato legfeljebb ${MAX_BASIS}-at visz`
+          : long ? `egy mondata ${long.length} karakter, a futtato legfeljebb ${MAX_SENTENCE}-at visz` : p.why
     }
     if (why !== null) { skipped.push({ targetId: item.targetId, why }); continue }
-    if (inputs.length + lines.length > MAX_ITEMS) { deferred++; continue }
+    // the first item that does not fit ends the run's input: the rest waits in the OS's order (barracuda, #335)
+    if (inputs.length + lines.length > MAX_ITEMS) { deferred = items.length - index; break }
     for (const line of lines) {
       const r = ref(set, inputs.length + 1)
       inputs.push({ ...line, ref: r })
@@ -242,10 +266,12 @@ export async function sync(o: SyncOptions, deps: RunDeps = {}): Promise<number> 
   const pending = parsePending(got.body, o.set)
   if (!pending.ok) { say(`NINCS IRAS: ${pending.why}.`); return 1 }
   const shaped = shape(o.set, pending.items)
-  const head = `${TARGET[o.set]}: ${pending.items.length} lekerve (osszesen ${pending.total} var), ${pending.notOffered} nem adhato at (OS), ${shaped.skipped.length} kihagyva (a futtato szabalya), ${shaped.deferred} a kovetkezo korre`
+  const byReason = countByReason(pending.notOffered)
+  const reasons = Object.entries(byReason).map(([r, n]) => `${r} ${n}`).join(', ')
+  const head = `${TARGET[o.set]}: ${pending.items.length} lekerve (osszesen ${pending.total} var), ${pending.notOffered.length} nem adhato at (OS${reasons ? `: ${reasons}` : ''}), ${shaped.skipped.length} kihagyva (a futtato szabalya), ${shaped.deferred} a kovetkezo korre`
   mkdirSync(o.outDir, { recursive: true, mode: 0o750 })
   const summary = (extra: Record<string, unknown>) =>
-    writeFileSync(join(o.outDir, 'sync.json'), `${JSON.stringify({ runId: o.runId, set: o.set, fetched: pending.items.length, total: pending.total, notOffered: pending.notOffered, skipped: shaped.skipped, deferred: shaped.deferred, ...extra }, null, 2)}\n`, { mode: 0o640 })
+    writeFileSync(join(o.outDir, 'sync.json'), `${JSON.stringify({ runId: o.runId, set: o.set, fetched: pending.items.length, total: pending.total, notOffered: { count: pending.notOffered.length, byReason, items: pending.notOffered }, skipped: shaped.skipped, deferred: shaped.deferred, ...extra }, null, 2)}\n`, { mode: 0o640 })
   if (shaped.inputs.length === 0) { summary({ written: 0 }); say(`${head}; nincs mit futtatni.`); return pending.items.length === 0 ? 0 : 1 }
 
   const inputFile = join(o.outDir, 'inputs.json')
@@ -279,7 +305,8 @@ export async function sync(o: SyncOptions, deps: RunDeps = {}): Promise<number> 
   if (!posted.ok) { summary({ written: 0, writeError: posted.why }); say(`NINCS IRAS: az OS elutasitotta (${posted.why}).`); return 1 }
   const res = isObject(posted.body) ? posted.body : {}
   const rejected = Array.isArray(res.rejected) ? res.rejected : []
-  summary({ written: res.written, alreadyWritten: res.alreadyWritten, rejected, unanswered: read.unanswered, unreadable: read.unreadable, jelzett: read.flags.filter((f) => f.flagged).length })
+  // which items got which verdict: ids only, so the editor's surface can be checked item by item
+  summary({ written: res.written, alreadyWritten: res.alreadyWritten, rejected, unanswered: read.unanswered, unreadable: read.unreadable, jelzett: read.flags.filter((f) => f.flagged).length, flags: read.flags.map((f) => ({ targetId: f.targetId, flagged: f.flagged })) })
   say(`${o.runId}: ${String(res.written)} jelzes beirva (${read.flags.filter((f) => f.flagged).length} JELEZ), ${String(res.alreadyWritten)} mar bent, ${rejected.length} elutasitva, ${read.unanswered.length} itelet nelkul (var tovabb), ${read.unreadable} olvashatatlan sor. Osszegzes: ${join(o.outDir, 'sync.json')}`)
   return 0
 }

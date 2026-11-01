@@ -44,7 +44,9 @@ export const MAX_ITEMS = 50
 const REF = /^f\d{2}$/
 const KEY_WORD = /^[A-Z_]{1,40}$/
 const TEXT = (max: number) => (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0 && v.length <= max && !/[\n\r|`]/.test(v)
-const SENTENCE = TEXT(500)
+/** The longest sentence (passage, conclusion, basis claim) the runner takes. */
+export const MAX_SENTENCE = 500
+const SENTENCE = TEXT(MAX_SENTENCE)
 const LABEL = TEXT(60)
 const sameKeys = (o: object, keys: string[]) => Object.keys(o).sort().join() === [...keys].sort().join()
 const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v)
