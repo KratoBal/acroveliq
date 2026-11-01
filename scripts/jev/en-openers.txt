@@ -11,13 +11,13 @@
 # One word per line or several on a line; lower case; the file is part of the leak gate's hash.
 
 the a an this that these those there here it its we our they their such
-some many most several few all both each every either neither none another other any much more less
+some many several few all both each every either neither none another other any much more less
 in on at by for from with within without into onto over under between among across along around
 after before during since until upon through throughout toward towards against despite beyond via
 above below behind near
 and but or nor yet so because although though while whereas if unless when where whether once as than
 then thus therefore hence however moreover furthermore additionally also nevertheless nonetheless
-consequently accordingly meanwhile instead rather indeed still even only overall finally firstly secondly
+consequently accordingly meanwhile instead rather indeed only overall finally firstly secondly
 lastly notably similarly likewise conversely specifically generally typically importantly interestingly
 collectively together taken based compared using given following considering regarding according
 is are was were be been being has have had do does did can could should would must might not no
@@ -26,7 +26,7 @@ declining warming acute chronic prolonged repeated combined exposure exposed exp
 corals reef reefs colony colonies fragment fragments species symbiont symbionts symbiosis
 results data samples experiment experiments treatment treatments control controls analysis
 analyses measurements rates levels concentrations effects changes values studies study research evidence
-findings previous recent current present mean average daily significant significantly total
+findings previous recent current present mean average significant significantly total
 temperature temperatures thermal heat nutrient nutrients nitrate nitrogen phosphate phosphorus ammonium
 seawater water acidification calcification growth photosynthesis respiration bleaching mortality
 survival

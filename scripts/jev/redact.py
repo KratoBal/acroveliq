@@ -475,6 +475,10 @@ def _find_spans(text, known):
             continue
         if _is_name(base):
             spans.append((m.start(), m.end(), "PERSON"))
+        elif _ET_AL.match(text, m.end()):
+            # "Still et al.", "An et al.": an author's surname, whatever word lists it is on
+            spans.append((m.start(), m.end(), "PROPER"))
+            proper_stems.add(_stem(base))
         elif base in _FIGURE_REFS and _FIGURE_NUMBER.match(text, m.end()):
             # "(Fig. 4c)", "Table 2", "Figure S3": a reference into the paper, not a name; only
             # with the number after it, so a bare capitalised word before a number still masks
@@ -592,6 +596,8 @@ takács takacs juhász juhasz molnár molnar farkas varga lukács lukacs biró b
 # "Figure S3", "Eq. (5)"). Without the number the word is judged like any other.
 _FIGURE_REFS = {"fig", "figs", "figure", "figures", "table", "tables", "tab", "eq", "eqs", "equation"}
 _FIGURE_NUMBER = re.compile(r"\.?[ \t]?\(?S?\d")
+# A capitalised word before this is an author's surname ("Still et al.").
+_ET_AL = re.compile(r"[ \t]+et\.?[ \t]+al(?![^\W_])")
 
 
 # Capitalised only because they open a sentence. Stripped from the FRONT of
@@ -615,9 +621,10 @@ def _person_span(text, s, e):
         return (s, e)
     words = list(re.finditer(r"\S+", frag))
     while words and (fold(words[0].group(0)) in _OPENERS
-                     or fold(words[0].group(0).rstrip(",")) in EN_OPENERS):
-        # an English opener only at the front ("However, Kovács Péter"); inside a sentence the
-        # single-word pass still masks it as a proper noun
+                     or (words[0].group(0).endswith(",") and fold(words[0].group(0)[:-1]) in EN_OPENERS)):
+        # an English opener only with its comma ("However, Kovács Péter"): without one it may be a
+        # family name standing first ("Do Thi Lan", "So Yeon"), and the run masks whole (barracuda,
+        # #337 review). Inside a sentence the single-word pass still masks it as a proper noun
         words.pop(0)
     while words and _is_preserved(words[0].group(0)):
         words.pop(0)

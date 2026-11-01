@@ -2874,6 +2874,32 @@
    "keep": [
     "Tab. 2"
    ]
+  },
+  {
+   "id": "v9-family-name-first-opener-word",
+   "text": "Do Thi Lan reported more bleaching. So Yeon Park measured it.",
+   "leak": [
+    "Do Thi Lan",
+    "Thi Lan",
+    "Do",
+    "So Yeon Park",
+    "Yeon Park",
+    "So Yeon"
+   ],
+   "keep": [
+    "reported more bleaching"
+   ]
+  },
+  {
+   "id": "v9-et-al-surname",
+   "text": "Still et al. measured the rates. An et al. found more.",
+   "leak": [
+    "Still",
+    "An et"
+   ],
+   "keep": [
+    "measured the rates"
+   ]
   }
  ]
 }
