@@ -295,7 +295,8 @@ describe('pr-beolvaszt.sh: where the gate stands and what it does', () => {
 
   it('the mode line is one line, and it is ENFORCE mode since 2026-10-30 (#157 merged without a verdict in log mode)', () => {
     expect(src.match(/^GEPI_REVIEW_KENYSZERIT=\d$/gm)).toEqual(['GEPI_REVIEW_KENYSZERIT=1'])
-    expect(src).toContain('"$GEPI_REVIEW" "$GEPI_OK" "$GEPI_REVIEW_KENYSZERIT" << \'PYEOF\'')
+    // the mode is passed to the merger's python (more arguments may follow it: the verdict gate's, card 31e495e0)
+    expect(src).toMatch(/"\$GEPI_REVIEW" "\$GEPI_OK" "\$GEPI_REVIEW_KENYSZERIT"( "[^"\n]*")* << 'PYEOF'/)
   })
 
   it('the gate stands before the --nez exit and before the merge PUT, so --nez shows it', () => {

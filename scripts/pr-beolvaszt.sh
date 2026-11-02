@@ -96,10 +96,16 @@ while :; do
       shift
       FRISS_OK="${1:?a --friss-fej-rendben INDOKOT var: mibol tudod, hogy a szerzo befejezte}"
       shift ;;
+    # A VERDICT FEJENEK feloldasa (card 31e495e0, lasd a kaput a beolvasztas elott). Ugyanaz az alak, mint a
+    # tobbi feloldasnal: az INDOK KOTELEZO es kiirodik.
+    --verdict-fej-rendben)
+      shift
+      VERDICT_OK="${1:?a --verdict-fej-rendben INDOKOT var: mibol tudod, hogy barracuda ezt a fejet hagyta jova}"
+      shift ;;
     *) break ;;
   esac
 done
-PR="${1:?hasznalat: pr-beolvaszt.sh [--nez] [--task <task_id>] [--friss-fej-rendben \"indok\"] [--gepi-review-rendben \"indok\"] [--elavult-bazis-rendben \"indok\"] [--migracio-sorrend-rendben \"indok\"] [--kozos-fajl-rendben \"indok\"] <PR-szam> [tulajdonos/repo]}"
+PR="${1:?hasznalat: pr-beolvaszt.sh [--nez] [--task <task_id>] [--friss-fej-rendben \"indok\"] [--gepi-review-rendben \"indok\"] [--elavult-bazis-rendben \"indok\"] [--migracio-sorrend-rendben \"indok\"] [--kozos-fajl-rendben \"indok\"] [--verdict-fej-rendben \"indok\"] <PR-szam> [tulajdonos/repo]}"
 # A repo masodik argumentumkent adhato meg. Alapertelmezes az Acropora OS, mert a
 # beolvasztasok tulnyomo resze oda megy -- de a commerce repora is kell, es ott a
 # check-runs vegpont 403-at ad ugyanezzel a tokennel (merve 2026-09-04, murena
@@ -179,9 +185,10 @@ TARTAS=/home/marveen/marveen/exchange/pr-tartas.txt
 
 ESEMENY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/beolvadt-esemeny.py"
 GEPI_REVIEW="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gepi-review-ellenor.py"
+VERDICT_FEJ="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/verdict-fej-ellenor.py"
 # the token goes in the environment, not the argv (every agent's `ps` shows argv;
 # acrovelIQ P0-1); argv[3] stays a placeholder so the positions do not move
-PR_BEOLVASZT_TOK="$TOK" python3 - "$PR" "$REPO" "-" "$NEZ" "$TARTAS" "$FRISS_OK" "$BAZIS_OK" "$SORREND_OK" "$DUPLA_OK" "$KOZOS_OK" "$TASK" "$ESEMENY" "$GEPI_REVIEW" "$GEPI_OK" "$GEPI_REVIEW_KENYSZERIT" << 'PYEOF'
+PR_BEOLVASZT_TOK="$TOK" python3 - "$PR" "$REPO" "-" "$NEZ" "$TARTAS" "$FRISS_OK" "$BAZIS_OK" "$SORREND_OK" "$DUPLA_OK" "$KOZOS_OK" "$TASK" "$ESEMENY" "$GEPI_REVIEW" "$GEPI_OK" "$GEPI_REVIEW_KENYSZERIT" "$VERDICT_FEJ" "${VERDICT_OK:-}" << 'PYEOF'
 import json, os, re as _re, subprocess, sys, time
 pr, repo = sys.argv[1], sys.argv[2]
 # popped, so the curl, git and python children do not inherit it
@@ -198,6 +205,8 @@ esemeny_szkript = sys.argv[12] if len(sys.argv) > 12 else ''
 gepi_szkript = sys.argv[13] if len(sys.argv) > 13 else ''
 gepi_ok = sys.argv[14] if len(sys.argv) > 14 else ''
 gepi_kenyszerit = (sys.argv[15] if len(sys.argv) > 15 else '0') == '1'
+verdict_szkript = sys.argv[16] if len(sys.argv) > 16 else ''
+verdict_ok = sys.argv[17] if len(sys.argv) > 17 else ''
 
 # A TARTAS ELOSZOR, MINDEN API-HIVAS ELOTT: egy tartott PR-t meg megnezni sem kell
 # ahhoz, hogy tudjuk, nem megy be.
@@ -913,6 +922,35 @@ if not kozos_ok:
         sys.exit(1)
 else:
     print(f'   kozos fajl feloldva: {kozos_ok}')
+
+# === A LEGUTOLSO VERDICT A PR MOSTANI FEJERE SZOL (card 31e495e0) ===
+#
+# A GitHub APPROVED allapota onmagaban nem eleg: a #194-en a gepi review commit_id-je az uj fejre allt, mikozben a
+# verdict az idovonalon a regire szolt (barracuda 40282, 40290). A review a fejet koveti, a verdict nem. Ezert a
+# beolvaszto a verdictet magat nezi: a feladat idovonalan barracuda LEGUTOLSO verdictje erre a PR-re, a szava es a
+# feje (verdict-fej-ellenor.py). Ha nincs, CHANGES, vagy a feje nem ez a 40 jegyu fej: NEM olvaszt, es kiirja a ket
+# fejet. Minden modban kapu (nem naplo mod), a --verdict-fej-rendben "indok" oldja fel. Feladat nelkul nincs
+# idovonal, tehat nincs verdict sem: az is megallit.
+if not task:
+    _vf_szoveg, _vf_kod = 'nincs feladat (--task), tehat nincs idovonal, amin verdict allhatna', 1
+else:
+    _vf = subprocess.run(['python3', '-B', verdict_szkript, '--task', task, '--repo', repo, '--pr', str(pr), '--head', sha],
+                         capture_output=True, text=True)
+    _vf_szoveg, _vf_kod = (_vf.stdout + _vf.stderr).strip() or '(a segedprogram nem irt ki semmit)', _vf.returncode
+if _vf_kod == 0:
+    for _sor in _vf_szoveg.splitlines():
+        print(f'   {_sor}')
+elif verdict_ok:
+    print(f'   verdict fej feloldva: {verdict_ok}')
+    for _sor in _vf_szoveg.splitlines():
+        print(f'   (a hiany: {_sor})')
+else:
+    print('NEM OLVASZTOK: a legutolso verdict nem a PR mostani fejet hagyja jova.')
+    for _sor in _vf_szoveg.splitlines():
+        print(f'   {_sor}')
+    print('   Uj fejhez uj review kell: csomag (review-csomag.sh) es keres barracudanak, a verdict az uj fejre.')
+    print('   Feloldas: --verdict-fej-rendben "mibol tudod, hogy barracuda ezt a fejet hagyta jova"')
+    sys.exit(1)
 
 # === A GEPI REVIEW A JOVAHAGYOTT FEJEN (b25-gepi-review) ===
 #
