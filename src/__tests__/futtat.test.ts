@@ -343,4 +343,19 @@ describe('futtat: the log', () => {
     const exists = (p: string) => { try { statSync(p); return true } catch { return false } }
     expect([exists(old.log), exists(old.log.replace(/\.log$/, '.summary.json')), exists(fresh.log)], 'FUTTAT-RETENTION').toEqual([false, true, true])
   })
+
+  it('FUTTAT-HEAVY-LOCK: a test run waits for another heavy run in the fleet, a non-heavy run does not', () => {
+    const lock = join(root, 'nehez.lock')
+    const withLock = { ...env, FUTTAT_NEHEZ_ZAR: lock }
+    const attempt = (kind: string) => {
+      const holder = `flock '${lock}' sleep 2 >/dev/null 2>&1 & sleep 0.4; `
+      const started = Date.now()
+      const r = spawnSync('bash', ['-c', `${holder}python3 '${SCRIPT}' run --feladat proba --fajta ${kind} -- true`], { env: withLock, encoding: 'utf-8' })
+      return { waited: Date.now() - started >= 1800, said: r.stderr.includes('várok rá'), code: r.status }
+    }
+    expect([attempt('test'), attempt('egyeb')], 'FUTTAT-HEAVY-LOCK').toEqual([
+      { waited: true, said: true, code: 0 },
+      { waited: false, said: false, code: 0 },
+    ])
+  })
 })
