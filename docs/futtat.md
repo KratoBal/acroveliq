@@ -79,3 +79,7 @@ tesztnévben nem rontja el a kivonatot. A napló fejlécében a cserék száma �
   szigorúbb lesz, soha nem lazább. **A csoportot telepítéskor létre kell hozni.**
 - **Megőrzés:** a naplók 30 nap után törlődnek. Minden futás után takarít a saját projektjében,
   és kézzel is futtatható: `futtat.sh takarit`. Az összefoglalók megmaradnak.
+
+## Nehéz futások: egyszerre egy a flottában (2026-11-04)
+
+A `test`, `build` és `typecheck` fajta futás a `/tmp/flotta-nehez.lock` záron vár, ha egy másik ágens nehéz futása tart (a gép 4 mag, 8 GB; két párhuzamos tesztsor megfektette). A fájlt olvasásra nyitja, létrehozás nélkül, mert a sticky /tmp-ben más tulajdonában álló fájlt O_CREAT-tel nem nyithat meg (fs.protected_regular=2). Futtatón kívül ugyanez: `( flock 9; <parancs> ) 9</tmp/flotta-nehez.lock`. Felülírás: `FUTTAT_NEHEZ_ZAR`.

@@ -34,6 +34,7 @@ owner-only (0700/0600) and says so: stricter, never looser.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import bisect
 import grp
 import hashlib
@@ -56,6 +57,12 @@ RETENTION_DAYS = 30
 HASH_LIST_OPTIONAL_ENV = "FUTTAT_LENYOMAT_NEM_KOTELEZO"
 HASH_LIST_STOP_CODE = 3
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+# Heavy kinds run one at a time across the whole fleet (Balázs, 2026-11-04 18:45 UTC:
+# "megint olyan volt mintha befagyott volna a gep"; measured: 4 cores, 8 GB, load 35,
+# a tsc and a multi-worker vitest of two agents at once). The lock file is shared by
+# every agent user, so it is opened read-only: flock works on a read-only descriptor.
+HEAVY_KINDS = {"test", "build", "typecheck"}
+HEAVY_LOCK = Path(os.environ.get("FUTTAT_NEHEZ_ZAR", "/tmp/flotta-nehez.lock"))
 
 # ---- masking ---------------------------------------------------------------
 
@@ -407,6 +414,27 @@ def prune(root: Path, days: int, now: float) -> int:
 
 # ---- commands ----------------------------------------------------------------
 
+def take_heavy_lock(kind: str) -> int | None:
+    """Wait for the fleet-wide heavy-run lock; None if the lock file cannot be opened."""
+    # Open WITHOUT O_CREAT first: /tmp is sticky and fs.protected_regular=2, so an
+    # O_CREAT open of a file another user owns is refused even when it is 0666
+    # (nautilus measured it, 2026-11-04). Create only when it does not exist yet.
+    try:
+        try:
+            fd = os.open(HEAVY_LOCK, os.O_RDONLY)
+        except FileNotFoundError:
+            fd = os.open(HEAVY_LOCK, os.O_RDONLY | os.O_CREAT, 0o644)
+    except OSError as error:
+        print(f"# figyelem: a nehéz-futás zár nem nyitható ({error}), zár nélkül fut", file=sys.stderr)
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(f"# futtat: egy másik {kind}/build/typecheck fut a flottában, várok rá ({HEAVY_LOCK})", file=sys.stderr)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     for label, value in (("--projekt", args.projekt), ("--feladat", args.feladat)):
         if not SAFE_NAME.match(value):
@@ -456,6 +484,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     stamp = now.strftime("%Y%m%dT%H%M%S") + f"{now.microsecond // 1000:03d}Z"
     log_path = directory / f"{stamp}-{kind}.log"
 
+    lock_fd = take_heavy_lock(kind) if kind in HEAVY_KINDS else None
     masker = Masker(hashes)
     started = time.monotonic()
     lines: list[str] = []
@@ -465,6 +494,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         lines.append(masker.line(raw.rstrip("\n")))
     code = process.wait()
     duration = time.monotonic() - started
+    if lock_fd is not None:
+        os.close(lock_fd)
 
     header = [
         f"# futtat: {' '.join(masker.line(part) for part in command)}",
