@@ -13,3 +13,8 @@
 # Sutyerák production gateway keepalive (loopback 3430). Lost in a container recreate
 # and nothing restored it: staff got "Sutyerák most nem tud válaszolni" (measured 2026-10-21).
 * * * * * /home/marveen/sutyerak/run-gateway.sh
+# Idle and fleet-lock watchdog (not an LLM): every ten minutes between 08 and 24 it tells acrobot
+# who has stood idle, or waited on /tmp/flotta-nehez.lock, longer than 20 minutes. Missing since the
+# 2026-10-13 container recreate because it was only in the live crontab (acrobot 43759, 2026-11-05:
+# Balázs asked why he has to ask whether anyone is working).
+*/10 8-23 * * * /home/marveen/marveen/scripts/tetlen-or.sh 20 >>/home/marveen/marveen/store/tetlen-or.log 2>&1
