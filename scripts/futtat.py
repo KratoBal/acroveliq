@@ -438,6 +438,30 @@ def take_heavy_lock(kind: str) -> int | None:
     return fd
 
 
+def locks_heavy_lock_itself(command: list[str]) -> str | None:
+    """Where the command flocks the fleet lock on its own, or None.
+
+    The command line itself (`flock ... flotta-nehez.lock`, `9</tmp/flotta-nehez.lock`), or a
+    script it names that flocks the lock without looking at the held-lock mark. A script that
+    reads HEAVY_LOCK_HELD_ENV skips its own flock under futtat, so it is not one of these.
+    """
+    names = {str(HEAVY_LOCK), HEAVY_LOCK.name}
+    line = " ".join(command)
+    if "flock" in line and any(name in line for name in names):
+        return "a parancssor"
+    for token in command:
+        path = Path(token)
+        try:
+            if not path.is_file() or path.stat().st_size > 1_000_000:
+                continue
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        if "flock" in text and any(name in text for name in names) and HEAVY_LOCK_HELD_ENV not in text:
+            return str(path)
+    return None
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     for label, value in (("--projekt", args.projekt), ("--feladat", args.feladat)):
         if not SAFE_NAME.match(value):
@@ -479,6 +503,20 @@ def cmd_run(args: argparse.Namespace) -> int:
     hash_warning = "; ".join(warnings)
 
     kind = args.fajta or infer_kind(command)
+    # A command that flocks the fleet lock itself, under a futtat that holds it (a heavy kind,
+    # or a nested run), waits on its own parent forever: flock locks per open file description.
+    # Measured 2026-11-05: murena stood on it twice (14:00-17:00 and 18:2x-19:5x; acrobot 43759).
+    # So it does not start; the message says why and what to run instead.
+    if kind in HEAVY_KINDS or os.environ.get(HEAVY_LOCK_HELD_ENV) == "1":
+        where = locks_heavy_lock_itself(command)
+        if where:
+            print(
+                f"FAIL: a futtat már zárol ({HEAVY_LOCK}), és a parancs maga is flock-ol rá ({where}): "
+                "a saját flock holtpont lenne, ezért nem indítottam el, és naplót sem írtam. "
+                f"Futtasd a futtat nélkül, vagy a zár nélküli alakkal (a szkript nézze a {HEAVY_LOCK_HELD_ENV}=1 jelet).",
+                file=sys.stderr,
+            )
+            return 2
     gid = project_group(args.projekt)
     directory = LOG_ROOT / args.projekt / args.feladat
     ensure_dir(LOG_ROOT / args.projekt, directory, gid)

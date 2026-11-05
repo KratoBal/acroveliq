@@ -370,4 +370,36 @@ describe('futtat: the log', () => {
     const r = spawnSync('python3', [SCRIPT, 'run', '--feladat', 'proba', '--fajta', 'test', '--', 'bash', '-c', inner], { env, encoding: 'utf-8', timeout: 10_000 })
     expect({ code: r.status, held: existsSync(marker) ? readFileSync(marker, 'utf-8').trim() : null }, 'FUTTAT-NESTED-LOCK').toEqual({ code: 0, held: '1' })
   })
+
+  // acrobot 43759: WHAT TURNS THIS RED: a heavy run whose command flocks the fleet lock itself starting anyway (it waits
+  // on its own parent forever; murena, 2026-11-05, twice), or writing a log; a script that honours the held-lock mark,
+  // or a non-heavy run, refused for nothing
+  it('FUTTAT-SELF-LOCK: a heavy command that flocks the fleet lock itself does not start; one that honours the mark does', () => {
+    const lock = env.FUTTAT_NEHEZ_ZAR!
+    const taskDir = join(env.FUTTAT_LOG_ROOT!, 'acropora', 'proba')
+    const attempt = (kind: string, ...command: string[]) => {
+      const r = spawnSync('python3', [SCRIPT, 'run', '--feladat', 'proba', '--fajta', kind, '--', ...command], { env, encoding: 'utf-8', timeout: 10_000 })
+      return { code: r.status, refused: r.stderr.includes('holtpont') }
+    }
+    const selfLocking = join(root, 'onzarolo.sh')
+    writeFileSync(selfLocking, `#!/usr/bin/env bash\nexec 9<'${lock}'\nflock 9\ntrue\n`)
+    const honouring = join(root, 'jelet-nezo.sh')
+    writeFileSync(honouring, `#!/usr/bin/env bash\n[ "\${FLOTTA_NEHEZ_ZAR_TARTVA:-}" = 1 ] || { exec 9<'${lock}'; flock 9; }\ntrue\n`)
+    expect(
+      [
+        attempt('test', 'bash', '-c', `( flock 9; true ) 9<'${lock}'`),
+        attempt('test', 'bash', selfLocking),
+        attempt('test', 'bash', honouring),
+        attempt('egyeb', 'bash', '-c', `flock '${lock}' true`),
+      ],
+      'FUTTAT-SELF-LOCK',
+    ).toEqual([
+      { code: 2, refused: true },
+      { code: 2, refused: true },
+      { code: 0, refused: false },
+      { code: 0, refused: false },
+    ])
+    // the two refused runs wrote no log; the two that ran wrote one each
+    expect(readdirSync(taskDir).filter((f) => f.endsWith('.log')).length, 'FUTTAT-SELF-LOCK-NOLOG').toBe(2)
+  })
 })
