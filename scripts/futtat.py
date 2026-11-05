@@ -62,6 +62,9 @@ SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 # a tsc and a multi-worker vitest of two agents at once). The lock file is shared by
 # every agent user, so it is opened read-only: flock works on a read-only descriptor.
 HEAVY_KINDS = {"test", "build", "typecheck"}
+# Set in the child's environment while this run holds the heavy lock. A script that
+# takes the lock itself must skip its own flock when this is "1" (see cmd_run).
+HEAVY_LOCK_HELD_ENV = "FLOTTA_NEHEZ_ZAR_TARTVA"
 HEAVY_LOCK = Path(os.environ.get("FUTTAT_NEHEZ_ZAR", "/tmp/flotta-nehez.lock"))
 
 # ---- masking ---------------------------------------------------------------
@@ -484,11 +487,20 @@ def cmd_run(args: argparse.Namespace) -> int:
     stamp = now.strftime("%Y%m%dT%H%M%S") + f"{now.microsecond // 1000:03d}Z"
     log_path = directory / f"{stamp}-{kind}.log"
 
-    lock_fd = take_heavy_lock(kind) if kind in HEAVY_KINDS else None
+    # A nested heavy run (a script that takes the same lock itself, or futtat inside
+    # futtat) would wait on its own parent forever: flock locks per open file
+    # description, so a second open in the child conflicts with ours. Measured
+    # 2026-11-05: a web test run sat 39 minutes on its own lock and queued the fleet.
+    # So the holder marks the child's environment, and a holder never re-takes it.
+    already_held = os.environ.get(HEAVY_LOCK_HELD_ENV) == "1"
+    lock_fd = take_heavy_lock(kind) if kind in HEAVY_KINDS and not already_held else None
+    child_env = dict(os.environ)
+    if lock_fd is not None or already_held:
+        child_env[HEAVY_LOCK_HELD_ENV] = "1"
     masker = Masker(hashes)
     started = time.monotonic()
     lines: list[str] = []
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=child_env)
     assert process.stdout is not None
     for raw in process.stdout:
         lines.append(masker.line(raw.rstrip("\n")))

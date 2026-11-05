@@ -38,8 +38,12 @@ let env: NodeJS.ProcessEnv
 
 beforeEach(() => {
   const dir = mkdtempSync(join(root, 'case-'))
-  env = { ...process.env, FUTTAT_LOG_ROOT: join(dir, 'logs'), FUTTAT_SECRET_HASHES: join(dir, 'hashes.txt'), FUTTAT_GROUP: 'nincs-ilyen-csoport' }
+  // A heavy run (--fajta test) takes FUTTAT_NEHEZ_ZAR. Without a per-case path it is the REAL fleet lock: a suite run
+  // under a held fleet lock then waits on itself (measured 2026-11-05: three hours, the fleet queued behind it).
+  env = { ...process.env, FUTTAT_LOG_ROOT: join(dir, 'logs'), FUTTAT_SECRET_HASHES: join(dir, 'hashes.txt'), FUTTAT_GROUP: 'nincs-ilyen-csoport', FUTTAT_NEHEZ_ZAR: join(dir, 'nehez.lock') }
   delete env.FUTTAT_LENYOMAT_NEM_KOTELEZO
+  // a suite run under futtat inherits the held-lock mark; without this the lock tests would not wait
+  delete env.FLOTTA_NEHEZ_ZAR_TARTVA
   // the list is required; one placeholder hash keeps it from being empty (an empty list is said aloud)
   writeFileSync(env.FUTTAT_SECRET_HASHES!, `${'0'.repeat(64)} 12\n`)
 })
@@ -357,5 +361,13 @@ describe('futtat: the log', () => {
       { waited: true, said: true, code: 0 },
       { waited: false, said: false, code: 0 },
     ])
+  })
+
+  it('FUTTAT-NESTED-LOCK: a heavy run inside a heavy run does not wait on its own parent, and the child sees the held-lock mark', () => {
+    const marker = join(root, 'nested-held.txt')
+    // `timeout 5` on the inner run: a deadlock ends as 124 instead of an orphan waiting forever
+    const inner = `timeout 5 python3 '${SCRIPT}' run --feladat proba --fajta test -- bash -c 'printenv FLOTTA_NEHEZ_ZAR_TARTVA > ${marker}'`
+    const r = spawnSync('python3', [SCRIPT, 'run', '--feladat', 'proba', '--fajta', 'test', '--', 'bash', '-c', inner], { env, encoding: 'utf-8', timeout: 10_000 })
+    expect({ code: r.status, held: existsSync(marker) ? readFileSync(marker, 'utf-8').trim() : null }, 'FUTTAT-NESTED-LOCK').toEqual({ code: 0, held: '1' })
   })
 })
