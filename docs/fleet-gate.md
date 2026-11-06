@@ -78,6 +78,7 @@ DecisionRun exposure,resolution,status,latencyMs,respondedModel,errorCode,create
 _prisma_migrations migration_name,started_at,finished_at,rolled_back_at,applied_steps_count tartos B8 alaplista: migrációs állapot
 BankTransaction id,bankAccountId,bookingDate,amount,currency,counterpartyName,narrative,direction 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
 BankAccount id,name,currency 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
+GameQuestion id,week,type,prompt,options,acceptedAnswers,opensAt,closesAt,prizeName,prizeDescription,prizeImageId 2027-01-10 a nyereményjáték kérdéseinek átnézése (Balázs kérése, 2026-11-06 09:28 UTC, játék szál msg 1568195428611002391)
 IncomingBillingDocument id,issueDate,documentNumber,supplierName,source,kindCode,cancelled,currency,grossAmount,paymentsKnown,paidAmount,sourceDocumentId,externalId 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
 IncomingSupplierDocument id,payeeCheck,purchaseInvoiceId 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)
 BankTransactionMatch documentId,bankTransactionId 2026-11-17 bejövő számlák kifizetettsége (2026-10-17-i kézi lap)

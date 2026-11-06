@@ -721,7 +721,7 @@ cat "$f"
     expect([results, shape], 'GRANT-REFUSE').toEqual([cases.map(([name]) => [name, 2, 0]), [2, 2, 2, 2]])
   })
 
-  it('GRANT-DOC: the list block in docs/fleet-gate.md passes the gate\'s own checks, 114 columns, the B8 base lasting', () => {
+  it('GRANT-DOC: the list block in docs/fleet-gate.md passes the gate\'s own checks, 125 columns, the B8 base lasting', () => {
     const g = grantWorld()
     g.onMain(true)
     writeFileSync(join(g.w.dir, 'doc.md'), readFileSync(join(process.cwd(), 'docs', 'fleet-gate.md'), 'utf-8'))
@@ -729,9 +729,10 @@ cat "$f"
     const pairs: string[] = g.sql().match(/\('[A-Za-z_][A-Za-z0-9_]*', '[A-Za-z_][A-Za-z0-9_]*'\)/g) ?? []
     // The gate's own refusal goes into the message: on 2026-10-19 this assertion failed once in CI
     // ([2, 0, false, false], PR #243 job 118028152528) with no way to see which check refused the list.
-    expect([r.code, new Set(pairs).size, pairs.includes("('_prisma_migrations', 'migration_name')"), pairs.includes("('NavIncomingInvoice', 'purchaseInvoiceId')")],
+    expect([r.code, new Set(pairs).size, pairs.includes("('_prisma_migrations', 'migration_name')"), pairs.includes("('NavIncomingInvoice', 'purchaseInvoiceId')"), pairs.includes("('GameQuestion', 'prizeImageId')")],
       `GRANT-DOC (gate stderr: ${r.err.trim().slice(0, 400) || 'empty'})`)
-      .toEqual([0, 114, true, true])
+      // 125: the game's questions (GameQuestion, 11 columns; Balázs, 2026-11-06 09:28 UTC) on top of the earlier 114
+      .toEqual([0, 125, true, true, true])
   })
 
   it('GRANT-STALE: an older main commit whose list a later PR changed is refused; one whose list main still holds passes', () => {
