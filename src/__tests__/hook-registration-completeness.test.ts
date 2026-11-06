@@ -39,6 +39,8 @@ const REGISTRATION_SURFACES = [
 // name -> why it is allowed to be unregistered. Keep every reason concrete;
 // "misc" entries defeat the lint.
 const EXEMPT: Record<string, string> = {
+  'heavy-run-gate.py':
+    'unwired by decision (acrobot 44403, task flotta-memoria-or): wiring it into templates/profiles is a permission_change, locked at level 1, listed for Balazs; delete this entry in the wiring PR',
   'ledger_lib.py':
     'shared library imported by the ledger hooks; not itself a hook',
   'memory-save.sh':

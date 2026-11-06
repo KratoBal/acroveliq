@@ -66,6 +66,15 @@ HEAVY_KINDS = {"test", "build", "typecheck"}
 # takes the lock itself must skip its own flock when this is "1" (see cmd_run).
 HEAVY_LOCK_HELD_ENV = "FLOTTA_NEHEZ_ZAR_TARTVA"
 HEAVY_LOCK = Path(os.environ.get("FUTTAT_NEHEZ_ZAR", "/tmp/flotta-nehez.lock"))
+# A heavy run's heap ceiling (task flotta-memoria-or, acrobot 44384): 2026-11-06 12:1x a tsc with
+# --max-old-space-size=3072 ran the box out of memory beside six claude sessions. The lock queues heavy runs; this
+# caps them: half of MemAvailable at the start, never above 1536 MB, never below 512 MB (a run that cannot fit in
+# 512 MB should fail fast, not swap the fleet to a halt). Set in the child's NODE_OPTIONS, and a larger value written
+# on the command line itself is lowered to it (a command-line flag would win over NODE_OPTIONS).
+HEAP_CEILING_MB = 1536
+HEAP_FLOOR_MB = 512
+MEMINFO = Path(os.environ.get("FUTTAT_MEMINFO", "/proc/meminfo"))
+HEAP_FLAG = re.compile(r"--max[-_]old[-_]space[-_]size=(\d+)")
 
 # ---- masking ---------------------------------------------------------------
 
@@ -417,6 +426,30 @@ def prune(root: Path, days: int, now: float) -> int:
 
 # ---- commands ----------------------------------------------------------------
 
+def heap_ceiling() -> tuple[int, int | None]:
+    """The heap ceiling in MB, and the MemAvailable it came from (None: unreadable, the plain ceiling holds)."""
+    try:
+        for line in MEMINFO.read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                available = int(line.split()[1]) // 1024
+                return max(HEAP_FLOOR_MB, min(HEAP_CEILING_MB, available // 2)), available
+    except (OSError, ValueError, IndexError):
+        pass
+    return HEAP_CEILING_MB, None
+
+
+def cap_heap(text: str, ceiling: int) -> str:
+    """Every --max-old-space-size above the ceiling lowered to it; a smaller one stays."""
+    return HEAP_FLAG.sub(lambda m: f"--max-old-space-size={min(int(m.group(1)), ceiling)}", text)
+
+
+def capped_node_options(current: str, ceiling: int) -> str:
+    """NODE_OPTIONS with a heap flag no larger than the ceiling (added when there is none)."""
+    if HEAP_FLAG.search(current):
+        return cap_heap(current, ceiling)
+    return f"{current} --max-old-space-size={ceiling}".strip()
+
+
 def take_heavy_lock(kind: str) -> int | None:
     """Wait for the fleet-wide heavy-run lock; None if the lock file cannot be opened."""
     # Open WITHOUT O_CREAT first: /tmp is sticky and fs.protected_regular=2, so an
@@ -535,6 +568,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     child_env = dict(os.environ)
     if lock_fd is not None or already_held:
         child_env[HEAVY_LOCK_HELD_ENV] = "1"
+    heap_note = None
+    if kind in HEAVY_KINDS:
+        ceiling, available = heap_ceiling()
+        child_env["NODE_OPTIONS"] = capped_node_options(child_env.get("NODE_OPTIONS", ""), ceiling)
+        lowered = [cap_heap(part, ceiling) for part in command]
+        changed = lowered != command
+        command = lowered
+        heap_note = (
+            f"heap-plafon {ceiling} MB (MemAvailable {available if available is not None else '?'} MB)"
+            + ("; a parancssor nagyobb --max-old-space-size erteket a plafonra irtam at" if changed else "")
+        )
+        print(f"# futtat: {heap_note}", file=sys.stderr)
     masker = Masker(hashes)
     started = time.monotonic()
     lines: list[str] = []
@@ -550,7 +595,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     header = [
         f"# futtat: {' '.join(masker.line(part) for part in command)}",
         f"# fajta={kind} kilepes={code} ido={duration:.1f}s sorok={len(lines)} cserek={masker.count}",
-    ] + ([f"# figyelem: {hash_warning}"] if hash_warning else [])
+    ] + ([f"# figyelem: {hash_warning}"] if hash_warning else []) + ([f"# {heap_note}"] if heap_note else [])
     log_path.write_text("\n".join(header + lines) + "\n")
     grouped = protect_file(log_path, gid)
 
