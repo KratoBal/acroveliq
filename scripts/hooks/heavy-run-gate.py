@@ -14,6 +14,8 @@ WHAT IT DOES: it takes the call apart with the deny gate's own normaliser (scrip
 `bash -c`, `env`, `$(...)`, `&&`, `;`, absolute paths unwrapped), and denies a simple command that is a heavy run:
   - `tsc` (any project compile; `--version`/`--help` stay allowed), also as `node .../tsc`, `npx tsc`, `pnpm exec tsc`;
   - `vitest` with no file filter (a run naming a spec file or a path stays allowed: that is not the whole suite);
+    a `-t <pattern>` alone is NOT a filter here, and that is deliberate: it filters test NAMES, every file is still
+    loaded and transformed, so its memory is the whole run's (barracuda 44438);
   - `turbo run build|test|typecheck` (and `turbo build|test|typecheck`);
   - `pnpm|npm|yarn [run] test*|build*|typecheck*`, with pnpm's `--filter X`/`-C dir` before the script name.
 A heavy run INSIDE futtat is an argument of `futtat.sh run ... --`, not a simple command of its own, so it passes.

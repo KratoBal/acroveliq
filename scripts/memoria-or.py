@@ -15,8 +15,10 @@ WHAT IT DOES, one step per run (a step changes the memory, the next run measures
     matrix's agent-lifecycle group already grants the main agent this). IDLE is what the panel says: the idle footer
     and no busy marker (a turn, a token counter, a still-running shell). A panel without the footer is a modal (a
     permission prompt): never stopped. An agent it cannot reach is skipped.
-  RECOVERED = MemAvailable > 2.5 GB, continuously for 10 minutes. Then it starts back ONE agent IT stopped per run
-    (POST /start, not fresh: the agent continues its conversation), the highest priority first, and only those.
+  RECOVERED = MemAvailable > 2.5 GB, continuously for 10 minutes. Then it starts back ONE agent IT stopped
+    (POST /start, not fresh: the agent continues its conversation), the highest priority first, and only those; and
+    the clock starts again: the next start needs another 10 measured minutes (barracuda 44438: a resumed session loads
+    its whole conversation, so one start a minute would bring the peak back and stop somebody again).
 Every stop and start is recorded in store/memoria-or.state and goes to acrobot's daily log as one line (not a
 message: a message would wake a language-model turn under memory pressure). Idempotent: an agent already stopped
 by it is not stopped again; one it did not stop is never started.
@@ -50,7 +52,9 @@ SWAPIN_PAGES_PER_S = 2500  # about 10 MB/s with 4 kB pages; 12:1x showed 30-60k 
 # lowest priority first; acrobot is never on it
 PRIORITY = ["korall", "polip", "picasso", "barracuda", "murena", "nautilus"]
 
-BUSY = re.compile(r"esc to interrupt|\(\d+s (·|\.)|still running")
+# a background task keeps an agent busy behind an idle footer (barracuda 44438): measured 2026-11-06 on a pane with a
+# run_in_background shell, the footer reads "bypass permissions on · 1 shell"; a background agent or monitor the same way
+BUSY = re.compile(r"esc to interrupt|\(\d+s (·|\.)|still running|\b\d+ (shells?|agents?|monitors?|tasks?)\b")
 IDLE_FOOTER = ("bypass permissions on", "? for shortcuts")
 
 
@@ -180,9 +184,12 @@ def main() -> int:
         elif lifecycle(agent, verb):
             if verb == "stop":
                 stopped.append(agent)
+                state.pop("start_failures", None)
                 line = f"{measured}: leallitottam a tetlen {agent} agenst (leallitva: {', '.join(stopped)})"
             else:
                 stopped.remove(agent)
+                state["high_since"] = t
+                state.pop("start_failures", None)
                 line = f"{measured} 10 perce: visszainditottam {agent} agenst (folytatja; meg leallitva: {', '.join(stopped) or 'senki'})"
             print(line)
             daily_line(line)
@@ -190,6 +197,13 @@ def main() -> int:
             # somebody started it in the meantime: it is not ours to start any more, and must not block the others
             stopped.remove(agent)
             print(f"{agent} mar fut (nem en inditottam), lekerult a listamrol")
+        elif verb == "start":
+            # the API keeps failing and the agent is still down: said once in the daily log at the fifth try, so a
+            # stopped agent does not stay out unseen (barracuda 44438)
+            failures = int(state.get("start_failures", 0)) + 1
+            state["start_failures"] = failures
+            if failures == 5:
+                daily_line(f"{measured}: {agent} visszainditasa otodszor sem sikerult (az API hibat ad), leallitva marad")
     # a dry run leaves the list as it was
     state["stopped"] = state.get("stopped", []) if DRY_RUN else stopped
     save_state(state)

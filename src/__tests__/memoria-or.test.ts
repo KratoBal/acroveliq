@@ -18,6 +18,8 @@ afterAll(() => rmSync(root, { recursive: true, force: true }))
 const IDLE = '❯ \n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n'
 const BUSY = '✻ Working… (12s · ↓ 300 tokens · esc to interrupt)\n'
 const SHELL = '  1 shell still running\n  ⏵⏵ bypass permissions on\n'
+// measured 2026-11-06 on a pane with a run_in_background shell
+const BACKGROUND = '❯ \n  ⏵⏵ bypass permissions on · 1 shell · ← for agents\n'
 const MODAL = 'Do you want to proceed?\n❯ 1. Yes\n  2. No\n'
 const TOKEN = 'test-token-not-a-secret'
 
@@ -71,7 +73,7 @@ const T0 = 1_793_960_000
 
 describe('memoria-or', () => {
   it('MEMORIA-OR-STOP: under pressure one idle agent per run, lowest priority first; never a busy, modal or running-shell one, never acrobot', () => {
-    const t = tree({ acrobot: IDLE, korall: BUSY, polip: MODAL, picasso: SHELL, barracuda: IDLE, murena: IDLE })
+    const t = tree({ acrobot: IDLE, korall: BUSY, polip: MODAL, picasso: SHELL, barracuda: IDLE, murena: IDLE, nautilus: BACKGROUND })
     const first = t.run({ availMb: 800, now: T0 })
     t.run({ availMb: 700, now: T0 + 60 })
     expect(
@@ -97,8 +99,12 @@ describe('memoria-or', () => {
     t.run({ availMb: 3000, now: T0 + 460 + 599 })
     expect(t.verbs(), 'MEMORIA-OR-START-WAIT').toEqual(['korall/stop', 'polip/stop'])
     t.run({ availMb: 3000, now: T0 + 460 + 600 })
+    // the clock starts again after a start: no second start in the next minute, nor before 10 more minutes
     t.run({ availMb: 3000, now: T0 + 460 + 660 })
-    t.run({ availMb: 3000, now: T0 + 460 + 720 })
+    t.run({ availMb: 3000, now: T0 + 460 + 1199 })
+    expect(t.verbs(), 'MEMORIA-OR-START-ONE-PER-TEN').toEqual(['korall/stop', 'polip/stop', 'polip/start'])
+    t.run({ availMb: 3000, now: T0 + 460 + 1200 })
+    t.run({ availMb: 3000, now: T0 + 460 + 1260 })
     expect({ verbs: t.verbs(), stopped: t.stopped() }, 'MEMORIA-OR-START').toEqual({
       verbs: ['korall/stop', 'polip/stop', 'polip/start', 'korall/start'],
       stopped: [],
@@ -142,5 +148,16 @@ describe('memoria-or', () => {
       verbs: ['korall/stop', 'polip/stop', 'polip/start', 'korall/start'],
       stopped: [],
     })
+  })
+
+  it('MEMORIA-OR-START-FAILING: an API that keeps refusing the start of a stopped agent is said once, at the fifth try, and the agent stays listed', () => {
+    const t = tree({ korall: IDLE })
+    t.run({ availMb: 500, now: T0 })
+    t.run({ availMb: 3000, now: T0 + 60 })
+    for (let i = 0; i < 6; i++) t.run({ availMb: 3000, now: T0 + 660 + i * 60, code: '500' })
+    expect(
+      { starts: t.verbs().filter((v) => v.endsWith('/start')).length, stopped: t.stopped(), said: t.daily().filter((l) => l.includes('otodszor')).length },
+      'MEMORIA-OR-START-FAILING',
+    ).toEqual({ starts: 6, stopped: ['korall'], said: 1 })
   })
 })
