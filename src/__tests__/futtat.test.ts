@@ -402,4 +402,34 @@ describe('futtat: the log', () => {
     // the two refused runs wrote no log; the two that ran wrote one each
     expect(readdirSync(taskDir).filter((f) => f.endsWith('.log')).length, 'FUTTAT-SELF-LOCK-NOLOG').toBe(2)
   })
+
+  it('FUTTAT-HEAP: a heavy run gets half of MemAvailable as its heap ceiling (512..1536 MB), in NODE_OPTIONS and on its command line; a light run is left alone', () => {
+    const meminfo = join(root, `meminfo-${Date.now()}`)
+    const heap = (kind: string, availableKb: number | null, nodeOptions: string) => {
+      if (availableKb === null) rmSync(meminfo, { force: true })
+      else writeFileSync(meminfo, `MemTotal:  8000000 kB\nMemAvailable:  ${availableKb} kB\n`)
+      const result = spawnSync(
+        'python3',
+        [SCRIPT, 'run', '--feladat', 'proba', '--fajta', kind, '--', 'bash', '-c', 'echo "N=$NODE_OPTIONS"; echo "A=$1"', '_', 'node --max-old-space-size=3072 x.js'],
+        { env: { ...env, FUTTAT_MEMINFO: meminfo, NODE_OPTIONS: nodeOptions }, encoding: 'utf-8' },
+      )
+      const taskDir = join(env.FUTTAT_LOG_ROOT!, 'acropora', 'proba')
+      const log = readFileSync(join(taskDir, readdirSync(taskDir).filter((f) => f.endsWith('.log')).sort().at(-1)!), 'utf-8')
+      return [log.match(/^N=.*$/m)?.[0], log.match(/^A=.*$/m)?.[0], result.stderr.includes('heap-plafon')]
+    }
+    expect(
+      [
+        heap('test', 2_048_000, ''),
+        heap('typecheck', 300_000, '--max-old-space-size=4096 --enable-source-maps'),
+        heap('build', null, '--max-old-space-size=1024'),
+        heap('egyeb', 2_048_000, '--max-old-space-size=4096'),
+      ],
+      'FUTTAT-HEAP',
+    ).toEqual([
+      ['N=--max-old-space-size=1000', 'A=node --max-old-space-size=1000 x.js', true],
+      ['N=--max-old-space-size=512 --enable-source-maps', 'A=node --max-old-space-size=512 x.js', true],
+      ['N=--max-old-space-size=1024', 'A=node --max-old-space-size=1536 x.js', true],
+      ['N=--max-old-space-size=4096', 'A=node --max-old-space-size=3072 x.js', false],
+    ])
+  })
 })

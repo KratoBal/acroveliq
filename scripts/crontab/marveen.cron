@@ -18,3 +18,7 @@
 # 2026-10-13 container recreate because it was only in the live crontab (acrobot 43759, 2026-11-05:
 # Balázs asked why he has to ask whether anyone is working).
 */10 8-23 * * * /home/marveen/marveen/scripts/tetlen-or.sh 20 >>/home/marveen/marveen/store/tetlen-or.log 2>&1
+# Memory guard (not an LLM, task flotta-memoria-or): every minute, round the clock. Under memory pressure it stops one
+# idle agent (lowest priority first, never acrobot); after 10 minutes above 2.5 GB free it starts back the ones it
+# stopped. 2026-11-06 12:1x the box ran out of memory beside six claude sessions.
+* * * * * /usr/bin/python3 /home/marveen/marveen/scripts/memoria-or.py >>/home/marveen/marveen/store/memoria-or.log 2>&1

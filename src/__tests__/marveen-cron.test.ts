@@ -19,4 +19,17 @@ describe('marveen.cron', () => {
       script: true,
     })
   })
+
+  it('MARVEEN-CRON-MEMORIA-OR: the memory guard runs every minute, and its script exists', () => {
+    const live = readFileSync(CRON, 'utf-8')
+      .split('\n')
+      .filter((l) => l.includes('memoria-or.py') && !l.startsWith('#'))
+    expect(
+      { live, script: existsSync(join(process.cwd(), 'scripts', 'memoria-or.py')) },
+      'MARVEEN-CRON-MEMORIA-OR',
+    ).toEqual({
+      live: ['* * * * * /usr/bin/python3 /home/marveen/marveen/scripts/memoria-or.py >>/home/marveen/marveen/store/memoria-or.log 2>&1'],
+      script: true,
+    })
+  })
 })
