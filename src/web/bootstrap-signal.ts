@@ -74,8 +74,8 @@ export function stalePinNote(imageScript: string | null, treeScript: string | nu
  * else (a FAIL on the sudo rules, a B45 REGRESSION, a MISSING of an installed file, which also says "absent") is a DIFFERENT fault
  * that a stale image does not explain, and must not be folded into an old card.
  */
+const MISMATCH_RX = /^MISMATCH: scripts\/root\/([a-z0-9.-]+) sha256 ([0-9a-f]{64}), pinned ([0-9a-f]{64}): not installing it$/
 const STALE_IMAGE_SYMPTOM_RX = [
-  /^MISMATCH: scripts\/root\/[a-z0-9.-]+ sha256 [0-9a-f]{64}, pinned [0-9a-f]{64}: not installing it$/,
   /^NOT INSTALLED: (D4|the broker|the installer) is deployed \(.*\), but (a|its) source (above )?is not the pinned version$/,
   /^(D4|FLEET-PANE|ROOT-TELEPITO): step 4[acd] reported a problem above$/,
   /^CHECK FAILED, see the lines above\.$/,
@@ -83,9 +83,34 @@ const STALE_IMAGE_SYMPTOM_RX = [
 /** The dev-only absences print at EVERY start and say themselves that they do not block the fleet: neither a symptom nor a new fault. */
 const DEV_ONLY_RX = /^MISSING \(dev only, does not block the fleet\): /
 
+/** The pin name the bootstrap uses for a root script (fleet-bootstrap.sh: FP_PIN, RT_PIN, and the D4 table by file name). */
+export function pinKeyForScript(script: string): string {
+  if (script === 'fleet-pane.py') return 'FP_PIN'
+  if (script === 'root-telepito.py') return 'RT_PIN'
+  return `D4:${script}`
+}
+
+export interface StalePins {
+  image: Map<string, string>
+  tree: Map<string, string>
+}
+
+/**
+ * A MISMATCH line is the stale image's symptom ONLY when it says what a stale image says: `sha256 X` is the TREE's pin for that
+ * script (the tree is self-consistent, its test holds file and pin together) and `pinned Y` is the IMAGE's pin. Any other pair of
+ * hashes (barracuda, #344) means the tree's root script itself changed under its own pin, which is what the pins exist to catch:
+ * that is a different fault and must reach its own card, not be filed under "the old image".
+ */
+function mismatchIsStaleImage(line: string, pins: StalePins | undefined): boolean {
+  const m = MISMATCH_RX.exec(line)
+  if (!m || !pins) return false
+  const key = pinKeyForScript(m[1]!)
+  return pins.tree.get(key) === m[2] && pins.image.get(key) === m[3]
+}
+
 /** True when the start has a stale-image symptom and NOTHING else that is a problem. */
-export function onlyStaleImageSymptoms(problemLines: string[]): boolean {
-  const isSymptom = (l: string) => STALE_IMAGE_SYMPTOM_RX.some((rx) => rx.test(l))
+export function onlyStaleImageSymptoms(problemLines: string[], pins?: StalePins): boolean {
+  const isSymptom = (l: string) => mismatchIsStaleImage(l, pins) || STALE_IMAGE_SYMPTOM_RX.some((rx) => rx.test(l))
   return problemLines.some(isSymptom) && problemLines.every((l) => isSymptom(l) || DEV_ONLY_RX.test(l))
 }
 
@@ -99,8 +124,8 @@ export interface BootstrapSignalDeps {
   write: (path: string, text: string) => void
   createCard: (card: { id: string; title: string; description: string; status: 'planned'; assignee: string; priority: 'urgent' }) => void
   newId: () => string
-  /** The one stale-image line, or null (see `stalePinNote`). */
-  stalePinNote: () => string | null
+  /** The one stale-image line with the two pin maps it was made from, or null (see `stalePinNote`). */
+  staleImage: () => ({ note: string } & StalePins) | null
   /** The newest open card of this signal (not done, not archived), to be updated instead of opening another. */
   findOpenCard: () => string | null
   addComment: (cardId: string, text: string) => void
@@ -117,7 +142,12 @@ const realDeps: BootstrapSignalDeps = {
   write: (p, t) => writeFileSync(p, t, { mode: 0o600 }),
   createCard: (c) => createKanbanCard(c),
   newId: () => randomUUID().slice(0, 8),
-  stalePinNote: () => stalePinNote(readOrNull(IMAGE_BOOTSTRAP), readOrNull(TREE_BOOTSTRAP)),
+  staleImage: () => {
+    const image = readOrNull(IMAGE_BOOTSTRAP)
+    const tree = readOrNull(TREE_BOOTSTRAP)
+    const note = stalePinNote(image, tree)
+    return note === null || image === null || tree === null ? null : { note, image: pinsOf(image), tree: pinsOf(tree) }
+  },
   findOpenCard: () => {
     const open = listKanbanCards()
       .filter((c) => c.title.startsWith(CARD_TITLE_PREFIX) && c.status !== 'done' && c.archived_at === null)
@@ -162,10 +192,11 @@ export function checkBootstrapStatus(deps: BootstrapSignalDeps = realDeps): Boot
     const when = new Date(at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ })
     // The router measured this itself (image vs tree), it is not a line of the file. A stale image repeats at EVERY start, so it
     // updates the card that is already open instead of opening another (acrobot 44808); with none open it opens the first one.
-    const stale = deps.stalePinNote()
+    const staleInfo = deps.staleImage()
+    const stale = staleInfo?.note ?? null
     // ...and ONLY when every problem of this start is a symptom of that stale image: a different fault (FAIL, B45 REGRESSION, a
     // MISSING) behind the same old card would never reach anyone, so it opens its own card, with the stale line on it.
-    const existing = stale && onlyStaleImageSymptoms(allProblems) ? deps.findOpenCard() : null
+    const existing = staleInfo && onlyStaleImageSymptoms(allProblems, staleInfo) ? deps.findOpenCard() : null
     if (stale && existing) {
       deps.addComment(
         existing,

@@ -11,6 +11,7 @@ import { logger } from '../logger.js'
 import {
   checkBootstrapStatus,
   onlyStaleImageSymptoms,
+  pinKeyForScript,
   pinsOf,
   stalePinNote,
   STATUS_FILE,
@@ -30,7 +31,7 @@ function deps(files: Record<string, string>) {
       cards.push(c)
     },
     newId: () => `id${cards.length + 1}`,
-    stalePinNote: () => null,
+    staleImage: () => null,
     findOpenCard: () => null,
     addComment: () => {
       throw new Error('no comment expected')
@@ -161,7 +162,7 @@ describe('a stale image', () => {
   const setup = (open: string | null, status: string = STALE_HIBA) => {
     const r = deps({ [STATUS_FILE]: status })
     const comments: { id: string; text: string }[] = []
-    r.d.stalePinNote = () => NOTE
+    r.d.staleImage = () => ({ note: NOTE, image: new Map([['FP_PIN', H64B]]), tree: new Map([['FP_PIN', H64A]]) })
     r.d.findOpenCard = () => open
     r.d.addComment = (id, text) => {
       comments.push({ id, text })
@@ -226,6 +227,33 @@ describe('a stale image', () => {
     expect(onlyStaleImageSymptoms(['MISSING (dev only, does not block the fleet): /x'])).toBe(false)
   })
 
+  // barracuda #344 (non-blocking): a MISMATCH whose hashes are not (tree pin, image pin) is the tree's root script changed under its
+  // own pin, not a stale image, and must not be filed under the old card.
+  it('a MISMATCH that is not the tree pin against the image pin opens its own card', () => {
+    const other = 'c'.repeat(64)
+    const forged = `MISMATCH: scripts/root/fleet-pane.py sha256 ${other}, pinned ${H64B}: not installing it`
+    const wrongImage = `MISMATCH: scripts/root/fleet-pane.py sha256 ${H64A}, pinned ${other}: not installing it`
+    const otherScript = `MISMATCH: scripts/root/fleet-github.py sha256 ${H64A}, pinned ${H64B}: not installing it`
+    for (const line of [forged, wrongImage, otherScript]) {
+      const status = STALE_HIBA.split('\n').map((l) => (l.startsWith('MISMATCH') ? line : l)).join('\n')
+      const { d, cards, comments } = setup('abc12345', status)
+      expect(checkBootstrapStatus(d), line).toBe('card')
+      expect(comments, line).toHaveLength(0)
+      expect(cards, line).toHaveLength(1)
+      expect(cards[0]!.description, line).toContain(`- ${line}`)
+    }
+  })
+
+  it('the pin name of each root script, and a MISMATCH with no pins to compare is never a symptom', () => {
+    expect(pinKeyForScript('fleet-pane.py')).toBe('FP_PIN')
+    expect(pinKeyForScript('root-telepito.py')).toBe('RT_PIN')
+    expect(pinKeyForScript('fleet-github.py')).toBe('D4:fleet-github.py')
+    const line = `MISMATCH: scripts/root/fleet-pane.py sha256 ${H64A}, pinned ${H64B}: not installing it`
+    expect(onlyStaleImageSymptoms([line])).toBe(false)
+    const pins = { image: new Map([['FP_PIN', H64B]]), tree: new Map([['FP_PIN', H64A]]) }
+    expect(onlyStaleImageSymptoms([line], pins)).toBe(true)
+  })
+
   it('with no card open it opens the first one, and the note is on it', () => {
     const { d, cards, comments } = setup(null)
     expect(checkBootstrapStatus(d)).toBe('card')
@@ -244,7 +272,7 @@ describe('a stale image', () => {
 
   it('a start that is NOT a stale image still opens its own card even if an old one is open', () => {
     const { d, cards, comments } = setup('abc12345')
-    d.stalePinNote = () => null
+    d.staleImage = () => null
     expect(checkBootstrapStatus(d)).toBe('card')
     expect(cards).toHaveLength(1)
     expect(comments).toHaveLength(0)
