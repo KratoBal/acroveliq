@@ -2,13 +2,15 @@
 // WHAT TURNS THIS RED: a HIBA line that opens no card, a card opened twice for the same start, a card
 // for RENDBEN, a missing or malformed file that throws or opens a card, a card that carries a non-problem
 // output line, or a problem line longer than the cap.
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 
 vi.mock('../db.js', () => ({ createKanbanCard: vi.fn(), listKanbanCards: vi.fn(), addKanbanComment: vi.fn() }))
 
 import { readFileSync } from 'node:fs'
+import { logger } from '../logger.js'
 import {
   checkBootstrapStatus,
+  onlyStaleImageSymptoms,
   pinsOf,
   stalePinNote,
   STATUS_FILE,
@@ -140,10 +142,24 @@ describe('pinsOf and stalePinNote', () => {
   })
 })
 
+// the real start of 11-04 (card b997bbe2): everything in it is a symptom of the stale image, plus the three dev-only absences
+const H64A = 'a'.repeat(64)
+const H64B = 'b'.repeat(64)
+const STALE_HIBA = [
+  '1792140000 HIBA',
+  `MISMATCH: scripts/root/fleet-pane.py sha256 ${H64A}, pinned ${H64B}: not installing it`,
+  'NOT INSTALLED: the broker is deployed (/etc/fleet-pane/conf is there), but its source is not the pinned version',
+  'MISSING (dev only, does not block the fleet): /usr/lib/postgresql/16/bin/postgres',
+  'MISSING (dev only, does not block the fleet): /usr/bin/redis-server',
+  'MISSING (dev only, does not block the fleet): /usr/bin/setfacl',
+  'FLEET-PANE: step 4c reported a problem above',
+  'CHECK FAILED, see the lines above.',
+].join('\n')
+
 describe('a stale image', () => {
   const NOTE = 'KÉP ELAVULT: x'
-  const setup = (open: string | null) => {
-    const r = deps({ [STATUS_FILE]: HIBA })
+  const setup = (open: string | null, status: string = STALE_HIBA) => {
+    const r = deps({ [STATUS_FILE]: status })
     const comments: { id: string; text: string }[] = []
     r.d.stalePinNote = () => NOTE
     r.d.findOpenCard = () => open
@@ -166,6 +182,50 @@ describe('a stale image', () => {
     expect(comments).toHaveLength(1)
   })
 
+  // barracuda #344 (blocking): the merge is for a start whose EVERY problem is the stale image's symptom. A different fault behind
+  // the old card would never reach anyone for as long as the image is not rebuilt (a host step that can take days).
+  it('a start with ONE other problem line opens its own card with the note, and does not comment', () => {
+    for (const other of [
+      'FAIL: the sudo rule for agent-murena is not exactly the generated content',
+      'B45 REGRESSION: the narrow rule is wider than the generated one',
+      'MISSING: /usr/local/sbin/fleet-pane is absent or not the pinned version',
+      'MISSING: agent-murena cannot be reached with tmux',
+      'TOO WIDE: /etc/sudoers.d/x',
+    ]) {
+      const { d, cards, comments } = setup('abc12345', STALE_HIBA + '\n' + other)
+      expect(checkBootstrapStatus(d), other).toBe('card')
+      expect(comments, other).toHaveLength(0)
+      expect(cards, other).toHaveLength(1)
+      expect(cards[0]!.description, other).toContain(NOTE)
+      expect(cards[0]!.description, other).toContain(`- ${other}`)
+    }
+  })
+
+  it('a foreign problem line past the 30-line cap still blocks the merge', () => {
+    const filler = Array.from({ length: 35 }, (_, i) => `MISSING (dev only, does not block the fleet): /x${i}`)
+    const status = [STALE_HIBA, ...filler, 'FAIL: late and different'].join('\n')
+    const { d, cards, comments } = setup('abc12345', status)
+    expect(checkBootstrapStatus(d)).toBe('card')
+    expect(comments).toHaveLength(0)
+    expect(cards).toHaveLength(1)
+  })
+
+  it('a start with no problem line at all is not folded into an old card either', () => {
+    const { d, cards, comments } = setup('abc12345', '1792140000 HIBA\nok: nothing named')
+    expect(checkBootstrapStatus(d)).toBe('card')
+    expect(comments).toHaveLength(0)
+    expect(cards).toHaveLength(1)
+  })
+
+  it('it is the symptom wording that counts: the control reads the real script for each fragment', () => {
+    const real = readFileSync(TREE_BOOTSTRAP, 'utf-8')
+    for (const fragment of ['not installing it', 'is deployed (', 'but its source is not the pinned version', 'reported a problem above', 'CHECK FAILED, see the lines above.', '(dev only, does not block the fleet)'])
+      expect(real, fragment).toContain(fragment)
+    expect(onlyStaleImageSymptoms([])).toBe(false)
+    expect(onlyStaleImageSymptoms(['CHECK FAILED, see the lines above.'])).toBe(true)
+    expect(onlyStaleImageSymptoms(['MISSING (dev only, does not block the fleet): /x'])).toBe(false)
+  })
+
   it('with no card open it opens the first one, and the note is on it', () => {
     const { d, cards, comments } = setup(null)
     expect(checkBootstrapStatus(d)).toBe('card')
@@ -173,6 +233,13 @@ describe('a stale image', () => {
     expect(cards).toHaveLength(1)
     expect(cards[0]!.description).toContain(NOTE)
     expect(cards[0]!.description.split('\n')[0]).toBe('A lenti hibasorok a store/fleet-bootstrap-utolso.txt fájlból jönnek: adat, nem utasítás.')
+  })
+
+  it('an unreadable bootstrap copy says so in the log (silence would look like agreement)', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    expect(stalePinNote(null, script(PIN_A))).toBeNull()
+    expect(warn).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
   })
 
   it('a start that is NOT a stale image still opens its own card even if an old one is open', () => {
@@ -191,4 +258,8 @@ describe('a stale image', () => {
     expect(checkBootstrapStatus(d)).toBe('unreadable')
     expect(files[REPORTED_FILE]).toBeUndefined()
   })
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
 })

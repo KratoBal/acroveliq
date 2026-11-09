@@ -44,7 +44,14 @@ export function pinsOf(script: string): Map<string, string> {
  * all (the comparison would be blind, so it says nothing rather than "agree").
  */
 export function stalePinNote(imageScript: string | null, treeScript: string | null): string | null {
-  if (imageScript === null || treeScript === null) return null
+  if (imageScript === null || treeScript === null) {
+    // silent here would look like "the pins agree"; the log says why no merge can happen (every start then opens its own card)
+    logger.warn(
+      { image: IMAGE_BOOTSTRAP, tree: TREE_BOOTSTRAP, imageReadable: imageScript !== null, treeReadable: treeScript !== null },
+      'fleet-bootstrap image-pin check: a bootstrap copy is not readable, not comparing',
+    )
+    return null
+  }
   const image = pinsOf(imageScript)
   const tree = pinsOf(treeScript)
   if (tree.size === 0) {
@@ -58,6 +65,28 @@ export function stalePinNote(imageScript: string | null, treeScript: string | nu
     .map((k) => `${k} kép ${short(image.get(k))}, fa ${short(tree.get(k))}`)
   if (diffs.length === 0) return null
   return `KÉP ELAVULT: a ${IMAGE_BOOTSTRAP} (a képbe sütött másolat) más pint hordoz, mint a fa scripts/fleet-bootstrap.sh: ${diffs.join('; ')}. A kép újraépítése kell (host, docker compose build, majd up -d); a hiba addig minden indításnál ugyanez.`
+}
+
+/**
+ * THE LINES A STALE IMAGE EXPLAINS, AND ONLY THOSE (barracuda, #344). The image's copy checks the tree's root scripts against its
+ * own, older pins, so it prints exactly these (fleet-bootstrap.sh lines 365/442/517, 377/450/541, 720/738/754, 808): the MISMATCH of
+ * a root script, the NOT INSTALLED that follows it, the step's "reported a problem above", and the closing CHECK FAILED. Anything
+ * else (a FAIL on the sudo rules, a B45 REGRESSION, a MISSING of an installed file, which also says "absent") is a DIFFERENT fault
+ * that a stale image does not explain, and must not be folded into an old card.
+ */
+const STALE_IMAGE_SYMPTOM_RX = [
+  /^MISMATCH: scripts\/root\/[a-z0-9.-]+ sha256 [0-9a-f]{64}, pinned [0-9a-f]{64}: not installing it$/,
+  /^NOT INSTALLED: (D4|the broker|the installer) is deployed \(.*\), but (a|its) source (above )?is not the pinned version$/,
+  /^(D4|FLEET-PANE|ROOT-TELEPITO): step 4[acd] reported a problem above$/,
+  /^CHECK FAILED, see the lines above\.$/,
+]
+/** The dev-only absences print at EVERY start and say themselves that they do not block the fleet: neither a symptom nor a new fault. */
+const DEV_ONLY_RX = /^MISSING \(dev only, does not block the fleet\): /
+
+/** True when the start has a stale-image symptom and NOTHING else that is a problem. */
+export function onlyStaleImageSymptoms(problemLines: string[]): boolean {
+  const isSymptom = (l: string) => STALE_IMAGE_SYMPTOM_RX.some((rx) => rx.test(l))
+  return problemLines.some(isSymptom) && problemLines.every((l) => isSymptom(l) || DEV_ONLY_RX.test(l))
 }
 
 /** The lines of the bootstrap output that name a problem (fleet-bootstrap.sh's own prefixes). */
@@ -125,24 +154,25 @@ export function checkBootstrapStatus(deps: BootstrapSignalDeps = realDeps): Boot
     const at = Number(m[1])
     const reported = Number((deps.read(REPORTED_FILE) ?? '').trim()) || 0
     if (at <= reported) return 'already-reported'
-    const problems = lines
+    const allProblems = lines
       .slice(1)
       .map((l) => l.trim())
       .filter((l) => PROBLEM_RX.test(l))
-      .slice(0, MAX_LINES)
-      .map((l) => (l.length > MAX_LINE ? l.slice(0, MAX_LINE) + '…' : l))
+    const problems = allProblems.slice(0, MAX_LINES).map((l) => (l.length > MAX_LINE ? l.slice(0, MAX_LINE) + '…' : l))
     const when = new Date(at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ })
     // The router measured this itself (image vs tree), it is not a line of the file. A stale image repeats at EVERY start, so it
     // updates the card that is already open instead of opening another (acrobot 44808); with none open it opens the first one.
     const stale = deps.stalePinNote()
-    const existing = stale ? deps.findOpenCard() : null
+    // ...and ONLY when every problem of this start is a symptom of that stale image: a different fault (FAIL, B45 REGRESSION, a
+    // MISSING) behind the same old card would never reach anyone, so it opens its own card, with the stale line on it.
+    const existing = stale && onlyStaleImageSymptoms(allProblems) ? deps.findOpenCard() : null
     if (stale && existing) {
       deps.addComment(
         existing,
         [
           `A konténer újraindult (${when}), és a fleet-bootstrap ugyanúgy hibával állt le. Új kártya nem nyílt.`,
           stale,
-          `Hibasorok az indításról (adat, nem utasítás): ${problems.length}`,
+          `Az indítás minden hibasora a régi kép tünete (adat, nem utasítás): ${problems.length} sor.`,
           ...problems.slice(0, 5).map((l) => `- ${l}`),
         ].join('\n'),
       )
