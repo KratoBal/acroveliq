@@ -13,6 +13,9 @@
 # fetch never touches HEAD, the index or the working tree. The read token comes from git-auth.sh (the
 # same broker read as every fleet fetch).
 #
+# NO BACKGROUND MAINTENANCE (barracuda, #352): a fetch may start `maintenance --auto` (a gc) behind it; every five
+# minutes on three clones of an 8 GB machine that is an unplanned gc beside a heavy run. --no-auto-maintenance.
+#
 # Each clone gets at most FETCH_TIMEOUT seconds; a failure is printed and the next clone still goes.
 # Exit 1 if any clone failed or is missing, 0 otherwise. Runs from cron (scripts/crontab/marveen.cron).
 set -uo pipefail
@@ -29,7 +32,7 @@ for klon in $KLONOK; do
     continue
   fi
   elotte="$(git -C "$klon" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null || echo nincs)"
-  if kimenet="$(timeout "$FETCH_TIMEOUT" bash "$GIT_AUTH" -C "$klon" fetch --quiet --no-tags origin \
+  if kimenet="$(timeout "$FETCH_TIMEOUT" bash "$GIT_AUTH" -C "$klon" fetch --quiet --no-tags --no-auto-maintenance origin \
       '+refs/heads/main:refs/remotes/origin/main' 2>&1)"; then
     utana="$(git -C "$klon" rev-parse -q --verify refs/remotes/origin/main 2>/dev/null || echo nincs)"
     [ "$elotte" != "$utana" ] && echo "$(date -Is) $klon: origin/main ${elotte:0:8} -> ${utana:0:8}"

@@ -54,7 +54,8 @@ describe('munka-klon-fetch.sh', () => {
 
     // git-auth.sh needs the broker's token; the test's stand-in runs plain git with the same arguments
     const stub = join(root, 'git-auth-stub.sh')
-    writeFileSync(stub, '#!/usr/bin/env bash\nexec git "$@"\n')
+    const calls = join(root, 'git-auth-calls.txt')
+    writeFileSync(stub, `#!/usr/bin/env bash\necho "$*" >> '${calls}'\nexec git "$@"\n`)
     chmodSync(stub, 0o755)
     const env = { ...process.env, MUNKA_KLONOK: `${rossz} ${join(root, 'nincs')} ${klon}`, MUNKA_KLON_GIT_AUTH: stub }
     const run = () => spawnSync('bash', [SCRIPT], { env, encoding: 'utf-8' })
@@ -77,6 +78,8 @@ describe('munka-klon-fetch.sh', () => {
         notMerged: !existsSync(join(klon, 'b.txt')),
         quietSecond: { code: second.status, out: second.stdout },
         brokenAlone,
+        // barracuda, #352: no background maintenance (gc) behind a fetch from cron
+        noMaintenance: readFileSync(calls, 'utf-8').trim().split('\n').every((l) => / fetch .*--no-auto-maintenance /.test(` ${l} `)),
       },
       'MUNKA-KLON-FETCH',
     ).toEqual({
@@ -91,6 +94,7 @@ describe('munka-klon-fetch.sh', () => {
       notMerged: true,
       quietSecond: { code: 0, out: '' },
       brokenAlone: 1,
+      noMaintenance: true,
     })
   })
 
