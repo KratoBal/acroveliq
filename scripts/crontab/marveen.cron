@@ -22,3 +22,7 @@
 # idle agent (lowest priority first, never acrobot); after 10 minutes above 2.5 GB free it starts back the ones it
 # stopped. 2026-11-06 12:1x the box ran out of memory beside six claude sessions.
 * * * * * /usr/bin/python3 /home/marveen/marveen/scripts/memoria-or.py >>/home/marveen/marveen/store/memoria-or.log 2>&1
+# The review clones' origin/main (card a9cef971): a fetch every five minutes, only the remote-tracking ref,
+# never a checkout or a pull (work may be in progress there). barracuda asked for a manual fetch twice on
+# 2026-11-10. The log holds only changes and failures.
+*/5 * * * * /home/marveen/marveen/scripts/munka-klon-fetch.sh >>/home/marveen/marveen/store/munka-klon-fetch.log 2>&1
