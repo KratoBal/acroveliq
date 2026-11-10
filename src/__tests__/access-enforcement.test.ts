@@ -210,6 +210,9 @@ describe('access enforcement: through the gate', () => {
       // cards and memories: own only; moving a memory to another writer is not own
       [G, 'POST', '/api/kanban/c-murena/move', { status: 'done' }, 200],
       [G, 'POST', '/api/kanban/c-nautilus/move', { status: 'done' }, 403],
+      [G, 'POST', '/api/kanban/c-murena/measure', { result: 'OK' }, 200], // the card's own measurement
+      [G, 'POST', '/api/kanban/c-nautilus/measure', { result: 'OK' }, 403], // another agent's card: its basis is not mine to overwrite
+      [A, 'POST', '/api/kanban/c-nautilus/measure', { result: 'OK' }, 200], // the main agent measures any card (the check before issuing)
       [G, 'PUT', '/api/kanban/c-murena', { title: 'uj cim' }, 200],
       [G, 'PUT', '/api/kanban/c-murena', { assignee: 'acrobot' }, 200], // the escalation to the main agent
       [G, 'PUT', '/api/kanban/c-murena', { assignee: 'nautilus' }, 403], // handing it to another agent

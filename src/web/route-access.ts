@@ -237,10 +237,10 @@ const GROUPS: Group[] = [
   },
   {
     name: 'kanban-card-change',
-    match: (r) => r.module === 'kanban' && /^\/api\/kanban\/:id(\/(move|archive|unarchive|labels|labels\/:labelId|breakdown|breakdown\/accept))?$/.test(r.path) && writes(r),
+    match: (r) => r.module === 'kanban' && /^\/api\/kanban\/:id(\/(move|archive|unarchive|labels|labels\/:labelId|breakdown|breakdown\/accept|measure))?$/.test(r.path) && writes(r),
     grants: g('yes', 'yes', 'own', 'yes', 'yes'),
     owner: { from: 'lookup', record: 'kanban-card', param: 'id' },
-    why: 'an agent changes the cards assigned to it (plan 3); it hands one on only to the main agent, the escalation the dispatch asks for (assigning is the main agent\'s job, acrobot 28671); creating a card and commenting stay open',
+    why: 'an agent changes the cards assigned to it (plan 3); it hands one on only to the main agent, the escalation the dispatch asks for (assigning is the main agent\'s job, acrobot 28671); creating a card and commenting stay open; the measurement (last measured field) rewrites the card\'s own basis and result, so it follows the card\'s owner too',
   },
   {
     name: 'administration',

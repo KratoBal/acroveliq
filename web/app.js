@@ -1461,6 +1461,21 @@ function createCardEl(card, embeddedChildren = []) {
     ? `<span class="kanban-card-seq" style="font-family:monospace;font-size:11px;color:var(--muted);margin-right:5px">#${card.seq}</span>`
     : ''
 
+  // Last measurement against the main branch (T6.5): one small line, only when there is something to say.
+  // The state comes from the server (`measure_state`, one rule in src/kanban-measure.ts); the card is not
+  // re-judged here.
+  let measureHtml = ''
+  if (card.measure_state && card.measure_state !== 'none') {
+    const when = card.measured_at ? new Date(card.measured_at * 1000).toLocaleString('hu-HU') : ''
+    const hours = card.measured_at ? (Date.now() / 1000 - card.measured_at) / 3600 : 0
+    const ago = hours >= 24 ? `${Math.floor(hours / 24)}d` : `${Math.floor(hours)}h`
+    const text = card.measure_state === 'unmeasured'
+      ? t('kanban.measure.unmeasured')
+      : t(`kanban.measure.${card.measure_state}`, { ago })
+    const title = [card.basis ? `${t('kanban.measure.basis')}: ${card.basis}` : '', when ? `${t('kanban.measure.at')}: ${when}` : '', card.measure_note || ''].filter(Boolean).join('\n')
+    measureHtml = `<div class="kanban-card-measure kanban-card-measure-${card.measure_state}" title="${escapeHtml(title)}">${escapeHtml(text)}</div>`
+  }
+
   // Card aging: left stripe + top-right badge based on hours since last update.
   // Skipped for done cards. Config thresholds and colours come from window._marveen.kanbanAging.
   let agingBadgeHtml = ''
@@ -1505,6 +1520,7 @@ function createCardEl(card, embeddedChildren = []) {
     ${projectHtml}
     <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
     <div class="kanban-card-footer">${assigneeHtml}${dueHtml}</div>
+    ${measureHtml}
     ${labelsHtml}
     <div class="kanban-card-actions">
       <button class="card-breakdown-btn" title="${t('kanban.btn.breakdown')}" aria-label="${t('kanban.btn.breakdown')}">⚡</button>

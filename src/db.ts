@@ -232,6 +232,22 @@ export function initDatabase(dbPathOverride?: string): void {
   } catch (err) {
     logger.warn({ err }, 'kanban_cards testing-status migration failed -- continuing')
   }
+  // Migration: the card's last measurement (T6.5, card b3d8174e). AFTER the testing-status table
+  // recreation above on purpose: that recreation copies an explicit column list and would drop these.
+  //   basis           what the card's claim rests on: one `repo:path` or `repo:path#name` per line,
+  //                   or a free-text line (a query) that no machine checks
+  //   measured_at     when the claim was last measured against the main branch (epoch seconds).
+  //                   NOT updated_at: that moves on every write (a comment, a drag), so it says
+  //                   nothing about whether the claim is still true.
+  //   measure_result  OK | DIVERGED | UNKNOWN (UNKNOWN: it could not be looked at)
+  //   measure_note    one line: which basis line diverged, or why it is unknown
+  for (const column of ['basis TEXT', 'measured_at INTEGER', 'measure_result TEXT', 'measure_note TEXT']) {
+    try {
+      db.exec(`ALTER TABLE kanban_cards ADD COLUMN ${column}`)
+    } catch {
+      // column already exists
+    }
+  }
   // Migration: add agent_id, category, auto_generated columns to memories
   try {
     db.exec("ALTER TABLE memories ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'marveen'")
@@ -1809,7 +1825,14 @@ export interface KanbanCard {
   // is woken (kanban -> agent dispatch). NULL = never dispatched; the once-only
   // guard so re-dragging a card does not re-prompt the agent.
   dispatched_at: number | null
+  // The card's last measurement against the main branch (T6.5): see the migration. NULL until measured.
+  basis: string | null
+  measured_at: number | null
+  measure_result: 'OK' | 'DIVERGED' | 'UNKNOWN' | null
+  measure_note: string | null
 }
+
+export const KANBAN_MEASURE_RESULTS = ['OK', 'DIVERGED', 'UNKNOWN'] as const
 
 export interface KanbanComment {
   id: number
@@ -1845,6 +1868,7 @@ export function createKanbanCard(card: {
   project?: string
   parent_id?: string
   due_date?: number
+  basis?: string
 }): void {
   const now = Math.floor(Date.now() / 1000)
   const status = card.status ?? 'planned'
@@ -1854,13 +1878,35 @@ export function createKanbanCard(card: {
   const sortOrder = (maxRow?.m ?? -1) + 1
 
   db.prepare(
-    `INSERT INTO kanban_cards (id, title, description, status, assignee, priority, project, parent_id, due_date, sort_order, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO kanban_cards (id, title, description, status, assignee, priority, project, parent_id, due_date, sort_order, created_at, updated_at, basis)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     card.id, card.title, card.description ?? null, status,
     card.assignee ?? null, card.priority ?? 'normal',
-    card.project ?? null, card.parent_id ?? null, card.due_date ?? null, sortOrder, now, now
+    card.project ?? null, card.parent_id ?? null, card.due_date ?? null, sortOrder, now, now,
+    card.basis?.trim() || null
   )
+}
+
+/**
+ * STAMPS A MEASUREMENT ON A CARD (T6.5). Sets `measured_at` to NOW from the server's own clock (the caller never
+ * supplies the time: a time written from a remembered "I checked it earlier" is exactly the kind of stale claim this
+ * field exists to catch), the result, and the note; `basis` is replaced only when given. It deliberately does NOT
+ * touch `updated_at`: the board orders and shows that as "last changed", and a re-measurement changes nothing on the
+ * card itself. Returns false for an unknown card.
+ */
+export function stampKanbanMeasure(
+  id: string,
+  input: { result: KanbanCard['measure_result'] & string; note?: string | null; basis?: string | null },
+): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  const basisGiven = input.basis !== undefined
+  return db.prepare(
+    `UPDATE kanban_cards SET measured_at=?, measure_result=?, measure_note=?${basisGiven ? ', basis=?' : ''} WHERE id=?`
+  ).run(
+    now, input.result, input.note?.trim() || null,
+    ...(basisGiven ? [input.basis?.trim() || null, id] : [id])
+  ).changes > 0
 }
 
 export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>): boolean {
