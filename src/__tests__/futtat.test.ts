@@ -390,6 +390,21 @@ describe('futtat: the log', () => {
     ).toEqual({ code: 75, ran: false, logs: 0, quick: true, waitingNamesHolder: true, failNamesHolder: true })
   })
 
+  // barracuda, #351: WHAT TURNS THIS RED: a negative, non-numeric or infinite ceiling meaning "wait forever"; only "0" may.
+  it('FUTTAT-HEAVY-LOCK-MAX: only an exact 0 waits without a ceiling; a typo falls back to 1800', () => {
+    const read = (value: string | undefined) => {
+      const e: NodeJS.ProcessEnv = { ...env }
+      if (value === undefined) delete e.FUTTAT_NEHEZ_ZAR_MAX_MP
+      else e.FUTTAT_NEHEZ_ZAR_MAX_MP = value
+      const code = `import importlib.util,sys; s=importlib.util.spec_from_file_location('f', sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.heavy_lock_max())`
+      return Number(execFileSync('python3', ['-c', code, SCRIPT], { env: e, encoding: 'utf-8' }).trim())
+    }
+    expect(
+      [undefined, '', '0', '90', '2.5', '-1', '-0.5', 'abc', 'inf', 'nan'].map(read),
+      'FUTTAT-HEAVY-LOCK-MAX',
+    ).toEqual([1800, 1800, 0, 90, 2.5, 1800, 1800, 1800, 1800, 1800])
+  })
+
   it('FUTTAT-NESTED-LOCK: a heavy run inside a heavy run does not wait on its own parent, and the child sees the held-lock mark', () => {
     const marker = join(root, 'nested-held.txt')
     // `timeout 5` on the inner run: a deadlock ends as 124 instead of an orphan waiting forever

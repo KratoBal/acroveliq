@@ -463,12 +463,17 @@ class HeavyLockTimeout(Exception):
 
 
 def heavy_lock_max() -> float:
+    """The ceiling in seconds; only an exact "0" waits without one (barracuda, #351): a negative,
+    non-numeric or non-finite value falls back to the default, so a typo ("-1") never brings back
+    the endless wait this ceiling is for."""
     raw = os.environ.get(HEAVY_LOCK_MAX_ENV, "").strip()
+    if raw == "0":
+        return 0.0
     try:
-        value = float(raw) if raw else HEAVY_LOCK_MAX_DEFAULT
+        value = float(raw)
     except ValueError:
-        value = HEAVY_LOCK_MAX_DEFAULT
-    return max(value, 0.0)
+        return float(HEAVY_LOCK_MAX_DEFAULT)
+    return value if value > 0 and value != float("inf") else float(HEAVY_LOCK_MAX_DEFAULT)
 
 
 def lock_holders(fd: int, locks_path: str = "/proc/locks") -> list[str]:
