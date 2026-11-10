@@ -363,6 +363,33 @@ describe('futtat: the log', () => {
     ])
   })
 
+  // card 744ceb69 (barracuda #339): WHAT TURNS THIS RED: a run waiting past the ceiling, or starting the command after it;
+  // the timeout leaving a log or exiting 0; the waiting line or the failure not naming who holds the lock.
+  it('FUTTAT-HEAVY-LOCK-CEILING: past the ceiling the run does not start, exits 75 and names the holder', () => {
+    const lock = join(root, 'nehez-plafon.lock')
+    const marker = join(root, 'plafon-futott.txt')
+    const holder = `flock '${lock}' sleep 4 >/dev/null 2>&1 & sleep 0.4; `
+    const started = Date.now()
+    const r = spawnSync('bash', ['-c', `${holder}python3 '${SCRIPT}' run --feladat plafon --fajta test -- bash -c 'touch ${marker}'`], {
+      env: { ...env, FUTTAT_NEHEZ_ZAR: lock, FUTTAT_NEHEZ_ZAR_MAX_MP: '1' },
+      encoding: 'utf-8',
+    })
+    const elapsed = Date.now() - started
+    const logDir = join(env.FUTTAT_LOG_ROOT!, 'acropora', 'plafon')
+    const logs = existsSync(logDir) ? readdirSync(logDir).filter((f) => f.endsWith('.log')) : []
+    expect(
+      {
+        code: r.status,
+        ran: existsSync(marker),
+        logs: logs.length,
+        quick: elapsed < 3500,
+        waitingNamesHolder: /várok rá .*legfeljebb 1 mp; tartja: \d+ \(flock .*sleep 4\)/.test(r.stderr),
+        failNamesHolder: /NEM indult el\. Tartja: \d+ \(flock .*sleep 4\)/.test(r.stderr),
+      },
+      'FUTTAT-HEAVY-LOCK-CEILING',
+    ).toEqual({ code: 75, ran: false, logs: 0, quick: true, waitingNamesHolder: true, failNamesHolder: true })
+  })
+
   it('FUTTAT-NESTED-LOCK: a heavy run inside a heavy run does not wait on its own parent, and the child sees the held-lock mark', () => {
     const marker = join(root, 'nested-held.txt')
     // `timeout 5` on the inner run: a deadlock ends as 124 instead of an orphan waiting forever

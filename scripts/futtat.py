@@ -66,6 +66,14 @@ HEAVY_KINDS = {"test", "build", "typecheck"}
 # takes the lock itself must skip its own flock when this is "1" (see cmd_run).
 HEAVY_LOCK_HELD_ENV = "FLOTTA_NEHEZ_ZAR_TARTVA"
 HEAVY_LOCK = Path(os.environ.get("FUTTAT_NEHEZ_ZAR", "/tmp/flotta-nehez.lock"))
+# THE WAIT HAS A CEILING (barracuda #339, card 744ceb69): a holder that never lets go (a shell that
+# flocked the lock and then started futtat under it, nautilus 2026-11-10; a hung build) used to keep
+# every heavy run in the fleet waiting with no end and no name. Past the ceiling the run does not start,
+# says who holds the lock, and exits with HEAVY_LOCK_TIMEOUT_EXIT. Seconds; 0 waits without a ceiling.
+HEAVY_LOCK_MAX_ENV = "FUTTAT_NEHEZ_ZAR_MAX_MP"
+HEAVY_LOCK_MAX_DEFAULT = 1800
+HEAVY_LOCK_TIMEOUT_EXIT = 75  # EX_TEMPFAIL: try again later, nothing ran
+HEAVY_LOCK_POLL_SECONDS = 1.0
 # A heavy run's heap ceiling (task flotta-memoria-or, acrobot 44384): 2026-11-06 12:1x a tsc with
 # --max-old-space-size=3072 ran the box out of memory beside six claude sessions. The lock queues heavy runs; this
 # caps them: half of MemAvailable at the start, never above 1536 MB, never below 512 MB (a run that cannot fit in
@@ -450,8 +458,52 @@ def capped_node_options(current: str, ceiling: int) -> str:
     return f"{current} --max-old-space-size={ceiling}".strip()
 
 
+class HeavyLockTimeout(Exception):
+    """The fleet lock was not free within the ceiling; the message names the holders."""
+
+
+def heavy_lock_max() -> float:
+    raw = os.environ.get(HEAVY_LOCK_MAX_ENV, "").strip()
+    try:
+        value = float(raw) if raw else HEAVY_LOCK_MAX_DEFAULT
+    except ValueError:
+        value = HEAVY_LOCK_MAX_DEFAULT
+    return max(value, 0.0)
+
+
+def lock_holders(fd: int, locks_path: str = "/proc/locks") -> list[str]:
+    """Who holds a flock on the file behind fd: "PID (command)" from /proc/locks, the command when readable.
+
+    A line looks like `1: FLOCK  ADVISORY  WRITE 4242 08:02:131074 0 EOF`; the device and inode
+    must be the lock file's. An unreadable /proc/locks names nobody, it does not fail the run.
+    """
+    st = os.fstat(fd)
+    want = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+    holders: list[str] = []
+    try:
+        with open(locks_path, encoding="utf-8") as locks:
+            for line in locks:
+                parts = line.split()
+                # a blocked waiter's line starts "1: -> FLOCK ..."; only holders count
+                if len(parts) < 6 or parts[1] != "FLOCK" or parts[5] != want:
+                    continue
+                pid = parts[4]
+                try:
+                    with open(f"/proc/{pid}/cmdline", "rb") as cmd:
+                        text = cmd.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+                except OSError:
+                    text = ""
+                holders.append(f"{pid} ({text[:120]})" if text else pid)
+    except OSError:
+        return []
+    return holders
+
+
 def take_heavy_lock(kind: str) -> int | None:
-    """Wait for the fleet-wide heavy-run lock; None if the lock file cannot be opened."""
+    """Wait for the fleet-wide heavy-run lock; None if the lock file cannot be opened.
+
+    Raises HeavyLockTimeout past the ceiling (`FUTTAT_NEHEZ_ZAR_MAX_MP`), with the lock released.
+    """
     # Open WITHOUT O_CREAT first: /tmp is sticky and fs.protected_regular=2, so an
     # O_CREAT open of a file another user owns is refused even when it is 0666
     # (nautilus measured it, 2026-11-04). Create only when it does not exist yet.
@@ -463,12 +515,32 @@ def take_heavy_lock(kind: str) -> int | None:
     except OSError as error:
         print(f"# figyelem: a nehéz-futás zár nem nyitható ({error}), zár nélkül fut", file=sys.stderr)
         return None
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        print(f"# futtat: egy másik {kind}/build/typecheck fut a flottában, várok rá ({HEAVY_LOCK})", file=sys.stderr)
-        fcntl.flock(fd, fcntl.LOCK_EX)
-    return fd
+    ceiling = heavy_lock_max()
+    deadline = time.monotonic() + ceiling
+    first = True
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            pass
+        if first:
+            first = False
+            holders = ", ".join(lock_holders(fd)) or "ismeretlen (a /proc/locks nem nevezi meg)"
+            limit = f"legfeljebb {ceiling:.0f} mp" if ceiling > 0 else "felső határ nélkül"
+            print(
+                f"# futtat: egy másik {kind}/build/typecheck fut a flottában, várok rá ({HEAVY_LOCK}), {limit}; tartja: {holders}",
+                file=sys.stderr,
+            )
+        if ceiling > 0 and time.monotonic() >= deadline:
+            holders = ", ".join(lock_holders(fd)) or "ismeretlen"
+            os.close(fd)
+            raise HeavyLockTimeout(
+                f"FAIL: a nehéz-futás zár ({HEAVY_LOCK}) {ceiling:.0f} mp alatt sem szabadult fel, a parancs NEM indult el. "
+                f"Tartja: {holders}. Ha a tartó folyamat beragadt, annak a gazdája állítsa le; "
+                f"ha szándékosan tovább várnál: {HEAVY_LOCK_MAX_ENV}=<mp> (0: határ nélkül)."
+            )
+        time.sleep(HEAVY_LOCK_POLL_SECONDS)
 
 
 def locks_heavy_lock_itself(command: list[str]) -> str | None:
@@ -564,7 +636,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     # 2026-11-05: a web test run sat 39 minutes on its own lock and queued the fleet.
     # So the holder marks the child's environment, and a holder never re-takes it.
     already_held = os.environ.get(HEAVY_LOCK_HELD_ENV) == "1"
-    lock_fd = take_heavy_lock(kind) if kind in HEAVY_KINDS and not already_held else None
+    try:
+        lock_fd = take_heavy_lock(kind) if kind in HEAVY_KINDS and not already_held else None
+    except HeavyLockTimeout as timeout:
+        print(str(timeout), file=sys.stderr)
+        return HEAVY_LOCK_TIMEOUT_EXIT
     child_env = dict(os.environ)
     if lock_fd is not None or already_held:
         child_env[HEAVY_LOCK_HELD_ENV] = "1"
