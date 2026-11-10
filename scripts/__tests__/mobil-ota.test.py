@@ -10,7 +10,9 @@
 #   - the caller's text reaching the printed line raw (barracuda, #199): a branch or environment
 #     outside the name pattern must print no command at all, the message must come back as ONE
 #     shell word, letter for letter;
-#   - `kiadas` on preview with any environment but preview going on (the pair rule).
+#   - `kiadas` on preview with any environment but preview going on (the pair rule);
+#   - the platform selector (card a9054f30): an unknown OTA_PLATFORM going on, the chosen platform missing from
+#     the printed line, the dry-run command or the publishing call, or the other platform's fingerprint computed.
 import os, shlex, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -84,6 +86,51 @@ try:
         check("kiadas on %s goes on to the clone (no clone here: exit 1)" % name, (1, True, False), (rc, "NINCS KLON" in out, called))
     rc, out, called = run([])
     check("the dry run goes on to the clone", (1, True, False), (rc, "NINCS KLON" in out, called))
+
+    print("the platform selector (card a9054f30): all | ios | android, nothing else")
+    for name, args in [("szaraz", []), ("kiadas", ["kiadas", "javitas"])]:
+        rc, out, called = run(args, OTA_PLATFORM="mindketto")
+        check("an unknown platform (%s): exit 2 before the clone, nothing runs" % name,
+              (2, False, False), (rc, called, "NINCS KLON" in out))
+    rc, out, called = run(["kiadas", "javitas"], OTA_AG="orzo-meres", OTA_PLATFORM="android")
+    check("the printed line for Balázs names the platform",
+          True, "--branch orzo-meres --environment orzo-meres --platform android" in out)
+
+    # a clone the script accepts: its head is origin/main, the tree is clean, apps/mobile exists
+    klon = os.path.join(T, "klon")
+    os.makedirs(os.path.join(klon, "apps", "mobile"))
+    g = lambda *a: subprocess.run(["git", "-C", klon, *a], check=True, capture_output=True)
+    g("init", "-q"); g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x")
+    g("update-ref", "refs/remotes/origin/main", "HEAD")
+
+    def dry(platform=None):
+        env = {"MOBIL_KLON": klon}
+        if platform is not None:
+            env["OTA_PLATFORM"] = platform
+        rc, out, _ = run([], **env)
+        calls = open(marker).read().splitlines() if os.path.exists(marker) else []
+        return rc, out, calls
+
+    rc, out, calls = dry("ios")
+    check("dry run, ios: exit 0, the command names --platform ios",
+          (0, True), (rc, "--branch production --environment production --platform ios" in out))
+    check("dry run, ios: only the ios fingerprint is computed",
+          [["--platform", "ios"]], [c.split()[-2:] for c in calls])
+    check("dry run, ios: no android line", False, "  android   " in out)
+    rc, out, calls = dry("android")
+    check("dry run, android: only the android fingerprint, and the android line",
+          ([["--platform", "android"]], True, False),
+          ([c.split()[-2:] for c in calls], "  android   " in out, "  ios       " in out))
+    rc, out, calls = dry()
+    check("dry run, default: --platform all, both fingerprints (today's behaviour), and the OOM hint",
+          (0, True, [["--platform", "ios"], ["--platform", "android"]], True),
+          (rc, "--platform all" in out, [c.split()[-2:] for c in calls], "OTA_PLATFORM=ios, majd OTA_PLATFORM=android" in out))
+
+    # the publishing call itself needs the Expo token, which the test cannot read: its shape is read from the source
+    forras = open(SCRIPT, encoding="utf-8").read()
+    hivas = forras[forras.index("npx --yes eas-cli@24.8.0 update \\\n  --branch"):]
+    hivas = hivas[: hivas.index("--non-interactive")]
+    check("the publishing call passes --platform \"$PLATFORM\"", True, '--platform "$PLATFORM"' in hivas)
 
     print("no unpinned eas-cli")
     check("no eas-cli@latest in the script", False, "eas-cli@latest" in open(SCRIPT, encoding="utf-8").read())
