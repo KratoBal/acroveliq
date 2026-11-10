@@ -114,6 +114,18 @@
 #   OTA_AG=preview bash .../mobil-ota.sh kiadas "uzenet"   <- valodi kiadas a preview agra
 #   bash .../mobil-ota.sh kiadas "az uzenet"               <- valodi kiadas a production agra (2026-10-21 ota)
 #   OTA_AG=mas-ag bash .../mobil-ota.sh kiadas "uzenet"    <- NEM ad ki: kiirja Balazsnak a sort
+#   OTA_PLATFORM=ios bash .../mobil-ota.sh kiadas "uzenet" <- csak az iOS csomag (all | ios | android, alap: all)
+#
+# === A PLATFORM-VALASZTO, ES MIERT (kartya a9054f30, merve 2026-11-05) ===
+#
+# Az `eas update` `--platform` nelkul mindket csomagot (ios es android) egy futasban exportalja, es a 8 GB-os
+# gepen ez OOM-mal halt meg. Az `OTA_PLATFORM=ios`, majd egy MASODIK futas `OTA_PLATFORM=android`-dal ugyanazt
+# adja ki, ket lepesben (ket frissites-csoport, platformonkent egy). Az alap `all` marad: a mai viselkedes nem
+# valtozik, aki eddig egy futassal adott ki, annak ugyanugy mukodik.
+#
+# HA A KET LEPES KOZUL CSAK AZ ELSO SIKERUL, a ket platform kulonbozo kodot futtat: a masodikat azonnal ujra
+# kell futtatni (ugyanarrol a fejrol). A szkript ezt nem tudja helyetted megjegyezni: a zaro sor kiirja,
+# melyik platform ment ki.
 #
 # === A FLOTTA A PREVIEW ES A PRODUCTION AGRA AD KI (2026-10-21 12:44 UTC ota) ===
 #
@@ -149,6 +161,7 @@ set -uo pipefail
 KLON="${MOBIL_KLON:-/home/marveen/work/acropora-os}"
 TOKEN_FILE="/home/marveen/marveen/store/.expo-token"
 AG_NEV="${OTA_AG:-production}"
+PLATFORM="${OTA_PLATFORM:-all}"
 VALTOZAT="${OTA_VALTOZAT:-$AG_NEV}"
 
 MIT="${1:-szaraz}"
@@ -158,6 +171,15 @@ case "$MIT" in
   szaraz|kiadas) ;;
   *)
     echo "hasznalat: mobil-ota.sh [szaraz|kiadas] [uzenet]" >&2
+    exit 2
+    ;;
+esac
+
+# a platform szuk listabol: a kiirt sorba (Balazs shellje) es a hivasba is ez kerul, tehat mas nem mehet at
+case "$PLATFORM" in
+  all|ios|android) ;;
+  *)
+    echo "MEGALLOK: az OTA_PLATFORM erteke all, ios vagy android lehet, nem '$PLATFORM'." >&2
     exit 2
     ;;
 esac
@@ -188,7 +210,7 @@ if [ "$MIT" = "kiadas" ] && { [[ " $KIADHATO_AGAK " != *" $AG_NEV "* ]] || [ "$V
   echo
   echo "--- Balazsnak: a friss main-en, a sajat gepeden ---"
   echo "  cd acropora-os && git pull --ff-only origin main && cd apps/mobile && \\"
-  echo "    npx eas-cli@24.8.0 update --branch $AG_NEV --environment $VALTOZAT \\"
+  echo "    npx eas-cli@24.8.0 update --branch $AG_NEV --environment $VALTOZAT --platform $PLATFORM \\"
   echo "    --message $(egyes "${UZENET:-<uzenet>}")"
   echo
   echo "Elotte, ha meg nem vagy belepve: cd acropora-os/apps/mobile && npx eas-cli@24.8.0 login"
@@ -209,6 +231,7 @@ echo "fej        $FEJ"
 echo "origin     $TAVOLI"
 echo "EAS ag     $AG_NEV"
 echo "valtozat   $VALTOZAT"
+echo "platform   $PLATFORM"
 
 # ORZO: ami ITT all, az megy ki a telefonra. Egy elavult klonbol egy OTA
 # frissites REGI kodot kuld ki -- es az nem hibazik, csak rossz.
@@ -263,9 +286,12 @@ ujjlenyomat() {
 
 echo
 echo "--- vart runtimeVersion (APP_VARIANT=$VALTOZAT) ---"
-IOS="$(ujjlenyomat ios)"
-AND="$(ujjlenyomat android)"
-echo "  ios       ${IOS:-(nem szamolhato)}"
+# csak a valasztott platform(ok)ra: amit nem adunk ki, annak a celja itt zaj volna
+IOS=""
+AND=""
+[ "$PLATFORM" != "android" ] && IOS="$(ujjlenyomat ios)"
+[ "$PLATFORM" != "ios" ] && AND="$(ujjlenyomat android)"
+[ "$PLATFORM" != "android" ] && echo "  ios       ${IOS:-(nem szamolhato)}"
 # AZ ANDROID SOR SZOVEGE MERESBOL JON, NEM BEEGETVE -- ES EZT EGY MERT ESET
 # TANITOTTA MEG (acrobot, 2026-09-17 18:33). Az elso valtozatom azt ALLITOTTA,
 # hogy a kiirt android ertek "NEM a cel". Nalam igaz volt; NALA NEM, mert az o
@@ -287,50 +313,57 @@ echo "  ios       ${IOS:-(nem szamolhato)}"
 # ES A VALTOZO-AG UGYANEZ: a `-n "$GOOGLE_SERVICES_JSON"` csak azt nezte, hogy
 # BE VAN-E ALLITVA, a celt nem -- egy elgepelt utvonal is "megvan"-t adott. Ezert
 # hasznaljuk a valtozot UTKENT, es azon futtatunk `-r`-t.
-TITOK="${GOOGLE_SERVICES_JSON:-google-services.json}"
-if [ -r "$TITOK" ]; then
-  ANDROID_MEGJEGYZES="OSSZEVETHETO (a google-services.json megvan)"
-else
-  ANDROID_MEGJEGYZES="NEM a cel -- lasd lent"
-fi
-echo "  android   ${AND:-(nem szamolhato)}   <- $ANDROID_MEGJEGYZES"
-echo
-if [ -r "$TITOK" ]; then
-  echo "  A google-services.json OLVASHATO ($TITOK), tehat az android ujjlenyomat"
-  echo "  kap bemenetet ott, ahol nalad kulonben hianyozna."
-  echo
-  echo "  DE EZ CSAK AZ OLVASHATOSAGOT MERI, A TARTALMAT NEM -- es a tartalom is"
-  echo "  beleszamol."
-  echo "  Merve (2026-09-17): ugyanazon a fan a fajl NELKUL 2c93a755, a valodi"
-  echo "  kiadassal a5666bdb. A ket szelso ertek pinnelheto, mert a bemenetuk adott."
-  echo "  A KOZEPSO NEM: barmilyen nem-valodi tartalom HARMADIK, mind a kettotol"
-  echo "  kulonbozo hasht ad -- de hogy MELYIKET, az attol fugg, mi all a fajlban."
-  echo "  (A repos parja ugyanide 1ecf6378-at ir, mert MAS dummyval merte. Egyik sem"
-  echo "  elavult: egy szam bazis nelkul nem referencia.)"
-  echo "  Harom allapot, harom hash. Ha tehat a fenti android ertek nem egyezik a"
-  echo "  telepitett buildevel, az"
-  echo "  elso kerdes ne az legyen, hogy a kiadas rossz, hanem hogy UGYANAZ-e a fajl,"
-  echo "  mint ami a build gepre megy."
-else
-  if [ -e "$TITOK" ]; then
-    echo "  A google-services.json OTT VAN, DE EZ A FOLYAMAT NEM OLVASSA ($TITOK)."
-    echo "  Nem hianyzik: a jogosultsaga zarja ki. Az ujjlenyomat ettol ugyanugy"
-    echo "  bemenet nelkul szamol, mintha ott sem lenne."
+# az android sor es a magyarazata csak akkor, ha az android is kimegy (OTA_PLATFORM all vagy android)
+if [ "$PLATFORM" != "ios" ]; then
+  TITOK="${GOOGLE_SERVICES_JSON:-google-services.json}"
+  if [ -r "$TITOK" ]; then
+    ANDROID_MEGJEGYZES="OSSZEVETHETO (a google-services.json megvan)"
   else
-    echo "  A google-services.json NINCS ITT (gitignore alatt all, a build gepen EAS"
-    echo "  titokkent erkezik)."
+    ANDROID_MEGJEGYZES="NEM a cel -- lasd lent"
   fi
-  echo "  A TARTALMA benne van az android ujjlenyomatban."
-  echo "  A fenti android ertek tehat egy HARMADIK allapotrol szol -- ne hasonlitsd"
-  echo "  a telepitett buildehez. Az iOS ertek az, amit ossze lehet vetni."
+  echo "  android   ${AND:-(nem szamolhato)}   <- $ANDROID_MEGJEGYZES"
+  echo
+  if [ -r "$TITOK" ]; then
+    echo "  A google-services.json OLVASHATO ($TITOK), tehat az android ujjlenyomat"
+    echo "  kap bemenetet ott, ahol nalad kulonben hianyozna."
+    echo
+    echo "  DE EZ CSAK AZ OLVASHATOSAGOT MERI, A TARTALMAT NEM -- es a tartalom is"
+    echo "  beleszamol."
+    echo "  Merve (2026-09-17): ugyanazon a fan a fajl NELKUL 2c93a755, a valodi"
+    echo "  kiadassal a5666bdb. A ket szelso ertek pinnelheto, mert a bemenetuk adott."
+    echo "  A KOZEPSO NEM: barmilyen nem-valodi tartalom HARMADIK, mind a kettotol"
+    echo "  kulonbozo hasht ad -- de hogy MELYIKET, az attol fugg, mi all a fajlban."
+    echo "  (A repos parja ugyanide 1ecf6378-at ir, mert MAS dummyval merte. Egyik sem"
+    echo "  elavult: egy szam bazis nelkul nem referencia.)"
+    echo "  Harom allapot, harom hash. Ha tehat a fenti android ertek nem egyezik a"
+    echo "  telepitett buildevel, az"
+    echo "  elso kerdes ne az legyen, hogy a kiadas rossz, hanem hogy UGYANAZ-e a fajl,"
+    echo "  mint ami a build gepre megy."
+  else
+    if [ -e "$TITOK" ]; then
+      echo "  A google-services.json OTT VAN, DE EZ A FOLYAMAT NEM OLVASSA ($TITOK)."
+      echo "  Nem hianyzik: a jogosultsaga zarja ki. Az ujjlenyomat ettol ugyanugy"
+      echo "  bemenet nelkul szamol, mintha ott sem lenne."
+    else
+      echo "  A google-services.json NINCS ITT (gitignore alatt all, a build gepen EAS"
+      echo "  titokkent erkezik)."
+    fi
+    echo "  A TARTALMA benne van az android ujjlenyomatban."
+    echo "  A fenti android ertek tehat egy HARMADIK allapotrol szol -- ne hasonlitsd"
+    echo "  a telepitett buildehez. Az iOS ertek az, amit ossze lehet vetni."
+  fi
 fi
 
 if [ "$MIT" = "szaraz" ]; then
   echo
   echo "--- a parancs, ami KIADASKOR futna ---"
   echo "  npx --yes eas-cli@24.8.0 update \\"
-  echo "    --branch $AG_NEV --environment $VALTOZAT \\"
+  echo "    --branch $AG_NEV --environment $VALTOZAT --platform $PLATFORM \\"
   echo "    --message \"<uzenet>\" --non-interactive"
+  if [ "$PLATFORM" = "all" ]; then
+    echo
+    echo "  Ha a gep keves memoriaval OOM-mal all le az exportnal: OTA_PLATFORM=ios, majd OTA_PLATFORM=android."
+  fi
   echo
   echo "SZARAZ FUTAS: semmi nem ment ki. Kiadashoz: mobil-ota.sh kiadas \"az uzenet\""
   exit 0
@@ -355,7 +388,7 @@ export EXPO_TOKEN
 EXPO_TOKEN="$(cat "$TOKEN_FILE")"
 
 echo
-echo "=== KIADAS a(z) $AG_NEV agra ==="
+echo "=== KIADAS a(z) $AG_NEV agra, platform: $PLATFORM ==="
 # AZ `APP_VARIANT=` ELOTAG SZANDEKOSAN NINCS ITT. A szerver oldalon all
 # (merve acrobot altal, 2026-09-17 18:31: az `eas env:list --environment
 # production` kiirja), es az `--environment production` betolti. Egy helyi
@@ -367,13 +400,23 @@ echo "=== KIADAS a(z) $AG_NEV agra ==="
 npx --yes eas-cli@24.8.0 update \
   --branch "$AG_NEV" \
   --environment "$VALTOZAT" \
+  --platform "$PLATFORM" \
   --message "$UZENET" \
   --non-interactive
 allapot=$?
 
 echo
 echo "--- utana: VESD OSSZE ---"
-echo "  a fent kiirt ios ertek:  ${IOS:-(nem szamolhato)}"
-echo "  a CLI altal kiirt ios runtimeVersion: lasd a fenti kimenetet"
-echo "  Ha a ketto NEM egyezik, a frissites MAS celkozonsegnek ment ki."
+if [ "$PLATFORM" != "android" ]; then
+  echo "  a fent kiirt ios ertek:  ${IOS:-(nem szamolhato)}"
+  echo "  a CLI altal kiirt ios runtimeVersion: lasd a fenti kimenetet"
+  echo "  Ha a ketto NEM egyezik, a frissites MAS celkozonsegnek ment ki."
+else
+  echo "  az android ertek itt csak akkor vetheto ossze, ha fent OSSZEVETHETO allt (lasd a google-services.json sorat)"
+fi
+if [ "$PLATFORM" != "all" ]; then
+  echo
+  echo "  CSAK A(Z) $PLATFORM CSOMAG MENT KI (kilepes: $allapot). A masik platformot ugyanarrol a fejrol ($FEJ)"
+  echo "  most futtasd: amig nem megy ki, a ket platform mas kodot futtat."
+fi
 exit "$allapot"
