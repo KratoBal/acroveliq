@@ -1187,7 +1187,10 @@ sys.exit(3 if bad else 0)'
       HAS_OVERRIDE=1; OVERRIDE="$(arg "${4-}")"
       [ -n "$(printf '%s' "$OVERRIDE" | tr -d '[:space:]')" ] || { echo "FAIL: a --akkor-is-ki indoka kotelezo"; exit 1; }
     fi
-    kartya_merese "$CARD"
+    # A VISSZAADAS A FOAGENSNEK (acrobot, 46015) KIVETEL: ott nem fut a visszameres (a kiadasnal a foagens ugyis meri), tehat a
+    # PUT a megadott azonositora megy, es nincs belyeg. Minden mas assignee: meres, es a PUT a FELOLDOTT teljes azonositora.
+    MEASURE_ID="$CARD"; MEASURE_RESULT=""; MEASURE_NOTE=""
+    if [ "$(printf '%s' "$ASSIGNEE" | tr '[:upper:]' '[:lower:]')" != "acrobot" ]; then kartya_merese "$CARD"; fi
     case "$MEASURE_RESULT" in
       DIVERGED)
         if [ "$HAS_OVERRIDE" -eq 0 ]; then
@@ -1196,11 +1199,14 @@ sys.exit(3 if bad else 0)'
           exit 4
         fi
         echo "ELTERES ellenere kiadva, indok: ${OVERRIDE} (${MEASURE_NOTE})"
-        post "/kanban/${MEASURE_ID}/comments" "$(json_obj author "$(id -un)" content "Kiadas ELTERES ellenere (--akkor-is-ki). Indok: ${OVERRIDE}. Elteres: ${MEASURE_NOTE}")" >/dev/null || exit 1
         ;;
       UNKNOWN) echo "FIGYELEM: a kartya hivatkozasat NEM sikerult megmerni (${MEASURE_NOTE}), a kiadas ettol fuggetlenul megy." ;;
     esac
-    put "/kanban/${CARD}" "$(json_obj assignee "$ASSIGNEE")"
+    put "/kanban/${MEASURE_ID}" "$(json_obj assignee "$ASSIGNEE")"
+    # a komment a SIKERES kiadas UTAN kerul fel: egy elbukott PUT utan a komment kiadast allitana, ami nem tortent meg
+    if [ "$MEASURE_RESULT" = "DIVERGED" ]; then
+      post "/kanban/${MEASURE_ID}/comments" "$(json_obj author "$(id -un)" content "Kiadas ELTERES ellenere (--akkor-is-ki). Indok: ${OVERRIDE}. Elteres: ${MEASURE_NOTE}")" >/dev/null || exit 1
+    fi
     ;;
   kanban-merve)
     # A KARTYA UTOLSO MERESE (T6.5, kartya b3d8174e): a kartya mire epul (`basis`), es hogy a fofagon
