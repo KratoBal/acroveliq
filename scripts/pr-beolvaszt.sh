@@ -841,7 +841,10 @@ def _nyers(path):
                         '-H', '@-',
                         '-H', 'Accept: application/vnd.github.raw',
                         f'https://api.github.com/repos/{repo}{path}'],
-                       input='Authorization: Bearer ' + tok + '\n', capture_output=True, text=True)
+                       # errors='replace': a removed/changed binary (woff2, png) must not crash the
+                       # overlap check; only text hunks are compared (PR #2076, 2026-11-03)
+                       input='Authorization: Bearer ' + tok + '\n', capture_output=True, text=True,
+                       errors='replace')
     return r.stdout
 
 _base = d.get('base', {}).get('sha')
