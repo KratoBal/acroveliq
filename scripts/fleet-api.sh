@@ -25,7 +25,8 @@
 #   bash scripts/fleet-api.sh kanban-archive <card_id>
 #   bash scripts/fleet-api.sh kanban-new "<title>" <status> <assignee> <priority>
 #   bash scripts/fleet-api.sh kanban-move <card_id> <status> [actor]
-#   bash scripts/fleet-api.sh kanban-assign <card_id> <assignee>
+#   bash scripts/fleet-api.sh kanban-assign <card_id> <assignee> [--akkor-is-ki "<indok>"]   # a basis-os kartyat kiadas elott visszameri
+#   bash scripts/fleet-api.sh kanban-visszameres <card_id>        # a kartya basis-at megmeri a main agon (T6.5), kilepes 4: DIVERGED
 #   bash scripts/fleet-api.sh kanban-cim <card_id> - < cim.txt      # a CIM atirasa
 #   bash scripts/fleet-api.sh kanban-merve <card_id> <OK|DIVERGED|UNKNOWN> [basis|-] [megjegyzes]   # utoljara merve (T6.5)
 #   bash scripts/fleet-api.sh kanban-comment <card_id> <author> "<content>"
@@ -148,6 +149,32 @@ post() {
 get() {
   local path="$1"
   curl -s -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "${API}${path}" || { echo "FAIL: GET ${path}"; exit 1; }
+}
+
+# kartya_merese <card_id>: A KARTYA BASIS-AT MEGMERI A FOAGON, ES A BELYEGET A /measure-ra IRJA (T6.5 PR2, kartya b3d8174e).
+# Beallitja: MEASURE_ID (a teljes azonosito), MEASURE_RESULT (OK | DIVERGED | UNKNOWN, vagy ures: a kartyanak nincs basis-a,
+# nincs mit merni, es BELYEG SEM KERUL ra) es MEASURE_NOTE. A szabalyok es amit NEM mer: scripts/lib/kartya_visszameres.py.
+# Ismeretlen vagy nem egyertelmu kartyaazonosito: FAIL, exit 1 (nem nema kiadas).
+kartya_merese() {
+  local card="$1" card_json resolved basis out
+  card_json="$(get /kanban)" || exit 1
+  resolved="$(printf '%s' "$card_json" | python3 -c '
+import sys,json
+cards=json.load(sys.stdin); pre=sys.argv[1].lower()
+m=[c for c in cards if str(c.get("id","")).lower().startswith(pre)]
+if len(m)!=1: sys.exit(3)
+print(m[0]["id"]); print(m[0].get("basis") or "", end="")' "$card")" || { echo "FAIL: a kartya nem talalhato vagy nem egyertelmu: $card"; exit 1; }
+  MEASURE_ID="$(printf '%s' "$resolved" | head -n1)"
+  basis="$(printf '%s' "$resolved" | tail -n +2)"
+  MEASURE_RESULT=""; MEASURE_NOTE=""
+  [ -n "$(printf '%s' "$basis" | tr -d '[:space:]')" ] || return 0
+  out="$(printf '%s' "$basis" | python3 "$BASE/scripts/kartya-visszameres.py")" || { echo "FAIL: a visszameres nem futott le"; exit 1; }
+  MEASURE_RESULT="$(printf '%s' "$out" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("result") or "")')"
+  MEASURE_NOTE="$(printf '%s' "$out" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("note") or "")')"
+  [ -n "$MEASURE_RESULT" ] || { echo "FAIL: a visszameres nem adott eredmenyt"; exit 1; }
+  post "/kanban/${MEASURE_ID}/measure" "$(python3 -c '
+import json,sys
+print(json.dumps({"result":sys.argv[1],"note":sys.argv[2]}))' "$MEASURE_RESULT" "$MEASURE_NOTE")" >/dev/null || exit 1
 }
 
 # PUT <path> <json-body>; same contract as post(). Kanban card fields (assignee,
@@ -1139,9 +1166,40 @@ sys.exit(3 if bad else 0)'
       post "/kanban/${CARD}/move" "$(json_obj status "$STATUS")"
     fi
     ;;
+  kanban-visszameres)
+    # A KARTYA BASIS-ANAK MEGMERESE A FOAGON (T6.5 PR2). Kilepes: 0 OK vagy UNKNOWN (az UNKNOWN KIMONDVA), 4 DIVERGED.
+    argc_max 1 "$#" "fleet-api.sh kanban-visszameres <card_id>"
+    CARD="${1:?card id required}"
+    kartya_merese "$CARD"
+    if [ -z "$MEASURE_RESULT" ]; then echo "Nincs basis a kartyan: nincs mit merni, belyeg nem kerult ra."; exit 0; fi
+    echo "${MEASURE_RESULT}: ${MEASURE_NOTE}"
+    [ "$MEASURE_RESULT" != "DIVERGED" ] || exit 4
+    ;;
   kanban-assign)
-    argc_max 2 "$#" "fleet-api.sh kanban-assign <card_id> <assignee>"
+    # A KIADAS ELOTT A basis-os KARTYA VISSZAMERODIK (T6.5 PR2, acrobot 45981): DIVERGED (a hivatkozott fajl vagy nev mar nincs a
+    # main agon) NEM ad ki, exit 4; --akkor-is-ki "<indok>" felulirja, az INDOK KOTELEZO, kiirodik, es megjegyzeskent a kartyara kerul.
+    # UNKNOWN kiad, es KIMONDJA, hogy nem merte meg. Basis nelkuli kartya a regi modon megy ki (nincs mit merni).
+    argc_max 4 "$#" "fleet-api.sh kanban-assign <card_id> <assignee> [--akkor-is-ki \"<indok>\"]"
     CARD="${1:?card id required}"; : "${2:?assignee required}"; ASSIGNEE="$(arg "$2")"
+    OVERRIDE=""; HAS_OVERRIDE=0
+    if [ "$#" -ge 3 ]; then
+      [ "${3-}" = "--akkor-is-ki" ] || { echo "FAIL: ismeretlen kapcsolo: ${3-} (--akkor-is-ki \"<indok>\")"; exit 1; }
+      HAS_OVERRIDE=1; OVERRIDE="$(arg "${4-}")"
+      [ -n "$(printf '%s' "$OVERRIDE" | tr -d '[:space:]')" ] || { echo "FAIL: a --akkor-is-ki indoka kotelezo"; exit 1; }
+    fi
+    kartya_merese "$CARD"
+    case "$MEASURE_RESULT" in
+      DIVERGED)
+        if [ "$HAS_OVERRIDE" -eq 0 ]; then
+          echo "FAIL 4: ELTERES, a kartyat nem adom ki: ${MEASURE_NOTE}"
+          echo "A kartya hivatkozasa mar nem igaz a main agon. Javitsd a kartyat (kanban-cim, kanban-merve), vagy --akkor-is-ki \"<indok>\"."
+          exit 4
+        fi
+        echo "ELTERES ellenere kiadva, indok: ${OVERRIDE} (${MEASURE_NOTE})"
+        post "/kanban/${MEASURE_ID}/comments" "$(json_obj author "$(id -un)" content "Kiadas ELTERES ellenere (--akkor-is-ki). Indok: ${OVERRIDE}. Elteres: ${MEASURE_NOTE}")" >/dev/null || exit 1
+        ;;
+      UNKNOWN) echo "FIGYELEM: a kartya hivatkozasat NEM sikerult megmerni (${MEASURE_NOTE}), a kiadas ettol fuggetlenul megy." ;;
+    esac
     put "/kanban/${CARD}" "$(json_obj assignee "$ASSIGNEE")"
     ;;
   kanban-merve)
@@ -1626,7 +1684,7 @@ if d.get("action_description"):
 '
     ;;
   *)
-    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|agents|kanban-keres|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-merve|kanban-comment|kanban-comments|kanban-archive|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart|kiadas|deployed|task-project|task-profile|project-repo)"
+    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|agents|kanban-keres|kanban-new|kanban-move|kanban-assign|kanban-visszameres|kanban-cim|kanban-merve|kanban-comment|kanban-comments|kanban-archive|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart|kiadas|deployed|task-project|task-profile|project-repo)"
     exit 1
     ;;
 esac
