@@ -177,7 +177,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'PUT', path: '/api/kanban/:id', module: 'kanban', class: 'ERZEKENY' },
   { method: 'DELETE', path: '/api/kanban/:id', module: 'kanban', class: 'ERZEKENY' },
   { method: 'POST', path: '/api/kanban/:id/move', module: 'kanban', class: 'KRITIKUS' },
-  // the card's last measurement (T6.5): writes shared state, like a comment, and moves no card
+  // the card's last measurement (T6.5): rewrites a card field (basis, result, measured-at), so it is a card change: the card's owner or the main agent, not an open write like a comment
   { method: 'POST', path: '/api/kanban/:id/measure', module: 'kanban', class: 'ERZEKENY' },
   { method: 'POST', path: '/api/kanban/:id/archive', module: 'kanban', class: 'ERZEKENY' },
   { method: 'GET', path: '/api/kanban/archived', module: 'kanban', class: 'OLVASO' },

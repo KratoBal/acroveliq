@@ -193,7 +193,7 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | PUT | `/api/kanban/:id` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
 | DELETE | `/api/kanban/:id` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
 | POST | `/api/kanban/:id/move` | KRITIKUS | ✓ | ✓ | saját | ✗ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
-| POST | `/api/kanban/:id/measure` | ERZEKENY | ✓ | ✓ | ✓ | ✗ | ✓ | class:ERZEKENY |  |
+| POST | `/api/kanban/:id/measure` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
 | POST | `/api/kanban/:id/archive` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
 | GET | `/api/kanban/archived` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
 | POST | `/api/kanban/:id/unarchive` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
@@ -417,7 +417,7 @@ Az L oszlopban csak ezek ✓, akármit ad a csoport vagy az osztály (a többi s
 - **memory-change**: an agent changes or deletes only its own memories; an update that would move one to another writer is not its own
 - **memory-write**: an agent writes its own namespace (plan 3). `shared` is a category: the record still names its writer, so that must be the caller. A missing agent_id is the main agent's, so it is not "own"
 - **daily-log-write**: an agent writes its own daily log (plan 3)
-- **kanban-card-change**: an agent changes the cards assigned to it (plan 3); it hands one on only to the main agent, the escalation the dispatch asks for (assigning is the main agent's job, acrobot 28671); creating a card and commenting stay open
+- **kanban-card-change**: an agent changes the cards assigned to it (plan 3); it hands one on only to the main agent, the escalation the dispatch asks for (assigning is the main agent's job, acrobot 28671); creating a card and commenting stay open; the measurement (last measured field) rewrites the card's own basis and result, so it follows the card's owner too
 - **administration**: profiles, autonomy, settings, updates, migration, vault, security, connectors, federation: only the session (plan 3)
 - **voice-directive-self**: an agent's own voice message: the transcript of its own channel's file and its reply directive, which carries no token (the reply reads the caller's own); it used to return the SHARED token (barracuda, #20), so the session only, and the agents' own hook got 403
 - **class:NYILVANOS** (ha egy csoport sem illik): no authentication at all
