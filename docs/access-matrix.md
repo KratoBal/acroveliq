@@ -193,6 +193,7 @@ vagy a `legacy-szukitett` állás előtt ezeket kell eldönteni vagy lemérni:
 | PUT | `/api/kanban/:id` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
 | DELETE | `/api/kanban/:id` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
 | POST | `/api/kanban/:id/move` | KRITIKUS | ✓ | ✓ | saját | ✗ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
+| POST | `/api/kanban/:id/measure` | ERZEKENY | ✓ | ✓ | ✓ | ✗ | ✓ | class:ERZEKENY |  |
 | POST | `/api/kanban/:id/archive` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | kanban-card-change | rekord: kanban-card (:id) |
 | GET | `/api/kanban/archived` | OLVASO | ✓ | ✓ | ✓ | ✗ | ✓ | class:OLVASO |  |
 | POST | `/api/kanban/:id/unarchive` | ERZEKENY | ✓ | ✓ | saját | ✗ | ✓ | kanban-card-change | rekord: kanban-card (:id) |

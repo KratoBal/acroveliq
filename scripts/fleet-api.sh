@@ -27,6 +27,7 @@
 #   bash scripts/fleet-api.sh kanban-move <card_id> <status> [actor]
 #   bash scripts/fleet-api.sh kanban-assign <card_id> <assignee>
 #   bash scripts/fleet-api.sh kanban-cim <card_id> - < cim.txt      # a CIM atirasa
+#   bash scripts/fleet-api.sh kanban-merve <card_id> <OK|DIVERGED|UNKNOWN> [basis|-] [megjegyzes]   # utoljara merve (T6.5)
 #   bash scripts/fleet-api.sh kanban-comment <card_id> <author> "<content>"
 #   bash scripts/fleet-api.sh kanban-comments <card_id>          # READ them back
 #   bash scripts/fleet-api.sh message-read <id>       # a TELJES tartalom, vagas nelkul
@@ -1143,6 +1144,30 @@ sys.exit(3 if bad else 0)'
     CARD="${1:?card id required}"; : "${2:?assignee required}"; ASSIGNEE="$(arg "$2")"
     put "/kanban/${CARD}" "$(json_obj assignee "$ASSIGNEE")"
     ;;
+  kanban-merve)
+    # A KARTYA UTOLSO MERESE (T6.5, kartya b3d8174e): a kartya mire epul (`basis`), es hogy a fofagon
+    # utoljara mikor mertuk, mi lett az eredmeny. A BELYEG IDEJET A SZERVER ADJA (a hivo nem tud ido
+    # irni: egy "ezt mar megneztem korabban" ido pont az az elavult allitas, amit a mezo elkap).
+    #   OK        a hivatkozas igaz a fofagon
+    #   DIVERGED  mar nem igaz (fajl vagy nev nincs a fofagon, vagy a kijelentes elavult)
+    #   UNKNOWN   nem sikerult megnezni (halozat, token, szabad szoveges alap)
+    # A basis ELHAGYHATO (ures marad a meglevo): soronkent `repo:fajl` vagy `repo:fajl#nev`; a "-"
+    # STDIN-rol olvas, ATIRANYITASSAL.
+    argc_max 4 "$#" "fleet-api.sh kanban-merve <card_id> <OK|DIVERGED|UNKNOWN> [basis|-] [megjegyzes]"
+    CARD="${1:?card id required}"; RESULT="${2:?result required}"
+    case "$RESULT" in OK|DIVERGED|UNKNOWN) ;; *) echo "FAIL: a result OK, DIVERGED vagy UNKNOWN: $RESULT"; exit 1 ;; esac
+    HAS_BASIS=0; BASIS=""; NOTE=""
+    if [ "$#" -ge 3 ] && [ -n "${3-}" ]; then HAS_BASIS=1; BASIS="$(arg "$3")"; fi
+    [ "$#" -ge 4 ] && NOTE="$(arg "$4")"
+    BODY="$(python3 -c '
+import json,sys
+result,has_basis,basis,note=sys.argv[1:5]
+d={"result":result}
+if has_basis=="1": d["basis"]=basis
+if note: d["note"]=note
+print(json.dumps(d))' "$RESULT" "$HAS_BASIS" "$BASIS" "$NOTE")"
+    post "/kanban/${CARD}/measure" "$BODY"
+    ;;
   kanban-cim)
     # A KARTYA CIMENEK ATIRASA. Ez a parancs 2026-09-08-ig NEM LETEZETT, es a
     # hianya EGY ELO KARTYAT irt at egy kozos tablan.
@@ -1601,7 +1626,7 @@ if d.get("action_description"):
 '
     ;;
   *)
-    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|agents|kanban-keres|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-comment|kanban-comments|kanban-archive|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart|kiadas|deployed|task-project|task-profile|project-repo)"
+    echo "FAIL: unknown command '$CMD' (memory|memory-search|daily-log|daily-log-now|daily-log-read|kanban-list|agents|kanban-keres|kanban-new|kanban-move|kanban-assign|kanban-cim|kanban-merve|kanban-comment|kanban-comments|kanban-archive|inbox|message-status|messages-sent|schedule-new|approval-new|approval-get|message-close|message-read|agent-restart|kiadas|deployed|task-project|task-profile|project-repo)"
     exit 1
     ;;
 esac

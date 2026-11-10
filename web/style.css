@@ -7576,3 +7576,21 @@ html[data-surface="acroveliq"] .sidebar .sb-group,
 html[data-surface="acroveliq"] #mobileLoginBtn {
   display: none;
 }
+
+/* Last measurement against the main branch (T6.5): one small line under the card footer. */
+.kanban-card-measure {
+  font-size: 11px;
+  margin-top: 4px;
+  opacity: 0.85;
+}
+.kanban-card-measure-stale,
+.kanban-card-measure-unmeasured,
+.kanban-card-measure-unknown {
+  color: #c9a000;
+  opacity: 1;
+}
+.kanban-card-measure-diverged {
+  color: #d64545;
+  font-weight: 600;
+  opacity: 1;
+}

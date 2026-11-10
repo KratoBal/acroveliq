@@ -15,7 +15,9 @@ import {
   countNewHotMemories,
   countPlannedKanbanCards,
   getDbFileSizeMb,
+  stampKanbanMeasure, KANBAN_MEASURE_RESULTS,
 } from '../../db.js'
+import { kanbanMeasureState } from '../../kanban-measure.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
@@ -186,7 +188,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
     const labelsByCard = getLabelsForAllCards()
-    const cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+    const nowSec = Math.floor(Date.now() / 1000)
+    const staleH = Number(getEffectiveSettingValue('KANBAN_MEASURE_STALE_H'))
+    // `measure_state` is the card's measurement freshness (T6.5), computed once here so the board only renders it
+    const cards = listKanbanCards().map((card) => ({
+      ...card,
+      labels: labelsByCard.get(card.id) ?? [],
+      measure_state: kanbanMeasureState(card, nowSec, staleH),
+    }))
     jsonMaybeGzip(req, res, cards)
     return true
   }
@@ -335,6 +344,47 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanCardMatch[1])
     revertIdeaFromKanban(id)
     if (deleteKanbanCard(id)) { json(res, { ok: true }); return true }
+    json(res, { error: 'Kártya nem található' }, 404)
+    return true
+  }
+
+  // The card's last measurement against the main branch (T6.5). The time is the server's, never the caller's.
+  const kanbanMeasureMatch = path.match(/^\/api\/kanban\/([^/]+)\/measure$/)
+  if (kanbanMeasureMatch && method === 'POST') {
+    const id = decodeURIComponent(kanbanMeasureMatch[1])
+    const body = await readBody(req)
+    let data: { result?: unknown; note?: unknown; basis?: unknown }
+    try {
+      data = JSON.parse(body.toString())
+    } catch {
+      json(res, { error: 'A törzs nem JSON.' }, 400)
+      return true
+    }
+    if (typeof data.result !== 'string' || !(KANBAN_MEASURE_RESULTS as readonly string[]).includes(data.result)) {
+      json(res, { error: `A result ${KANBAN_MEASURE_RESULTS.join(' | ')} lehet.` }, 400)
+      return true
+    }
+    for (const key of ['note', 'basis'] as const) {
+      const value = data[key]
+      if (value !== undefined && value !== null && typeof value !== 'string') {
+        json(res, { error: `A ${key} szöveg kell legyen.` }, 400)
+        return true
+      }
+    }
+    if (typeof data.note === 'string' && data.note.length > 500) {
+      json(res, { error: 'A note legfeljebb 500 karakter.' }, 400)
+      return true
+    }
+    if (typeof data.basis === 'string' && data.basis.length > 4000) {
+      json(res, { error: 'A basis legfeljebb 4000 karakter.' }, 400)
+      return true
+    }
+    const stamped = stampKanbanMeasure(id, {
+      result: data.result as (typeof KANBAN_MEASURE_RESULTS)[number],
+      note: data.note as string | null | undefined,
+      basis: data.basis as string | null | undefined,
+    })
+    if (stamped) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }

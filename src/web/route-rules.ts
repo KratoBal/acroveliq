@@ -177,6 +177,8 @@ export const ROUTE_RULES: RouteRule[] = [
   { method: 'PUT', path: '/api/kanban/:id', module: 'kanban', class: 'ERZEKENY' },
   { method: 'DELETE', path: '/api/kanban/:id', module: 'kanban', class: 'ERZEKENY' },
   { method: 'POST', path: '/api/kanban/:id/move', module: 'kanban', class: 'KRITIKUS' },
+  // the card's last measurement (T6.5): writes shared state, like a comment, and moves no card
+  { method: 'POST', path: '/api/kanban/:id/measure', module: 'kanban', class: 'ERZEKENY' },
   { method: 'POST', path: '/api/kanban/:id/archive', module: 'kanban', class: 'ERZEKENY' },
   { method: 'GET', path: '/api/kanban/archived', module: 'kanban', class: 'OLVASO' },
   { method: 'POST', path: '/api/kanban/:id/unarchive', module: 'kanban', class: 'ERZEKENY' },

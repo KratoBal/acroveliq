@@ -175,6 +175,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'KANBAN_MEASURE_STALE_H',
+    type: 'int',
+    default: 24,
+    min: 1,
+    max: 8760,
+    description: 'Ennyi óra után számít elavultnak egy kártya utolsó mérése (utoljára mérve, a főágon).',
+    module: 'kanban',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Kanban aging thresholds and colours (hot-reload via settings-store) ---
   {
     key: 'KANBAN_AGING_WARN_H',

@@ -114,3 +114,35 @@ describe('fleet-api.sh kanban-archive', () => {
     expect(r.out).toContain('FAIL http=404')
   })
 })
+
+describe('fleet-api.sh kanban-merve (T6.5)', () => {
+  // What turns this red: a result outside OK/DIVERGED/UNKNOWN reaching the server; the basis sent when it was not
+  // given (it would clear the card's basis); a note or basis lost on the way (the stdin form); a time written by the
+  // script; a 404 reported as success.
+  it('POSTs the result alone: no basis key, no time', async () => {
+    const r = await run(['kanban-merve', 'a1b2c3d4', 'OK'])
+    expect(r.code).toBe(0)
+    expect(requests).toEqual([{ method: 'POST', path: '/api/kanban/a1b2c3d4/measure', body: { result: 'OK' } }])
+  })
+
+  it('carries the basis and the note when given', async () => {
+    const r = await run(['kanban-merve', 'a1b2c3d4', 'DIVERGED', 'os:apps/api/src/a.ts#f', 'a.ts nincs a fofagon'])
+    expect(r.code).toBe(0)
+    expect(requests[0]!.body).toEqual({ result: 'DIVERGED', basis: 'os:apps/api/src/a.ts#f', note: 'a.ts nincs a fofagon' })
+  })
+
+  it('a result that is not one of the three: FAIL, nothing sent', async () => {
+    for (const bad of ['ok', 'MAYBE', 'DONE']) {
+      const r = await run(['kanban-merve', 'a1b2c3d4', bad])
+      expect(r.code).toBe(1)
+      expect(r.out).toContain('FAIL')
+    }
+    expect(requests).toEqual([])
+  })
+
+  it('a fourth+ argument (a split quote) is refused by the arity guard, nothing sent', async () => {
+    const r = await run(['kanban-merve', 'a1b2c3d4', 'OK', 'basis', 'megjegyzes', 'felesleg'])
+    expect(r.code).not.toBe(0)
+    expect(requests).toEqual([])
+  })
+})
