@@ -143,6 +143,21 @@ def github_fetcher(token_for, api_base='https://api.github.com', timeout=20):
     return fetch
 
 
+def api_base_allowed(base):
+    """The token is sent to this base: https://api.github.com, or http(s) on a loopback host (the tests' fake server)."""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(base)
+        host = parts.hostname
+    except ValueError:
+        return False
+    if parts.username or parts.password:
+        return False
+    if parts.scheme == 'https' and host == 'api.github.com' and parts.port in (None, 443):
+        return True
+    return parts.scheme in ('http', 'https') and host in ('127.0.0.1', 'localhost', '::1')
+
+
 def main(argv=None, stdin=None, stdout=None):
     """stdin: the card's basis text. stdout: ONE JSON line {"result", "note"}, or {"result": null} when the card
     has no basis. The exit code is 0 for every outcome the caller reads from the JSON."""
@@ -154,6 +169,10 @@ def main(argv=None, stdin=None, stdout=None):
 
     owner_file = os.environ.get('KARTYA_VISSZAMERES_TOKEN_FILE')  # only read when FLEET_GITHUB_APP=off (the rollback)
     api_base = os.environ.get('KARTYA_VISSZAMERES_GITHUB_API', 'https://api.github.com')
+    if not api_base_allowed(api_base):
+        # the bearer token goes to this address: only GitHub itself or a loopback test server may receive it
+        stdout.write(json.dumps({'result': 'UNKNOWN', 'note': 'a GitHub cím nem engedélyezett (csak https://api.github.com vagy loopback)'}) + '\n')
+        return 0
     fetch = github_fetcher(lambda repo: github_token(repo, 'olvas', owner_file), api_base)
     outcome = measure(stdin.read(), fetch)
     stdout.write(json.dumps({'result': None} if outcome is None else {'result': outcome[0], 'note': outcome[1]}) + '\n')

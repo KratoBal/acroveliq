@@ -22,6 +22,7 @@ let github: Server
 let dashboardPort = 0
 let githubPort = 0
 let requests: { method: string; path: string; body: unknown }[] = []
+let failPut = false
 
 // the GitHub side: path -> status (and the text for a 200)
 const GITHUB: Record<string, [number, string]> = {
@@ -60,6 +61,11 @@ beforeAll(async () => {
     req.on('data', (c) => (raw += c))
     req.on('end', () => {
       requests.push({ method: req.method ?? '', path: req.url ?? '', body: raw ? JSON.parse(raw) : null })
+      if (req.method === 'PUT' && failPut) {
+        res.writeHead(500)
+        res.end('boom')
+        return
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(req.method === 'GET' && req.url === '/api/kanban' ? CARDS : { ok: true }))
     })
@@ -74,9 +80,10 @@ afterAll(() => {
 })
 beforeEach(() => {
   requests = []
+  failPut = false
 })
 
-function run(args: string[]): Promise<{ code: number; out: string }> {
+function run(args: string[], env: Record<string, string> = {}): Promise<{ code: number; out: string }> {
   return new Promise((resolve) => {
     execFile(
       'bash',
@@ -88,6 +95,7 @@ function run(args: string[]): Promise<{ code: number; out: string }> {
           FLEET_GITHUB_APP: 'off',
           KARTYA_VISSZAMERES_TOKEN_FILE: join(root, 'store', 'github-owner-token'),
           KARTYA_VISSZAMERES_GITHUB_API: `http://127.0.0.1:${githubPort}`,
+          ...env,
         },
       },
       (error, stdout) => resolve({ code: error ? Number((error as { code?: number }).code ?? 1) : 0, out: stdout }),
@@ -197,5 +205,40 @@ describe('fleet-api.sh kanban-assign, the check before issuing', () => {
     const r = await run(['kanban-assign', 'aaaa', 'murena'])
     expect(r.code).toBe(1)
     expect(puts()).toEqual([])
+  })
+})
+
+describe('the follow-up to #347 (barracuda 46012, acrobot 46015)', () => {
+  it('a shortened card id: the measurement AND the PUT use the resolved full id', async () => {
+    const r = await run(['kanban-assign', 'aaaa1', 'murena'])
+    expect(r.code).toBe(0)
+    expect(puts()).toEqual([{ method: 'PUT', path: '/api/kanban/aaaa1111', body: { assignee: 'murena' } }])
+    expect(posted('/measure')[0]!.path).toBe('/api/kanban/aaaa1111/measure')
+  })
+
+  it('the override comment goes on the card only AFTER a successful PUT: a failed PUT leaves no comment', async () => {
+    failPut = true
+    const r = await run(['kanban-assign', 'bbbb2222', 'murena', '--akkor-is-ki', 'indok'])
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain('FAIL')
+    expect(posted('/comments')).toEqual([])
+  })
+
+  it('handing a card back to the main agent: no measurement, no stamp, no block, even on a diverged card', async () => {
+    const r = await run(['kanban-assign', 'bbbb2222', 'acrobot'])
+    expect(r.code).toBe(0)
+    expect(puts()).toEqual([{ method: 'PUT', path: '/api/kanban/bbbb2222', body: { assignee: 'acrobot' } }])
+    expect(posted('/measure')).toEqual([])
+    expect(requests.filter((q) => q.method === 'GET')).toEqual([])
+  })
+
+  it('only GitHub itself or a loopback address may receive the token: any other base is UNKNOWN and said', async () => {
+    for (const base of ['https://gyujto.example', 'http://127.0.0.1.evil.example', 'https://api.github.com@evil.example', 'http://api.github.com']) {
+      requests = []
+      const r = await run(['kanban-visszameres', 'aaaa1111'], { KARTYA_VISSZAMERES_GITHUB_API: base })
+      expect(r.code, base).toBe(0)
+      expect(r.out, base).toContain('UNKNOWN')
+      expect(r.out, base).toContain('nem engedélyezett')
+    }
   })
 })
