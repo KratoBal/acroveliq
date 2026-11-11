@@ -62,7 +62,7 @@ beforeEach(() => {
   mkdirSync(join(dir, 'store'), { recursive: true })
   mkdirSync(join(dir, 'scripts'), { recursive: true })
   writeFileSync(join(dir, 'store', '.coolify-token-prod'), 'prod-token\n')
-  writeFileSync(join(dir, 'store', '.coolify-token-ai-rw'), 'ai-token\n')
+  writeFileSync(join(dir, 'store', '.coolify-token-ai'), 'ai-token\n')
 })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
@@ -92,12 +92,13 @@ const aiSection = (out: string) => out.slice(out.indexOf('===== AI GEP'), out.in
 // card 8f35a038 (2026-11-11): the AI machine's Coolify is reached on the tailnet with the fleet's rw token; the public
 // name is closed and the executor is gone. WHAT TURNS THESE RED: a refused token told as anything but a refused token,
 // or pointing at the executor; the probe asking another path than the sections; a dead tailnet told as a refusal; the
-// token file read from anywhere but store/.coolify-token-ai-rw; the fixed address not the tailnet one.
+// listing reading with anything but the read token (store/.coolify-token-ai, acrobot 46546), or the deploy helper
+// without the rw one; the fixed address not the tailnet one.
 describe('the AI machine on the tailnet: what the answer was is said as it was', () => {
-  it('the fixed address is the tailnet one, and the token is the fleet rw token', () => {
+  it('the fixed address is the tailnet one; the listing reads with the read token, the deploy helper starts with the rw one', () => {
     const src = readFileSync(join(ROOT, 'scripts', 'infra-allapot.sh'), 'utf-8')
     expect(src).toMatch(/^AI_COOLIFY_URL="http:\/\/100\.88\.199\.87:8000"$/m)
-    expect(src).toMatch(/^AI_TOKEN="\$INSTALL_DIR\/store\/\.coolify-token-ai-rw"$/m)
+    expect(src).toMatch(/^AI_TOKEN="\$INSTALL_DIR\/store\/\.coolify-token-ai"$/m)
     expect(src).not.toContain('vegrehajto.sh')
     // the deploy helper asks the same Coolify, with the same token
     const deploy = readFileSync(join(ROOT, 'scripts', 'kirakat-telepites.sh'), 'utf-8')
@@ -111,7 +112,7 @@ describe('the AI machine on the tailnet: what the answer was is said as it was',
     const r = await run()
     const sec = aiSection(r.out)
     expect(sec).toContain(`A TOKENT ELUTASITOTTA (HTTP ${code})`)
-    expect(sec).toContain('.coolify-token-ai-rw')
+    expect(sec).toContain('store/.coolify-token-ai hianyzik')
     expect(sec).toContain('kirakat-telepites.sh allapot')
     expect(r.out).not.toContain('a valasz nem JSON -- a felulet')
   })
@@ -126,8 +127,8 @@ describe('the AI machine on the tailnet: what the answer was is said as it was',
     expect(seen.some((q) => q.path === '/api/v1/applications')).toBe(true)
   })
 
-  it('without the rw token file the probe still asks, and the refusal names the file', async () => {
-    rmSync(join(dir, 'store', '.coolify-token-ai-rw'))
+  it('without the token file the probe still asks, and the refusal names the file', async () => {
+    rmSync(join(dir, 'store', '.coolify-token-ai'))
     aiRoutes = { '/api/v1/applications': { code: 401, type: 'text/plain', body: 'Unauthenticated' } }
     const r = await run()
     expect(aiSection(r.out)).toContain('A TOKENT ELUTASITOTTA (HTTP 401)')

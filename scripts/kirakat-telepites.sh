@@ -46,7 +46,8 @@ set -uo pipefail
 
 UUID_APP=6sbolw7oedo5sdffhpswdoyt
 # THE TAILNET ADDRESS (card 8f35a038, 2026-11-11): coolify2's public name is closed (403); the fleet reaches the AI
-# machine's Coolify on the tailnet with its own read-write token. Measured 08:0x: public /api/health 403, tailnet 200.
+# machine's Coolify on the tailnet. The rw token, because `indit` starts a deploy (a write); infra-allapot.sh only
+# lists, with the read token. Measured 08:0x: public /api/health 403, tailnet 200.
 COOLIFY=http://100.88.199.87:8000
 TOKEN_FILE=/home/marveen/marveen/store/.coolify-token-ai-rw
 SSH_KEY=/home/marveen/.ssh/id_ed25519_acropora_monitor

@@ -74,13 +74,14 @@ COOLIFY_PROD_URL="http://10.0.1.1:8000"
 show "ELES GEP" "$COOLIFY_PROD_URL" "$INSTALL_DIR/store/.coolify-token-prod"
 # THE TAILNET ADDRESS (card 8f35a038, 2026-11-11): the AI machine's Coolify is closed on its public name (coolify2,
 # 403 since B20b, 2026-10-16), and the executor that once reached it for the fleet is gone (Balazs, 2026-10-19). The
-# fleet reaches it on the tailnet with its own read-write token (store/.coolify-token-ai-rw, 2026-10-20). Measured
+# fleet reaches it on the tailnet. This section only READS, so it takes the read token (store/.coolify-token-ai):
+# acrobot measured 2026-11-11 08:15 that both it and the rw token answer 200 there (#353). Measured
 # 2026-11-11 08:0x: https://coolify2.acropora.hu/api/health 403, http://100.88.199.87:8000/api/health 200. The old probe
 # asked /api/health, a path the sections below never use: where that answered 200 and the API refused, the section
 # printed "a valasz nem JSON" for an answer that was a deliberate 403 (task flotta-or-es-infra-javitas, 2026-10-19).
 # So the probe asks what the sections ask: the applications list, with the token. Only a 200 is "reachable".
 AI_COOLIFY_URL="http://100.88.199.87:8000"
-AI_TOKEN="$INSTALL_DIR/store/.coolify-token-ai-rw"
+AI_TOKEN="$INSTALL_DIR/store/.coolify-token-ai"
 AI_KOD=""
 ai_coolify_elerheto() {
   local tok="$AI_TOKEN"
