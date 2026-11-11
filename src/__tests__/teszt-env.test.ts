@@ -1,7 +1,8 @@
 // scripts/teszt-env.sh (card 8f35a038, second slice; acrobot 46571, 46574). WHAT TURNS THESE RED: a secret-shaped,
 // lower-case or malformed key, a multi-line value or an unknown uuid reaching the Coolify; a dry run sending a write;
 // an existing key POSTed or a new one PATCHed; the write aimed at the preview row, or a preview-only key read as
-// present; a write the read-back does not show passing as done; the token printed; the address not the fixed tailnet one.
+// present; a write the read-back does not show passing as done; the token printed; the address not the fixed tailnet one;
+// (barracuda, #354) a gap in the secret filter, a harmless key refused, the rw token loaded or sent outside the write.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { execFile } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -13,7 +14,8 @@ import { join } from 'node:path'
 const ROOT = join(__dirname, '..', '..')
 const SRC = join(ROOT, 'scripts', 'teszt-env.sh')
 const UUID = 'vuxtvlowb1i7lqdybubb37nj'
-const TOKEN = 'titkos-teszt-token-123'
+const TOKEN = 'olvaso-teszt-token-123'
+const TOKEN_RW = 'iro-teszt-token-456'
 
 type Env = { key: string; is_preview: boolean; value?: string }
 let envs: Env[] = []
@@ -51,14 +53,16 @@ beforeAll(async () => {
   })
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
   dir = mkdtempSync(join(tmpdir(), 'teszt-env-'))
-  writeFileSync(join(dir, 'token'), `${TOKEN}\n`)
+  writeFileSync(join(dir, 'token-ro'), `${TOKEN}\n`)
+  writeFileSync(join(dir, 'token-rw'), `${TOKEN_RW}\n`)
   const port = (server.address() as AddressInfo).port
   script = join(dir, 'teszt-env.sh')
   writeFileSync(
     script,
     readFileSync(SRC, 'utf-8')
       .replace(/^COOLIFY=.*$/m, `COOLIFY="http://127.0.0.1:${port}"`)
-      .replace(/^TOKEN_FILE=.*$/m, `TOKEN_FILE="${join(dir, 'token')}"`),
+      .replace(/^TOKEN_FILE_RO=.*$/m, `TOKEN_FILE_RO="${join(dir, 'token-ro')}"`)
+      .replace(/^TOKEN_FILE_RW=.*$/m, `TOKEN_FILE_RW="${join(dir, 'token-rw')}"`),
   )
 })
 afterAll(() => {
@@ -84,10 +88,42 @@ const run = (...args: string[]) =>
 const writes = () => calls.filter((c) => c.method !== 'GET')
 
 describe('teszt-env.sh', () => {
-  it('the address is the fixed tailnet one, the token the rw one', () => {
+  it('the address is the fixed tailnet one; the read token reads, the rw token writes', () => {
     const src = readFileSync(SRC, 'utf-8')
     expect(src).toMatch(/^COOLIFY="http:\/\/100\.88\.199\.87:8000"$/m)
-    expect(src).toMatch(/^TOKEN_FILE="\/home\/marveen\/marveen\/store\/\.coolify-token-ai-rw"$/m)
+    expect(src).toMatch(/^TOKEN_FILE_RO="\/home\/marveen\/marveen\/store\/\.coolify-token-ai"$/m)
+    expect(src).toMatch(/^TOKEN_FILE_RW="\/home\/marveen\/marveen\/store\/\.coolify-token-ai-rw"$/m)
+  })
+
+  // barracuda, #354: the deny list's gaps. Every one of these exits 2 before any request.
+  it.each([
+    'CLIENT_SECRETS', 'API_TOKENS', 'PASSWORDS', 'PRIVATEKEY', 'APITOKEN', 'ACCESSTOKEN', 'CLIENTSECRET', 'AUTHTOKEN',
+    'MEDUSA_DATABASE_URL', 'DIRECT_DATABASE_URL', 'CACHE_REDIS_URL', 'POSTGRES_URL', 'MONGO_URI', 'AMQP_URL',
+    'SLACK_WEBHOOK_URL', 'DISCORD_WEBHOOK_URL', 'DB_URL', 'JWT_SIGNING_KEY', 'PASSWORD_SALT', 'HMAC_VALUE',
+    'TLS_CERT', 'SERVER_PEM', 'SESSION_COOKIE_VALUE', 'STRIPE_KEYS', 'ACCESSKEY',
+  ])('refuses the secret-shaped key %s', async (key) => {
+    const r = await run(UUID, key, 'x', '--vegrehajt')
+    expect({ code: r.code, calls: calls.length }).toEqual({ code: 2, calls: 0 })
+  })
+
+  it.each(['STOREFRONT_URL', 'NEXT_PUBLIC_REGION', 'FEEDBACK_URL', 'MONKEY_MODE', 'SHOP_BANNER'])(
+    'lets the harmless key %s through (dry run)',
+    async (key) => {
+      const r = await run(UUID, key, 'x')
+      expect(r.code).toBe(0)
+      expect(writes()).toEqual([])
+    },
+  )
+
+  it('a dry run never loads the rw token: it reads with the read token, and runs without the rw file', async () => {
+    rmSync(join(dir, 'token-rw'))
+    try {
+      const r = await run(UUID, 'SHOP_BANNER', 'x')
+      expect(r.code).toBe(0)
+      expect(calls.every((c) => c.auth === `Bearer ${TOKEN}`)).toBe(true)
+    } finally {
+      writeFileSync(join(dir, 'token-rw'), `${TOKEN_RW}\n`)
+    }
   })
 
   it.each([
@@ -138,9 +174,11 @@ describe('teszt-env.sh', () => {
     expect(r.out).not.toContain('telepitest ez a parancs nem indit')
   })
 
-  it('the token goes as Bearer and is never printed', async () => {
+  it('the reads go with the read token, the write with the rw token, and neither is printed', async () => {
     const r = await run(UUID, 'SHOP_BANNER', 'x', '--vegrehajt')
-    expect(calls.every((c) => c.auth === `Bearer ${TOKEN}`)).toBe(true)
+    expect(calls.filter((c) => c.method === 'GET').every((c) => c.auth === `Bearer ${TOKEN}`)).toBe(true)
+    expect(writes().map((c) => c.auth)).toEqual([`Bearer ${TOKEN_RW}`])
     expect(r.out).not.toContain(TOKEN)
+    expect(r.out).not.toContain(TOKEN_RW)
   })
 })

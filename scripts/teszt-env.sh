@@ -13,18 +13,21 @@
 # MEASURED BY ACROBOT (2026-11-11 08:3x, the test Medusa's envs, rw token): the answer carries NO value field, only
 # the key and its meta, so the state is "present" or "absent", and a written value cannot be read back; and every key
 # stands twice, is_preview false and true. The write goes to the non-preview row only, and the output says so.
-# REFUSED (exit 2, nothing sent): a key not ^[A-Z][A-Z0-9_]*$, a secret-shaped key name (see TITOK below; a secret
-# is not the fleet's to set and not to print), a multi-line value. It starts NO deploy: the value takes effect on the
+# REFUSED (exit 2, nothing sent): a key not ^[A-Z][A-Z0-9_]*$, a secret-shaped key name or a connection URL (see TITOK
+# and KAPCSOLAT below; a secret is not the fleet's to set and not to print), a multi-line value. It starts NO deploy: the value takes effect on the
 # next deploy of the application, and the output says so.
 set -uo pipefail
 
 COOLIFY="http://100.88.199.87:8000"
-TOKEN_FILE="/home/marveen/marveen/store/.coolify-token-ai-rw"
+# THE READ TOKEN READS, THE RW TOKEN ONLY WRITES (barracuda, #354): the dry run and the read-back take the read token
+# (acrobot measured it accepted on the tailnet, #353); the rw token is loaded only on the --vegrehajt branch, for the write.
+TOKEN_FILE_RO="/home/marveen/marveen/store/.coolify-token-ai"
+TOKEN_FILE_RW="/home/marveen/marveen/store/.coolify-token-ai-rw"
 
-exec python3 - "$COOLIFY" "$TOKEN_FILE" "$@" <<'PY'
+exec python3 - "$COOLIFY" "$TOKEN_FILE_RO" "$TOKEN_FILE_RW" "$@" <<'PY'
 import json, re, sys, urllib.error, urllib.request
 
-coolify, token_file, *args = sys.argv[1:]
+coolify, token_ro_file, token_rw_file, *args = sys.argv[1:]
 USAGE = "hasznalat: teszt-env.sh <alkalmazas-uuid> <KULCS> <ertek> [--vegrehajt]"
 vegrehajt = "--vegrehajt" in args
 args = [a for a in args if a != "--vegrehajt"]
@@ -32,27 +35,43 @@ if len(args) != 3:
     print(USAGE, file=sys.stderr); sys.exit(2)
 uuid, key, value = args
 
-# a secret-shaped name: a part of the key (split on _) or a known secret-carrying name
-TITOK = re.compile(r"(^|_)(SECRET|TOKEN|KEY|PASSWORD|PASS|PASSWD|PRIVATE|CREDENTIALS?|AUTH|DSN|APIKEY)(_|$)|^(GMAIL_|SMTP_)|^(DATABASE_URL|REDIS_URL)$")
+# A SECRET-SHAPED NAME (barracuda, #354): a deny list, so it leans wide. The secret words match ANYWHERE in the key, not
+# only between underscores (CLIENT_SECRETS, APITOKEN, PASSWORDS, PRIVATEKEY); KEY alone only as a segment, KEYS too, or
+# in the named compounds (MONKEY_ stays allowed); GMAIL_ and SMTP_ prefixes. A cost named: a harmless SALTWATER_ or
+# AUTHOR_ key is refused too; that is the cheaper error.
+TITOK = re.compile(
+    r"SECRET|TOKEN|PASSW|PASSPHRASE|PRIVATE|CREDENTIAL|APIKEY|AUTH|DSN|SIGNING|SALT|HMAC|CERT|PEM|COOKIE"
+    r"|(^|_)KEYS?(_|$)|(ACCESS|ENCRYPTION|MASTER|SECRET|SIGNING|API)KEYS?"
+    r"|^(GMAIL|SMTP)_"
+)
+# A CONNECTION URL carries its credentials: a key ending in _URL, _URI or _DSN that names a database, a cache, a queue,
+# a webhook or a connection (MEDUSA_DATABASE_URL, CACHE_REDIS_URL, MONGO_URI, SLACK_WEBHOOK_URL). DB and PG only as a
+# segment (FEEDBACK_URL stays allowed).
+KAPCSOLAT = re.compile(r"(DATABASE|REDIS|POSTGRES|MONGO|AMQP|RABBIT|WEBHOOK|CONNECTION|(^|_)(DB|PG)(_|$))")
+def titok(k):
+    return bool(TITOK.search(k)) or (bool(re.search(r"_(URL|URI|DSN)$|^(URL|URI)$", k)) and bool(KAPCSOLAT.search(k)))
 if not re.fullmatch(r"[a-z0-9]{8,64}", uuid):
     print(f"MEGTAGADVA: az alkalmazas-uuid alakja nem ismert: {uuid!r}", file=sys.stderr); sys.exit(2)
 if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
     print(f"MEGTAGADVA: a kulcs nem NAGYBETUS_ALAK: {key!r}", file=sys.stderr); sys.exit(2)
-if TITOK.search(key):
+if titok(key):
     print(f"MEGTAGADVA: a(z) {key} titok-alaku kulcsnev; titkot a flotta nem allit es nem ir ki.", file=sys.stderr); sys.exit(2)
 if "\n" in value or "\r" in value:
     print("MEGTAGADVA: az ertek tobbsoros.", file=sys.stderr); sys.exit(2)
 
-try:
-    with open(token_file, encoding="utf-8") as f:
-        token = f.read().strip()
-except OSError as e:
-    print(f"MEGALLOK: a token nem olvashato ({token_file}): {e.strerror}", file=sys.stderr); sys.exit(4)
+def read_token(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError as e:
+        print(f"MEGALLOK: a token nem olvashato ({path}): {e.strerror}", file=sys.stderr); sys.exit(4)
 
-def call(method, path, body=None):
+token = read_token(token_ro_file)
+
+def call(method, path, body=None, with_token=None):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(coolify + path, data=data, method=method,
-                                 headers={"Authorization": f"Bearer {token}", "Accept": "application/json",
+                                 headers={"Authorization": f"Bearer {with_token or token}", "Accept": "application/json",
                                           **({"Content-Type": "application/json"} if data else {})})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
@@ -87,7 +106,8 @@ if not vegrehajt:
     sys.exit(0)
 
 body = {"key": key, "value": value, "is_preview": False}
-code, answer = call("PATCH" if before else "POST", f"/api/v1/applications/{uuid}/envs", body)
+code, answer = call("PATCH" if before else "POST", f"/api/v1/applications/{uuid}/envs", body,
+                    with_token=read_token(token_rw_file))
 if code not in (200, 201):
     print(f"NEM IRTA AT (HTTP {code}): {str(answer)[:200]}", file=sys.stderr); sys.exit(1)
 after = state()
