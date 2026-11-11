@@ -101,6 +101,8 @@ describe('teszt-env.sh', () => {
     'MEDUSA_DATABASE_URL', 'DIRECT_DATABASE_URL', 'CACHE_REDIS_URL', 'POSTGRES_URL', 'MONGO_URI', 'AMQP_URL',
     'SLACK_WEBHOOK_URL', 'DISCORD_WEBHOOK_URL', 'DB_URL', 'JWT_SIGNING_KEY', 'PASSWORD_SALT', 'HMAC_VALUE',
     'TLS_CERT', 'SERVER_PEM', 'SESSION_COOKIE_VALUE', 'STRIPE_KEYS', 'ACCESSKEY',
+    // barracuda, #354 v2: PASS as a word end, and PWD
+    'DB_PASS', 'REDIS_PASS', 'MAIL_PASS', 'ADMINPASS', 'DB_PWD',
   ])('refuses the secret-shaped key %s', async (key) => {
     const r = await run(UUID, key, 'x', '--vegrehajt')
     expect({ code: r.code, calls: calls.length }).toEqual({ code: 2, calls: 0 })
@@ -114,6 +116,23 @@ describe('teszt-env.sh', () => {
       expect(writes()).toEqual([])
     },
   )
+
+  // barracuda, #354 v2: a credential in the VALUE is refused whatever the key's name; the value is not printed
+  it.each([
+    ['SHOP_DB_LINK', 'mysql://u:p@h/x'],
+    ['CLICKHOUSE_URL', 'https://admin:titok@ch.example:8443'],
+    ['MARIADB_URL', 'mariadb://root@db/x'],
+  ])('refuses %s whose value carries userinfo, before any request, without printing it', async (key, value) => {
+    const r = await run(UUID, key, value, '--vegrehajt')
+    expect({ code: r.code, calls: calls.length }).toEqual({ code: 2, calls: 0 })
+    expect(r.out).toContain(key)
+    expect(r.out).not.toContain(value)
+  })
+
+  it('a plain https value goes through (dry run)', async () => {
+    const r = await run(UUID, 'STOREFRONT_URL', 'https://teszt.example')
+    expect(r.code).toBe(0)
+  })
 
   it('a dry run never loads the rw token: it reads with the read token, and runs without the rw file', async () => {
     rmSync(join(dir, 'token-rw'))

@@ -42,6 +42,8 @@ uuid, key, value = args
 TITOK = re.compile(
     r"SECRET|TOKEN|PASSW|PASSPHRASE|PRIVATE|CREDENTIAL|APIKEY|AUTH|DSN|SIGNING|SALT|HMAC|CERT|PEM|COOKIE"
     r"|(^|_)KEYS?(_|$)|(ACCESS|ENCRYPTION|MASTER|SECRET|SIGNING|API)KEYS?"
+    # PASS as a word end (DB_PASS, ADMINPASS) and PWD (barracuda, #354 v2): BYPASS_ and COMPASS_ fall too, the cheaper error
+    r"|PASS(_|$)|PWD"
     r"|^(GMAIL|SMTP)_"
 )
 # A CONNECTION URL carries its credentials: a key ending in _URL, _URI or _DSN that names a database, a cache, a queue,
@@ -58,6 +60,11 @@ if titok(key):
     print(f"MEGTAGADVA: a(z) {key} titok-alaku kulcsnev; titkot a flotta nem allit es nem ir ki.", file=sys.stderr); sys.exit(2)
 if "\n" in value or "\r" in value:
     print("MEGTAGADVA: az ertek tobbsoros.", file=sys.stderr); sys.exit(2)
+# A CREDENTIAL IN THE VALUE, whatever the key's name (barracuda, #354 v2): a name list is never complete (MYSQL_URL,
+# CLICKHOUSE_URL), but a URL with userinfo (scheme://user:pass@host) carries its secret on its face. The key is named,
+# the value is not printed.
+if re.search(r"://[^/\s@]*@", value):
+    print(f"MEGTAGADVA: a(z) {key} erteke hitelesito adatot hordozo URL (felhasznalo@ a cimben); titkot a flotta nem allit.", file=sys.stderr); sys.exit(2)
 
 def read_token(path):
     try:
