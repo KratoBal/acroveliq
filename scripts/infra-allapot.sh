@@ -72,15 +72,19 @@ for item in data:
 # so it reaches Coolify on the gateway. A fixed constant: a secret's target is not env-settable.
 COOLIFY_PROD_URL="http://10.0.1.1:8000"
 show "ELES GEP" "$COOLIFY_PROD_URL" "$INSTALL_DIR/store/.coolify-token-prod"
-# B20b (2026-10-16), then Balazs's decision A of 10-16 (memory 2374): the AI machine's Coolify (coolify2) is NOT
-# reachable from outside, from the fleet only the executor reaches it (its own tailnet identity). The old probe
+# THE TAILNET ADDRESS (card 8f35a038, 2026-11-11): the AI machine's Coolify is closed on its public name (coolify2,
+# 403 since B20b, 2026-10-16), and the executor that once reached it for the fleet is gone (Balazs, 2026-10-19). The
+# fleet reaches it on the tailnet. This section only READS, so it takes the read token (store/.coolify-token-ai):
+# acrobot measured 2026-11-11 08:15 that both it and the rw token answer 200 there (#353). Measured
+# 2026-11-11 08:0x: https://coolify2.acropora.hu/api/health 403, http://100.88.199.87:8000/api/health 200. The old probe
 # asked /api/health, a path the sections below never use: where that answered 200 and the API refused, the section
 # printed "a valasz nem JSON" for an answer that was a deliberate 403 (task flotta-or-es-infra-javitas, 2026-10-19).
 # So the probe asks what the sections ask: the applications list, with the token. Only a 200 is "reachable".
-AI_COOLIFY_URL="https://coolify2.acropora.hu"
+AI_COOLIFY_URL="http://100.88.199.87:8000"
+AI_TOKEN="$INSTALL_DIR/store/.coolify-token-ai"
 AI_KOD=""
 ai_coolify_elerheto() {
-  local tok="$INSTALL_DIR/store/.coolify-token-ai"
+  local tok="$AI_TOKEN"
   if [[ -r "$tok" ]]; then
     AI_KOD="$(/usr/bin/curl -s -o /dev/null -m 10 -w '%{http_code}' -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$tok")") "$AI_COOLIFY_URL/api/v1/applications")"
   else
@@ -90,15 +94,14 @@ ai_coolify_elerheto() {
 }
 ai_zart() {
   case "$AI_KOD" in
-    403) echo "  SZANDEKOSAN NEM LATHATO INNEN (HTTP 403): a coolify2 kivulrol zart, a flottabol csak a vegrehajto eri el (Balazs 10-16-i A dontese)." ;;
-    000|"") echo "  A coolify2 nem valaszol (nincs kapcsolat): ez NEM a szandekos zaras, nezd meg a halozatot." ;;
-    *) echo "  A coolify2 a lekerdezesre HTTP ${AI_KOD}-t adott, nem 200-at: ez nem a szandekos zaras (az 403 lenne)." ;;
+    401|403) echo "  A TOKENT ELUTASITOTTA (HTTP ${AI_KOD}): a $AI_TOKEN hianyzik, lejart, vagy nem ennek a Coolify-nak szol." ;;
+    000|"") echo "  A tailnet-cim nem valaszol (nincs kapcsolat): nezd meg, fut-e a tailscale ezen a gepen es az AI gepen." ;;
+    *) echo "  A Coolify a lekerdezesre HTTP ${AI_KOD}-t adott, nem 200-at." ;;
   esac
-  echo "  Az AI gep (stage) allapota innen: a vegrehajton at, egy telepites R-jenek allapota: bash /home/marveen/marveen/scripts/vegrehajto.sh allapot <R>"
-  echo "  (telepiteshez is ott: scripts/vegrehajto.sh); a teljes listat Balazs a tailnetrol latja."
+  echo "  A teszt kirakat telepitesei a Coolify adatbazisabol: bash /home/marveen/marveen/scripts/kirakat-telepites.sh allapot"
 }
 if ai_coolify_elerheto; then
-  show "AI GEP -- ITT VAN A VALODI STAGING" "$AI_COOLIFY_URL" "$INSTALL_DIR/store/.coolify-token-ai"
+  show "AI GEP -- ITT VAN A VALODI STAGING" "$AI_COOLIFY_URL" "$AI_TOKEN"
 else
   echo; echo "===== AI GEP ($AI_COOLIFY_URL) ====="; ai_zart
 fi
@@ -149,7 +152,7 @@ print("     %-30s %-12s %s" % (a.get("name") or "?", mode, a.get("fqdn") or ""))
 }
 mod "ELES GEP" "$COOLIFY_PROD_URL" "$INSTALL_DIR/store/.coolify-token-prod"
 if ai_coolify_elerheto; then
-  mod "AI GEP (teszt)" "$AI_COOLIFY_URL" "$INSTALL_DIR/store/.coolify-token-ai"
+  mod "AI GEP (teszt)" "$AI_COOLIFY_URL" "$AI_TOKEN"
 else
   echo " --- AI GEP (teszt) ---"; ai_zart
 fi
