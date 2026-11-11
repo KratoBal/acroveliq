@@ -105,6 +105,16 @@ for p in sorted(prs, key=lambda x: x["number"]):
     lines.append("| #%d | `%s` | `%s` | %s |" % (
         p["number"], p["head"]["ref"], p["head"]["sha"][:8],
         "piszkozat" if p["draft"] else "nyitva"))
-open(out_path, "w").write("\n".join(lines) + "\n")
+# An agent running under its own OS user cannot write the shared file (it is acrobot's).
+# nautilus measured 2026-11-11 that the file "never refreshed" for it: the list was right,
+# only the write failed. Without write access the same table goes to stdout, and the line
+# says so, so nobody reads the stale file as the current state.
+try:
+    with open(out_path, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+except OSError as e:
+    print("\n".join(lines))
+    print("NEM IRTAM a %s fajlba (%s): a fenti tabla a FRISS allapot, a fajl a regi." % (out_path, e.strerror))
+    sys.exit(0)
 print("OK %s -- repo %s (%s): %d nyitott PR" % (out_path, repo, repo_forras, len(prs)))
 PY
