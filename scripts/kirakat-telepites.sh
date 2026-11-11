@@ -45,8 +45,10 @@
 set -uo pipefail
 
 UUID_APP=6sbolw7oedo5sdffhpswdoyt
-COOLIFY=https://coolify2.acropora.hu
-TOKEN_FILE=/home/marveen/marveen/store/.coolify-token-ai
+# THE TAILNET ADDRESS (card 8f35a038, 2026-11-11): coolify2's public name is closed (403); the fleet reaches the AI
+# machine's Coolify on the tailnet with its own read-write token. Measured 08:0x: public /api/health 403, tailnet 200.
+COOLIFY=http://100.88.199.87:8000
+TOKEN_FILE=/home/marveen/marveen/store/.coolify-token-ai-rw
 SSH_KEY=/home/marveen/.ssh/id_ed25519_acropora_monitor
 GEP=fleet@100.88.199.87
 
@@ -99,11 +101,10 @@ for e in json.loads(nyers):
 "
     ;;
   indit)
-    # B20b (2026-10-16): coolify2 is closed to the public except /webhooks/, and the fleet may not
-    # reach its :8000 on the tailnet. A refusal is said in words before any deploy call.
+    # An unreachable Coolify is said in words before any deploy call (the tailnet address, card 8f35a038).
     if [ "$(/usr/bin/curl -s -o /dev/null -m 10 -w '%{http_code}' "$COOLIFY/api/health")" != 200 ]; then
-      echo "NEM INDITHATO INNEN: a coolify2 a flottabol nem erheto el (B20b: csak a tailneten)." >&2
-      echo "A teszt kirakat a GitHub-push utan magatol telepul (a webhook nyitva marad); kezi inditas Balazse." >&2
+      echo "NEM INDITHATO INNEN: a teszt Coolify a tailnet-cimen ($COOLIFY) nem valaszol." >&2
+      echo "A teszt kirakat a GitHub-push utan magatol is telepul (a webhook nyitva marad)." >&2
       echo "Az allapot es a naplo tovabbra is megy: kirakat-telepites.sh allapot | naplo <uuid>" >&2
       exit 3
     fi

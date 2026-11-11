@@ -9,8 +9,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 /*
   scripts/infra-allapot.sh SAYS WHAT IT SAW (task flotta-or-es-infra-javitas, 2026-10-19).
-  Measured that day: the AI machine's Coolify (coolify2) refuses the fleet on purpose (Balazs 10-16, decision A:
-  the executor alone reaches it), and the stage section printed "a valasz nem JSON" instead of saying so. The probe
+  Measured that day: the AI machine's Coolify refused the fleet on its public name, and the stage section printed
+  "a valasz nem JSON" instead of saying so. Since card 8f35a038 (2026-11-11) the fleet asks it on the tailnet. The probe
   asked /api/health, a path the sections never use; where that answered 200 and the API refused, the refusal read
   as a broken answer. What turns these red: a refusal printed as "not JSON"; the probe judging by a path other than
   the one the section uses; a 403 and a 502 or a dead connection told as the same thing; a non-JSON answer printed
@@ -62,7 +62,7 @@ beforeEach(() => {
   mkdirSync(join(dir, 'store'), { recursive: true })
   mkdirSync(join(dir, 'scripts'), { recursive: true })
   writeFileSync(join(dir, 'store', '.coolify-token-prod'), 'prod-token\n')
-  writeFileSync(join(dir, 'store', '.coolify-token-ai'), 'ai-token\n')
+  writeFileSync(join(dir, 'store', '.coolify-token-ai-rw'), 'ai-token\n')
 })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
@@ -89,40 +89,52 @@ function run(opts: { aiPort?: number } = {}): Promise<{ code: number; out: strin
 
 const aiSection = (out: string) => out.slice(out.indexOf('===== AI GEP'), out.indexOf('TELEPITESI MOD'))
 
-describe('the AI machine: a deliberate refusal is said as one', () => {
-  it('403 on the API (the executor alone reaches it): "SZANDEKOSAN NEM LATHATO", the way to the state, never "nem JSON"', async () => {
-    aiRoutes = { '/api/v1/applications': { code: 403, type: 'text/plain', body: 'Forbidden' } }
+// card 8f35a038 (2026-11-11): the AI machine's Coolify is reached on the tailnet with the fleet's rw token; the public
+// name is closed and the executor is gone. WHAT TURNS THESE RED: a refused token told as anything but a refused token,
+// or pointing at the executor; the probe asking another path than the sections; a dead tailnet told as a refusal; the
+// token file read from anywhere but store/.coolify-token-ai-rw; the fixed address not the tailnet one.
+describe('the AI machine on the tailnet: what the answer was is said as it was', () => {
+  it('the fixed address is the tailnet one, and the token is the fleet rw token', () => {
+    const src = readFileSync(join(ROOT, 'scripts', 'infra-allapot.sh'), 'utf-8')
+    expect(src).toMatch(/^AI_COOLIFY_URL="http:\/\/100\.88\.199\.87:8000"$/m)
+    expect(src).toMatch(/^AI_TOKEN="\$INSTALL_DIR\/store\/\.coolify-token-ai-rw"$/m)
+    expect(src).not.toContain('vegrehajto.sh')
+    // the deploy helper asks the same Coolify, with the same token
+    const deploy = readFileSync(join(ROOT, 'scripts', 'kirakat-telepites.sh'), 'utf-8')
+    expect(deploy).toMatch(/^COOLIFY=http:\/\/100\.88\.199\.87:8000$/m)
+    expect(deploy).toMatch(/^TOKEN_FILE=\/home\/marveen\/marveen\/store\/\.coolify-token-ai-rw$/m)
+    expect(deploy).not.toContain('coolify2.acropora.hu/')
+  })
+
+  it.each([401, 403])('HTTP %i on the API: the token was refused, named, with the way to the deploy state', async (code) => {
+    aiRoutes = { '/api/v1/applications': { code, type: 'text/plain', body: 'Forbidden' } }
     const r = await run()
     const sec = aiSection(r.out)
-    expect(sec).toContain('SZANDEKOSAN NEM LATHATO INNEN (HTTP 403)')
-    expect(sec).toContain('vegrehajto.sh allapot <R>')
-    expect(sec).toContain('Balazs 10-16-i A dontese')
-    expect(r.out).not.toContain('nem JSON, a felulet')
+    expect(sec).toContain(`A TOKENT ELUTASITOTTA (HTTP ${code})`)
+    expect(sec).toContain('.coolify-token-ai-rw')
+    expect(sec).toContain('kirakat-telepites.sh allapot')
     expect(r.out).not.toContain('a valasz nem JSON -- a felulet')
   })
 
-  it('the OLD failure shape: /api/health answers 200 while the API refuses: still the deliberate-refusal text, not a broken section', async () => {
+  it('the probe asks the applications list (not /api/health)', async () => {
     aiRoutes = {
       '/api/health': { code: 200, body: 'OK', type: 'text/plain' },
       '/api/v1/applications': { code: 403, type: 'text/plain', body: 'Forbidden' },
     }
-    const r = await run()
-    expect(aiSection(r.out)).toContain('SZANDEKOSAN NEM LATHATO INNEN (HTTP 403)')
-    expect(aiSection(r.out)).not.toContain('nem JSON')
-    // the probe asked the path the sections use, not /api/health
-    expect(seen.filter((q) => q.path === '/api/health')).toEqual([])
-  })
-
-  it('without the AI token file the probe still asks the applications list (not /api/health) and says the same', async () => {
-    rmSync(join(dir, 'store', '.coolify-token-ai'))
-    aiRoutes = { '/api/v1/applications': { code: 403, type: 'text/plain', body: 'Forbidden' } }
-    const r = await run()
-    expect(aiSection(r.out)).toContain('SZANDEKOSAN NEM LATHATO INNEN (HTTP 403)')
+    await run()
     expect(seen.filter((q) => q.path === '/api/health')).toEqual([])
     expect(seen.some((q) => q.path === '/api/v1/applications')).toBe(true)
   })
 
-  it('the probe is asked ONLY when the answer is a 200: the API list then prints', async () => {
+  it('without the rw token file the probe still asks, and the refusal names the file', async () => {
+    rmSync(join(dir, 'store', '.coolify-token-ai-rw'))
+    aiRoutes = { '/api/v1/applications': { code: 401, type: 'text/plain', body: 'Unauthenticated' } }
+    const r = await run()
+    expect(aiSection(r.out)).toContain('A TOKENT ELUTASITOTTA (HTTP 401)')
+    expect(seen.some((q) => q.path === '/api/v1/applications')).toBe(true)
+  })
+
+  it('a 200 prints the list', async () => {
     aiRoutes = {
       '/api/v1/applications': { code: 200, body: apps(['acropora-stage-api']) },
       '/api/v1/databases': { code: 200, body: '[]' },
@@ -131,38 +143,36 @@ describe('the AI machine: a deliberate refusal is said as one', () => {
     const r = await run()
     const sec = aiSection(r.out)
     expect(sec).toContain('acropora-stage-api')
-    expect(sec).not.toContain('SZANDEKOSAN')
+    expect(sec).not.toContain('ELUTASITOTTA')
     expect(sec).toContain('(egy sem)')
   })
 
   it.each([
     [502, '502'],
-    [401, '401'],
     [500, '500'],
-  ])('HTTP %i is told as "not the deliberate refusal", with its code (a 403 would be)', async (code, shown) => {
+  ])('HTTP %i is told with its code, not as a refused token', async (code, shown) => {
     aiRoutes = { '/api/v1/applications': { code, type: 'text/plain', body: 'x' } }
     const r = await run()
     const sec = aiSection(r.out)
     expect(sec).toContain(`HTTP ${shown}-t adott`)
-    expect(sec).toContain('nem a szandekos zaras')
-    expect(sec).not.toContain('SZANDEKOSAN NEM LATHATO')
+    expect(sec).not.toContain('ELUTASITOTTA')
   })
 
-  it('no connection at all (a closed port) is its own sentence: not the deliberate refusal', async () => {
+  it('no connection at all (a closed port) is its own sentence: the tailnet, not a refusal', async () => {
     const dead = await makeServer(() => ({}), [])
     const closedPort = dead.port
     dead.server.close()
     const r = await run({ aiPort: closedPort })
     const sec = aiSection(r.out)
-    expect(sec).toContain('nem valaszol (nincs kapcsolat)')
-    expect(sec).not.toContain('SZANDEKOSAN NEM LATHATO')
+    expect(sec).toContain('A tailnet-cim nem valaszol (nincs kapcsolat)')
+    expect(sec).not.toContain('ELUTASITOTTA')
   })
 
   it('the install-mode section says the same for the stage machine', async () => {
     aiRoutes = { '/api/v1/applications': { code: 403, type: 'text/plain', body: 'Forbidden' } }
     const r = await run()
     const mode = r.out.slice(r.out.indexOf(' --- AI GEP (teszt) ---'))
-    expect(mode).toContain('SZANDEKOSAN NEM LATHATO INNEN (HTTP 403)')
+    expect(mode).toContain('A TOKENT ELUTASITOTTA (HTTP 403)')
   })
 })
 
