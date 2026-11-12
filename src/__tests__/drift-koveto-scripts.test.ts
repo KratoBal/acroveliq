@@ -113,10 +113,16 @@ describe('the daily invoice summary: the bank line', () => {
   const py = script.slice(script.indexOf("<<'PY'\n") + 7, script.indexOf('\nPY\n'))
   const raw = join(tmp, 'nyers.txt')
   writeFileSync(raw, 'ki_osszes|12|x\nolvasatlan_dokumentum|3|x\nterheles_szamla_nelkul|7|x\n')
-  const summary = (app: unknown) => {
+  const summary = (app: unknown, suggestions?: unknown) => {
     const appFile = join(tmp, `app-${Math.random().toString(36).slice(2)}.json`)
     writeFileSync(appFile, typeof app === 'string' ? app : JSON.stringify(app))
-    const r = spawnSync('python3', ['-I', '-', raw, appFile], { input: py, encoding: 'utf8' })
+    const args = ['-I', '-', raw, appFile]
+    if (suggestions !== undefined) {
+      const sugFile = join(tmp, `sug-${Math.random().toString(36).slice(2)}.json`)
+      writeFileSync(sugFile, typeof suggestions === 'string' ? suggestions : JSON.stringify(suggestions))
+      args.push(sugFile)
+    }
+    const r = spawnSync('python3', args, { input: py, encoding: 'utf8' })
     return { status: r.status, out: r.stdout, err: r.stderr }
   }
   const month = (amount: unknown) => ({
@@ -140,6 +146,61 @@ describe('the daily invoice summary: the bank line', () => {
     for (const g of [broken, empty]) {
       expect(g.out).toContain('• Kimenő: 12 számla')
       expect(g.out).toContain('számla nélküli banki terhelés: 7')
+    }
+  })
+
+  // card 5f8a2714: the decision-waiting PDF suggestions' stale count (acropora-os #1833)
+  const items = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `s${i}` }))
+
+  it('NAPI-STALE-COUNT: the waiting suggestions and the stale ones are on the summary, with the app\'s own limit', () => {
+    const got = summary(month('1000'), { items: items(5), staleAfterDays: 60, staleCount: 2 })
+    expect(got.status, got.err).toBe(0)
+    expect(got.out).toContain('• Döntésre váró PDF-javaslat: 5, ebből 2 régebbi 60 napnál')
+    // zero stale is a number, not a silence
+    const none = summary(month('1000'), { items: items(3), staleAfterDays: 60, staleCount: 0 })
+    expect(none.out).toContain('• Döntésre váró PDF-javaslat: 3, ebből 0 régebbi 60 napnál')
+    // the other lines stand
+    expect(got.out).toContain('• Kimenő: 12 számla')
+    expect(got.out).toContain('hiányzik 1 000 Ft')
+  })
+
+  it('NAPI-STALE-ABSENT: a response without staleCount (an OS build before #1833) says so instead of printing 0', () => {
+    const got = summary(month('1000'), { items: items(4), staleAfterDays: 60 })
+    expect(got.status, got.err).toBe(0)
+    expect(got.out).toContain('a válaszban nincs staleCount')
+    expect(got.out).not.toContain('ebből 0')
+    // a text or a boolean is not a count either
+    for (const bad of ['2', true, null]) {
+      const g = summary(month('1000'), { items: items(1), staleCount: bad })
+      expect(g.out, String(bad)).toContain('a válaszban nincs staleCount')
+    }
+  })
+
+  it('NAPI-STALE-WIRING: the shell fetches the suggestions through the helper and hands the file to the summary', () => {
+    // the summary's Python above is run on its own; this pins the shell lines around it, which no stub can run (the script
+    // reads the production host over ssh): a fetch that is dropped, or a file that is not passed, would leave the line saying
+    // "the suggestions page is not reachable" every morning with nothing red
+    expect(script).toContain('os-hianyzo-honapok.py" suggestions >')
+    expect(script).toContain('python3 - "$NYERS" "$APP" "$SUG" <<\'PY\'')
+  })
+
+  it('NAPI-HELPER-ENDPOINT-NAME: the helper takes an endpoint NAME from a short list, never the caller\'s text', () => {
+    const helper = readFileSync(join(REPO_ROOT, 'scripts', 'os-hianyzo-honapok.py'), 'utf8')
+    expect(helper).toContain("ENDPOINTS = {'months': '/missing-invoices/months', 'suggestions': '/missing-invoices/suggestions'}")
+    expect(helper).toContain('BASE + ENDPOINTS[NAME]')
+    expect(helper).not.toMatch(/BASE \+ sys\.argv/)
+    // an unknown name stops before any credential is read or any request is made
+    const r = spawnSync('python3', ['-I', join(REPO_ROOT, 'scripts', 'os-hianyzo-honapok.py'), '../admin/users'], { encoding: 'utf8' })
+    expect(r.status).toBe(64)
+    expect(r.stderr).toContain('ismeretlen vegpont-nev')
+  })
+
+  it('NAPI-STALE-UNREADABLE: no suggestions answer (empty, broken, missing items) says so, and the other lines stand', () => {
+    for (const bad of ['', 'nem json', { staleCount: 3 }]) {
+      const g = summary(month('1000'), bad)
+      expect(g.status, g.err).toBe(0)
+      expect(g.out, JSON.stringify(bad)).toContain('a javaslat-lapot most nem értem el')
+      expect(g.out).toContain('• Kimenő: 12 számla')
     }
   })
 })

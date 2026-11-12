@@ -23,7 +23,11 @@ fi
 # since 2026-10-21 20:33 UTC). If that call fails, the line falls back to the old upper bound and says so.
 APP="$OUT_DIR/$NAP-app.json"
 timeout 90 python3 "$ROOT/scripts/os-hianyzo-honapok.py" > "$APP" 2>/dev/null || : > "$APP"
-python3 - "$NYERS" "$APP" <<'PY'
+# the decision-waiting PDF suggestions (GET /missing-invoices/suggestions, finance.view): its `staleCount` is the number of
+# UNASSIGNED PDFs waiting for a decision for more than 60 days (acropora-os #1833, card 5f8a2714)
+SUG="$OUT_DIR/$NAP-javaslat.json"
+timeout 90 python3 "$ROOT/scripts/os-hianyzo-honapok.py" suggestions > "$SUG" 2>/dev/null || : > "$SUG"
+python3 - "$NYERS" "$APP" "$SUG" <<'PY'
 import json, sys
 from decimal import Decimal, ROUND_HALF_UP
 rows = {}
@@ -41,6 +45,23 @@ lines.append(f'• Bejövő: {g("be_osszes")[0]} számla. A tárolt jelző (csak
              f'ebből a begyűjtött levélben, Drive-on vagy feltöltésben megvan a PDF (számlaszám és adószám egyezik): {g("be_pdf_levelbol_van")[0]}; '
              f'nincs egyező PDF: {g("be_pdf_nincs_egyezes")[0]} (a kézi csatolást a mérés nem látja, a felület ezeket még mutathatja)')
 lines.append(f'• Átnézésre vár: {g("atnezesre_var")[0]}; hiányos összeg: {g("be_hianyos_osszeg")[0]}; határidő nélkül: {g("be_hatarido_nelkul")[0]}')
+# the decision-waiting PDF suggestions: how many wait, and how many for longer than the app's own limit (`staleAfterDays`).
+# A missing `staleCount` is said out loud, not printed as 0: an older OS build (before #1833) has no such field, and a 0 there
+# would read as "nothing is stale"
+try:
+    sug = json.load(open(sys.argv[3], encoding='utf-8'))
+    waiting = len(sug['items'])
+except Exception:
+    sug = None
+if sug is None:
+    lines.append('• Döntésre váró PDF-javaslat: a javaslat-lapot most nem értem el')
+else:
+    stale, days = sug.get('staleCount'), sug.get('staleAfterDays')
+    if isinstance(stale, int) and not isinstance(stale, bool):
+        limit = f'{days} napnál' if isinstance(days, int) and not isinstance(days, bool) else 'a határnál'
+        lines.append(f'• Döntésre váró PDF-javaslat: {waiting}, ebből {stale} régebbi {limit}')
+    else:
+        lines.append(f'• Döntésre váró PDF-javaslat: {waiting}; a válaszban nincs staleCount (az OS #1833 előtti kiadás fut?), az elavultak száma ismeretlen')
 try:
     months = json.load(open(sys.argv[2], encoding='utf-8'))['months']
 except Exception:
