@@ -424,6 +424,11 @@ D4_MOUNT=/etc/fleet-github
 if (( DRY )) && [[ -n "${FLEET_D4_MOUNT_DRYRUN:-}" ]]; then D4_MOUNT="$FLEET_D4_MOUNT_DRYRUN"; fi
 D4_SUDOERS=/etc/sudoers.d/fleet-github
 D4_SBIN=/usr/local/sbin
+# Where the installed copies are LOOKED FOR. The rule and the install target always name D4_SBIN; only a dry run may look
+# elsewhere (the tests: inside the fleet's own container the real copies are installed, so the install plan never showed
+# and fleet-bootstrap-d4.test.py was red there while green in CI).
+D4_SBIN_SEEN="$D4_SBIN"
+if (( DRY )) && [[ -n "${FLEET_D4_SBIN_DRYRUN:-}" ]]; then D4_SBIN_SEEN="$FLEET_D4_SBIN_DRYRUN"; fi
 # source-in-scripts/root:installed-name:sha256
 D4_SCRIPTS="fleet-github.py:fleet-github:a742cc58966fb0488bb5701f7c53f621c1bb7a71e9241f95167fdde69dbdf2c7
 fleet-approve.py:fleet-approve:afe34423cec27da93c78a9503726aad8e8c16945ba04aed332b89199a3ce5b69"
@@ -479,7 +484,7 @@ else
   D4_DEPLOYED=1
   while IFS=: read -r src dst want; do
     [[ -n "$src" ]] || continue
-    have="$(sha256sum < "$D4_SBIN/$dst" 2>/dev/null | cut -d' ' -f1)"
+    have="$(sha256sum < "$D4_SBIN_SEEN/$dst" 2>/dev/null | cut -d' ' -f1)"
     if [[ "$have" == "$want" ]]; then echo "ok: $D4_SBIN/$dst is the pinned version"; continue; fi
     if as_root install -o root -g root -m 0755 "$d4_tmpdir/$dst" "$D4_SBIN/$dst"; then
       echo "installed: $D4_SBIN/$dst"

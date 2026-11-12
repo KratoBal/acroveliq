@@ -9,7 +9,10 @@ WHAT TURNS THIS RED:
   3. with the mount and the pinned sources, a dry run does not plan both scripts and the rule;
   4. a source that is not the pinned version, or a symlink, is planned for install anyway;
   5. the generated sudoers content does not parse (checked with visudo -c -f where visudo exists);
-  6. the step stops the script before step 4b (the blanket line removal must always run).
+  6. the step stops the script before step 4b (the blanket line removal must always run);
+  7. the dry run looks for the installed copies anywhere but FLEET_D4_SBIN_DRYRUN (then the result depends on
+     whether this machine has the broker installed: red inside the fleet's container, green in CI), or a
+     pinned installed copy is planned for install again.
 
 Everything runs with --dry-run and a fake FLEET_ROOT: no root, no sudo rule, no install.
 The mount is pointed at a temp directory with FLEET_D4_MOUNT_DRYRUN, which the bootstrap honours
@@ -58,9 +61,14 @@ def fake_root(alter=None, link=None):
     return root
 
 
-def run(root, mount=None):
+SBIN_EMPTY = tempfile.mkdtemp(prefix='fleet-d4-sbin-')
+
+
+def run(root, mount=None, sbin=SBIN_EMPTY):
     env = dict(os.environ, FLEET_ROOT=root)
     env.pop('FLEET_D4_MOUNT_DRYRUN', None)
+    # the installed copies are looked for here, never in this machine's /usr/local/sbin
+    env['FLEET_D4_SBIN_DRYRUN'] = sbin
     if mount is not None:
         env['FLEET_D4_MOUNT_DRYRUN'] = mount
     r = subprocess.run(['bash', BOOT, '--dry-run'], env=env, capture_output=True, text=True, timeout=120)
@@ -111,6 +119,16 @@ expected = [
 check('the six rules, as docs/fleet-github.md step 8', [r for r in rules if not r.startswith('#')] == expected, rules)
 check('step 4b still runs', '== 4b.' in out)
 
+print('3b. a pinned installed copy is not installed again')
+sbin = tempfile.mkdtemp(prefix='fleet-d4-sbin-pinned-')
+shutil.copyfile(os.path.join(SCRIPTS, 'root', 'fleet-github.py'), os.path.join(sbin, 'fleet-github'))
+out, err = run(root, mount=mount, sbin=sbin)
+s = step4a(out)
+check('the pinned copy is ok', 'ok: /usr/local/sbin/fleet-github is the pinned version' in s, s)
+check('the pinned copy is not planned', re.search(r'DRY: (sudo -n )?install -o root -g root -m 0755 \S+ /usr/local/sbin/fleet-github$', s, re.M) is None, s)
+check('the missing one still is', re.search(r'DRY: (sudo -n )?install -o root -g root -m 0755 \S+ /usr/local/sbin/fleet-approve$', s, re.M) is not None, s)
+shutil.rmtree(sbin)
+
 print('4. a changed source or a symlink is not planned')
 for kind, kw in (('changed', {'alter': 'fleet-github.py'}), ('symlink', {'link': 'fleet-github.py'})):
     bad = fake_root(**kw)
@@ -135,6 +153,7 @@ else:
     print('skip visudo is not installed here')
 
 shutil.rmtree(root)
+shutil.rmtree(SBIN_EMPTY)
 shutil.rmtree(mount)
 print()
 print('FAILED: ' + ', '.join(FAILS) if FAILS else 'all passed')
