@@ -176,6 +176,25 @@ describe('the daily invoice summary: the bank line', () => {
     }
   })
 
+  it('NAPI-STALE-WIRING: the shell fetches the suggestions through the helper and hands the file to the summary', () => {
+    // the summary's Python above is run on its own; this pins the shell lines around it, which no stub can run (the script
+    // reads the production host over ssh): a fetch that is dropped, or a file that is not passed, would leave the line saying
+    // "the suggestions page is not reachable" every morning with nothing red
+    expect(script).toContain('os-hianyzo-honapok.py" suggestions >')
+    expect(script).toContain('python3 - "$NYERS" "$APP" "$SUG" <<\'PY\'')
+  })
+
+  it('NAPI-HELPER-ENDPOINT-NAME: the helper takes an endpoint NAME from a short list, never the caller\'s text', () => {
+    const helper = readFileSync(join(REPO_ROOT, 'scripts', 'os-hianyzo-honapok.py'), 'utf8')
+    expect(helper).toContain("ENDPOINTS = {'months': '/missing-invoices/months', 'suggestions': '/missing-invoices/suggestions'}")
+    expect(helper).toContain('BASE + ENDPOINTS[NAME]')
+    expect(helper).not.toMatch(/BASE \+ sys\.argv/)
+    // an unknown name stops before any credential is read or any request is made
+    const r = spawnSync('python3', ['-I', join(REPO_ROOT, 'scripts', 'os-hianyzo-honapok.py'), '../admin/users'], { encoding: 'utf8' })
+    expect(r.status).toBe(64)
+    expect(r.stderr).toContain('ismeretlen vegpont-nev')
+  })
+
   it('NAPI-STALE-UNREADABLE: no suggestions answer (empty, broken, missing items) says so, and the other lines stand', () => {
     for (const bad of ['', 'nem json', { staleCount: 3 }]) {
       const g = summary(month('1000'), bad)
