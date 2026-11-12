@@ -21,7 +21,8 @@ WHAT TURNS THIS RED:
      rewritten on every start); an agent's own helper or useHttpPath is rewritten or its value printed; a
      symlinked, unreadable or unparsable .gitconfig or a missing home passes as ok, is followed, or stops the
      script, or the verify step does not say MISSING for it; outside root (the tree's copy at the dashboard's
-     pre-start) the step does anything but skip quietly; or the agent list differs from step 4a's pushers.
+     pre-start) the step does anything but skip quietly; or the agent list differs from step 4a's pushers; or a list
+     holding only the empty line (our first write without the second) is kept instead of completed.
 
 Everything runs with --dry-run and a fake FLEET_ROOT: no root, no sudo rule, no install. The mount
 is a temp directory (FLEET_PANE_CONF_DRYRUN), and step 4 is entered through a stand-in blanket file
@@ -318,10 +319,21 @@ check('2e problems: the script goes on past the step', '== 3.' in gout, gout[-40
 check('2e problems: the verify step says MISSING', 'MISSING: an agent\'s git credential helper, see step 2e above' in gout, gout[-600:])
 os.chmod(nau, 0o644)
 
+# only the empty line, our first write without the second: completed, not kept as an own setting (barracuda, #357)
+with open(nau, 'w') as f:
+    f.write('')
+git_set(nau, '--add', 'credential.helper', '')
+os.unlink(mur)
+os.makedirs(os.path.join(gtmp, 'agent-murena'), exist_ok=True)
+gout, _ = run_git(gtmp)
+n = agent_lines(step_2e(gout), 'agent-nautilus')
+check('2e half written: the broker helper is planned after the empty line',
+      f'DRY: as_agent agent-nautilus git config --file {nau} --add credential.helper {helper}' in n and 'kept:' not in n, n)
+check('2e half written: no second empty line', '--add credential.helper \n' not in n + '\n', n)
+
 # a file git cannot parse must not read as "no helper"
 with open(nau, 'w') as f:
     f.write('[credential\n\thelper = x\n')
-os.unlink(mur)
 shutil.rmtree(os.path.join(gtmp, 'agent-murena'))
 gout, _ = run_git(gtmp)
 sec = step_2e(gout)

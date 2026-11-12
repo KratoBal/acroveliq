@@ -282,6 +282,12 @@ fi
        run as_agent "$user" git config --file "$gc" --add credential.helper "$GIT_HELPER"; then
       echo "set: $user credential.helper (empty, then $GIT_HELPER)"
     else echo "NOT SET: could not write credential.helper to $gc" >&2; GIT_CRED_RC=1; fi
+  elif (( ${#helpers[@]} == 1 )) && [[ "${helpers[0]}" == "" ]]; then
+    # only the empty line: an earlier start wrote it and failed on the next one (barracuda, #357). Not an own
+    # setting, it is ours half done, and as it stands git has NO helper: "could not read Username" again.
+    if run as_agent "$user" git config --file "$gc" --add credential.helper "$GIT_HELPER"; then
+      echo "set: $user credential.helper ($GIT_HELPER after the empty line already there)"
+    else echo "NOT SET: could not write credential.helper to $gc" >&2; GIT_CRED_RC=1; fi
   else
     echo "kept: $user has ${#helpers[@]} credential.helper line(s) of its own; not rewritten (docs/fleet-github.md step 9 if they should be ours)"
   fi
