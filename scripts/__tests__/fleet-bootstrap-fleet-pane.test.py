@@ -16,6 +16,13 @@ WHAT TURNS THIS RED:
      readable one is touched; another user's unreadable one or a symlink passes as ok, is followed, or
      stops the script; the verify step does not say MISSING for them; or the step reads another
      variable than scripts/futtat.py (FUTTAT_NEHEZ_ZAR). Kept in this file because CI runs it by name.
+  8. step 2e (card 30ecba56): an agent without a git config does not get the empty helper line, the broker's
+     helper and credential.useHttpPath planned; a config the step itself wrote is not reported ok (it would be
+     rewritten on every start); an agent's own helper or useHttpPath is rewritten or its value printed; a
+     symlinked, unreadable or unparsable .gitconfig or a missing home passes as ok, is followed, or stops the
+     script, or the verify step does not say MISSING for it; outside root (the tree's copy at the dashboard's
+     pre-start) the step does anything but skip quietly; or the agent list differs from step 4a's pushers; or a list
+     holding only the empty line (our first write without the second) is kept instead of completed.
 
 Everything runs with --dry-run and a fake FLEET_ROOT: no root, no sudo rule, no install. The mount
 is a temp directory (FLEET_PANE_CONF_DRYRUN), and step 4 is entered through a stand-in blanket file
@@ -175,7 +182,7 @@ def run_lock(lock):
 
 
 def step_2d(text):
-    m = re.search(r'== 2d\..*?(?=\n== 3\.)', text, re.S)
+    m = re.search(r'== 2d\..*?(?=\n== 2e\.)', text, re.S)
     return m.group(0) if m else ''
 
 
@@ -223,6 +230,130 @@ futtat = open(os.path.join(SCRIPTS, 'futtat.py'), encoding='utf-8').read()
 check('2d the same variable as futtat.py',
       'FUTTAT_NEHEZ_ZAR' in futtat and '${FUTTAT_NEHEZ_ZAR:-/tmp/flotta-nehez.lock}' in TEXT)
 shutil.rmtree(ltmp)
+
+print('8. step 2e: the pushing agents\' git credential helper (card 30ecba56)')
+HELPER_LINE = re.compile(r'^GIT_AGENTS="([a-z ]+)"$', re.M)
+
+
+def run_git(homes, hook=True):
+    """A dry run with the agents' homes in a temp dir (FLEET_GIT_HOME_DRYRUN), stderr in order with stdout. One fake
+    root for the whole section: the helper path is under it, and the second run must see the first run's path."""
+    env = dict(os.environ, FLEET_ROOT=groot)
+    for k in ('FLEET_PANE_CONF_DRYRUN', 'FLEET_BLANKET_DRYRUN', 'FLEET_D4_MOUNT_DRYRUN', 'FLEET_GIT_HOME_DRYRUN'):
+        env.pop(k, None)
+    env['FLEET_PANE_CONF_DRYRUN'] = os.path.join(groot, 'no-such-mount')
+    env['FLEET_D4_MOUNT_DRYRUN'] = os.path.join(groot, 'no-such-mount')
+    if hook:
+        env['FLEET_GIT_HOME_DRYRUN'] = homes
+    r = subprocess.run(['bash', BOOT, '--dry-run'], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       text=True, timeout=120)
+    return r.stdout, os.path.join(groot, 'scripts', 'git-credential-fleet-github')
+
+
+def step_2e(text):
+    m = re.search(r'== 2e\..*?(?=\n== 3\.)', text, re.S)
+    return m.group(0) if m else ''
+
+
+def agent_lines(sec, user):
+    return '\n'.join(l for l in sec.splitlines() if f'{user} ' in l or f'/{user}/' in l or l.endswith(f'/{user}'))
+
+
+def git_set(path, *args):
+    subprocess.run(['git', 'config', '--file', path, *args], check=True)
+
+
+groot = fake_root()
+gtmp = tempfile.mkdtemp(prefix='git-homes-')
+for u in ('agent-nautilus', 'agent-murena'):
+    os.makedirs(os.path.join(gtmp, u))
+nau = os.path.join(gtmp, 'agent-nautilus', '.gitconfig')
+mur = os.path.join(gtmp, 'agent-murena', '.gitconfig')
+
+gout, helper = run_git(gtmp)
+sec = step_2e(gout)
+n = agent_lines(sec, 'agent-nautilus')
+check('2e no config: the step is there', bool(sec), gout[-400:])
+check('2e no config: the empty helper line is planned', f"DRY: as_agent agent-nautilus git config --file {nau} --add credential.helper " + '\n' in n + '\n', n)
+check('2e no config: then the broker helper', f'DRY: as_agent agent-nautilus git config --file {nau} --add credential.helper {helper}' in n, n)
+check('2e no config: the empty line comes first',
+      n.find('--add credential.helper \n') != -1 and n.find('--add credential.helper \n') < n.find(f'--add credential.helper {helper}'), n)
+check('2e no config: useHttpPath true is planned', f'DRY: as_agent agent-nautilus git config --file {nau} credential.useHttpPath true' in n, n)
+check('2e no config: both pushing agents', 'DRY: as_agent agent-murena git config' in sec, sec)
+check('2e no config: nothing written in a dry run', not os.path.exists(nau) and not os.path.exists(mur))
+check('2e no config: the verify step does not complain', 'MISSING: an agent\'s git credential helper' not in gout, gout[-600:])
+
+# what the step writes, written with git itself the same way, must read back as ok (or every start rewrites it)
+git_set(nau, '--add', 'credential.helper', '')
+git_set(nau, '--add', 'credential.helper', helper)
+git_set(nau, 'credential.useHttpPath', 'true')
+# murena: an own helper and an own useHttpPath; their values must not be printed
+git_set(mur, '--add', 'credential.helper', 'store --file /x/titok-helyett')
+git_set(mur, 'credential.useHttpPath', 'false')
+gout, helper2 = run_git(gtmp)
+check('2e the same helper path in both runs', helper2 == helper)
+sec = step_2e(gout)
+n = agent_lines(sec, 'agent-nautilus')
+m = agent_lines(sec, 'agent-murena')
+check('2e our config: ok, nothing planned', 'ok: agent-nautilus credential.helper' in n and 'ok: agent-nautilus credential.useHttpPath' in n
+      and 'DRY:' not in n, n)
+check('2e own helper: kept and counted', 'kept: agent-murena has 1 credential.helper line(s) of its own' in m, m)
+check('2e own useHttpPath: kept', 'kept: agent-murena credential.useHttpPath is false' in m, m)
+check('2e own settings: nothing planned for that agent', 'DRY:' not in m, m)
+check('2e own helper: its value is not printed', 'titok-helyett' not in gout, sec)
+check('2e own settings: not a failure', 'MISSING: an agent\'s git credential helper' not in gout, gout[-600:])
+
+# murena's file a symlink, nautilus's unreadable (as a non-root test; root reads everything, so it is skipped there)
+os.unlink(mur)
+target = os.path.join(gtmp, 'target')
+open(target, 'w').close()
+os.symlink(target, mur)
+os.chmod(nau, 0o000)
+gout, _ = run_git(gtmp)
+sec = step_2e(gout)
+check('2e symlink: named, not followed', 'NOT SET: ' + mur + ' is a symlink' in sec and 'DRY: as_agent agent-murena' not in sec, sec)
+check('2e symlink: the target is untouched', os.path.getsize(target) == 0)
+if os.geteuid() != 0:
+    check('2e unreadable: named, nothing written over it', f'NOT SET: {nau} cannot be read' in sec and 'DRY: as_agent agent-nautilus' not in sec, sec)
+check('2e problems: the script goes on past the step', '== 3.' in gout, gout[-400:])
+check('2e problems: the verify step says MISSING', 'MISSING: an agent\'s git credential helper, see step 2e above' in gout, gout[-600:])
+os.chmod(nau, 0o644)
+
+# only the empty line, our first write without the second: completed, not kept as an own setting (barracuda, #357)
+with open(nau, 'w') as f:
+    f.write('')
+git_set(nau, '--add', 'credential.helper', '')
+os.unlink(mur)
+os.makedirs(os.path.join(gtmp, 'agent-murena'), exist_ok=True)
+gout, _ = run_git(gtmp)
+n = agent_lines(step_2e(gout), 'agent-nautilus')
+check('2e half written: the broker helper is planned after the empty line',
+      f'DRY: as_agent agent-nautilus git config --file {nau} --add credential.helper {helper}' in n and 'kept:' not in n, n)
+check('2e half written: no second empty line', '--add credential.helper \n' not in n + '\n', n)
+
+# a file git cannot parse must not read as "no helper"
+with open(nau, 'w') as f:
+    f.write('[credential\n\thelper = x\n')
+shutil.rmtree(os.path.join(gtmp, 'agent-murena'))
+gout, _ = run_git(gtmp)
+sec = step_2e(gout)
+check('2e unparsable: named, nothing written over it', 'NOT SET: ' + nau + ' does not parse' in sec and 'DRY: as_agent agent-nautilus' not in sec, sec)
+check('2e missing home: named', 'NOT SET: agent-murena has no home directory' in sec, sec)
+
+# the tree's copy, not root and without the test hook: one skip line, no MISSING
+gout, _ = run_git(gtmp, hook=False)
+sec = step_2e(gout)
+if os.geteuid() != 0:
+    check('2e not root: skips quietly', 'skip: not root' in sec and 'NOT SET' not in sec and 'DRY:' not in sec, sec)
+    check('2e not root: no MISSING in verify', 'MISSING: an agent\'s git credential helper' not in gout, gout[-600:])
+
+# the agents are the ones step 4a lets ask the broker for a token on any repo
+listed = HELPER_LINE.findall(TEXT)
+pushers = sorted(re.findall(r'echo "agent-([a-z]+) ALL=\(root\) NOPASSWD: \$D4_SBIN/fleet-github token \*"', TEXT))
+check('2e one agent list', len(listed) == 1, str(listed))
+check('2e the list is step 4a\'s pushers', bool(listed) and sorted(listed[0].split()) == pushers, f'{listed} vs {pushers}')
+shutil.rmtree(gtmp)
+shutil.rmtree(groot)
 
 shutil.rmtree(root)
 shutil.rmtree(conf)

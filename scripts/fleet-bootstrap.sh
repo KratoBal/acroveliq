@@ -233,6 +233,75 @@ else
   HEAVY_LOCK_RC=1
 fi
 
+step "2e. the pushing agents' git credential helper (docs/fleet-github.md step 9)"
+# The agents' homes live in the container, so a recreate loses their ~/.gitconfig and the next push stops with
+# "could not read Username" (card 30ecba56, measured 2026-11-11 12:47). Written back HERE, per agent, as that agent:
+# the empty line first (it empties the helper list, so no older helper answers with an older token), then the
+# broker's helper, and credential.useHttpPath (without it git does not name the repository).
+# Only where the agent has NO helper and NO useHttpPath of its own: an existing setting is kept and named, never
+# rewritten; its values are not printed (a helper line can carry a token). Report, do not stop, like step 2d.
+# The agents are the ones step 4a gives `fleet-github token *`; keep the two lists together.
+GIT_AGENTS="nautilus murena"
+GIT_HELPER="$ROOT/scripts/git-credential-fleet-github"
+GIT_CRED_RC=0
+# as root: the agent's own uid, its own HOME, and a start directory it can open (root's cwd may not be)
+as_agent() { local u="$1"; shift; if (( AS_ROOT )); then runuser -u "$u" -- env -C "$home" HOME="$home" "$@"; else "$@"; fi }
+# Only as root (the image's /usr/local/sbin/fleet-bootstrap at container start): the tree's copy runs as the router
+# user at the dashboard's pre-start, and that user can neither read nor write another agent's home. There the step
+# says so and stays quiet in step 7: a MISSING it cannot fix would turn every dashboard start into a failure.
+GIT_STEP=1
+if (( ! AS_ROOT )) && ! { (( DRY )) && [[ -n "${FLEET_GIT_HOME_DRYRUN:-}" ]]; }; then
+  echo "skip: not root; the image's root-owned copy writes the agents' git config at container start"; GIT_STEP=0
+fi
+(( GIT_STEP )) && for agent in $GIT_AGENTS; do
+  user="agent-$agent"
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  # the tests point the homes into a temp directory; honoured in dry runs only, like the other *_DRYRUN hooks
+  if (( DRY )) && [[ -n "${FLEET_GIT_HOME_DRYRUN:-}" ]]; then home="$FLEET_GIT_HOME_DRYRUN/$user"; fi
+  gc="$home/.gitconfig"
+  if [[ -z "$home" || ! -d "$home" ]]; then
+    echo "NOT SET: $user has no home directory${home:+ ($home)}" >&2; GIT_CRED_RC=1; continue
+  fi
+  if [[ -L "$gc" ]]; then
+    echo "NOT SET: $gc is a symlink (-> $(readlink "$gc")); not followed, its owner removes it" >&2; GIT_CRED_RC=1; continue
+  fi
+  # `git config` answers 1 for an unreadable file exactly as for a missing key: read it first, or a file we cannot
+  # see would look empty and get our lines on top of its own
+  if [[ -e "$gc" ]] && ! as_agent "$user" test -r "$gc"; then
+    echo "NOT SET: $gc cannot be read as $user" >&2; GIT_CRED_RC=1; continue
+  fi
+  # exit 1 is "no such key" and nothing else is: a broken file (128) must not look empty either
+  out="$(as_agent "$user" git config --file "$gc" --get-all credential.helper)"; hrc=$?
+  helpers=()
+  if (( hrc == 0 )); then mapfile -t helpers <<< "$out"
+  elif (( hrc != 1 )); then echo "NOT SET: $gc does not parse (git config exit $hrc)" >&2; GIT_CRED_RC=1; continue; fi
+  if (( ${#helpers[@]} == 2 )) && [[ "${helpers[0]}" == "" && "${helpers[1]}" == "$GIT_HELPER" ]]; then
+    echo "ok: $user credential.helper"
+  elif (( ${#helpers[@]} == 0 )); then
+    if run as_agent "$user" git config --file "$gc" --add credential.helper '' &&
+       run as_agent "$user" git config --file "$gc" --add credential.helper "$GIT_HELPER"; then
+      echo "set: $user credential.helper (empty, then $GIT_HELPER)"
+    else echo "NOT SET: could not write credential.helper to $gc" >&2; GIT_CRED_RC=1; fi
+  elif (( ${#helpers[@]} == 1 )) && [[ "${helpers[0]}" == "" ]]; then
+    # only the empty line: an earlier start wrote it and failed on the next one (barracuda, #357). Not an own
+    # setting, it is ours half done, and as it stands git has NO helper: "could not read Username" again.
+    if run as_agent "$user" git config --file "$gc" --add credential.helper "$GIT_HELPER"; then
+      echo "set: $user credential.helper ($GIT_HELPER after the empty line already there)"
+    else echo "NOT SET: could not write credential.helper to $gc" >&2; GIT_CRED_RC=1; fi
+  else
+    echo "kept: $user has ${#helpers[@]} credential.helper line(s) of its own; not rewritten (docs/fleet-github.md step 9 if they should be ours)"
+  fi
+  path="$(as_agent "$user" git config --file "$gc" --get credential.useHttpPath)"; prc=$?
+  if (( prc == 0 )) && [[ "$path" == "true" ]]; then
+    echo "ok: $user credential.useHttpPath"
+  elif (( prc == 1 )); then
+    if run as_agent "$user" git config --file "$gc" credential.useHttpPath true; then echo "set: $user credential.useHttpPath true"
+    else echo "NOT SET: could not write credential.useHttpPath to $gc" >&2; GIT_CRED_RC=1; fi
+  else
+    echo "kept: $user credential.useHttpPath is $path; not rewritten"
+  fi
+done
+
 step "3. the router is in the fleet group"
 # Needed so the dashboard can write into the agent directories (owner agent-*,
 # group fleet, setgid). A process gets its groups AT START, so a plain usermod
@@ -705,6 +774,8 @@ step "7. verify"
 rc=0
 # the heavy-run lock (step 2d): there, a regular file, and readable by the others
 if (( HEAVY_LOCK_RC )); then echo "MISSING: the heavy-run lock $HEAVY_LOCK, see step 2d above" >&2; rc=1; fi
+# the pushing agents' git credential helper (step 2e)
+if (( GIT_CRED_RC )); then echo "MISSING: an agent's git credential helper, see step 2e above" >&2; rc=1; fi
 getent group fleet >/dev/null || { echo "MISSING: fleet group" >&2; rc=1; }
 for pair in $AGENTS; do
   uid="${pair%%:*}"; agent="${pair##*:}"; user="agent-$agent"
