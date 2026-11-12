@@ -205,6 +205,34 @@ else
   echo "note: $HASHES does not exist yet (futtat.sh lenyomat-hozzaad creates it; rerun this step after)"
 fi
 
+step "2d. the futtat heavy-run lock file (/tmp/flotta-nehez.lock, readable by every agent user)"
+# Created HERE, not by the first heavy run (card 744ceb69, barracuda #339): the first run's user
+# owns what it creates, with its own umask. One agent with a strict umask leaves a 0600 file the
+# others cannot open, and they then run WITHOUT the lock; the shell form (`9<file`) cannot open a
+# missing file at all. flock works on a read-only descriptor, so 0644 is all the others need.
+# The same variable as scripts/futtat.py (FUTTAT_NEHEZ_ZAR). Report, do not stop: this runs at the
+# dashboard's pre-start, and a file somebody put in /tmp must not keep the dashboard down; the
+# verify step below says MISSING instead.
+HEAVY_LOCK="${FUTTAT_NEHEZ_ZAR:-/tmp/flotta-nehez.lock}"
+HEAVY_LOCK_RC=0
+as_router() { if (( AS_ROOT )); then run runuser -u "$ROUTER_USER" -- "$@"; else run "$@"; fi }
+if [[ -L "$HEAVY_LOCK" ]]; then
+  echo "NOT SET: $HEAVY_LOCK is a symlink (-> $(readlink "$HEAVY_LOCK")); not followed, its owner removes it" >&2; HEAVY_LOCK_RC=1
+elif [[ ! -e "$HEAVY_LOCK" ]]; then
+  if as_router install -m 0644 /dev/null "$HEAVY_LOCK"; then echo "set: $HEAVY_LOCK ($ROUTER_USER 0644)"
+  else echo "NOT SET: could not create $HEAVY_LOCK" >&2; HEAVY_LOCK_RC=1; fi
+elif [[ ! -f "$HEAVY_LOCK" ]]; then
+  echo "NOT SET: $HEAVY_LOCK is not a regular file" >&2; HEAVY_LOCK_RC=1
+elif (( 0$(stat -c '%a' "$HEAVY_LOCK") & 4 )); then
+  echo "ok: $HEAVY_LOCK ($(stat -c '%U %a' "$HEAVY_LOCK"))"
+elif [[ "$(stat -c '%U' "$HEAVY_LOCK")" == "$ROUTER_USER" ]]; then
+  if as_router chmod 0644 "$HEAVY_LOCK"; then echo "set: $HEAVY_LOCK (0644)"
+  else echo "NOT SET: could not chmod $HEAVY_LOCK" >&2; HEAVY_LOCK_RC=1; fi
+else
+  echo "NOT SET: $HEAVY_LOCK is $(stat -c '%U %a' "$HEAVY_LOCK"): the others cannot open it; its owner makes it 0644 (or removes it)" >&2
+  HEAVY_LOCK_RC=1
+fi
+
 step "3. the router is in the fleet group"
 # Needed so the dashboard can write into the agent directories (owner agent-*,
 # group fleet, setgid). A process gets its groups AT START, so a plain usermod
@@ -675,6 +703,8 @@ fi
 
 step "7. verify"
 rc=0
+# the heavy-run lock (step 2d): there, a regular file, and readable by the others
+if (( HEAVY_LOCK_RC )); then echo "MISSING: the heavy-run lock $HEAVY_LOCK, see step 2d above" >&2; rc=1; fi
 getent group fleet >/dev/null || { echo "MISSING: fleet group" >&2; rc=1; }
 for pair in $AGENTS; do
   uid="${pair%%:*}"; agent="${pair##*:}"; user="agent-$agent"
