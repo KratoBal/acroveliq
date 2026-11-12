@@ -12,6 +12,10 @@ WHAT TURNS THIS RED:
   5. with the owner's no-tmux-line marker, step 4 still builds a tmux line; without it, it builds
      none (the old line must stay until the owner retires it);
   6. the generated rule does not parse (checked with visudo -c -f where visudo exists).
+  7. step 2d (card 744ceb69): a missing heavy-run lock file is not planned 0644 as the router user; a
+     readable one is touched; another user's unreadable one or a symlink passes as ok, is followed, or
+     stops the script; the verify step does not say MISSING for them; or the step reads another
+     variable than scripts/futtat.py (FUTTAT_NEHEZ_ZAR). Kept in this file because CI runs it by name.
 
 Everything runs with --dry-run and a fake FLEET_ROOT: no root, no sudo rule, no install. The mount
 is a temp directory (FLEET_PANE_CONF_DRYRUN), and step 4 is entered through a stand-in blanket file
@@ -151,6 +155,74 @@ if visudo:
     os.unlink(f.name)
 else:
     print('skip visudo is not installed here')
+
+print('7. step 2d: the heavy-run lock file (card 744ceb69)')
+
+
+def run_lock(lock):
+    """A dry run with the lock path in a temp dir (FUTTAT_NEHEZ_ZAR): the real /tmp/flotta-nehez.lock is never touched.
+    stderr in the stdout stream, in order: the NOT SET lines go to stderr and must land inside their step."""
+    lroot = fake_root()
+    env = dict(os.environ, FLEET_ROOT=lroot, FUTTAT_NEHEZ_ZAR=lock)
+    for k in ('FLEET_PANE_CONF_DRYRUN', 'FLEET_BLANKET_DRYRUN', 'FLEET_D4_MOUNT_DRYRUN'):
+        env.pop(k, None)
+    env['FLEET_PANE_CONF_DRYRUN'] = os.path.join(lroot, 'no-such-mount')
+    env['FLEET_D4_MOUNT_DRYRUN'] = os.path.join(lroot, 'no-such-mount')
+    r = subprocess.run(['bash', BOOT, '--dry-run'], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       text=True, timeout=120)
+    shutil.rmtree(lroot)
+    return r.stdout
+
+
+def step_2d(text):
+    m = re.search(r'== 2d\..*?(?=\n== 3\.)', text, re.S)
+    return m.group(0) if m else ''
+
+
+ltmp = tempfile.mkdtemp(prefix='heavy-lock-')
+
+missing = os.path.join(ltmp, 'missing.lock')
+lout = run_lock(missing)
+sec = step_2d(lout)
+check('2d missing lock: the step is there', bool(sec), lout[-400:])
+check('2d missing lock: planned with mode 0644', f'DRY: install -m 0644 /dev/null {missing}' in sec, sec)
+check('2d missing lock: nothing created in a dry run', not os.path.exists(missing))
+check('2d missing lock: the verify step does not complain', f'MISSING: the heavy-run lock {missing}' not in lout, lout[-600:])
+
+readable = os.path.join(ltmp, 'readable.lock')
+open(readable, 'w').close()
+os.chmod(readable, 0o644)
+sec = step_2d(run_lock(readable))
+check('2d readable lock: reported ok', f'ok: {readable}' in sec, sec)
+check('2d readable lock: no change planned', 'DRY:' not in sec, sec)
+
+closed = os.path.join(ltmp, 'closed.lock')
+open(closed, 'w').close()
+os.chmod(closed, 0o600)
+lout = run_lock(closed)
+sec = step_2d(lout)
+if subprocess.run(['id', '-un'], capture_output=True, text=True).stdout.strip() == 'marveen':
+    check('2d closed lock owned by the router: chmod 0644 planned', f'DRY: chmod 0644 {closed}' in sec, sec)
+else:
+    check('2d closed lock of another user: NOT SET with the reason', 'NOT SET' in sec and 'cannot open it' in sec, sec)
+    check('2d closed lock of another user: the verify step says MISSING', f'MISSING: the heavy-run lock {closed}' in lout, lout[-600:])
+
+target = os.path.join(ltmp, 'target')
+open(target, 'w').close()
+os.chmod(target, 0o600)
+link = os.path.join(ltmp, 'link.lock')
+os.symlink(target, link)
+lout = run_lock(link)
+sec = step_2d(lout)
+check('2d symlink: named, not followed', 'is a symlink' in sec and 'DRY: chmod' not in sec and 'DRY: install' not in sec, sec)
+check('2d symlink: the script goes on past the step', '== 3.' in lout, lout[-400:])
+check('2d symlink: the target keeps its mode', (os.stat(target).st_mode & 0o777) == 0o600)
+check('2d symlink: the verify step says MISSING', f'MISSING: the heavy-run lock {link}' in lout, lout[-600:])
+
+futtat = open(os.path.join(SCRIPTS, 'futtat.py'), encoding='utf-8').read()
+check('2d the same variable as futtat.py',
+      'FUTTAT_NEHEZ_ZAR' in futtat and '${FUTTAT_NEHEZ_ZAR:-/tmp/flotta-nehez.lock}' in TEXT)
+shutil.rmtree(ltmp)
 
 shutil.rmtree(root)
 shutil.rmtree(conf)
