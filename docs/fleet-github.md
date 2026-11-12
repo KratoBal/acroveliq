@@ -176,6 +176,15 @@ A parancsok a gazdagépről, a konténeren kívülről futnak (`cd` és `docker 
    # az ellenőrzés: pontosan két sor, az üres és a mienk, más forrásból semmi
    docker compose exec -u agent-nautilus marveen git -C /home/marveen/marveen/agents/nautilus/marveen-repo config --show-origin --get-all credential.helper
    ```
+
+   **A konténer újrateremtése után a globális rész magától visszaáll** (kártya 30ecba56): az ügynökök home-ja a
+   konténerben él, a `~/.gitconfig` elveszik, és a `fleet-bootstrap.sh` 2e lépése (a kép root-tulajdonú példánya, a
+   konténer indulásakor) ügynökönként, az ügynök nevében visszaírja az üres sort, a mi helperünket és a
+   `credential.useHttpPath true`-t. Csak oda ír, ahol az ügynöknek SEMMILYEN saját `credential.helper` és
+   `useHttpPath` sora nincs; a meglévőt megnevezi és békén hagyja (ilyenkor a fenti kézi sorok kellenek). A lépés
+   ügynöklistája a 4a lépés `fleet-github token *` szabályával egyezik (nautilus, murena), ezt teszt őrzi. A repó-szintű
+   régi helper törlése (a fenti `--local --unset-all`) továbbra is kézi: az a klónban él, a bind mounton, az
+   újrateremtés nem hozza vissza.
 10. **A mért új út** egy próba-PR-on, mindegyik külön (a lap 5. lépése): push; PR nyitása; beolvasztás jóváhagyással;
     elutasított beolvasztás jóváhagyás nélkül; egy App-jóváhagyás kísérlete (nem számíthat); a workflow-PR útja; a
     visszaállító kapcsoló. **A bizonyíték minden lépésnél a bróker naplósora** (`/var/log/fleet-github.log`: `result ok`,
