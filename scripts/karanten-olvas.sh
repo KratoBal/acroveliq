@@ -10,7 +10,7 @@
 #     visible text, with its address on the first line)
 #     A page that answers 403, a Cloudflare challenge, or no answer at all (a connection error from an allowed public address)
 #     goes to Firecrawl's scrape API instead (only for a host the egress gate allows; the key store/.firecrawl-key is read by the
-#     calling user; the envelope's source says karanten-url-firecrawl-403, -kihivas or -kapcsolat).
+#     calling user; the envelope's source says karanten-url-firecrawl-403, -kihivas, -kapcsolat or -tanusitvany).
 #   exit 0: the summary, wrapped as untrusted data; 2: nothing came through (why, no content);
 #   3: the summary held a secret shape, nothing came through
 #

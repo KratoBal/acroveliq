@@ -118,7 +118,7 @@ export interface DownloadDeps {
 /** `challenge` on a 200 page: it is a Cloudflare challenge, not the page. A failure carries the status and the address that answered, and `challenge`. */
 export type DownloadResult =
   | { ok: true; body: Buffer; finalUrl: string; contentType: string; challenge: boolean }
-  | { ok: false; why: string; status?: number; url?: string; challenge?: boolean; connect?: boolean }
+  | { ok: false; why: string; status?: number; url?: string; challenge?: boolean; connect?: 'kapcsolat' | 'tanusitvany' }
 
 async function resolveAll(host: string): Promise<string[]> {
   const r = await dnsLookup(host, { all: true, verbatim: true })
@@ -187,6 +187,15 @@ export function pinnedPost(url: URL, pinned: string, headers: Record<string, str
 
 export const DEFAULT_DEPS: DownloadDeps = { allowed: (u) => gateAllows(u), resolve: resolveAll, isBlocked: blockedAddress, get: pinnedGet }
 
+/** A certificate or TLS error's code (node's https: CERT_HAS_EXPIRED, ERR_TLS_CERT_ALTNAME_INVALID, DEPTH_ZERO_SELF_SIGNED_CERT ...). */
+const TLS_CODE = /^(CERT_|ERR_TLS_|ERR_SSL_|DEPTH_ZERO_SELF_SIGNED_CERT$|SELF_SIGNED_CERT_IN_CHAIN$|UNABLE_TO_(GET|VERIFY)_)/
+
+/** The error's code: node's own (`code`), or the cause's (undici); only an upper-case code shape, never free text. */
+export function errorCode(e: unknown): string | null {
+  const raw = (e as { code?: unknown })?.code ?? (e as { cause?: { code?: unknown } })?.cause?.code
+  return typeof raw === 'string' && /^[A-Z][A-Z0-9_]{2,63}$/.test(raw) ? raw : null
+}
+
 /** Downloads a page for the reader, or says why not (never with content). */
 export async function letolt(start: string, deps: DownloadDeps = DEFAULT_DEPS, limits = { maxBytes: MAX_DOWNLOAD_BYTES, timeoutMs: DOWNLOAD_TIMEOUT_MS }): Promise<DownloadResult> {
   const deadline = Date.now() + limits.timeoutMs
@@ -211,7 +220,16 @@ export async function letolt(start: string, deps: DownloadDeps = DEFAULT_DEPS, l
       // NO ANSWER AT ALL from an allowed, public address (a refused connection, a reset, a timeout; acrobot 50420: the
       // triton-reagents.de pages): `connect` marks it, with the address, for the Firecrawl fallback. The gate, the name
       // and the internal-address checks above have all passed, so this is never a host the fleet may not reach.
-      return { ok: false, why: m === 'idotullepes' ? 'idotullepes' : 'a letoltes hibaval allt le', url: url.href, connect: true }
+      // the error's own code goes into the reason (barracuda, #360: "fetch failed" covered a refused connection and a bad
+      // certificate alike); a certificate or TLS failure is named apart, so the label and the log say which it was
+      const code = errorCode(e)
+      const tls = code !== null && TLS_CODE.test(code)
+      return {
+        ok: false,
+        why: m === 'idotullepes' ? 'idotullepes' : `${tls ? 'a tanusitvany vagy a TLS hibas' : 'a letoltes hibaval allt le'}${code ? ` (${code})` : ''}`,
+        url: url.href,
+        connect: tls ? 'tanusitvany' : 'kapcsolat',
+      }
     }
     if (res.status >= 300 && res.status < 400 && res.location) {
       try { url = new URL(res.location, url) } catch { return { ok: false, why: 'hibas atiranyitas' } }
