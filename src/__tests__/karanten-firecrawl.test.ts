@@ -121,6 +121,36 @@ describe('when the fallback starts', () => {
     expect(posts.length).toBe(0)
   })
 
+  /*
+    NO ANSWER AT ALL (acrobot 50420: triton-reagents.de, on the egress list, ends in "fetch failed", so the fallback never
+    started and nine items of a list stayed empty). WHAT TURNS THIS RED: a refused connection or a timeout from an allowed,
+    public address not sent to Firecrawl, or sent under another label; a host the gate refuses, a name pointing to an
+    internal address, or a page that is too large sent to Firecrawl (those checks stand BEFORE the connection).
+  */
+  it('FC-ON-CONNECT: a connection error or a timeout from an allowed public address asks Firecrawl once, for that address, labelled kapcsolat', async () => {
+    const failing = (msg: string): DownloadDeps => ({ ...deps(), get: async () => { throw new Error(msg) } })
+    const out: string[] = []
+    for (const msg of ['fetch failed', 'idotullepes']) {
+      posts = []
+      const r = await run('/lezart', failing(msg))
+      out.push(`${msg}:${r.code}:${/^<untrusted source="([^:"]+)/.exec(r.out)?.[1]}:${posts.length}`)
+      expect(JSON.parse(posts[0]!.body).url).toBe(url('/lezart'))
+    }
+    expect(out).toEqual(['fetch failed:0:karanten-url-firecrawl-kapcsolat:1', 'idotullepes:0:karanten-url-firecrawl-kapcsolat:1'])
+  })
+
+  it('FC-CONNECT-NOT: a refused host, an internal address and a too large page never reach Firecrawl, even though no page came', async () => {
+    const thrower = (msg: string) => async () => { throw new Error(msg) }
+    const refused = await karantenOlvasUrl({ url: url('/lezart', 'evil.test'), claude: fakeClaude(), storeDir: store, timeoutMs: 5000, deps: { ...deps(), get: thrower('fetch failed') } })
+    const internal = await run('/lezart', { ...deps({ table: { 'pelda.test': ['10.0.0.5'], 'api.firecrawl.dev': ['203.0.113.7'] } }), get: thrower('fetch failed') })
+    const large = await run('/lezart', { ...deps(), get: thrower('tul nagy') })
+    expect([refused.code, internal.code, large.code]).toEqual([2, 2, 2])
+    expect(refused.out).toContain('az egress-kapu nem engedi')
+    expect(internal.out).toContain('belso vagy nem publikus')
+    expect(large.out).toContain('nagyobb, mint')
+    expect(posts.length).toBe(0)
+  })
+
   it('FC-ON-403: a 403 asks Firecrawl once, for the address that answered it, with exactly the fixed request; the markdown reaches the reader as a FILE, in an envelope that says Firecrawl and 403', async () => {
     const r = await run('/tiltott', deps())
     expect(posts.length).toBe(1)

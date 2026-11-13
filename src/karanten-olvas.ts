@@ -21,8 +21,9 @@
 // and the reader gets it as a file; the reader itself never gets WebFetch. A page the reader's Read tool
 // could not see through (large, or one line of hundreds of KB, as modern pages are) goes as its visible
 // TEXT (src/karanten-szoveg.ts), not as the HTML: pageInput.
-// A page that answers 403 or a Cloudflare challenge goes to Firecrawl's scrape API instead (src/karanten-firecrawl.ts), only for a
-// host the egress gate allows; the reader gets the markdown as a file.
+// A page that answers 403, a Cloudflare challenge, or no answer at all (a connection error from an allowed public address)
+// goes to Firecrawl's scrape API instead (src/karanten-firecrawl.ts), only for a host the egress gate allows; the reader gets
+// the markdown as a file.
 // The reader logs in like the main agent (scripts/channels.sh: CLAUDE_CODE_OAUTH_TOKEN or
 // ANTHROPIC_API_KEY from .env, else store/.claude-oauth-token; acrobot 31077: without it the reader
 // said "Not logged in"). The token goes ONLY into the reader's own environment, never to an output.
@@ -175,8 +176,11 @@ export function pageInput(d: { body: Buffer; contentType: string; finalUrl: stri
 export async function karantenOlvasUrl(o: KarantenUrlOptions, env: NodeJS.ProcessEnv = process.env): Promise<KarantenResult> {
   const deps = o.deps ?? DEFAULT_DEPS
   const d = await letolt(o.url, deps)
-  // a 403 or a Cloudflare challenge (on any status, a 200 included) is the ONLY thing that sends the page to Firecrawl
-  const trigger: Trigger | null = d.ok ? (d.challenge ? 'kihivas' : null) : d.status === 403 ? '403' : d.challenge ? 'kihivas' : null
+  // a 403, a Cloudflare challenge (on any status, a 200 included), or no answer at all from an allowed public address
+  // (`connect`, acrobot 50420) are the ONLY things that send the page to Firecrawl
+  const trigger: Trigger | null = d.ok
+    ? (d.challenge ? 'kihivas' : null)
+    : d.status === 403 ? '403' : d.challenge ? 'kihivas' : d.connect ? 'kapcsolat' : null
   if (trigger) {
     const r = await viaFirecrawl(o, d.ok ? d.finalUrl : (d.url ?? o.url), trigger, deps, env)
     // a page that DID download (a 200 taken for a challenge) is not lost when Firecrawl cannot help: it goes the old way, with the reason said
@@ -193,10 +197,10 @@ export async function karantenOlvasUrl(o: KarantenUrlOptions, env: NodeJS.Proces
 /**
  * The Firecrawl fallback (src/karanten-firecrawl.ts). `target` is the address that answered with the 403 or the challenge: every hop of
  * the download passed the egress gate, and the gate is asked again right before the call. The envelope's source says that the page came
- * through Firecrawl and what made the command ask (karanten-url-firecrawl-403, karanten-url-firecrawl-kihivas).
+ * through Firecrawl and what made the command ask (karanten-url-firecrawl-403, -kihivas, -kapcsolat).
  */
 async function viaFirecrawl(o: KarantenUrlOptions, target: string, trigger: Trigger, deps: DownloadDeps, env: NodeJS.ProcessEnv): Promise<KarantenResult> {
-  const why = trigger === '403' ? 'az oldal 403-at adott' : 'az oldal Cloudflare-kihivast adott'
+  const why = trigger === '403' ? 'az oldal 403-at adott' : trigger === 'kihivas' ? 'az oldal Cloudflare-kihivast adott' : 'az oldal nem valaszolt (kapcsolati hiba)'
   const stop = (reason: string): KarantenResult => ({ code: 2, out: `KARANTEN: ${why}, a Firecrawl-visszaesés nem adott tartalmat: ${reason}; a tartalom nem jott at.` })
   const key = readFirecrawlKey(o.storeDir)
   if (!key.ok) return stop(key.why)
