@@ -13,7 +13,7 @@ import type { AddressInfo } from 'node:net'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { looksLikeChallenge, pinnedGet, pinnedPost, type DownloadDeps, type Response } from '../karanten-letolt.js'
+import { errorCode, looksLikeChallenge, pinnedGet, pinnedPost, type DownloadDeps, type Response } from '../karanten-letolt.js'
 import { karantenOlvasUrl, READER_ARGS } from '../karanten-olvas.js'
 import { readFirecrawlKey, urlHasSecret } from '../karanten-firecrawl.js'
 
@@ -137,6 +137,43 @@ describe('when the fallback starts', () => {
       expect(JSON.parse(posts[0]!.body).url).toBe(url('/lezart'))
     }
     expect(out).toEqual(['fetch failed:0:karanten-url-firecrawl-kapcsolat:1', 'idotullepes:0:karanten-url-firecrawl-kapcsolat:1'])
+  })
+
+  /*
+    THE ERROR'S OWN CODE (barracuda, #360: "fetch failed" covered a refused connection and a bad certificate alike). WHAT TURNS
+    THIS RED: a certificate or TLS error labelled kapcsolat; a refused connection labelled tanusitvany; the code missing from
+    the reason; a code-looking string taken from free text.
+  */
+  it('FC-CODE: a certificate error is labelled tanusitvany, a refused connection kapcsolat, and the code is in the reason', async () => {
+    const failing = (code: string, viaCause = false): DownloadDeps => ({
+      ...deps(),
+      get: async () => {
+        const e = new Error('fetch failed') as Error & { code?: string; cause?: { code: string } }
+        if (viaCause) e.cause = { code }
+        else e.code = code
+        throw e
+      },
+    })
+    const labels: string[] = []
+    for (const [code, viaCause] of [['CERT_HAS_EXPIRED', false], ['ERR_TLS_CERT_ALTNAME_INVALID', true], ['ECONNREFUSED', false]] as const) {
+      const r = await run('/lezart', failing(code, viaCause))
+      labels.push(`${code}:${/^<untrusted source="([^:"]+)/.exec(r.out)?.[1]}`)
+    }
+    expect(labels).toEqual([
+      'CERT_HAS_EXPIRED:karanten-url-firecrawl-tanusitvany',
+      'ERR_TLS_CERT_ALTNAME_INVALID:karanten-url-firecrawl-tanusitvany',
+      'ECONNREFUSED:karanten-url-firecrawl-kapcsolat',
+    ])
+    rmSync(join(store, '.firecrawl-key'))
+    const noKey = await run('/lezart', failing('ECONNREFUSED'))
+    expect(noKey.code).toBe(2)
+    expect(noKey.out).toContain('az oldal nem valaszolt (kapcsolati hiba)')
+    expect(noKey.out).toContain('az eredeti hiba: a letoltes hibaval allt le (ECONNREFUSED)')
+    const tlsNoKey = await run('/lezart', failing('CERT_HAS_EXPIRED'))
+    expect(tlsNoKey.out).toContain('az oldal tanusitvanya vagy TLS-e hibas')
+    expect(tlsNoKey.out).toContain('(CERT_HAS_EXPIRED)')
+    expect(errorCode(Object.assign(new Error('x'), { code: 'see the page for details' }))).toBeNull()
+    expect(errorCode({ cause: { code: 'ECONNRESET' } })).toBe('ECONNRESET')
   })
 
   it('FC-CONNECT-NOT: a refused host, an internal address and a too large page never reach Firecrawl, even though no page came', async () => {

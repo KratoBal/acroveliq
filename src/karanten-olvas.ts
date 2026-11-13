@@ -180,11 +180,16 @@ export async function karantenOlvasUrl(o: KarantenUrlOptions, env: NodeJS.Proces
   // (`connect`, acrobot 50420) are the ONLY things that send the page to Firecrawl
   const trigger: Trigger | null = d.ok
     ? (d.challenge ? 'kihivas' : null)
-    : d.status === 403 ? '403' : d.challenge ? 'kihivas' : d.connect ? 'kapcsolat' : null
+    : d.status === 403 ? '403' : d.challenge ? 'kihivas' : (d.connect ?? null)
   if (trigger) {
     const r = await viaFirecrawl(o, d.ok ? d.finalUrl : (d.url ?? o.url), trigger, deps, env)
     // a page that DID download (a 200 taken for a challenge) is not lost when Firecrawl cannot help: it goes the old way, with the reason said
-    if (!d.ok || r.code !== 2) return r
+    // no page and no Firecrawl content: the original failure, with its code, goes into the reason too (barracuda, #360)
+    if (!d.ok)
+      return r.code === 2 && d.connect
+        ? { code: 2, out: r.out.replace(/; a tartalom nem jott at\.$/, `; az eredeti hiba: ${d.why}; a tartalom nem jott at.`) }
+        : r
+    if (r.code !== 2) return r
     const input = pageInput(d)
     const read = await inFreshFolder((dir) => writeFileSync(join(dir, input.name), input.body, { mode: 0o600 }), input.name, input.source, o, env)
     return read.code === 0 ? { code: 0, out: `${read.out}\n(KARANTEN: a Firecrawl-visszaesés nem adott tartalmat (${r.out.replace(/^KARANTEN: /, '').replace(/; a tartalom nem jott at\.$/, '')}); az oldal a kozvetlen letoltessel jott at)` } : read
@@ -197,10 +202,14 @@ export async function karantenOlvasUrl(o: KarantenUrlOptions, env: NodeJS.Proces
 /**
  * The Firecrawl fallback (src/karanten-firecrawl.ts). `target` is the address that answered with the 403 or the challenge: every hop of
  * the download passed the egress gate, and the gate is asked again right before the call. The envelope's source says that the page came
- * through Firecrawl and what made the command ask (karanten-url-firecrawl-403, -kihivas, -kapcsolat).
+ * through Firecrawl and what made the command ask (karanten-url-firecrawl-403, -kihivas, -kapcsolat, -tanusitvany).
  */
 async function viaFirecrawl(o: KarantenUrlOptions, target: string, trigger: Trigger, deps: DownloadDeps, env: NodeJS.ProcessEnv): Promise<KarantenResult> {
-  const why = trigger === '403' ? 'az oldal 403-at adott' : trigger === 'kihivas' ? 'az oldal Cloudflare-kihivast adott' : 'az oldal nem valaszolt (kapcsolati hiba)'
+  const why =
+    trigger === '403' ? 'az oldal 403-at adott'
+    : trigger === 'kihivas' ? 'az oldal Cloudflare-kihivast adott'
+    : trigger === 'tanusitvany' ? 'az oldal tanusitvanya vagy TLS-e hibas'
+    : 'az oldal nem valaszolt (kapcsolati hiba)'
   const stop = (reason: string): KarantenResult => ({ code: 2, out: `KARANTEN: ${why}, a Firecrawl-visszaesés nem adott tartalmat: ${reason}; a tartalom nem jott at.` })
   const key = readFirecrawlKey(o.storeDir)
   if (!key.ok) return stop(key.why)
