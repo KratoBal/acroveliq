@@ -32,7 +32,7 @@ export const FIRECRAWL_TIMEOUT_MS = 60_000
 export const FIRECRAWL_MAX_BYTES = 5 * 1024 * 1024
 
 /** What made the command ask Firecrawl: the direct download's 403, or a Cloudflare challenge (on any status, 200 included). */
-export type Trigger = '403' | 'kihivas'
+export type Trigger = '403' | 'kihivas' | 'kapcsolat'
 
 export type Key = { ok: true; key: string } | { ok: false; why: string }
 

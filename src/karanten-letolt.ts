@@ -118,7 +118,7 @@ export interface DownloadDeps {
 /** `challenge` on a 200 page: it is a Cloudflare challenge, not the page. A failure carries the status and the address that answered, and `challenge`. */
 export type DownloadResult =
   | { ok: true; body: Buffer; finalUrl: string; contentType: string; challenge: boolean }
-  | { ok: false; why: string; status?: number; url?: string; challenge?: boolean }
+  | { ok: false; why: string; status?: number; url?: string; challenge?: boolean; connect?: boolean }
 
 async function resolveAll(host: string): Promise<string[]> {
   const r = await dnsLookup(host, { all: true, verbatim: true })
@@ -207,7 +207,11 @@ export async function letolt(start: string, deps: DownloadDeps = DEFAULT_DEPS, l
     let res: Response
     try { res = await deps.get(url, addrs[0]!, left, limits.maxBytes) } catch (e) {
       const m = e instanceof Error ? e.message : String(e)
-      return { ok: false, why: m === 'tul nagy' ? `nagyobb, mint ${limits.maxBytes} bajt` : m === 'idotullepes' ? 'idotullepes' : 'a letoltes hibaval allt le' }
+      if (m === 'tul nagy') return { ok: false, why: `nagyobb, mint ${limits.maxBytes} bajt` }
+      // NO ANSWER AT ALL from an allowed, public address (a refused connection, a reset, a timeout; acrobot 50420: the
+      // triton-reagents.de pages): `connect` marks it, with the address, for the Firecrawl fallback. The gate, the name
+      // and the internal-address checks above have all passed, so this is never a host the fleet may not reach.
+      return { ok: false, why: m === 'idotullepes' ? 'idotullepes' : 'a letoltes hibaval allt le', url: url.href, connect: true }
     }
     if (res.status >= 300 && res.status < 400 && res.location) {
       try { url = new URL(res.location, url) } catch { return { ok: false, why: 'hibas atiranyitas' } }
