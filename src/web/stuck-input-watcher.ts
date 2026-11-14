@@ -157,7 +157,7 @@ async function recoverParkedPaste(
       { label, session, attempt: next.attempts },
       'stuck-input-watcher: parked paste placeholder persisted past confirm window, sending recovery Enter',
     )
-    sendEnterToSession(session, host)
+    await sendEnterToSession(session, host)
   } else if (next.attempts >= thresholds.maxAttempts && prev.attempts < thresholds.maxAttempts) {
     logger.warn(
       { label, session },
@@ -193,7 +193,7 @@ async function bareEnterRecovery(label: string, session: string, host: string | 
       { label, session, attempt: next.attempts },
       'stuck-input-watcher: parked input persisted past confirm window, sending recovery Enter',
     )
-    sendEnterToSession(session, host)
+    await sendEnterToSession(session, host)
   } else if (next.parkedSig !== null && next.attempts >= THRESHOLDS.maxAttempts) {
     // Logged at most once per spell: the give-up is recorded on the tick
     // that spent the last attempt (attempts hits maxAttempts there), not

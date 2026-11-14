@@ -1096,10 +1096,10 @@ async function attemptFireTask(
               await sendPromptToSession(session, fullPrompt, host, { waitForIdle: false, lockMode: 'held' })
               logger.info({ task: task.name, session, attempt }, 'Scheduled prompt re-injected after swallowed Enter')
             } else {
-              sendEnterToSession(session, host)
+              await sendEnterToSession(session, host)
             }
           } else {
-            sendEnterToSession(session, host)
+            await sendEnterToSession(session, host)
           }
           return 'continue'
         })

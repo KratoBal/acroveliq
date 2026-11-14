@@ -11,10 +11,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // a tick that stops serving the idle agent (the positive control on the instrument).
 const tmux = vi.hoisted(() => ({
   sync: {} as Record<string, number>,
+  async: {} as Record<string, number>,
   sessions: [] as string[],
   panes: {} as Record<string, string>,
 }))
 const VERBS = ['list-sessions', 'display-message', 'capture-pane', 'send-keys', 'load-buffer', 'paste-buffer', 'set-buffer', 'delete-buffer', 'has-session']
+const KEY_VERB = VERBS.find((v) => v.endsWith('-keys'))!
 const verbOf = (args: string[]): string => VERBS.find((v) => args?.includes(v)) ?? 'other'
 function answer(args: string[]): string {
   const verb = verbOf(args)
@@ -54,6 +56,7 @@ describe('the router tick starts no synchronous pane-read or session-lookup chil
   beforeEach(() => {
     for (const name of NAMES) mkdirSync(agentDir(name), { recursive: true })
     tmux.sync = {}
+    tmux.async = {}
     tmux.sessions = NAMES.map(agentSessionName)
     tmux.panes = {
       [agentSessionName(NAMES[0]!)]: IDLE,
@@ -62,6 +65,8 @@ describe('the router tick starts no synchronous pane-read or session-lookup chil
     }
     resetPaneSnapshotsForTest()
     setCaptureExecForTest(((_file: string, args: string[], _opts: unknown, cb: (err: Error | null, out: string) => void) => {
+      const verb = verbOf(args)
+      tmux.async[verb] = (tmux.async[verb] ?? 0) + 1
       setTimeout(() => cb(null, answer(args)), 1)
       return { stdin: { end: () => undefined } }
     }) as unknown as never)
@@ -82,8 +87,10 @@ describe('the router tick starts no synchronous pane-read or session-lookup chil
     expect(tmux.sync['capture-pane'] ?? 0).toBe(0)
     expect(tmux.sync['list-sessions'] ?? 0).toBe(0)
     expect(tmux.sync['display-message'] ?? 0).toBe(0)
-    // positive control on the instrument: the tick really ran the delivery path (the key writes are still sync: slice c)
-    expect(tmux.sync['send-keys'] ?? 0).toBeGreaterThan(0)
+    // slice (c) (card cdba1d62): the KEY WRITES are async too, so the tick starts no synchronous tmux child AT ALL
+    expect(Object.values(tmux.sync).reduce((a, b) => a + b, 0)).toBe(0)
+    // positive control on the instrument: the tick really ran the delivery path, and its writes used the async launcher
+    expect(tmux.async[KEY_VERB] ?? 0).toBeGreaterThan(0)
     expect(getPendingMessages(NAMES[0]!).length).toBe(0) // the idle agent got both messages
     expect(getPendingMessages(NAMES[2]!).length).toBe(2) // the blocked agent keeps them: a permission question takes no line
   })
@@ -106,6 +113,28 @@ describe('wiring: no synchronous pane read in the router path', () => {
     expect(router).not.toMatch(/\bsessionExistsOnHost\(/)
     expect(router).toContain('capturePaneAsync(')
     expect(router).toContain('sessionExistsOnHostAsync(')
+  })
+
+  it('the same functions and the Enter helper write keys through runTmuxAsync, never the sync runTmux or the sync broker call', () => {
+    const names = [
+      'sendPromptToSession',
+      'clearInputBuffer',
+      'discardPlaceholderBuffer',
+      'answerFirstRunGates',
+      'clearStaleParkedInput',
+      'dismissSurveyModalIfPresent',
+      'dismissResumeSummaryModalIfPresent',
+      'dismissFeedbackDraftModalIfPresent',
+      'dismissModelConsentDialogIfPresent',
+      'sendEnterToSession',
+    ]
+    for (const name of names) {
+      const at = processSrc.search(new RegExp(`\\n(export )?async function ${name}\\(`))
+      expect(at, name).toBeGreaterThan(-1)
+      const body = processSrc.slice(at, processSrc.indexOf('\n}\n', at))
+      expect(body, name).not.toMatch(/\brunTmux\(/)
+      expect(body, name).not.toMatch(/\bcallBrokerSync\(/)
+    }
   })
 
   it('the delivery, modal, janitor and refusal functions in agent-process.ts read with no sync child', () => {

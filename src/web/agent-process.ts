@@ -1269,6 +1269,15 @@ function captureTmuxAsync(target: string | null | TmuxTarget, tmuxArgs: string[]
   })
 }
 
+/**
+ * runTmux without holding the event loop (card cdba1d62, slice c): the delivery path's KEY WRITES were the last
+ * synchronous children of a router tick. Same invocation, same timeouts, rejects like execFileSync threw (stderr in
+ * `err.stderr`). Callers await each write in order, so the keystroke order the sync code gave by construction is kept.
+ */
+async function runTmuxAsync(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): Promise<void> {
+  await captureTmuxAsync(target, tmuxArgs, opts)
+}
+
 // Tri-state run state. For a remote agent a failed list-sessions query is
 // 'unreachable' (the session is almost certainly still alive on the laptop --
 // an SSH drop must never read as 'stopped', which would trigger a wrong
@@ -2149,7 +2158,7 @@ async function dismissSurveyModalIfPresent(session: string, host: string | null 
   try {
     const pane = await captureTmuxAsync(host, ['capture-pane', '-t', session, '-p'])
     if (!SURVEY_MODAL_RX.test(pane)) return
-    await dialogKeys(session, host, 'survey', () => runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 }))
+    await dialogKeys(session, host, 'survey', () => runTmuxAsync(host, ['send-keys', '-t', session, '0'], { timeout: 5000 }))
     // Modal close is one frame; settle window so the next send-keys lands in
     // the prompt input, not the now-stale modal handler.
     await delay(300)
@@ -2172,9 +2181,9 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
     const pane = await captureTmuxAsync(host, ['capture-pane', '-t', session, '-p'])
     if (!RESUME_SUMMARY_MODAL_RX.test(pane)) return
     await dialogKeys(session, host, 'resume-summary', async () => {
-      runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
+      await runTmuxAsync(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
       await delay(100)
-      runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+      await runTmuxAsync(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
     })
     // /compact starts immediately and can run for minutes; we only need to
     // unblock the modal so detectPaneState can transition off 'unknown'.
@@ -2232,11 +2241,11 @@ export async function dismissFeedbackDraftModalIfPresent(session: string, host: 
     if (!detectsFeedbackDraftModal(pane)) return
     // the broker's feedback-draft answer includes the opt-out offer's Esc (keep)
     await dialogKeys(session, host, 'feedback-draft', async () => {
-      runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 })
+      await runTmuxAsync(host, ['send-keys', '-t', session, '0'], { timeout: 5000 })
       await delay(300)
       const after = await captureTmuxAsync(host, ['capture-pane', '-t', session, '-p'])
       if (detectsFeedbackOptOutPrompt(after)) {
-        runTmux(host, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
+        await runTmuxAsync(host, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
         await delay(300)
       }
     })
@@ -2262,9 +2271,9 @@ export async function dismissModelConsentDialogIfPresent(session: string, host: 
     const pane = await captureTmuxAsync(host, ['capture-pane', '-t', session, '-p'])
     if (!detectsModelConsentDialog(pane)) return
     await dialogKeys(session, host, 'model-consent', async () => {
-      runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
+      await runTmuxAsync(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
       await delay(150)
-      runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+      await runTmuxAsync(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
     })
     await delay(300)
     logger.info({ session }, 'Answered model usage-credit consent dialog: kept the configured model (option 1, never the switch default)')
@@ -2306,16 +2315,16 @@ export async function answerFirstRunGates(
     try {
       await dialogKeys(session, host, gate === 'bypass-permissions' ? 'bypass' : gate, async () => {
         if (gate === 'trust') {
-          runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
+          await runTmuxAsync(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
           await delay(150)
-          runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+          await runTmuxAsync(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
         } else if (gate === 'bypass-permissions') {
-          runTmux(host, ['send-keys', '-t', session, '2'], { timeout: 5000 })
+          await runTmuxAsync(host, ['send-keys', '-t', session, '2'], { timeout: 5000 })
           await delay(150)
-          runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+          await runTmuxAsync(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
         } else {
           // theme / welcome: Enter accepts the highlighted default and moves on.
-          runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+          await runTmuxAsync(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
         }
       })
     } catch (err) {
@@ -2367,7 +2376,7 @@ export async function scheduleIdentitySetup(session: string, displayName: string
         void (async () => {
           try {
             for (const cmd of identitySlashCommands(displayName)) {
-              runTmux(host, ['send-keys', '-t', session, cmd, 'Enter'], { timeout: 5000 })
+              await runTmuxAsync(host, ['send-keys', '-t', session, cmd, 'Enter'], { timeout: 5000 })
               await delay(1000)
             }
             logger.info({ session, displayName }, 'Set session /name')
@@ -2461,7 +2470,7 @@ export async function clearInputBuffer(session: string, host: string | null = nu
   try {
     const pane = await capturePaneAsync(session, host)
     for (const key of parkedClearSequence(pane != null ? parkedInputRowCount(pane) : 0)) {
-      runTmux(host, ['send-keys', '-t', session, key], { timeout: 5000 })
+      await runTmuxAsync(host, ['send-keys', '-t', session, key], { timeout: 5000 })
     }
     // Settle briefly so the next send-keys lands in the freshly cleared
     // buffer rather than racing the clear.
@@ -2504,7 +2513,7 @@ async function discardPlaceholderBuffer(session: string, host: string | null = n
     // would quit the TUI.
     if (pane != null && !detectsPastePlaceholder(pane)) return true
     try {
-      runTmux(host, ['send-keys', '-t', session, 'C-c'], { timeout: 5000 })
+      await runTmuxAsync(host, ['send-keys', '-t', session, 'C-c'], { timeout: 5000 })
     } catch (err) {
       logger.warn({ err, session }, 'discardPlaceholderBuffer: Ctrl-C send failed')
       return false
@@ -2627,8 +2636,8 @@ export async function sendPromptToSession(
       typedLine(text),
       {
         capture: () => capturePaneAsync(session, host),
-        typeChunk: (chunk) => runTmux(host, ['send-keys', '-t', session, ...sendKeysLiteralArgs(chunk, terminated)], { timeout: 5000 }),
-        enter: () => runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 }),
+        typeChunk: (chunk) => runTmuxAsync(host, ['send-keys', '-t', session, ...sendKeysLiteralArgs(chunk, terminated)], { timeout: 5000 }),
+        enter: () => runTmuxAsync(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 }),
         delay,
         abandon: (typed) => recordAbandonedPrompt(session, typed),
         report: opts.onBusyReport,
@@ -2677,10 +2686,10 @@ export async function sendPromptToSession(
   const sendChunks = async (): Promise<void> => {
     const chunks = splitForSendKeys(oneLine, SEND_KEYS_CHUNK, terminated)
     for (let i = 0; i < chunks.length; i++) {
-      runTmux(host, ['send-keys', '-t', session, ...sendKeysLiteralArgs(chunks[i]!, terminated)], { timeout: 5000 })
+      await runTmuxAsync(host, ['send-keys', '-t', session, ...sendKeysLiteralArgs(chunks[i]!, terminated)], { timeout: 5000 })
       if (i < chunks.length - 1) await delay(30)
     }
-    runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    await runTmuxAsync(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
   }
   await sendChunks()
 
@@ -2733,7 +2742,7 @@ export async function sendPromptToSession(
     }
     // action === 'retry-enter'
     try {
-      runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+      await runTmuxAsync(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
     } catch (err) {
       logger.warn({ err, session, attempt }, 'Retry-Enter send failed')
       break
@@ -2885,16 +2894,16 @@ const PANE_READY_CONFIRM_DELAY_MS = 250
 // notification path (where the plugin, not sendPromptToSession, delivered
 // the text, so the post-send retry budget never ran). Best-effort: a
 // tmux failure is logged and swallowed so the watcher loop keeps going.
-export function sendEnterToSession(session: string, host: string | null = null): boolean {
+export async function sendEnterToSession(session: string, host: string | null = null): Promise<boolean> {
   const brokerAgent = brokerAgentFor(session, host)
   if (brokerAgent) {
     // the broker presses it only on a parked box with no dialog and no running turn
-    const r = callBrokerSync(['submit', brokerAgent])
+    const r = await callBroker(['submit', brokerAgent])
     if (r.code !== 0) logger.warn({ session, code: r.code, why: r.out }, 'sendEnterToSession: the broker refused the Enter')
     return r.code === 0
   }
   try {
-    runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    await runTmuxAsync(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
     return true
   } catch (err) {
     logger.warn({ err, session }, 'sendEnterToSession: failed to send recovery Enter')
@@ -3242,7 +3251,7 @@ export async function clearStaleParkedInput(session: string, host: string | null
   } else {
     const sequence = parkedClearSequence(parkedInputRowCount(a))
     for (let i = 0; i < sequence.length; i++) {
-      runTmux(host, ['send-keys', '-t', session, sequence[i]], { timeout: 5000 })
+      await runTmuxAsync(host, ['send-keys', '-t', session, sequence[i]], { timeout: 5000 })
       if (i % PARKED_CLEAR_RECHECK_EVERY === PARKED_CLEAR_RECHECK_EVERY - 1) {
         await delay(PARKED_CLEAR_SETTLE_MS)
         const after = await capturePaneAsync(session, host)

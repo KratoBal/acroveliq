@@ -207,7 +207,7 @@ describe('with the switch ON', () => {
     pane = RESUME
     await dismissResumeSummaryModalIfPresent(S, null)
     pane = IDLE
-    const entered = sendEnterToSession(S, null)
+    const entered = await sendEnterToSession(S, null)
     const cleared = await clearInputBuffer(S, null)
     expect([brokerCalls().filter((c) => c[0] !== 'capture' && c[0] !== 'status'), entered, cleared, rawKeys()]).toEqual([
       [['dismiss', 'proba', 'resume-summary'], ['submit', 'proba'], ['clear', 'proba']], true, true, [],
