@@ -1242,7 +1242,8 @@ function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opt
 
 // The async twin of captureTmux: the SAME invocation (tmuxInvocationFor, so the
 // broker / runAsUser / ssh resolution is not copied), but the child runs without
-// holding the event loop. Rejects like execFileSync threw (callers keep their
+// holding the event loop. Rejects like execFileSync threw, with one difference in the error: the child's stderr is
+// in `err.message` ("Command failed: ..." followed by the stderr), not in an `err.stderr` field (callers keep their
 // null-on-error contract one level up).
 type CaptureExec = typeof execFile
 let captureExecImpl: CaptureExec = execFile
@@ -1271,8 +1272,9 @@ function captureTmuxAsync(target: string | null | TmuxTarget, tmuxArgs: string[]
 
 /**
  * runTmux without holding the event loop (card cdba1d62, slice c): the delivery path's KEY WRITES were the last
- * synchronous children of a router tick. Same invocation, same timeouts, rejects like execFileSync threw (stderr in
- * `err.stderr`). Callers await each write in order, so the keystroke order the sync code gave by construction is kept.
+ * synchronous children of a router tick. Same invocation, same timeouts, rejects like execFileSync threw (the stderr is
+ * in `err.message`, after "Command failed: ..."; nobody reads it programmatically, the log shows it all the same).
+ * Callers await each write in order, so the keystroke order the sync code gave by construction is kept.
  */
 async function runTmuxAsync(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): Promise<void> {
   await captureTmuxAsync(target, tmuxArgs, opts)
@@ -2898,7 +2900,8 @@ export async function sendEnterToSession(session: string, host: string | null = 
   const brokerAgent = brokerAgentFor(session, host)
   if (brokerAgent) {
     // the broker presses it only on a parked box with no dialog and no running turn
-    const r = await callBroker(['submit', brokerAgent])
+    // the old sync call gave the broker 10 s; callBroker's default is 60 s (barracuda, #366): keep the old limit
+    const r = await callBroker(['submit', brokerAgent], undefined, 10_000)
     if (r.code !== 0) logger.warn({ session, code: r.code, why: r.out }, 'sendEnterToSession: the broker refused the Enter')
     return r.code === 0
   }
