@@ -86,6 +86,7 @@ vi.mock('../web/agent-process.js', () => ({
   // post-send resubmit loop) returns null so the loop sees nothing parked
   // and stops, same as the sibling fixtures.
   capturePane: (..._a: unknown[]) => (capturePaneCalls++ === 0 ? 'plain pane\n❯ ' : null),
+  capturePaneAsync: async (..._a: unknown[]) => (capturePaneCalls++ === 0 ? 'plain pane\n❯ ' : null),
   sendEnterToSession: vi.fn(),
   clearStaleParkedInput: vi.fn(() => false),
   resolveAgentProvider: () => 'telegram',

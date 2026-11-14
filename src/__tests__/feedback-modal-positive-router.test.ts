@@ -64,6 +64,7 @@ vi.mock('../web/agent-config.js', () => ({
 }))
 
 vi.mock('../web/agent-process.js', () => ({
+  capturePaneAsync: async () => null,
   clearFeedbackModalAndRecheck: (...a: unknown[]) => mockClearModal(...(a as [])),
   agentSessionName: (name: string) => `agent-${name}`,
   isSessionReadyForPrompt: (...a: unknown[]) => mockIsReady(...(a as [])),

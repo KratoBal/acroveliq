@@ -17,7 +17,7 @@ import {
   agentRunState,
   agentSessionName,
   restartAgentProcess,
-  capturePane,
+  capturePaneAsync,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { paneLooksIdle } from '../pane-state.js'
@@ -101,7 +101,7 @@ async function checkAgent(name: string, nowMs: number, revertAfterMs: number, ch
 
   const session = sessionFor(name)
   const host = name === MAIN_AGENT_ID ? null : readAgentRemoteHost(name)
-  const pane = capturePane(session, host)
+  const pane = await capturePaneAsync(session, host)
   if (pane == null) return
 
   const limitDetected = detectsUsageLimit(pane)

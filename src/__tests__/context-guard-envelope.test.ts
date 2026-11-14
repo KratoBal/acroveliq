@@ -63,6 +63,7 @@ vi.mock('../web/agent-process.js', () => ({
   agentSessionName: (n: string) => `agent-${n}`,
   restartAgentProcess: vi.fn(async (n: string) => { calls.push(`restart ${n}`) }),
   capturePane: () => 'pane',
+  capturePaneAsync: async () => 'pane',
   sendPromptToSession: vi.fn(async (session: string) => {
     if (panelFails) throw new Error('tmux gone')
     calls.push(`panel ${session}`)

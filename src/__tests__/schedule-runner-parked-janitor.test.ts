@@ -85,6 +85,7 @@ vi.mock('../web/agent-process.js', () => ({
   // null capture => no first-run gate is detected, and the post-send resubmit
   // loop sees nothing parked and stops.
   capturePane: () => null,
+  capturePaneAsync: async () => null,
   sendEnterToSession: vi.fn(),
   clearStaleParkedInput: (...a: unknown[]) => mockClearParked(...(a as [])),
   // Only heartbeat tasks fire here, so the bound-channel path is not reached;

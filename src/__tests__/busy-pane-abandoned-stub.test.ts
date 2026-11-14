@@ -35,7 +35,9 @@ vi.mock('../web/agent-process.js', async (importOriginal) => {
   return {
     ...orig,
     captureParkedInputView: () => paneNow,
+    captureParkedInputViewAsync: async () => paneNow,
     capturePane: () => paneNow,
+    capturePaneAsync: async () => paneNow,
     clearInputBuffer: vi.fn(async () => {
       calls.clear++
       return clearWorks

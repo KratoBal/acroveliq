@@ -4,7 +4,7 @@ import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT, RESPAWN_ENABLED, APP_TZ } from '../config.js'
 import { resolveFromPath } from '../platform.js'
 import { listAgentNames } from './agent-config.js'
-import { isAgentRunning, capturePane, startAgentProcess } from './agent-process.js'
+import { isAgentRunning, capturePaneAsync, startAgentProcess } from './agent-process.js'
 import { quarantineFleetTokenIfDead } from './claude-credentials-guard.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
@@ -275,8 +275,8 @@ function sendNotify(msg: string): void {
   })
 }
 
-function checkSession(label: string, session: string, isMain: boolean, quiet: boolean): void {
-  const pane = capturePane(session)
+async function checkSession(label: string, session: string, isMain: boolean, quiet: boolean): Promise<void> {
+  const pane = await capturePaneAsync(session)
   const sessionAlive = pane != null
   const reauth = detectReauthNeeded(pane)
   const prev = watchState.get(session) ?? NO_REAUTH_STATE
@@ -372,12 +372,25 @@ export function startReauthHealer(): NodeJS.Timeout | null {
     return null
   }
 
-  function sweep(): void {
+  // One sweep at a time: the pane reads are async now (card b8ed4f45, slice b), so a slow sweep could still be
+  // running when the interval fires; the sync version could not overlap by construction.
+  let sweeping = false
+  async function sweep(): Promise<void> {
+    if (sweeping) return
+    sweeping = true
+    try {
+      await sweepOnce()
+    } finally {
+      sweeping = false
+    }
+  }
+
+  async function sweepOnce(): Promise<void> {
     const quiet = isQuietHour(localHour(Date.now()))
     // Main agent: escalate-only (no autonomous /login into a live always-on
     // conversation). capturePane returns null when it is down -> spell ends.
     try {
-      checkSession(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, true, quiet)
+      await checkSession(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, true, quiet)
     } catch (err) {
       logger.debug({ err }, 'reauth-healer: main agent check error')
     }
@@ -389,7 +402,7 @@ export function startReauthHealer(): NodeJS.Timeout | null {
         continue
       }
       try {
-        checkSession(name, session, false, quiet)
+        await checkSession(name, session, false, quiet)
       } catch (err) {
         logger.debug({ err, agent: name }, 'reauth-healer: agent check error')
       }
