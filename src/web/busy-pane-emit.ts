@@ -107,8 +107,8 @@ function splitAtDashes(chars: string[], chunkSize: number): string[] {
 
 export interface BusyPaneIo {
   capture(): string | null | Promise<string | null>
-  typeChunk(chunk: string): void
-  enter(): void
+  typeChunk(chunk: string): unknown
+  enter(): unknown
   delay(ms: number): Promise<void>
   /**
    * A 'not-landed' send that typed something: what it typed, so the stuck-input
@@ -181,14 +181,14 @@ export async function emitIntoBusyPane(oneLine: string, io: BusyPaneIo, cfg: Bus
   for (let i = 0; i < chunks.length; i++) {
     const refusal = liveInputRefusal(await io.capture())
     if (refusal) return notLanded('chunk', refusal, i + 1)
-    io.typeChunk(chunks[i]!)
+    await io.typeChunk(chunks[i]!)
     typed += typedFromChunks([chunks[i]!])
     if (i < chunks.length - 1) await io.delay(cfg.chunkGapMs)
   }
   const head = payloadHead(oneLine)
   const beforeEnter = ourTextRefusal(await io.capture(), oneLine)
   if (beforeEnter) return notLanded('before-enter', beforeEnter)
-  io.enter()
+  await io.enter()
   for (let attempt = 0; ; attempt++) {
     await io.delay(cfg.pollMs)
     const pane = await io.capture()
@@ -210,7 +210,7 @@ export async function emitIntoBusyPane(oneLine: string, io: BusyPaneIo, cfg: Bus
       }
       return notLanded('after-enter', beforeRetry)
     }
-    io.enter()
+    await io.enter()
     retries++
   }
 }

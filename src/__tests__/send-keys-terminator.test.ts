@@ -10,7 +10,7 @@
 //     idle path;
 //   - the remote rule changes (its chunks must stay safe WITHOUT `--`);
 //   - the semicolon rule is lost in the terminated split.
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const sent: string[][] = []
 /** What tmux 3.3a types for one literal argument (the measured trailing-';' rule). */
@@ -38,7 +38,14 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
 })
 
 import { emitIntoBusyPane, sendKeysLiteralArgs, splitForSendKeys, typedFromChunks } from '../web/busy-pane-emit.js'
-import { sendPromptToSession } from '../web/agent-process.js'
+import { sendPromptToSession, setCaptureExecForTest } from '../web/agent-process.js'
+import { bridgeAsyncCaptureToSync } from './fixtures/sync-capture-bridge.js'
+import { execFileSync as syncChildForBridge } from 'node:child_process'
+
+// the key writes run through the async launcher now (card cdba1d62, slice c): bridge it to this file's sync fake
+beforeEach(() => {
+  setCaptureExecForTest(bridgeAsyncCaptureToSync(syncChildForBridge as never))
+})
 
 // a dash run longer than the old slide cap, a chunk boundary on a dash, and a trailing ';'
 const MSG = 'Kotojelek: ' + '-'.repeat(120) + ' es ' + 'x'.repeat(63) + '-szal vege;'
