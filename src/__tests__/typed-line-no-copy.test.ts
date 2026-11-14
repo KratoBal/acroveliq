@@ -38,7 +38,9 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 
-import { sendPromptToSession } from '../web/agent-process.js'
+import { sendPromptToSession, setCaptureExecForTest } from '../web/agent-process.js'
+import { bridgeAsyncCaptureToSync } from './fixtures/sync-capture-bridge.js'
+import { execFileSync as syncChildForBridge } from 'node:child_process'
 import { typedLine } from '../web/busy-pane-emit.js'
 import { wrapUntrusted, wrapTrustedPeer } from '../prompt-safety.js'
 import { liveBoxIsFree } from '../pane-state.js'
@@ -46,6 +48,7 @@ import { liveBoxIsFree } from '../pane-state.js'
 const literal = () => keys.filter((k) => k[0] === '-l').map((k) => k[k.length - 1])
 
 beforeEach(() => {
+  setCaptureExecForTest(bridgeAsyncCaptureToSync(syncChildForBridge as never))
   typed = ''
   keys.length = 0
   paneFor = () => idle('')

@@ -24,8 +24,8 @@ import {
   queuedPromptRefusalForSession,
   clearStaleParkedInput,
   sendPromptToSession,
-  sessionExistsOnHost,
-  capturePane,
+  sessionExistsOnHostAsync,
+  capturePaneAsync,
   clearFeedbackModalAndRecheck,
 } from './agent-process.js'
 import { detectPaneState, type PaneState } from '../pane-state.js'
@@ -556,10 +556,14 @@ export async function runMessageRouterTick(): Promise<void> {
     const presentNow = new Set<string>()
     // agent -> {exists: bool, host, session} cached lookup for the main loop.
     const agentSessionCache = new Map<string, {host: string | null, session: string, exists: boolean}>()
-    for (const agent of receiversInTick) {
+    // One async look per receiver, all at once (card b8ed4f45, slice b): the sync lookup was a blocking
+    // `sudo fleet-pane list-sessions` child per receiver per tick.
+    const lookups = await Promise.all([...receiversInTick].map(async (agent) => {
       const host = readAgentRemoteHost(agent)
       const session = agentSessionName(agent)
-      const exists = sessionExistsOnHost(host, session)
+      return { agent, host, session, exists: await sessionExistsOnHostAsync(host, session) }
+    }))
+    for (const { agent, host, session, exists } of lookups) {
       agentSessionCache.set(agent, { host, session, exists })
       if (exists) {
         presentNow.add(agent)
@@ -644,7 +648,7 @@ export async function runMessageRouterTick(): Promise<void> {
       const cached = agentSessionCache.get(msg.to_agent)
       const session = cached?.session ?? agentSessionName(msg.to_agent)
       const host = isMainAgent ? null : cached?.host ?? readAgentRemoteHost(msg.to_agent)
-      const sessionExists = cached?.exists ?? sessionExistsOnHost(host, session)
+      const sessionExists = cached?.exists ?? await sessionExistsOnHostAsync(host, session)
 
       if (shouldAbandon(sessionExists, ageMs, MESSAGE_ABANDON_WINDOW_MS)) {
         logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs }, 'Agent message abandoned: target session absent for full retry window')
@@ -710,7 +714,7 @@ export async function runMessageRouterTick(): Promise<void> {
           // Capturing here (rather than every tick) keeps the healthy path at
           // zero extra tmux calls.
           const stuckMs = now - stuckStart
-          const pane = capturePane(session, host)
+          const pane = await capturePaneAsync(session, host)
           const paneState = pane != null ? detectPaneState(pane) : null
           if (shouldEscalateStuckSession(paneState, stuckMs)) {
             // Session has been continuously stuck past the escalation threshold.

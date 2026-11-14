@@ -74,6 +74,22 @@ export class PaneSnapshotCache {
   }
 
   /**
+   * A read that is NEVER shared with one already running: it starts its own fetch and stores the result. For a
+   * decision made right after a keystroke or between two samples (readiness, an input-box check): a running
+   * fetch may have started before the thing the caller wants to see, and joining it would hand back that
+   * older frame (barracuda, #362 and #363).
+   */
+  fresh(key: string, fetch: PaneFetcher): Promise<string | null> {
+    const generation = this.generationOf(key)
+    return fetch()
+      .catch((): string | null => null)
+      .then((value) => {
+        if (this.generationOf(key) === generation) this.store.set(key, { value, at: this.now() })
+        return value
+      })
+  }
+
+  /**
    * For a SYNCHRONOUS caller (a list builder that cannot await): return what is
    * known now and, when it is older than the TTL, start a background refresh so
    * the next poll sees a newer one. undefined on the very first read of a key.

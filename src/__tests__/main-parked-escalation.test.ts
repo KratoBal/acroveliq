@@ -36,7 +36,10 @@ import {
   getMainParkedState,
   MAIN_PARKED_HEARTBEAT_AFTER,
   MAIN_PARKED_OWNER_AFTER,
+  setCaptureExecForTest,
 } from '../web/agent-process.js'
+import { bridgeAsyncCaptureToSync } from './fixtures/sync-capture-bridge.js'
+import { execFileSync as syncChildForBridge } from 'node:child_process'
 import { notifyChannel } from '../notify.js'
 import { MAIN_CHANNELS_SESSION } from '../web/main-agent.js'
 
@@ -49,6 +52,7 @@ function clearKeystrokes(): string[][] {
 }
 
 beforeEach(() => {
+  setCaptureExecForTest(bridgeAsyncCaptureToSync(syncChildForBridge as never))
   h.calls.length = 0
   vi.mocked(notifyChannel).mockClear()
 })
