@@ -2835,8 +2835,11 @@ export function capturePane(session: string, host: string | null = null): string
 export const PANE_SNAPSHOT_TTL_MS = 3000
 const paneSnapshots = new PaneSnapshotCache(PANE_SNAPSHOT_TTL_MS)
 const paneSnapshotKey = (session: string, host: string | null): string => `${host ?? 'local'}:${session}`
-// DECISION reads (readiness, keypresses) get their own key: they never join a display
-// read that started earlier, so the capture they act on is made after they asked.
+// DECISION reads (readiness, keypresses) get their own key: they never join a DISPLAY
+// read that started earlier, so the capture they act on is made after they asked. Two
+// decision reads of one session running at the same moment still share one child (a
+// maxAge 0 read joins a running one), so the later of the two can get a capture that
+// started just before it asked.
 const paneDecisionKey = (session: string, host: string | null): string => `decision:${paneSnapshotKey(session, host)}`
 
 async function fetchPaneRaw(session: string, host: string | null): Promise<string | null> {
