@@ -28,7 +28,14 @@
 #   disk            >= 80 percent of the fuller disk (the two disks of the host: / and /var/lib/docker)
 #   Build Cache     >= 2 GB reclaimable
 #
-# The runner kills this after 10 s, so the ssh timeouts stay under that (fleet-gate B8: two operations, 4 s each).
+# TIME LIMITS: the runner kills this after 10 s (src/web/schedule-runner.ts runPreCheck), so the two gate operations get
+# 2 s (`df -P`) and 7 s (`system-df --format`): 9 s together, one under the runner's. The `system-df` limit was 4 s
+# until the first prod run (2026-11-14 19:2x): `docker system df` took 5.07 s on the prod host (measured, timeout 30),
+# the 4 s cut it, the script left with exit 1 and the agent was woken without a measurement; the second run fitted and
+# read 6.30 GB of cache. A failure is open (never a wrong SKIP) but a SKIP that cannot be trusted saves nothing.
+#
+# EXIT CODES: 0 SKIP or a wake line; 1 any failed gate call (an unreachable host, a refusal by the gate, a timeout)
+# or an answer it cannot parse, and the runner wakes the agent; 2 only a bad argument or `stage`.
 set -uo pipefail
 
 case "${1:-}" in
@@ -39,9 +46,10 @@ esac
 DISK_PCT=80
 CACHE_GB=2
 
-gate() { timeout 4 ssh -o BatchMode=yes -o ConnectTimeout=3 -i /home/marveen/.ssh/id_ed25519_acropora_monitor "$HOST" "$@"; }
+# $1: the time limit in seconds, the rest is the gate operation
+gate() { local t="$1"; shift; timeout "$t" ssh -o BatchMode=yes -o ConnectTimeout=3 -i /home/marveen/.ssh/id_ed25519_acropora_monitor "$HOST" "$@"; }
 # (df's header line has no "%", so the parser below skips it)
-m=$(gate df -P && gate system-df --format) || exit 1
+m=$(gate 2 df -P && gate 7 system-df --format) || exit 1
 printf '%s\n' "$m" | WHICH="$1" DISK_PCT="$DISK_PCT" CACHE_GB="$CACHE_GB" python3 -c '
 import os, re, sys
 lines = sys.stdin.read().splitlines()
