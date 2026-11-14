@@ -42,6 +42,11 @@ vi.mock('node:child_process', async (importOriginal) => {
     child.stdin = {
       end: (s?: string) => {
         if (s !== undefined) call.input = s
+        // the pane read is async now (card b8ed4f45, slice b): the `capture` verb answers with the same pane the sync fake gives
+        if ([...args][2] === 'capture') {
+          setImmediate(() => cb(null, pane, ''))
+          return
+        }
         const r = brokerAnswer([...args].slice(2))
         setImmediate(() => cb(r.code === 0 ? null : Object.assign(new Error('broker'), { code: r.code }), r.out, ''))
       },

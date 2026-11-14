@@ -41,7 +41,9 @@ vi.mock('node:child_process', async (orig) => ({
 }))
 vi.mock('../notify.js', () => ({ notifyChannel: vi.fn(async () => {}), notifyTelegram: vi.fn(async () => {}) }))
 
-import { clearStaleParkedInput } from '../web/agent-process.js'
+import { clearStaleParkedInput, setCaptureExecForTest } from '../web/agent-process.js'
+import { bridgeAsyncCaptureToSync } from './fixtures/sync-capture-bridge.js'
+import { execFileSync as syncChildForBridge } from 'node:child_process'
 import { notifyChannel } from '../notify.js'
 import { MAIN_CHANNELS_SESSION } from '../web/main-agent.js'
 
@@ -54,6 +56,7 @@ function clearKeystrokes(): string[][] {
 }
 
 beforeEach(() => {
+  setCaptureExecForTest(bridgeAsyncCaptureToSync(syncChildForBridge as never))
   h.calls.length = 0
   h.eView = null // default: dim-stripped view == plain (real, non-dim parked line)
   vi.mocked(notifyChannel).mockClear()
