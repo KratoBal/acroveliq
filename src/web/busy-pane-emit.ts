@@ -40,14 +40,25 @@ import { decideSubmitFollowup, detectsPastePlaceholder, liveBoxHoldsOnly, liveIn
  * card 0ac8f761). A space, not a deletion, for the same reason as the controls: the security-tag scrub counts
  * these as a gap inside a tag (prompt-safety.ts TAG_GAP), so a tag split by one cannot be glued into a real
  * tag by deleting it. A U+200D between two emoji (a family, a flag, a heart with a variation selector, a
- * skin tone) is kept: it is what joins them, and it is drawn.
+ * skin tone) is kept: it is what joins them. Whether the box draws a kept joiner, so that tmux's capture
+ * shows it back, is NOT measured (barracuda, #370 review): if it does not, a message with a family emoji
+ * sticks the same way, and a live capture of one would decide it. It is no new loss: such a message was
+ * typed as it was before.
+ *
+ * The family is wider than five characters (barracuda, #370 review): the left-to-right and right-to-left
+ * marks (U+200E, U+200F), the bidi embeddings, overrides and isolates (U+202A to U+202E, U+2066 to U+2069)
+ * and the tag characters (U+E0000 to U+E007F) are drawn as nothing too, and can split a tag name the scrub
+ * does not see. A tag-character run right after U+1F3F4 (the black flag: Scotland, Wales, England) or inside
+ * a run that began there is an emoji tag sequence and stays; any other run is one space.
  */
 const LONE_ZERO_WIDTH_JOINER =
   /(?<![\p{Extended_Pictographic}\ufe0f\u{1F3FB}-\u{1F3FF}])\u200d|\u200d(?!\p{Extended_Pictographic})/gu
+const TAG_RUN_OUTSIDE_A_FLAG = /(?<![\u{1F3F4}\u{E0000}-\u{E007F}])[\u{E0000}-\u{E007F}]+/gu
 export function typedLine(text: string): string {
   return text
-    .replace(/\r\n|[\x00-\x1f\x7f-\x9f\u2028\u2029\ufeff\u200b\u200c\u2060]/gu, ' ')
+    .replace(/\r\n|[\x00-\x1f\x7f-\x9f\u2028\u2029\ufeff\u200b\u200c\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069]/gu, ' ')
     .replace(LONE_ZERO_WIDTH_JOINER, ' ')
+    .replace(TAG_RUN_OUTSIDE_A_FLAG, ' ')
 }
 
 /** Characters per send-keys write, as on the idle path. */
