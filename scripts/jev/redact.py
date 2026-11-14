@@ -29,7 +29,7 @@ import os
 import re
 import unicodedata
 
-REDACTION_VERSION = "r16"
+REDACTION_VERSION = "r17"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 KNOWN_ENTITIES_PATH = os.environ.get(
@@ -54,7 +54,9 @@ _HOMOGLYPHS = str.maketrans({
 })
 
 L = r"[^\W\d_]"          # any Unicode letter
-UP = r"(?:[A-ZÁÉÍÓÖŐÚÜŰ]|[^\W\d_a-záéíóöőúüű])"  # uppercase-ish, incl. non-Latin capitals
+# uppercase-ish, incl. non-Latin capitals. NOT the lowercase micro sign and the lowercase Greek letters: "5 µg/l" is
+# a unit, and the class took the µ for a capital and masked it as a proper noun (r17, card 7d537654)
+UP = r"(?:[A-ZÁÉÍÓÖŐÚÜŰ]|[^\W\d_a-záéíóöőúüű\u00b5\u03b1-\u03c9])"
 LO = r"[^\W\d_A-ZÁÉÍÓÖŐÚÜŰ]"                        # lowercase-ish letter
 
 
