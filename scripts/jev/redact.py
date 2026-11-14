@@ -732,7 +732,7 @@ def _merge(spans):
     return out
 
 
-def redact(text, *, keep_dates=False, keep_kinds=()):
+def redact(text, *, keep_dates=False, keep_kinds=(), originals=None):
     """Returns {"text", "version", "counts"}. Raises RedactionError on any
     internal failure: the caller must then drop the item, never fall back
     to the raw text.
@@ -741,7 +741,15 @@ def redact(text, *, keep_dates=False, keep_kinds=()):
     A personal span masks either way: no keepable kind outranks a personal
     one in _merge. Dropping the kept spans BEFORE the merge only keeps more of
     the business text around it: "Kovács Péter Kft." becomes "<PERSON_1> Kft."
-    instead of one wider placeholder."""
+    instead of one wider placeholder.
+
+    originals: an optional dict the caller owns. When given, it is filled with {placeholder: the original
+    text}, one entry per placeholder, for a caller that must put the originals back into an ANSWER to the
+    redacted text (the GPT debate: the answer comes back in placeholders, and the thread it is posted in
+    holds the originals already). The shortest original of a placeholder is kept, because a PERSON or PROPER
+    placeholder stands for every inflection of a name and the least inflected one reads right in a sentence.
+    It never reaches the return value, so no caller that logs the result can leak it, and the redacted text
+    is the same with or without it."""
     if not isinstance(text, str):
         raise RedactionError("input is not text")
     keep_kinds = frozenset(keep_kinds)
@@ -782,6 +790,11 @@ def redact(text, *, keep_dates=False, keep_kinds=()):
                     counts[kind] = counts.get(kind, 0) + 1
                     mapping[key] = f"<{kind}_{counts[kind]}>"
                 out.append(mapping[key])
+                if originals is not None:
+                    raw = text[s:e]
+                    placeholder = mapping[key]
+                    if placeholder not in originals or len(raw) < len(originals[placeholder]):
+                        originals[placeholder] = raw
             pos = e
         out.append(text[pos:])
         return {"text": "".join(out), "version": REDACTION_VERSION, "counts": counts}

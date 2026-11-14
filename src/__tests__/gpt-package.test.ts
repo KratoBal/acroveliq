@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { getDb, initDatabase } from '../db.js'
 import { getDebate, type Debate } from '../debates.js'
-import { GptBlocked, PARTICIPANT_NAMES, buildPackage, debatePieces, envSecretValues, maskInternalIpv4, outputAllowed, secretIn, type PackageOptions } from '../gpt-package.js'
+import { GptBlocked, PARTICIPANT_NAMES, buildPackage, debatePieces, envSecretValues, maskInternalIpv4, outputAllowed, restorePlaceholders, secretIn, type PackageOptions } from '../gpt-package.js'
 
 const ROOT = join(__dirname, '..', '..')
 const SCRIPT = join(ROOT, 'scripts', 'gpt-csomag', 'hatar.py')
@@ -142,6 +142,8 @@ describe('filter 1: secrets', () => {
     expect(maskInternalIpv4('A 10.0.2.4. És 10.0.2.4:8790, 192.168.250.1; 100.117.177.56. Publikus: 162.55.216.28. Nem cím: 110.0.2.45, v10.0.2.4.5')).toEqual({
       // a doubtful shape (a version-like v10.0.2.4.5) is masked too: the safe direction
       text: 'A <BELSO_IP_1>. És <BELSO_IP_2>, <BELSO_IP_3>; <BELSO_IP_4>. Publikus: 162.55.216.28. Nem cím: 110.0.2.45, v<BELSO_IP_1>.5', count: 4,
+      // the way home: each placeholder has its address (the version-like v10.0.2.4.5 comes back whole)
+      originals: { '<BELSO_IP_1>': '10.0.2.4', '<BELSO_IP_2>': '10.0.2.4:8790', '<BELSO_IP_3>': '192.168.250.1', '<BELSO_IP_4>': '100.117.177.56' },
     })
     const d = debate()
     owner('v1', 'm1', 'A gép címe 10.0.2.4.', 110)
@@ -169,6 +171,57 @@ describe('filter 2: personal data (the JEV boundary, full mode)', () => {
     const log = logLines()
     expect(log.map((l) => [l.result, typeof l.sha256, l.bytes === Buffer.byteLength(pkg.prompt)])).toEqual([['kiment', 'string', true]])
     expect(JSON.stringify(log).includes('Kovács') || JSON.stringify(log).includes('szerviz')).toBe(false)
+  })
+
+  // acrobot, card 7d537654: GPT answered in <PERSON_1>, <PROPER_6>, <DOMAIN_1> and nothing put the originals back
+  it('PKG-RESTORE: the package carries {placeholder: original} for the answer, never in the log or the prompt; an answer in those placeholders gets the originals back', async () => {
+    const d = debate()
+    owner('v1', 'm1', 'Kovács Péter kérdezte, hogy az aquacalculator.com mit mond. Péter telefonja +36 30 123 4567. A 10.0.2.4 címen fut.', 110)
+    const pkg = await buildPackage(getDb(), d, 'Mit javasolsz?', opts())
+    expect(pkg.restore).toBeDefined()
+    const restore = pkg.restore!
+    // every placeholder of the prompt has its original, and no original is in the prompt
+    const placeholders = [...new Set(pkg.prompt.match(/<[A-Z][A-Z_]*_\d+>/g) ?? [])].filter((p) => p !== '<PERSON_1>' || Object.hasOwn(restore, p))
+    for (const original of Object.values(restore)) expect([original, pkg.prompt.includes(original)]).toEqual([original, false])
+    expect(Object.values(restore).some((o) => o.includes('Kovács'))).toBe(true)
+    expect(Object.values(restore)).toContain('aquacalculator.com')
+    expect(Object.values(restore)).toContain('10.0.2.4')
+    expect(placeholders.length).toBeGreaterThan(0)
+    // the log still holds hash and size only
+    expect(JSON.stringify(logLines()).includes('Kovács') || JSON.stringify(logLines()).includes('aquacalculator')).toBe(false)
+    // the answer's way home
+    const person = Object.keys(restore).find((k) => /^<PERSON_/.test(k))!
+    const domain = Object.keys(restore).find((k) => /^<DOMAIN_/.test(k))!
+    const answer = `${person} szerint a ${domain} jó. ${person}-nak írj. Kitalált: <PERSON_9>. Más alak: <person_1> és <PERSON_1`
+    const back = restorePlaceholders(answer, restore)
+    expect(back).toBe(answer.replaceAll(person, restore[person]!).replaceAll(domain, restore[domain]!))
+    expect(back).toContain('<PERSON_9>')
+  })
+
+  it('PKG-RESTORE-PARTICIPANT: a kept participant name inside an original is the real name, not the swap token', async () => {
+    const d = debate()
+    owner('v1', 'm1', 'Kovács Balázs és Szabó Éva egyeztetett.', 110)
+    const pkg = await buildPackage(getDb(), d, 'Mit javasolsz?', opts())
+    expect(Object.values(pkg.restore ?? {}).some((o) => /Kivetel[a-z]{12}/.test(o))).toBe(false)
+  })
+
+  it('PKG-RESTORE-FUNCTION: only this package\'s placeholders, one pass, nothing without a map', () => {
+    const restore = { '<PERSON_1>': 'Kovács Péter', '<DOMAIN_1>': 'a.hu', '<PROPER_2>': '<PERSON_1>' }
+    expect(restorePlaceholders('<PERSON_1> és <PERSON_12> és <DOMAIN_1>', restore)).toBe('Kovács Péter és <PERSON_12> és a.hu')
+    // an original that looks like a placeholder is not restored a second time
+    expect(restorePlaceholders('<PROPER_2>', restore)).toBe('<PERSON_1>')
+    expect(restorePlaceholders('<PERSON_1>', undefined)).toBe('<PERSON_1>')
+    expect(restorePlaceholders('<PERSON_1>', {})).toBe('<PERSON_1>')
+  })
+
+  it('PKG-RESTORE-GARBAGE: an originals field of a wrong shape from the boundary is ignored, never guessed', async () => {
+    const d = debate()
+    owner('v1', 'm1', 'szia', 110)
+    const body = 'print(json.dumps({"ok": True, "text": "szia <PERSON_1>", "counts": {}, "originals": {"<PERSON_1>": "Péter", "nem-helyorzo": "x", "<PERSON_2>": 5, "<PERSON_3>": ""}}))'
+    const pkg = await buildPackage(getDb(), d, 'k', opts({ boundary: fakeBoundary(body) }))
+    expect(pkg.restore).toEqual({ '<PERSON_1>': 'Péter' })
+    const none = await buildPackage(getDb(), d, 'k', opts({ boundary: fakeBoundary('print(json.dumps({"ok": True, "text": "szia", "originals": [1]}))') }))
+    expect(none.restore).toBeUndefined()
   })
 
   // acrobot 31072: in the first live debate GPT called the owner <PERSON_1>
@@ -262,7 +315,7 @@ print(json.dumps([hatar.decide("Kovács Péter írt.", k)["ok"] for k in (["Kov�
     // the real boundary module, with its redact() made to leave an e-mail in: decide() must refuse
     const code = `import sys, json; sys.path.insert(0, ${JSON.stringify(join(ROOT, 'scripts', 'gpt-csomag'))})
 import hatar
-hatar.redact.redact = lambda t: {"text": "irj ide: kovacs@pelda.hu", "version": hatar.redact.REDACTION_VERSION, "counts": {}}
+hatar.redact.redact = lambda t, originals=None: {"text": "irj ide: kovacs@pelda.hu", "version": hatar.redact.REDACTION_VERSION, "counts": {}}
 print(json.dumps(hatar.decide("x")))`
     const r = spawnSync('python3', ['-I', '-c', code], { env: { PATH: '/usr/bin:/bin', ...jevEnv, JEV_LEAK_GATE_STATUS: gateStatus() }, encoding: 'utf8' })
     expect(JSON.parse(r.stdout)).toEqual({ ok: false, why: expect.stringContaining('maradt: EMAIL') })

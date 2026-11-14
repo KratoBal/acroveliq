@@ -26,7 +26,9 @@ the redactor masks the pair whole, as before; measured without this, "Kovács Ba
 owner is masked once. Not the redactor's code: the leak gate's code hash does not change.
 
 stdin:  {"text": "<the package body>", "keep": ["Balázs", "Acrobot", "GPT"]}
-stdout: {"ok": true, "text": "<redacted>", "counts": {...}, "version": "..."}
+stdout: {"ok": true, "text": "<redacted>", "counts": {...}, "version": "...", "originals": {"<PERSON_1>": "..."}}
+        ("originals" is for the answer's way home and is PERSONAL DATA: the caller keeps it in memory, never in a
+        log and never toward the provider; see src/gpt-package.ts restorePlaceholders)
         {"ok": false, "why": "<reason, no content>"}
 Exit 0 when it answered (either way); anything else is a failure the caller treats as a refusal.
 """
@@ -105,14 +107,24 @@ def protect(text, keep):
     return rx.sub(swap, text), {t: o for o, t in tokens.items()}
 
 
-def redact_keeping(text, keep):
-    """redact() with the kept names swapped out and preserved: (the result, {token: original}).
-    Raises redact.RedactionError like redact(). The leak gate calls this too."""
+def redact_keeping_with_originals(text, keep):
+    """redact_keeping() that also hands back {placeholder: original text} for the answer's way home:
+    (the result, {token: original}, {placeholder: original}). A kept name inside an original is put back
+    too. Raises redact.RedactionError like redact()."""
     restore = {}
     if keep:
         text, restore = protect(text, keep)
+    originals = {}
     with redact.preserving(restore.keys()):
-        return redact.redact(text), restore
+        result = redact.redact(text, originals=originals)
+    return result, restore, {ph: restore_names(raw, restore) for ph, raw in originals.items()}
+
+
+def redact_keeping(text, keep):
+    """redact() with the kept names swapped out and preserved: (the result, {token: original}).
+    Raises redact.RedactionError like redact(). The leak gate calls this too."""
+    result, restore, _originals = redact_keeping_with_originals(text, keep)
+    return result, restore
 
 
 def restore_names(text, restore):
@@ -130,13 +142,14 @@ def decide(text, keep=()):
     if not gate_green():
         return {"ok": False, "why": "a szivargas-kapu nem zold erre a kitakaro-kodra"}
     try:
-        r, restore = redact_keeping(text, keep)
+        r, restore, originals = redact_keeping_with_originals(text, keep)
     except redact.RedactionError as e:
         return {"ok": False, "why": f"a kitakaras nem futott le: {e}"}
     problems = redact.runtime_guard(r)
     if problems:
         return {"ok": False, "why": f"a kitakaras utan is maradt: {','.join(problems)}"}
-    return {"ok": True, "text": restore_names(r["text"], restore), "counts": r["counts"], "version": r["version"]}
+    return {"ok": True, "text": restore_names(r["text"], restore), "counts": r["counts"], "version": r["version"],
+            "originals": originals}
 
 
 def main():

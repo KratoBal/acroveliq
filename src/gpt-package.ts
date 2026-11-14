@@ -46,6 +46,11 @@ export interface GptPackage {
   prompt: string
   /** Said in the thread before GPT's answer (e.g. older messages left out). */
   notice?: string
+  /**
+   * {placeholder: original} for THIS package, for the answer's way home (restorePlaceholders). PERSONAL DATA:
+   * it stays in memory with the run, is never logged and never goes toward the provider (only `prompt` does).
+   */
+  restore?: Record<string, string>
 }
 
 export interface PackageOptions {
@@ -137,11 +142,23 @@ export function secretIn(text: string, known: string[]): string | null {
 // Filter 2: personal data (the JEV boundary, full mode)
 // ---------------------------------------------------------------------------
 
-export function redactBody(text: string, b: PackageOptions['boundary']): Promise<{ ok: true; text: string; counts: Record<string, number> } | { ok: false; why: string }> {
+export type RedactedBody = { ok: true; text: string; counts: Record<string, number>; originals: Record<string, string> } | { ok: false; why: string }
+
+/** The boundary's {placeholder: original}: only well-formed placeholders with text, else nothing (never a guess). */
+function readOriginals(raw: unknown): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
+  for (const [placeholder, original] of Object.entries(raw as Record<string, unknown>)) {
+    if (PLACEHOLDER.test(placeholder) && typeof original === 'string' && original) out[placeholder] = original
+  }
+  return out
+}
+
+export function redactBody(text: string, b: PackageOptions['boundary']): Promise<RedactedBody> {
   return new Promise((resolve) => {
     let out = ''
     let done = false
-    const finish = (r: { ok: true; text: string; counts: Record<string, number> } | { ok: false; why: string }) => { if (!done) { done = true; resolve(r) } }
+    const finish = (r: RedactedBody) => { if (!done) { done = true; resolve(r) } }
     const child = spawn(b.python, ['-I', b.script], {
       env: { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', ...(b.env ?? {}) },
       stdio: ['pipe', 'pipe', 'ignore'],
@@ -153,8 +170,8 @@ export function redactBody(text: string, b: PackageOptions['boundary']): Promise
       clearTimeout(timer)
       if (code !== 0) return finish({ ok: false, why: `a szemelyesadat-szuro hibaval allt le (${code})` })
       try {
-        const r = JSON.parse(out) as { ok?: unknown; text?: unknown; counts?: unknown; why?: unknown }
-        if (r.ok === true && typeof r.text === 'string' && r.text.trim()) return finish({ ok: true, text: r.text, counts: (r.counts ?? {}) as Record<string, number> })
+        const r = JSON.parse(out) as { ok?: unknown; text?: unknown; counts?: unknown; why?: unknown; originals?: unknown }
+        if (r.ok === true && typeof r.text === 'string' && r.text.trim()) return finish({ ok: true, text: r.text, counts: (r.counts ?? {}) as Record<string, number>, originals: readOriginals(r.originals) })
         return finish({ ok: false, why: typeof r.why === 'string' ? r.why : 'a szemelyesadat-szuro elutasitotta' })
       } catch {
         return finish({ ok: false, why: 'a szemelyesadat-szuro valasza nem olvashato' })
@@ -162,6 +179,22 @@ export function redactBody(text: string, b: PackageOptions['boundary']): Promise
     })
     child.stdin.end(JSON.stringify({ text, keep: PARTICIPANT_NAMES }))
   })
+}
+
+/** A placeholder as the redactor writes it: <KIND_n> (PERSON, PROPER, DOMAIN, ...) and our own <BELSO_IP_n>. */
+const PLACEHOLDER = /^<[A-Z][A-Z_]*_\d+>$/
+const PLACEHOLDER_IN_TEXT = /<[A-Z][A-Z_]*_\d+>/g
+
+/**
+ * GPT's answer comes back in the placeholders the package used (<PERSON_1>, <PROPER_6>, <DOMAIN_1>): the thread it is
+ * posted in holds the originals already, so they are put back. ONLY the placeholders of THIS package are restored,
+ * from the package's own map: a placeholder GPT made up (<PERSON_5> when the package had four) stays as it is, and
+ * so does one in a different shape. A single pass over the text, so an original that itself looks like a
+ * placeholder is not restored a second time.
+ */
+export function restorePlaceholders(text: string, restore: Record<string, string> | undefined): string {
+  if (!restore) return text
+  return text.replace(PLACEHOLDER_IN_TEXT, (found) => (restore[found] ?? found))
 }
 
 // ---------------------------------------------------------------------------
@@ -222,13 +255,18 @@ export async function buildPackage(db: Database.Database, debate: Debate, ask: s
   const masked = maskInternalIpv4(r.text)
   r.text = masked.text
   if (masked.count) r.counts = { ...r.counts, BELSO_IP: masked.count }
+  const restore = { ...r.originals, ...masked.originals }
   const late = secretIn(r.text, known)
   if (late) {
     logPackage(o, { debate: debate.id, result: 'titok', reason: late })
     throw new GptBlocked(`GPT most nem kapja meg a beszélgetést: a kész csomag titok-alakot tartalmaz (${late}).`, `secret after redaction: ${late}`)
   }
   logPackage(o, { debate: debate.id, result: 'kiment', sha256: createHash('sha256').update(r.text).digest('hex'), bytes: Buffer.byteLength(r.text), dropped, counts: r.counts })
-  return { prompt: r.text, ...(dropped ? { notice: `A GPT-nek küldött csomagból a régebbi ${dropped} üzenet a méretkorlát miatt kimaradt.` } : {}) }
+  return {
+    prompt: r.text,
+    ...(dropped ? { notice: `A GPT-nek küldött csomagból a régebbi ${dropped} üzenet a méretkorlát miatt kimaradt.` } : {}),
+    ...(Object.keys(restore).length ? { restore } : {}),
+  }
 }
 
 /** GPT's answer may be posted only without a secret shape or a fleet token in it. */
@@ -242,13 +280,13 @@ export function outputAllowed(text: string, o: Pick<PackageOptions, 'storeDir' |
 export const INTERNAL_IPV4 = /(?<![\d.])(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3})(?::\d{1,5})?(?!\d)/g
 
 /** Each internal address becomes a stable placeholder (the same address, the same placeholder). */
-export function maskInternalIpv4(text: string): { text: string; count: number } {
+export function maskInternalIpv4(text: string): { text: string; count: number; originals: Record<string, string> } {
   const seen = new Map<string, string>()
   const out = text.replace(INTERNAL_IPV4, (ip) => {
     if (!seen.has(ip)) seen.set(ip, `<BELSO_IP_${seen.size + 1}>`)
     return seen.get(ip)!
   })
-  return { text: out, count: seen.size }
+  return { text: out, count: seen.size, originals: Object.fromEntries([...seen].map(([ip, placeholder]) => [placeholder, ip])) }
 }
 
 /** One line per package: its hash and size, never its text. */
