@@ -1315,6 +1315,21 @@ export function sessionExistsOnHost(host: string | null, session: string): boole
   }
 }
 
+/**
+ * sessionExistsOnHost without holding the event loop: the router asks it once per receiver per tick, and each sync
+ * answer was a `sudo fleet-pane` child (card b8ed4f45, slice b). Fresh (a decision), never shared with a running read.
+ */
+export async function sessionExistsOnHostAsync(host: string | null, session: string): Promise<boolean> {
+  try {
+    const target: TmuxTarget = host
+      ? { host }
+      : { host: null, runAsUser: sessionRunAsUserMap().get(session) ?? null }
+    return sessionInList(await captureTmuxAsync(target, ['list-sessions', '-F', '#{session_name}']), session)
+  } catch {
+    return false
+  }
+}
+
 export function getAgentRunningSince(name: string): number | null {
   try {
     const target = agentTmuxTarget(name)
@@ -2132,7 +2147,7 @@ const SURVEY_MODAL_RX = /How is Claude doing this session/
 
 async function dismissSurveyModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
-    const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+    const pane = await captureTmuxAsync(host, ['capture-pane', '-t', session, '-p'])
     if (!SURVEY_MODAL_RX.test(pane)) return
     await dialogKeys(session, host, 'survey', () => runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 }))
     // Modal close is one frame; settle window so the next send-keys lands in
@@ -2154,7 +2169,7 @@ const RESUME_SUMMARY_MODAL_RX = /Resume from summary/
 
 export async function dismissResumeSummaryModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
-    const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+    const pane = await captureTmuxAsync(host, ['capture-pane', '-t', session, '-p'])
     if (!RESUME_SUMMARY_MODAL_RX.test(pane)) return
     await dialogKeys(session, host, 'resume-summary', async () => {
       runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
@@ -2200,7 +2215,7 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
 // nothing about the busy case changes.
 export async function clearFeedbackModalAndRecheck(session: string, host: string | null = null): Promise<boolean> {
   try {
-    const pane = capturePane(session, host)
+    const pane = await capturePaneAsync(session, host)
     if (pane == null || !detectsFeedbackDraftModal(pane)) return false
     logger.warn({ session }, 'pane held by a Claude Code feedback-draft modal on the not-ready path, dismissing')
     await dismissFeedbackDraftModalIfPresent(session, host)
@@ -2213,13 +2228,13 @@ export async function clearFeedbackModalAndRecheck(session: string, host: string
 
 export async function dismissFeedbackDraftModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
-    const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+    const pane = await captureTmuxAsync(host, ['capture-pane', '-t', session, '-p'])
     if (!detectsFeedbackDraftModal(pane)) return
     // the broker's feedback-draft answer includes the opt-out offer's Esc (keep)
     await dialogKeys(session, host, 'feedback-draft', async () => {
       runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 })
       await delay(300)
-      const after = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+      const after = await captureTmuxAsync(host, ['capture-pane', '-t', session, '-p'])
       if (detectsFeedbackOptOutPrompt(after)) {
         runTmux(host, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
         await delay(300)
@@ -2244,7 +2259,7 @@ export async function dismissFeedbackDraftModalIfPresent(session: string, host: 
 // (pure detector, quoted-text-proof), so this adds no blind-injection surface.
 export async function dismissModelConsentDialogIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
-    const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+    const pane = await captureTmuxAsync(host, ['capture-pane', '-t', session, '-p'])
     if (!detectsModelConsentDialog(pane)) return
     await dialogKeys(session, host, 'model-consent', async () => {
       runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
@@ -2284,7 +2299,7 @@ export async function answerFirstRunGates(
 ): Promise<'cleared' | 'login' | 'unchanged'> {
   let acted = false
   for (let i = 0; i < FIRST_RUN_ANSWER_MAX_STEPS; i++) {
-    const pane = capturePane(session, host)
+    const pane = await capturePaneAsync(session, host)
     const gate: FirstRunGateKind | null = pane != null ? detectsFirstRunGate(pane) : null
     if (gate == null) return acted ? 'cleared' : 'unchanged'
     if (gate === 'login') return 'login'
@@ -2421,7 +2436,7 @@ export async function waitForPaneIdle(
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
-    const pane = capturePane(session, host)
+    const pane = await capturePaneAsync(session, host)
     if (pane != null && paneLooksIdle(pane)) return true
     if (Date.now() >= deadline) return false
     await delay(PANE_IDLE_POLL_MS)
@@ -2444,7 +2459,7 @@ export async function clearInputBuffer(session: string, host: string | null = nu
   const brokerAgent = brokerAgentFor(session, host)
   if (brokerAgent) return brokerClear(brokerAgent, session)
   try {
-    const pane = capturePane(session, host)
+    const pane = await capturePaneAsync(session, host)
     for (const key of parkedClearSequence(pane != null ? parkedInputRowCount(pane) : 0)) {
       runTmux(host, ['send-keys', '-t', session, key], { timeout: 5000 })
     }
@@ -2454,7 +2469,8 @@ export async function clearInputBuffer(session: string, host: string | null = nu
   } catch (err) {
     logger.warn({ err, session }, 'Failed to clear pane input buffer before send')
   }
-  const cleared = liveBoxIsFree(capturePane(session, host), captureParkedInputView(session, host))
+  const views = await capturePaneViewsAsync(session, host)
+  const cleared = liveBoxIsFree(views?.plain ?? null, views?.parked ?? null)
   if (!cleared) logger.warn({ session }, 'clearInputBuffer: the input box is not empty after the clear')
   return cleared
 }
@@ -2483,7 +2499,7 @@ async function discardPlaceholderBuffer(session: string, host: string | null = n
   const brokerAgent = brokerAgentFor(session, host)
   if (brokerAgent) return brokerClear(brokerAgent, session)
   for (let i = 0; i < PLACEHOLDER_DISCARD_MAX; i++) {
-    const pane = capturePane(session, host)
+    const pane = await capturePaneAsync(session, host)
     // Stop pressing once the stub is gone -- a further Ctrl-C on an empty box
     // would quit the TUI.
     if (pane != null && !detectsPastePlaceholder(pane)) return true
@@ -2495,7 +2511,7 @@ async function discardPlaceholderBuffer(session: string, host: string | null = n
     }
     await delay(PLACEHOLDER_DISCARD_SETTLE_MS)
   }
-  const finalPane = capturePane(session, host)
+  const finalPane = await capturePaneAsync(session, host)
   return finalPane != null && !detectsPastePlaceholder(finalPane)
 }
 
@@ -2610,7 +2626,7 @@ export async function sendPromptToSession(
     const outcome = await emitIntoBusyPane(
       typedLine(text),
       {
-        capture: () => capturePane(session, host),
+        capture: () => capturePaneAsync(session, host),
         typeChunk: (chunk) => runTmux(host, ['send-keys', '-t', session, ...sendKeysLiteralArgs(chunk, terminated)], { timeout: 5000 }),
         enter: () => runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 }),
         delay,
@@ -2630,7 +2646,7 @@ export async function sendPromptToSession(
   // prove the buffer is clean, but proceeding without the clear is no
   // worse than the pre-fix status quo.
   try {
-    const preCapture = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+    const preCapture = await captureTmuxAsync(host, ['capture-pane', '-t', session, '-p'])
     if (shouldClearTruncatedPreamble(preCapture)) {
       logger.info({ session }, 'Cleared stale preamble from input buffer before sending prompt')
       // typing onto a stale preamble that did not clear appends the message to it: send nothing,
@@ -2689,7 +2705,7 @@ export async function sendPromptToSession(
   const payloadHint = oneLine.slice(0, Math.min(oneLine.length, 96))
   for (let attempt = 0; ; attempt++) {
     await delay(SUBMIT_RETRY_POLL_MS)
-    const pane = capturePane(session, host)
+    const pane = await capturePaneAsync(session, host)
     const action = decideSubmitFollowup(pane, payloadHint, attempt, SUBMIT_RETRY_MAX_ATTEMPTS)
     if (action === 'done') break
     if (action === 'give-up') {
@@ -2845,15 +2861,16 @@ export async function isSessionReadyForQueuedPrompt(session: string, host: strin
  * delivery diagnostics; a refusal only on the confirming second capture ends in '@confirm'.
  */
 export async function queuedPromptRefusalForSession(session: string, host: string | null = null): Promise<string | null> {
-  const refusal = (plain: string | null): string | null => {
-    const r = queuedPromptRefusal(plain)
+  // the plain and the dim-stripped view come from ONE capture per sample (card b8ed4f45, slice b)
+  const refusal = (views: { plain: string; parked: string } | null): string | null => {
+    const r = queuedPromptRefusal(views?.plain ?? null)
     // a box that shows text may hold only the dim placeholder: read the dim-stripped view
-    return r === 'box-not-free' ? queuedPromptRefusal(plain, captureParkedInputView(session, host)) : r
+    return r === 'box-not-free' ? queuedPromptRefusal(views?.plain ?? null, views?.parked ?? null) : r
   }
-  const first = refusal(capturePane(session, host))
+  const first = refusal(await capturePaneViewsAsync(session, host))
   if (first) return first
   await delay(PANE_READY_CONFIRM_DELAY_MS)
-  const second = refusal(capturePane(session, host))
+  const second = refusal(await capturePaneViewsAsync(session, host))
   return second ? `${second}@confirm` : null
 }
 
@@ -2936,7 +2953,27 @@ function plainPaneView(raw: string): string {
 
 /** A FRESH raw pane read that does not block the event loop: for decisions (readiness, keypresses). */
 export function capturePaneRawAsync(session: string, host: string | null = null): Promise<string | null> {
-  return paneSnapshots.get(paneDecisionKey(session, host), () => fetchPaneRaw(session, host), 0)
+  return paneSnapshots.fresh(paneDecisionKey(session, host), () => fetchPaneRaw(session, host))
+}
+
+/** captureParkedInputView's view (ghost suggestion stripped) of a raw `-e` capture. */
+export function parkedInputViewOf(raw: string): string {
+  return stripGhostSuggestion(raw)
+}
+
+/** captureParkedInputView, read fresh without blocking the event loop. */
+export async function captureParkedInputViewAsync(session: string, host: string | null = null): Promise<string | null> {
+  const raw = await capturePaneRawAsync(session, host)
+  return raw == null ? null : stripGhostSuggestion(raw)
+}
+
+/** BOTH views of ONE fresh capture, for a caller that reads the plain and the ghost-stripped view together. */
+export async function capturePaneViewsAsync(
+  session: string,
+  host: string | null = null,
+): Promise<{ plain: string; parked: string } | null> {
+  const raw = await capturePaneRawAsync(session, host)
+  return raw == null ? null : { plain: plainPaneView(raw), parked: stripGhostSuggestion(raw) }
 }
 
 /** capturePane's view, read fresh without blocking the event loop. */
@@ -3120,7 +3157,8 @@ const unwedgeAttempts = new Map<string, { last: number; sig: string; fails: numb
 // short settle, so input a human or agent is actively typing is never clobbered.
 // Returns true if it cleared something (caller should retry delivery next tick).
 export async function clearStaleParkedInput(session: string, host: string | null = null): Promise<boolean> {
-  const a = capturePane(session, host)
+  const aViews = await capturePaneViewsAsync(session, host)
+  const a = aViews?.plain ?? null
   if (a == null || detectPaneState(a) !== 'typing') return false
   // DIM-GUARD (2026-06-30, Szabi insight): extract the parked TEXT from the
   // dim-stripped (-e) view. Ghost/phantom frames -- stale captures, placeholder
@@ -3130,7 +3168,7 @@ export async function clearStaleParkedInput(session: string, host: string | null
   // as a wedge (no clear, no escalate). Only a REAL typed line (normal intensity)
   // survives the strip. Falls back to the plain capture only if the -e capture
   // fails (rare), preserving prior behaviour in that edge case.
-  const parked = parkedInputText(captureParkedInputView(session, host) ?? a)
+  const parked = parkedInputText(aViews?.parked ?? a)
   if (!parked) return false
 
   // Cooldown guard FIRST, before any blocking sleep: if the same parked text was
@@ -3144,11 +3182,12 @@ export async function clearStaleParkedInput(session: string, host: string | null
   if (prev && prev.sig === parked && nowMs - prev.last < UNWEDGE_COOLDOWN_MS) return false
 
   await delay(PARKED_STABLE_CONFIRM_MS)
-  const b = capturePane(session, host)
+  const bViews = await capturePaneViewsAsync(session, host)
+  const b = bViews?.plain ?? null
   // Changed (someone is typing) or already cleared -> leave it alone, and do not
   // record an attempt (this was never a stuck box). Compare on the SAME dim-
   // stripped view as the initial extraction so a dim ghost can't flip the result.
-  if (b == null || detectPaneState(b) !== 'typing' || parkedInputText(captureParkedInputView(session, host) ?? b) !== parked) return false
+  if (b == null || detectPaneState(b) !== 'typing' || parkedInputText(bViews?.parked ?? b) !== parked) return false
 
   // The main agent's input box is NEVER auto-cleared (a parked line could be a
   // real reply -- the 2026-06-30 "Balogh" near-miss). That stays absolute.
@@ -3206,7 +3245,7 @@ export async function clearStaleParkedInput(session: string, host: string | null
       runTmux(host, ['send-keys', '-t', session, sequence[i]], { timeout: 5000 })
       if (i % PARKED_CLEAR_RECHECK_EVERY === PARKED_CLEAR_RECHECK_EVERY - 1) {
         await delay(PARKED_CLEAR_SETTLE_MS)
-        const after = capturePane(session, host)
+        const after = await capturePaneAsync(session, host)
         if (after == null || detectPaneState(after) !== 'typing') break
       }
     }
@@ -3216,7 +3255,7 @@ export async function clearStaleParkedInput(session: string, host: string | null
   // Verify the box is ACTUALLY empty before claiming success: only then is the
   // pending message safe to deliver next tick. Otherwise record the failure so
   // the cooldown guard above backs us off instead of hammering every tick.
-  const final = capturePane(session, host)
+  const final = await capturePaneAsync(session, host)
   const stillStuck = final != null && detectPaneState(final) === 'typing' && parkedInputText(final) === parked
   if (stillStuck) {
     const fails = (prev && prev.sig === parked ? prev.fails : 0) + 1

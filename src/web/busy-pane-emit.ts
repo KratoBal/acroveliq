@@ -106,7 +106,7 @@ function splitAtDashes(chars: string[], chunkSize: number): string[] {
 }
 
 export interface BusyPaneIo {
-  capture(): string | null
+  capture(): string | null | Promise<string | null>
   typeChunk(chunk: string): void
   enter(): void
   delay(ms: number): Promise<void>
@@ -179,19 +179,19 @@ export async function emitIntoBusyPane(oneLine: string, io: BusyPaneIo, cfg: Bus
     return 'not-landed'
   }
   for (let i = 0; i < chunks.length; i++) {
-    const refusal = liveInputRefusal(io.capture())
+    const refusal = liveInputRefusal(await io.capture())
     if (refusal) return notLanded('chunk', refusal, i + 1)
     io.typeChunk(chunks[i]!)
     typed += typedFromChunks([chunks[i]!])
     if (i < chunks.length - 1) await io.delay(cfg.chunkGapMs)
   }
   const head = payloadHead(oneLine)
-  const beforeEnter = ourTextRefusal(io.capture(), oneLine)
+  const beforeEnter = ourTextRefusal(await io.capture(), oneLine)
   if (beforeEnter) return notLanded('before-enter', beforeEnter)
   io.enter()
   for (let attempt = 0; ; attempt++) {
     await io.delay(cfg.pollMs)
-    const pane = io.capture()
+    const pane = await io.capture()
     const action = decideSubmitFollowup(pane, head, attempt, cfg.maxRetries, { busyTarget: true, payload: oneLine })
     if (action === 'done') {
       io.report?.({ result: 'sent', chunks: chunks.length, retries })
@@ -199,7 +199,7 @@ export async function emitIntoBusyPane(oneLine: string, io: BusyPaneIo, cfg: Bus
     }
     if (action !== 'retry-enter') return notLanded('after-enter', followupRefusal(pane))
     // the retry Enter gets the same fresh look as the first one
-    const look = io.capture()
+    const look = await io.capture()
     const beforeRetry = ourTextRefusal(look, oneLine)
     if (beforeRetry) {
       // the text left the box between the two looks: the first Enter landed late. Not
