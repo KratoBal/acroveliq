@@ -6,6 +6,7 @@ import { PaneSnapshotCache } from '../web/pane-snapshot.js'
 import {
   capturePaneAsync,
   capturePaneSnapshot,
+  isSessionReadyForPrompt,
   peekPaneSnapshot,
   resetPaneSnapshotsForTest,
   setCaptureExecForTest,
@@ -75,6 +76,21 @@ describe('capturePaneAsync: a slow capture does not hold the event loop', () => 
       return { stdin: { end: () => undefined } }
     }) as unknown as never)
     expect(await capturePaneAsync('agent-gone')).toBeNull()
+  })
+})
+
+describe('isSessionReadyForPrompt: the router readiness check does not hold the event loop', () => {
+  beforeEach(() => resetPaneSnapshotsForTest())
+  afterEach(() => setCaptureExecForTest(null))
+
+  it('keeps timers firing while its capture is slow (a not-ready pane stops after one read)', async () => {
+    const fake = slowExec(300, ['✻ Brewing… (23s · ↓ 1.4k tokens)', '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt'].join('\n'))
+    setCaptureExecForTest(fake.impl)
+    let ready: boolean | undefined
+    const ticks = await ticksDuring(isSessionReadyForPrompt('agent-busy').then((r) => (ready = r)))
+    expect(ready).toBe(false)
+    expect(ticks).toBeGreaterThanOrEqual(10)
+    expect(fake.calls()).toBe(1)
   })
 })
 

@@ -2915,7 +2915,9 @@ export async function isSessionReadyForPrompt(session: string, host: string | nu
   // idleConsideringDimGhost / captureParkedInputView).
   const idleOrGhost = (plain: string): boolean =>
     idleConsideringDimGhost(plain, detectPaneState(plain) === 'typing' ? captureParkedInputView(session, host) : null)
-  const first = capturePane(session, host)
+  // Async reads (card b8ed4f45): this runs per queued message per router tick, and each
+  // synchronous capture was a `sudo fleet-pane` child holding the main thread.
+  const first = await capturePaneAsync(session, host)
   if (first == null) return false
   if (paneShowsContextSaturation(first)) {
     logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
@@ -2925,7 +2927,7 @@ export async function isSessionReadyForPrompt(session: string, host: string | nu
 
   await delay(PANE_READY_CONFIRM_DELAY_MS)
 
-  const second = capturePane(session, host)
+  const second = await capturePaneAsync(session, host)
   if (second == null) return false
   if (paneShowsContextSaturation(second)) {
     logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')

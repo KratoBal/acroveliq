@@ -178,8 +178,10 @@ describe('isSessionReadyForPrompt wiring (dim-ghost tolerant idle)', () => {
     expect(fn).toContain('captureParkedInputView(session, host)')
     expect(fn).toMatch(/idleOrGhost\((?:first|second)\)/)
     // context-saturation is scanned on the PLAIN capture (a dim banner cannot be
-    // masked -> the refusal stays robust):
-    expect(fn).toContain('capturePane(session, host)')
+    // masked -> the refusal stays robust). The read is the ASYNC twin of capturePane
+    // (same plain view; card b8ed4f45): a sync child here held the router's main thread.
+    expect(fn).toContain('capturePaneAsync(session, host)')
+    expect(fn).not.toMatch(/=\s*capturePane\(session, host\)/)
     expect(fn).toMatch(/paneShowsContextSaturation\((?:first|second)\)/)
   })
 })
