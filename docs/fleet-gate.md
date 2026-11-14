@@ -573,7 +573,7 @@ A hívó szkriptek a #28 óta a kapu nyelvén beszélnek (`ssh fleet@<gép> ps`)
 és az ütemezett feladatokat is akkor írja át acrobot. A két telepítés között tehát:
 
 - **A stage gépre szóló régi hívók az élő fából elutasítást kapnak:** a stage takarítás előszűrője
-  (`precheck/stage-gyorsitotar.sh`), az AI mentés a NAS-ra (`ai-db-nas-mentes.sh`), a
+  (`precheck/stage-gyorsitotar.sh`, ma a `precheck/lemez-kapu.sh` vékony burka), az AI mentés a NAS-ra (`ai-db-nas-mentes.sh`), a
   visszaállítási próba (`visszaallitasi-proba.sh`), a kirakat telepítési állapota
   (`kirakat-telepites.sh`), és a napi mentés AI-része a kereszt-másolással együtt.
 - **Az éles gépre szóló hívók az élő fából még mennek, de CSAK az 1. és a 3. lépés között.** Az éles
@@ -656,7 +656,7 @@ A teszt gépen előbb a stage-sorok, az élesítés után az éles sorok. A két
 | Mi | Gép | Parancs (a flotta konténeréből) | Várt kimenet |
 |---|---|---|---|
 | lemez-állapot | mindkettő | `cd /home/marveen/marveen && bash scripts/lemez-allapot.sh` | mindkét gépnél `df` sorok, `---DOCKER---`, a `docker system df` táblázat; nincs „NEM ERHETO EL” |
-| a stage takarítás előszűrője | stage | `cd /home/marveen/marveen && bash scripts/precheck/stage-gyorsitotar.sh; echo $?` | `SKIP` vagy egy `[preCheck meres]` sor, kilépés 0 |
+| a lemez-takarítások előszűrője (a stage és az éles takarítás közös előszűrője, `lemez-kapu.sh`; a régi `stage-gyorsitotar.sh` ennek vékony burka) | stage és éles | `cd /home/marveen/marveen && bash scripts/precheck/lemez-kapu.sh stage; echo $?` és `... lemez-kapu.sh eles; echo $?` | `SKIP` vagy egy `[preCheck meres, <gép>]` sor az okokkal, kilépés 0; hibánál (elérhetetlen gép, értelmezhetetlen válasz) kilépés nem 0, és az ütemező felébreszt |
 | az AI mentés a NAS-ra | stage | `cd /home/marveen/marveen && bash scripts/ai-db-nas-mentes.sh --local` | „bejegyzes: N” (N > 0), kilépés 0 |
 | a visszaállítási próba | stage | `cd /home/marveen/marveen && bash scripts/visszaallitasi-proba.sh ai` | „visszatoltve: conversations=… messages=…”, „KESZ.” |
 | a kirakat telepítési állapota | stage | `cd /home/marveen/marveen && bash scripts/kirakat-telepites.sh allapot` | az utolsó öt telepítés táblázata |
@@ -737,3 +737,19 @@ nem olvassa. A `/bin/sh` login shell is maradhat (ha mégis: `usermod -s /bin/ba
 (oszlopjog mellett a puszta `DROP ROLE` elbukik).
 
 A `/usr/local/sbin/fleet-gate` maradhat: kényszer nélkül senki nem hívja.
+
+## A lemez-takarítások előszűrője (`precheck/lemez-kapu.sh stage|eles`)
+
+Kártya fde4acc2 (2026-11-14). Egy szkript dönti el, kell-e felébreszteni a stage és az éles gép lemez-takarítását; SKIP csak akkor, ha MINDEN jel a küszöb alatt van. A küszöbök a 2026-11-14 18:49-es mérésből jönnek (`exchange/lemez-kapu-meres-2026-11-14.txt`):
+
+| jel | stage | éles |
+|---|---|---|
+| a telebb lemez (a `/` és a `/var/lib/docker` közül) | >= 80% | >= 80% |
+| Build Cache visszanyerhető (a `docker system df` utolsó oszlopa) | >= 2 GB | >= 2 GB |
+| Képek visszanyerhető | >= 10 GB | NEM jel |
+
+- **Miért a képek is, stage-en:** a 00:27-es, 06:28-as és 12:25-ös takarítás a lemezt főleg a kép-prune-nal ürítette (10,46 GB, 9,80 GB, kb. 33 GB, ebből a builder-prune 7,2 GB); a Képek 34,99 GB-ból 19,71 GB visszanyerhető (56%). A csak Build Cache-t néző kapu egy képekkel telő lemezen 80% alatt nem ébredt volna.
+- **Miért nem jel a képek az éles gépen:** minden éles kör builder-prune 0 B, a Docker-lemez 31% előtte és utána, a Build Cache 0 B; a 3,1 GB visszanyerhető kép nem mozdul. A feltétel nélküli, 6 óránkénti éles takarítás ezért napi négy teljes modell-kör volt semmiért.
+- **`docker buildx du`** nem kapu-művelet (a stage kapuja elutasítja, mérve 18:49), ezért a cache-jel a `system-df` Build Cache RECLAIMABLE oszlopa marad. Ma 40,57 GB a 45,06 GB-ból, tehát igaz szám; a 2026-09-23-i 35 MB a megosztott rekordok akkori állapota volt, nem állandó. Ha az oszlop újra a privát részen ragadna, a 80%-os lemez-feltétel akkor is ébreszt.
+- Hiba (elérhetetlen gép, értelmezhetetlen válasz) esetén a szkript nem 0-val lép ki, és az ütemező felébreszt (fail-open); SKIP-nek soha nem olvasódik.
+- Az ütemezések átállítása (a két takarítás `preCheck` mezője) az `~/.claude/scheduled-tasks` alatt él, nem a repóban: acrobot dolga.
