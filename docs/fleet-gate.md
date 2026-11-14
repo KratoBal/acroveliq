@@ -657,6 +657,7 @@ A teszt gépen előbb a stage-sorok, az élesítés után az éles sorok. A két
 |---|---|---|---|
 | lemez-állapot | mindkettő | `cd /home/marveen/marveen && bash scripts/lemez-allapot.sh` | mindkét gépnél `df` sorok, `---DOCKER---`, a `docker system df` táblázat; nincs „NEM ERHETO EL” |
 | a stage takarítás előszűrője | stage | `cd /home/marveen/marveen && bash scripts/precheck/stage-gyorsitotar.sh; echo $?` | `SKIP` vagy egy `[preCheck meres]` sor, kilépés 0 |
+| az éles lemez-takarítás előszűrője (`lemez-kapu.sh eles`) | éles | `cd /home/marveen/marveen && bash scripts/precheck/lemez-kapu.sh eles; echo $?` | `SKIP` vagy egy `[preCheck meres, eles]` sor az okokkal, kilépés 0; hibánál (elérhetetlen gép, értelmezhetetlen válasz) kilépés nem 0, és az ütemező felébreszt; kilépés 2 a kapu elutasítása, nem elérhetetlen gép |
 | az AI mentés a NAS-ra | stage | `cd /home/marveen/marveen && bash scripts/ai-db-nas-mentes.sh --local` | „bejegyzes: N” (N > 0), kilépés 0 |
 | a visszaállítási próba | stage | `cd /home/marveen/marveen && bash scripts/visszaallitasi-proba.sh ai` | „visszatoltve: conversations=… messages=…”, „KESZ.” |
 | a kirakat telepítési állapota | stage | `cd /home/marveen/marveen && bash scripts/kirakat-telepites.sh allapot` | az utolsó öt telepítés táblázata |
@@ -737,3 +738,18 @@ nem olvassa. A `/bin/sh` login shell is maradhat (ha mégis: `usermod -s /bin/ba
 (oszlopjog mellett a puszta `DROP ROLE` elbukik).
 
 A `/usr/local/sbin/fleet-gate` maradhat: kényszer nélkül senki nem hívja.
+
+## Az éles lemez-takarítás előszűrője (`precheck/lemez-kapu.sh eles`)
+
+Kártya fde4acc2 (2026-11-14). Az `eles-lemez-takaritas` (`50 */6 * * *`) előszűrője: SKIP csak akkor, ha MINDEN jel a küszöb alatt van. A 2026-11-14 18:49-es mérés (`exchange/lemez-kapu-meres-2026-11-14.txt`) szerint az éles takarítás minden köre builder-prune 0 B volt, a Docker-lemez 31% előtte és utána, a Build Cache 0 B: napi négy teljes modell-kör semmiért.
+
+| jel | küszöb |
+|---|---|
+| a telebb lemez (a `/` és a `/var/lib/docker` közül) | >= 80% |
+| Build Cache visszanyerhető (a `docker system df` utolsó oszlopa) | >= 2 GB |
+
+- **A stage takarítás feltétel nélküli marad, és NEM kap előszűrőt.** Balázs, 2026-11-04 18:42/18:45 UTC, fő csatorna, msg 1567610781254811670, szó szerint: „azert mert van hely naponta ketszer torold ami nem kell. nem kell megvarni amig felmegy 80%-ra". A `lemez-kapu.sh stage` ezért kilépés 2-vel elutasít. A kikapcsolt `stage-gyorsitotar-orjarat` régi kapuja a `stage-gyorsitotar.sh`, változatlanul.
+- Az éles képek nem jel (3,1 GB visszanyerhető, nem mozdul; a kép-prune az éles gépen tiltva marad).
+- `docker buildx du` nem kapu-művelet (a stage kapuja elutasítja, mérve), ezért a cache-jel a `system-df` Build Cache RECLAIMABLE oszlopa marad; a 2026-09-23-i 35 MB a megosztott rekordok akkori állapota volt, nem állandó. Ha az oszlop újra a privát részen ragadna, a 80%-os lemez-feltétel akkor is ébreszt.
+- Hiba (elérhetetlen gép, értelmezhetetlen válasz) esetén a szkript nem 0-val lép ki, és az ütemező felébreszt; SKIP-nek soha nem olvasódik.
+- Az ütemezés `preCheck` mezője az `~/.claude/scheduled-tasks` alatt él, nem a repóban: acrobot dolga.
