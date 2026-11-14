@@ -173,14 +173,17 @@ describe('isSessionReadyForPrompt wiring (dim-ghost tolerant idle)', () => {
     expect(start).toBeGreaterThan(-1)
     const fn = src.slice(start, start + 2600)
     // typing-vs-idle-box is decided through the dim-ghost-tolerant path, which
-    // scrapes the GHOST-STRIPPED captureParkedInputView (so the dim
-    // example-suggestion never reads as parked):
-    expect(fn).toContain('captureParkedInputView(session, host)')
-    expect(fn).toMatch(/idleOrGhost\((?:first|second)\)/)
-    // context-saturation is scanned on the PLAIN capture (a dim banner cannot be
-    // masked -> the refusal stays robust). The read is the ASYNC twin of capturePane
-    // (same plain view; card b8ed4f45): a sync child here held the router's main thread.
-    expect(fn).toContain('capturePaneAsync(session, host)')
+    // scrapes the GHOST-STRIPPED view (so the dim example-suggestion never reads as
+    // parked). Card b8ed4f45: that view is stripGhostSuggestion of the SAME raw
+    // capture the plain view comes from, not a second synchronous captureParkedInputView
+    // child on the main thread:
+    expect(fn).toContain('stripGhostSuggestion(raw)')
+    expect(fn).not.toMatch(/captureParkedInputView\(/)
+    expect(fn).toMatch(/idleOrGhost\((?:first|second), (?:first|second)Raw\)/)
+    // context-saturation is scanned on the PLAIN view (a dim banner cannot be
+    // masked -> the refusal stays robust). Both reads are the ASYNC raw capture,
+    // never a synchronous capturePane child:
+    expect(fn).toContain('capturePaneRawAsync(session, host)')
     expect(fn).not.toMatch(/=\s*capturePane\(session, host\)/)
     expect(fn).toMatch(/paneShowsContextSaturation\((?:first|second)\)/)
   })

@@ -94,6 +94,46 @@ describe('isSessionReadyForPrompt: the router readiness check does not hold the 
   })
 })
 
+// The typing branch used to start a SECOND, synchronous child (captureParkedInputView) per
+// sample (barracuda, #362 review). Both views now come from the one raw capture.
+describe('isSessionReadyForPrompt: the typing branch needs no extra child', () => {
+  beforeEach(() => resetPaneSnapshotsForTest())
+  afterEach(() => setCaptureExecForTest(null))
+
+  const ESC = '\x1b'
+  const SEP = '─'.repeat(80)
+  const FOOTER = '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ↓ to manage'
+  const box = (inputLine: string): string => [SEP, inputLine, SEP, FOOTER].join('\n')
+  const GHOST_BOX = box(`${ESC}[39m❯ ${ESC}[2mConfirm Samu got my last update${ESC}[0m`)
+  const REAL_INPUT_BOX = box(`${ESC}[39m❯ ${ESC}[38;5;253mFinish the migration before lunch${ESC}[39m`)
+
+  it('a dim ghost in the box reads ready, from exactly one child per sample, with the loop free', async () => {
+    const fake = slowExec(150, GHOST_BOX)
+    setCaptureExecForTest(fake.impl)
+    let ready: boolean | undefined
+    const ticks = await ticksDuring(isSessionReadyForPrompt('agent-ghost').then((r) => (ready = r)))
+    expect(ready).toBe(true)
+    expect(fake.calls()).toBe(2) // two samples, one child each; a sync parked-view child would not show here
+    expect(ticks).toBeGreaterThanOrEqual(10)
+  })
+
+  it('real parked input is NOT ready (the strip keeps normal-intensity text), one child for the one sample', async () => {
+    const fake = slowExec(5, REAL_INPUT_BOX)
+    setCaptureExecForTest(fake.impl)
+    expect(await isSessionReadyForPrompt('agent-parked')).toBe(false)
+    expect(fake.calls()).toBe(1)
+  })
+
+  it('a decision read never joins a display read that started before it', async () => {
+    const fake = slowExec(40)
+    setCaptureExecForTest(fake.impl)
+    const display = capturePaneSnapshot('agent-key')
+    await capturePaneAsync('agent-key')
+    await display
+    expect(fake.calls()).toBe(2)
+  })
+})
+
 describe('shared snapshots: many readers, one child', () => {
   beforeEach(() => resetPaneSnapshotsForTest())
   afterEach(() => setCaptureExecForTest(null))

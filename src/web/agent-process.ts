@@ -2825,28 +2825,48 @@ export function capturePane(session: string, host: string | null = null): string
 // ---- Non-blocking pane reads (card b8ed4f45) ------------------------------------
 // capturePane above stays for the many synchronous injection paths; the readers
 // below are for the event-loop-hot callers (dashboard polls, router readiness).
-// Same view, same post-processing, but the child does not hold the main thread and
+// Same views, same post-processing, but the child does not hold the main thread and
 // the snapshot is shared per session (see pane-snapshot.ts).
+//
+// The cache holds the RAW `capture-pane -e -p` text. capturePane's plain view and
+// captureParkedInputView's ghost-stripped view are both derived from that one
+// capture (they differ only in post-processing), so the readiness check's
+// "typing" branch needs no second child.
 export const PANE_SNAPSHOT_TTL_MS = 3000
 const paneSnapshots = new PaneSnapshotCache(PANE_SNAPSHOT_TTL_MS)
 const paneSnapshotKey = (session: string, host: string | null): string => `${host ?? 'local'}:${session}`
+// DECISION reads (readiness, keypresses) get their own key: they never join a display
+// read that started earlier, so the capture they act on is made after they asked.
+const paneDecisionKey = (session: string, host: string | null): string => `decision:${paneSnapshotKey(session, host)}`
 
-async function fetchPaneView(session: string, host: string | null): Promise<string | null> {
+async function fetchPaneRaw(session: string, host: string | null): Promise<string | null> {
   try {
-    return stripAllAnsi(stripSessionTitleBanner(await captureTmuxAsync(host, ['capture-pane', '-t', session, '-e', '-p'])))
+    return await captureTmuxAsync(host, ['capture-pane', '-t', session, '-e', '-p'])
   } catch {
     return null
   }
 }
 
-/** A FRESH pane read that does not block the event loop: for decisions (readiness, keypresses). */
-export function capturePaneAsync(session: string, host: string | null = null): Promise<string | null> {
-  return paneSnapshots.get(paneSnapshotKey(session, host), () => fetchPaneView(session, host), 0)
+/** capturePane's view of a raw `-e` capture: session-title banner and all ANSI removed. */
+function plainPaneView(raw: string): string {
+  return stripAllAnsi(stripSessionTitleBanner(raw))
+}
+
+/** A FRESH raw pane read that does not block the event loop: for decisions (readiness, keypresses). */
+export function capturePaneRawAsync(session: string, host: string | null = null): Promise<string | null> {
+  return paneSnapshots.get(paneDecisionKey(session, host), () => fetchPaneRaw(session, host), 0)
+}
+
+/** capturePane's view, read fresh without blocking the event loop. */
+export async function capturePaneAsync(session: string, host: string | null = null): Promise<string | null> {
+  const raw = await capturePaneRawAsync(session, host)
+  return raw == null ? null : plainPaneView(raw)
 }
 
 /** A pane view at most `maxAgeMs` old (default 3 s), shared per session: for DISPLAY. */
-export function capturePaneSnapshot(session: string, host: string | null = null, maxAgeMs: number = PANE_SNAPSHOT_TTL_MS): Promise<string | null> {
-  return paneSnapshots.get(paneSnapshotKey(session, host), () => fetchPaneView(session, host), maxAgeMs)
+export async function capturePaneSnapshot(session: string, host: string | null = null, maxAgeMs: number = PANE_SNAPSHOT_TTL_MS): Promise<string | null> {
+  const raw = await paneSnapshots.get(paneSnapshotKey(session, host), () => fetchPaneRaw(session, host), maxAgeMs)
+  return raw == null ? null : plainPaneView(raw)
 }
 
 /**
@@ -2854,7 +2874,8 @@ export function capturePaneSnapshot(session: string, host: string | null = null,
  * background when older than the TTL. undefined on the first read of a session.
  */
 export function peekPaneSnapshot(session: string, host: string | null = null): string | null | undefined {
-  return paneSnapshots.peekAndRefresh(paneSnapshotKey(session, host), () => fetchPaneView(session, host))
+  const raw = paneSnapshots.peekAndRefresh(paneSnapshotKey(session, host), () => fetchPaneRaw(session, host))
+  return raw == null ? raw : plainPaneView(raw)
 }
 
 /** Test seam: forget every cached pane view. */
@@ -2913,27 +2934,31 @@ export async function isSessionReadyForPrompt(session: string, host: string | nu
   // the plain view says 'typing' do we pay for the second (-e, dim-stripped)
   // capture to decide whether anything REAL is parked (see
   // idleConsideringDimGhost / captureParkedInputView).
-  const idleOrGhost = (plain: string): boolean =>
-    idleConsideringDimGhost(plain, detectPaneState(plain) === 'typing' ? captureParkedInputView(session, host) : null)
-  // Async reads (card b8ed4f45): this runs per queued message per router tick, and each
-  // synchronous capture was a `sudo fleet-pane` child holding the main thread.
-  const first = await capturePaneAsync(session, host)
-  if (first == null) return false
+  // The ghost-stripped view comes from the SAME raw capture as the plain one (card
+  // b8ed4f45): the typing branch used to start a second, synchronous child here.
+  const idleOrGhost = (plain: string, raw: string): boolean =>
+    idleConsideringDimGhost(plain, detectPaneState(plain) === 'typing' ? stripGhostSuggestion(raw) : null)
+  // Async reads: this runs per queued message per router tick, and each synchronous
+  // capture was a `sudo fleet-pane` child holding the main thread.
+  const firstRaw = await capturePaneRawAsync(session, host)
+  if (firstRaw == null) return false
+  const first = plainPaneView(firstRaw)
   if (paneShowsContextSaturation(first)) {
     logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
-  if (!idleOrGhost(first)) return false
+  if (!idleOrGhost(first, firstRaw)) return false
 
   await delay(PANE_READY_CONFIRM_DELAY_MS)
 
-  const second = await capturePaneAsync(session, host)
-  if (second == null) return false
+  const secondRaw = await capturePaneRawAsync(session, host)
+  if (secondRaw == null) return false
+  const second = plainPaneView(secondRaw)
   if (paneShowsContextSaturation(second)) {
     logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
-  return idleOrGhost(second)
+  return idleOrGhost(second, secondRaw)
 }
 
 // How long to wait between the two parked-input captures when deciding whether
