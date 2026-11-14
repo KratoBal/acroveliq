@@ -56,6 +56,7 @@ vi.mock('../web/agent-config.js', () => ({
 }))
 
 vi.mock('../web/agent-process.js', () => ({
+  capturePaneAsync: async () => null,
   // The not-ready-path modal clear: false = no modal, so every caller keeps
   // its existing skip/busy behaviour and these fixtures are unaffected.
   clearFeedbackModalAndRecheck: () => false,

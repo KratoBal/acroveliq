@@ -34,6 +34,7 @@ vi.mock('../web/agent-process.js', () => ({
   agentSessionName: (n: string) => `agent-${n}`,
   restartAgentProcess: vi.fn(),
   capturePane: () => null,
+  capturePaneAsync: async () => null,
   sendPromptToSession: vi.fn(),
   isSessionReadyForPrompt: async () => false,
 }))
