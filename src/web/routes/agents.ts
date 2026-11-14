@@ -96,11 +96,12 @@ import {
 } from '../agent-scaffold.js'
 import {
   isAgentRunning,
-  agentRunState,
   startAgentProcess,
   stopAgentProcess,
   restartAgentProcess,
-  getAgentRunningSince,
+  agentRunStateSnapshot,
+  getAgentRunningSinceSnapshot,
+  invalidateAgentLive,
   getAgentProcessInfo,
   agentSessionName,
   sendPromptToSession,
@@ -110,7 +111,6 @@ import {
   delay,
 } from '../agent-process.js'
 import { addDesiredAgent, removeDesiredAgent } from '../agent-desired-state.js'
-import { RemoteStatusCache } from '../remote-status-cache.js'
 import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { detectBlockingPrompt, detectPaneState, detectPermissionMode } from '../../pane-state.js'
@@ -216,17 +216,18 @@ itt írhatod meg.
 `
 }
 
-// Short-TTL caches so the synchronous, frequently-polled status endpoints
-// (`/api/agents` on load, `/api/agents/activity` every 3s) don't issue a fresh
-// blocking ssh call per remote agent per request. Only remote agents are cached;
-// local agents fetch fresh (sub-ms tmux). See remote-status-cache.ts.
-const remoteRunStateCache = new RemoteStatusCache<AgentRunState>(5000)
+// The run state and start time of an agent are read through the shared async snapshots in agent-process.ts
+// (3 s and 10 s): `/api/agents` and `/api/agents/activity` are polled, and a synchronous `sudo fleet-pane`
+// child per agent per request held the main thread (card b8ed4f45). A remote agent's ssh probe is covered the
+// same way, so the old remote-only cache is gone.
+interface AgentLive {
+  runState: AgentRunState
+  runningSince: number | null
+}
 
-// Resolve an agent's run state, cached for remote agents to avoid blocking on
-// ssh. `isRemote` is passed by the caller (it already read the remote config).
-function agentRunStateCached(name: string, isRemote: boolean): AgentRunState {
-  if (!isRemote) return agentRunState(name)
-  return remoteRunStateCache.getOrRefresh(name, Date.now(), () => agentRunState(name), 'unreachable')
+async function agentLive(name: string): Promise<AgentLive> {
+  const runState = await agentRunStateSnapshot(name)
+  return { runState, runningSince: runState === 'running' ? await getAgentRunningSinceSnapshot(name) : null }
 }
 
 // Discord channel ids are snowflakes — base-10 numeric ids, 17 to 20 digits
@@ -449,7 +450,7 @@ interface AgentDetail extends AgentSummary {
   hasApiKey: boolean
 }
 
-function getAgentSummary(name: string): AgentSummary {
+function getAgentSummary(name: string, live: AgentLive): AgentSummary {
   const dir = agentDir(name)
   const configRoot = agentConfigRoot(name)
   const claudeMd = readFileOr(join(configRoot, 'CLAUDE.md'), '')
@@ -467,15 +468,12 @@ function getAgentSummary(name: string): AgentSummary {
   try { agentModelConfig = JSON.parse(readFileOr(join(dir, 'agent-config.json'), '{}')) } catch { /* defaults */ }
   const modelResolution = resolveAgentModelDetailed(name)
 
-  // Resolve run state through the cache (remote agents) so listing the fleet
-  // never blocks on a sleeping laptop's ssh timeout. `running` is derived from
-  // it; `unreachable` reads as not-running but is surfaced distinctly so the UI
-  // does not show a still-alive remote agent as "stopped".
+  // `unreachable` reads as not-running but is surfaced distinctly so the UI does not show a
+  // still-alive remote agent as "stopped".
   const remote = readAgentRemoteConfig(name)
-  const runState = agentRunStateCached(name, remote.host != null)
+  const { runState, runningSince } = live
   const running = runState === 'running'
   const session = running ? agentSessionName(name) : undefined
-  const runningSince = running ? getAgentRunningSince(name) : null
 
   // Reauth badge: only meaningful for a running session (a stopped agent has
   // no pane to inspect). One capture-pane per running agent on the list poll.
@@ -516,10 +514,10 @@ function getAgentSummary(name: string): AgentSummary {
   }
 }
 
-function getAgentDetail(name: string): AgentDetail {
+function getAgentDetail(name: string, live: AgentLive): AgentDetail {
   const dir = agentDir(name)
   const configRoot = agentConfigRoot(name)
-  const summary = getAgentSummary(name)
+  const summary = getAgentSummary(name, live)
   const claudeMd = readFileOr(join(configRoot, 'CLAUDE.md'), '')
   const soulMd = readFileOr(join(dir, 'SOUL.md'), '')
   const mcpJson = readFileOr(join(dir, '.mcp.json'), '{}')
@@ -549,8 +547,10 @@ function getAgentDetail(name: string): AgentDetail {
   }
 }
 
-function listAgentSummaries(): AgentSummary[] {
-  return listAgentNames().map(getAgentSummary)
+async function listAgentSummaries(): Promise<AgentSummary[]> {
+  const names = listAgentNames()
+  const lives = await Promise.all(names.map(agentLive))
+  return names.map((name, i) => getAgentSummary(name, lives[i]!))
 }
 
 // Max inter-agent messages a single main-agent inbox drain returns. The rest
@@ -701,7 +701,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   }
 
   if (path === '/api/agents' && method === 'GET') {
-    const summaries = listAgentSummaries()
+    const summaries = await listAgentSummaries()
     jsonMaybeGzip(req, res, ctx.surface === 'acroveliq' ? acroveliqAgentsView(summaries) : summaries)
     return true
   }
@@ -777,7 +777,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // Remote agents: resolve run state through the short-TTL cache so this
       // endpoint never blocks on an ssh timeout.
       const host = readAgentRemoteHost(name)
-      const runState = agentRunStateCached(name, host != null)
+      const runState = await agentRunStateSnapshot(name)
       const running = runState === 'running'
       const pane = running ? await capturePaneSnapshot(agentSessionName(name), host) : null
       const state = runState === 'unreachable' ? 'unreachable' : label(running, pane)
@@ -1403,7 +1403,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const result = writeAgentRemoteConfig(name, data.host ?? '', data.workdir ?? '')
     if (!result.ok) { json(res, { error: result.error }, 400); return true }
     // Config changed -> drop any cached status so the next poll reflects it.
-    remoteRunStateCache.invalidate(name)
+    invalidateAgentLive(name)
     json(res, { ok: true, remoteHost: result.remote.host, remoteWorkdir: result.remote.workdir })
     return true
   }
@@ -2101,7 +2101,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   if (agentMatch && method === 'GET') {
     const name = decodeURIComponent(agentMatch[1])
     if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
-    json(res, getAgentDetail(name))
+    json(res, getAgentDetail(name, await agentLive(name)))
     return true
   }
 

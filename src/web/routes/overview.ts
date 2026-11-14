@@ -7,7 +7,7 @@ import {
   agentDir, listAgentNames, readAgentDisplayName,
 } from '../agent-config.js'
 import { readAgentTeam } from '../agent-team.js'
-import { isAgentRunning } from '../agent-process.js'
+import { agentRunStateSnapshot } from '../agent-process.js'
 import { json, jsonMaybeGzip } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
@@ -62,7 +62,9 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/overview' && method === 'GET') {
     const subAgents = listAgentNames()
-    const running = subAgents.filter(n => isAgentRunning(n)).length + 1
+    // run states from the shared async snapshots (card b8ed4f45): a sync `sudo fleet-pane` child per agent held the main thread
+    const runStates = await Promise.all(subAgents.map(n => agentRunStateSnapshot(n)))
+    const running = runStates.filter(state => state === 'running').length + 1
     const total = subAgents.length + 1
 
     const db0 = getDb()
@@ -132,13 +134,13 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       hasAvatar: mainHasAvatar,
       avatarUrl: `/api/marveen/avatar`,
     })
-    for (const a of subAgents) {
+    for (const [i, a] of subAgents.entries()) {
       const team = readAgentTeam(a)
       agentsForTeam.push({
         id: a,
         label: readAgentDisplayName(a),
         role: team.role,
-        running: isAgentRunning(a),
+        running: runStates[i] === 'running',
         hasAvatar: existsSync(join(agentDir(a), 'avatar.png')),
         avatarUrl: `/api/agents/${encodeURIComponent(a)}/avatar`,
       })

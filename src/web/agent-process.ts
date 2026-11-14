@@ -1327,6 +1327,61 @@ export function getAgentRunningSince(name: string): number | null {
   }
 }
 
+// ---- Non-blocking run state and start time (card b8ed4f45, slice (a)) --------------
+// The dashboard lists poll every agent's run state and start time. The sync readers above each start a
+// `sudo fleet-pane` child (list-sessions, display-message) on the main thread, one or two per agent per request.
+// These are their async twins, shared per agent for a short TTL like the pane snapshots (pane-snapshot.ts); the
+// sync readers stay for the control paths (start, stop, the watchers) that must see the state NOW.
+export const RUNSTATE_SNAPSHOT_TTL_MS = 3000
+/** The start time of a session does not change while it lives; a restart drops the entry (invalidateAgentLive). */
+export const RUNNING_SINCE_SNAPSHOT_TTL_MS = 10_000
+const runStateSnapshots = new PaneSnapshotCache(RUNSTATE_SNAPSHOT_TTL_MS)
+const runningSinceSnapshots = new PaneSnapshotCache(RUNNING_SINCE_SNAPSHOT_TTL_MS)
+const liveKey = (name: string, host: string | null): string => `${host ?? 'local'}:${name}`
+
+async function fetchRunState(name: string, target: TmuxTarget): Promise<string> {
+  const host = target.host
+  try {
+    return classifyRunState(await captureTmuxAsync(target, ['list-sessions', '-F', '#{session_name}']), agentSessionName(name), host != null)
+  } catch (err) {
+    // the same rule as agentRunState: only the exit status tells an unreachable remote from a stopped one
+    const status = (err && typeof err === 'object' && 'code' in err) ? (err as { code?: unknown }).code : undefined
+    return classifyRunStateFromExit(typeof status === 'number' ? status : null, host != null)
+  }
+}
+
+/** The run state, at most 3 s old and shared per agent, without holding the event loop: for DISPLAY. */
+export async function agentRunStateSnapshot(name: string, maxAgeMs: number = RUNSTATE_SNAPSHOT_TTL_MS): Promise<AgentRunState> {
+  const target = agentTmuxTarget(name)
+  const state = await runStateSnapshots.get(liveKey(name, target.host), () => fetchRunState(name, target), maxAgeMs)
+  return (state ?? 'stopped') as AgentRunState
+}
+
+/** The session start time, shared per agent for 10 s, without holding the event loop: for DISPLAY. */
+export async function getAgentRunningSinceSnapshot(name: string): Promise<number | null> {
+  const target = agentTmuxTarget(name)
+  const raw = await runningSinceSnapshots.get(
+    liveKey(name, target.host),
+    async () => {
+      try {
+        return (await captureTmuxAsync(target, ['display-message', '-p', '-t', agentSessionName(name), '#{session_created}'])).trim()
+      } catch {
+        return null
+      }
+    },
+  )
+  const ts = raw == null ? NaN : parseInt(raw, 10)
+  return Number.isFinite(ts) ? ts : null
+}
+
+/** Forget what the dashboard knows about one agent's run state and start time (it was started, stopped or moved). */
+export function invalidateAgentLive(name: string): void {
+  for (const host of new Set<string | null>([null, readAgentRemoteHost(name)])) {
+    runStateSnapshots.invalidate(liveKey(name, host))
+    runningSinceSnapshots.invalidate(liveKey(name, host))
+  }
+}
+
 
 export function agentHasChannel(name: string): boolean {
   const agentProvider = resolveAgentProvider(name)
@@ -1503,6 +1558,14 @@ export async function sessionIdLaunchError(name: string, opts: LaunchOpts): Prom
 }
 
 export async function startAgentProcess(name: string, opts: LaunchOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+  try {
+    return await startAgentProcessImpl(name, opts)
+  } finally {
+    invalidateAgentLive(name)
+  }
+}
+
+async function startAgentProcessImpl(name: string, opts: LaunchOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
 
@@ -1992,6 +2055,14 @@ export async function startAgentProcess(name: string, opts: LaunchOpts = {}): Pr
 }
 
 export async function stopAgentProcess(name: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    return await stopAgentProcessImpl(name)
+  } finally {
+    invalidateAgentLive(name)
+  }
+}
+
+async function stopAgentProcessImpl(name: string): Promise<{ ok: boolean; error?: string }> {
   const session = agentSessionName(name)
   if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
 
@@ -2032,6 +2103,14 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
 }
 
 export async function restartAgentProcess(name: string, opts: LaunchOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+  try {
+    return await restartAgentProcessImpl(name, opts)
+  } finally {
+    invalidateAgentLive(name)
+  }
+}
+
+async function restartAgentProcessImpl(name: string, opts: LaunchOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   // before the stop: a refused session id must not leave the agent stopped
   const sessionIdError = await sessionIdLaunchError(name, opts)
   if (sessionIdError) return { ok: false, error: sessionIdError }
@@ -2884,6 +2963,8 @@ export function peekPaneSnapshot(session: string, host: string | null = null): s
 /** Test seam: forget every cached pane view. */
 export function resetPaneSnapshotsForTest(): void {
   paneSnapshots.clear()
+  runStateSnapshots.clear()
+  runningSinceSnapshots.clear()
 }
 
 // Capture a pane for STUCK-INPUT detection, with the editor's dim "ghost
