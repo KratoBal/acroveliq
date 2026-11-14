@@ -330,7 +330,22 @@ async function checkSession(label: string, session: string): Promise<void> {
 }
 
 export function startStuckToolCallWatcher(): NodeJS.Timeout {
+  // ONE SWEEP AT A TIME (barracuda, #365): the pane reads are async now, so a slow `sudo` read can keep a sweep
+  // running past its 30 s interval, and the next sweep would start the SAME recovery on the SAME parked
+  // box (a second Enter or a second re-inject: a double delivery or a half line sent). The sync reads could not let
+  // the timer fire mid-sweep; the guard keeps that property.
+  let sweeping = false
   async function sweep() {
+    if (sweeping) return
+    sweeping = true
+    try {
+      await sweepOnce()
+    } finally {
+      sweeping = false
+    }
+  }
+
+  async function sweepOnce() {
     try {
       await checkSession('main', MAIN_CHANNELS_SESSION)
     } catch (err) {

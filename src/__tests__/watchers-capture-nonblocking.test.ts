@@ -52,4 +52,29 @@ describe('the recurring watchers and runners read panes with no synchronous chil
     expect(read('reauth-healer.ts')).toMatch(/let sweeping = false/)
     expect(read('reauth-healer.ts')).toMatch(/if \(sweeping\) return/)
   })
+
+  /*
+    barracuda, #365: the stuck-input-watcher (15 s) and the stuck-tool-call-watcher (30 s) sweeps ACT (a bare Enter, a
+    clear and re-inject, a session resume). Their pane reads are async now, so a slow read can keep a sweep running
+    past the interval; without a guard the next sweep would run the same recovery on the same parked box (a second
+    Enter or re-inject: a double delivery or a half line sent).
+  */
+  it('the two ACTING watchers (stuck-input-watcher, stuck-tool-call-watcher) run one sweep at a time', () => {
+    for (const file of ['stuck-input-watcher.ts', 'stuck-tool-call-watcher.ts']) {
+      const src = read(file)
+      expect(src, file).toMatch(/let sweeping = false/)
+      expect(src, file).toMatch(/if \(sweeping\) return/)
+      // the flag is released in a finally, so an exception cannot leave it stuck on true
+      expect(src, file).toMatch(/try \{\s*await sweepOnce\(\)\s*\} finally \{\s*sweeping = false\s*\}/)
+    }
+  })
+
+  it('the wedged-main check reads the plain and the parked view from ONE capture', () => {
+    const src = read('channel-monitor.ts')
+    const at = src.indexOf('async function maybeRestartWedgedMainChannel(')
+    expect(at).toBeGreaterThan(-1)
+    const body = src.slice(at, src.indexOf('\n}\n', at))
+    expect(body).toContain('capturePaneViewsAsync(MAIN_CHANNELS_SESSION)')
+    expect(body).not.toMatch(/captureParkedInputViewAsync\(/)
+  })
 })

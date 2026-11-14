@@ -13,6 +13,7 @@ import {
   agentSessionName,
   captureParkedInputViewAsync,
   capturePaneAsync,
+  capturePaneViewsAsync,
   clearInputBuffer,
   dismissResumeSummaryModalIfPresent,
   dismissModelConsentDialogIfPresent,
@@ -1241,11 +1242,13 @@ async function maybeRestartWedgedMainChannel(state: StuckInputState): Promise<vo
   // applyStuckRestartBusyGuard. detectPaneState reads 'unknown' for an
   // unreadable pane and the guard fails-open on that, so a broken capture never
   // blocks a genuine recovery.
-  const paneContent = await capturePaneAsync(MAIN_CHANNELS_SESSION)
+  // the plain and the ghost-stripped view from ONE capture (capturePaneViewsAsync, #364), not two children
+  const mainViews = await capturePaneViewsAsync(MAIN_CHANNELS_SESSION)
+  const paneContent = mainViews?.plain ?? null
   const paneState = paneContent != null ? detectPaneState(paneContent) : null
   // Deadlock carve-out facts: read from the ghost-stripped parked view (same
   // view the soft recovery uses) so a dim autocomplete hint never counts.
-  const parkedView = paneState === 'typing' ? await captureParkedInputViewAsync(MAIN_CHANNELS_SESSION) : null
+  const parkedView = paneState === 'typing' ? (mainViews?.parked ?? null) : null
   const machineOrigin = parkedView != null && parkedMachineOriginInput(parkedView)
   const softRemedy = parkedView != null && parkedMainInputHasRemedy(parkedView)
   const action = applyStuckRestartBusyGuard(paneState, decideStuckInputRestart(

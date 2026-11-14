@@ -263,7 +263,22 @@ async function checkLocalSession(label: string, session: string, alertOnGiveUp: 
 }
 
 export function startStuckInputWatcher(): NodeJS.Timeout {
+  // ONE SWEEP AT A TIME (barracuda, #365): the pane reads are async now, so a slow `sudo` read can keep a sweep
+  // running past its 15 s interval, and the next sweep would start the SAME recovery on the SAME parked
+  // box (a second Enter or a second re-inject: a double delivery or a half line sent). The sync reads could not let
+  // the timer fire mid-sweep; the guard keeps that property.
+  let sweeping = false
   async function sweep() {
+    if (sweeping) return
+    sweeping = true
+    try {
+      await sweepOnce()
+    } finally {
+      sweeping = false
+    }
+  }
+
+  async function sweepOnce() {
     // The main agent's channels session is named `<id>-channels`, not
     // `agent-<id>`, so isAgentRunning (which checks the agent- prefix)
     // does not apply. Check it directly; capturePane returns null when it
