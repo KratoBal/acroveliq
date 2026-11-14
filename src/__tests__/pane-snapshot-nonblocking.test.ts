@@ -199,6 +199,22 @@ describe('PaneSnapshotCache: an invalidate beats a fetch that was already runnin
     expect(cache.peek('k')).toBeUndefined()
   })
 
+  it('the old fetch finishing does not unregister the NEWER running fetch: a third reader still joins it', async () => {
+    const cache = new PaneSnapshotCache(3000, () => 5)
+    let releaseOld: (v: string) => void = () => undefined
+    let releaseFresh: (v: string) => void = () => undefined
+    const old = cache.get('k', () => new Promise<string>((r) => (releaseOld = r)))
+    cache.invalidate('k')
+    const freshFetch = vi.fn(() => new Promise<string>((r) => (releaseFresh = r)))
+    const second = cache.get('k', freshFetch)
+    releaseOld('old')
+    await old
+    const third = cache.get('k', freshFetch) // the fresh fetch is still running: join it, start no second child
+    releaseFresh('new')
+    expect(await Promise.all([second, third])).toEqual(['new', 'new'])
+    expect(freshFetch).toHaveBeenCalledTimes(1)
+  })
+
   it('invalidating one key leaves the others alone; clear() drops a running fetch too', async () => {
     const cache = new PaneSnapshotCache(3000, () => 5)
     await cache.get('a', async () => 'A')
