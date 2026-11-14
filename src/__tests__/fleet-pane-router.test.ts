@@ -203,6 +203,17 @@ describe('with the switch ON', () => {
     expect([r, brokerCalls().filter((c) => c[0] === 'deliver'), getAbandonedPrompt(S) != null]).toEqual(['not-landed', [['deliver', 'proba', '--queued']], true])
   })
 
+  /*
+    THE ENTER'S TIME LIMIT (barracuda, #366): the old sync broker call gave `submit` 10 s; callBroker's own default is
+    60 s, so the async version let a recovery Enter hang for a minute. It keeps the old limit.
+  */
+  it('FP-ENTER-TIMEOUT: the Enter goes to `submit` with the old 10 s limit, not the 60 s default', async () => {
+    pane = IDLE
+    await sendEnterToSession(S, null)
+    const submit = calls.filter((c) => c.file === 'sudo' && c.args[1] === FLEET_PANE_BIN && c.args[2] === 'submit')
+    expect(submit.map((c) => c.timeout)).toEqual([10_000])
+  })
+
   it('FP-DIALOG: the router\'s own dialog answer goes to `dismiss`, the Enter to `submit`, the clear to `clear`; no raw key', async () => {
     pane = RESUME
     await dismissResumeSummaryModalIfPresent(S, null)
