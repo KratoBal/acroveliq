@@ -60,6 +60,7 @@ import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomy
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { clearAbandonedPrompt, recordAbandonedPrompt, recordInjectedPrompt } from './injected-prompt-registry.js'
 import { takeOverParkedDelivery } from './parked-takeover.js'
+import { PaneSnapshotCache } from './pane-snapshot.js'
 import { agentOfSession, brokerArgsForTmux, brokerInvocation, brokerStartAgent, callBroker, callBrokerSync, deliverOutcome, deliverTimeoutMs, fleetPaneBrokerOn } from './fleet-pane.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
@@ -1237,6 +1238,35 @@ function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opt
   // stdout piped (we return it); stderr piped too so tmux's `can't find session`
   // noise lands in err.stderr on failure rather than the parent stderr / dashboard.log.
   return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+}
+
+// The async twin of captureTmux: the SAME invocation (tmuxInvocationFor, so the
+// broker / runAsUser / ssh resolution is not copied), but the child runs without
+// holding the event loop. Rejects like execFileSync threw (callers keep their
+// null-on-error contract one level up).
+type CaptureExec = typeof execFile
+let captureExecImpl: CaptureExec = execFile
+/** Test seam: replace the child launcher for async pane captures; `null` restores the real one. */
+export function setCaptureExecForTest(e: CaptureExec | null): void {
+  captureExecImpl = e ?? execFile
+}
+
+function captureTmuxAsync(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): Promise<string> {
+  return new Promise((resolve, reject) => {
+    try {
+      const { host } = resolveTarget(target, tmuxArgs)
+      const inv = tmuxInvocationFor(tmuxArgs, target)
+      const child = captureExecImpl(
+        inv.file,
+        inv.args,
+        { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', maxBuffer: 4 * 1024 * 1024 },
+        (err, stdout) => (err ? reject(err) : resolve(String(stdout ?? ''))),
+      )
+      child.stdin?.end()
+    } catch (err) {
+      reject(err)
+    }
+  })
 }
 
 // Tri-state run state. For a remote agent a failed list-sessions query is
@@ -2792,6 +2822,70 @@ export function capturePane(session: string, host: string | null = null): string
   }
 }
 
+// ---- Non-blocking pane reads (card b8ed4f45) ------------------------------------
+// capturePane above stays for the many synchronous injection paths; the readers
+// below are for the event-loop-hot callers (dashboard polls, router readiness).
+// Same views, same post-processing, but the child does not hold the main thread and
+// the snapshot is shared per session (see pane-snapshot.ts).
+//
+// The cache holds the RAW `capture-pane -e -p` text. capturePane's plain view and
+// captureParkedInputView's ghost-stripped view are both derived from that one
+// capture (they differ only in post-processing), so the readiness check's
+// "typing" branch needs no second child.
+export const PANE_SNAPSHOT_TTL_MS = 3000
+const paneSnapshots = new PaneSnapshotCache(PANE_SNAPSHOT_TTL_MS)
+const paneSnapshotKey = (session: string, host: string | null): string => `${host ?? 'local'}:${session}`
+// DECISION reads (readiness, keypresses) get their own key: they never join a DISPLAY
+// read that started earlier, so the capture they act on is made after they asked. Two
+// decision reads of one session running at the same moment still share one child (a
+// maxAge 0 read joins a running one), so the later of the two can get a capture that
+// started just before it asked.
+const paneDecisionKey = (session: string, host: string | null): string => `decision:${paneSnapshotKey(session, host)}`
+
+async function fetchPaneRaw(session: string, host: string | null): Promise<string | null> {
+  try {
+    return await captureTmuxAsync(host, ['capture-pane', '-t', session, '-e', '-p'])
+  } catch {
+    return null
+  }
+}
+
+/** capturePane's view of a raw `-e` capture: session-title banner and all ANSI removed. */
+function plainPaneView(raw: string): string {
+  return stripAllAnsi(stripSessionTitleBanner(raw))
+}
+
+/** A FRESH raw pane read that does not block the event loop: for decisions (readiness, keypresses). */
+export function capturePaneRawAsync(session: string, host: string | null = null): Promise<string | null> {
+  return paneSnapshots.get(paneDecisionKey(session, host), () => fetchPaneRaw(session, host), 0)
+}
+
+/** capturePane's view, read fresh without blocking the event loop. */
+export async function capturePaneAsync(session: string, host: string | null = null): Promise<string | null> {
+  const raw = await capturePaneRawAsync(session, host)
+  return raw == null ? null : plainPaneView(raw)
+}
+
+/** A pane view at most `maxAgeMs` old (default 3 s), shared per session: for DISPLAY. */
+export async function capturePaneSnapshot(session: string, host: string | null = null, maxAgeMs: number = PANE_SNAPSHOT_TTL_MS): Promise<string | null> {
+  const raw = await paneSnapshots.get(paneSnapshotKey(session, host), () => fetchPaneRaw(session, host), maxAgeMs)
+  return raw == null ? null : plainPaneView(raw)
+}
+
+/**
+ * For a synchronous list builder: the last known pane now, refreshed in the
+ * background when older than the TTL. undefined on the first read of a session.
+ */
+export function peekPaneSnapshot(session: string, host: string | null = null): string | null | undefined {
+  const raw = paneSnapshots.peekAndRefresh(paneSnapshotKey(session, host), () => fetchPaneRaw(session, host))
+  return raw == null ? raw : plainPaneView(raw)
+}
+
+/** Test seam: forget every cached pane view. */
+export function resetPaneSnapshotsForTest(): void {
+  paneSnapshots.clear()
+}
+
 // Capture a pane for STUCK-INPUT detection, with the editor's dim "ghost
 // suggestion" autocomplete removed. Captures WITH colour (`-e`) and strips the
 // SGR-2 (dim) ghost + all ANSI, so a hint shown in an empty input box is never
@@ -2843,25 +2937,31 @@ export async function isSessionReadyForPrompt(session: string, host: string | nu
   // the plain view says 'typing' do we pay for the second (-e, dim-stripped)
   // capture to decide whether anything REAL is parked (see
   // idleConsideringDimGhost / captureParkedInputView).
-  const idleOrGhost = (plain: string): boolean =>
-    idleConsideringDimGhost(plain, detectPaneState(plain) === 'typing' ? captureParkedInputView(session, host) : null)
-  const first = capturePane(session, host)
-  if (first == null) return false
+  // The ghost-stripped view comes from the SAME raw capture as the plain one (card
+  // b8ed4f45): the typing branch used to start a second, synchronous child here.
+  const idleOrGhost = (plain: string, raw: string): boolean =>
+    idleConsideringDimGhost(plain, detectPaneState(plain) === 'typing' ? stripGhostSuggestion(raw) : null)
+  // Async reads: this runs per queued message per router tick, and each synchronous
+  // capture was a `sudo fleet-pane` child holding the main thread.
+  const firstRaw = await capturePaneRawAsync(session, host)
+  if (firstRaw == null) return false
+  const first = plainPaneView(firstRaw)
   if (paneShowsContextSaturation(first)) {
     logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
-  if (!idleOrGhost(first)) return false
+  if (!idleOrGhost(first, firstRaw)) return false
 
   await delay(PANE_READY_CONFIRM_DELAY_MS)
 
-  const second = capturePane(session, host)
-  if (second == null) return false
+  const secondRaw = await capturePaneRawAsync(session, host)
+  if (secondRaw == null) return false
+  const second = plainPaneView(secondRaw)
   if (paneShowsContextSaturation(second)) {
     logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
-  return idleOrGhost(second)
+  return idleOrGhost(second, secondRaw)
 }
 
 // How long to wait between the two parked-input captures when deciding whether
