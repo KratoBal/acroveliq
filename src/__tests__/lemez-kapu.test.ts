@@ -44,9 +44,19 @@ esac
 `,
   )
   chmodSync(join(dir, 'ssh'), 0o755)
+  // a `timeout` stub that records the limit the script gave each gate call, then runs the call itself
+  writeFileSync(join(dir, 'timeout'), `#!/bin/bash\necho "$1" >> "${dir}/timeout.log"\nshift\nexec "$@"\n`)
+  chmodSync(join(dir, 'timeout'), 0o755)
   const r = spawnSync('bash', [SCRIPT, ...args], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` }, encoding: 'utf-8' })
   const logFile = join(dir, 'ssh.log')
-  return { code: r.status, out: (r.stdout ?? '').trim(), err: r.stderr ?? '', log: existsSync(logFile) ? readFileSync(logFile, 'utf-8') : '' }
+  const limitsFile = join(dir, 'timeout.log')
+  return {
+    code: r.status,
+    out: (r.stdout ?? '').trim(),
+    err: r.stderr ?? '',
+    log: existsSync(logFile) ? readFileSync(logFile, 'utf-8') : '',
+    limits: existsSync(limitsFile) ? readFileSync(limitsFile, 'utf-8').trim().split('\n').map(Number) : [],
+  }
 }
 
 // the measured prod state of 2026-11-14 18:49: every cleanup round of the day freed 0 B
@@ -95,6 +105,18 @@ describe('lemez-kapu.sh eles', () => {
     expect(calls[0]).toContain('fleet@162.55.216.28 df -P')
     expect(calls[1]).toContain('fleet@162.55.216.28 system-df --format')
     expect(r.log).not.toContain('100.88.199.87')
+  })
+
+  /*
+    THE TIME LIMITS (acrobot 52627): `docker system df` took 5.07 s on the prod host, the 4 s limit cut it and the first
+    prod run left with exit 1 (an unreliable SKIP). The runner kills a preCheck after 10 s, so the two calls together
+    must stay under it.
+  */
+  it('the gate calls get 2 s for df -P and 7 s for system-df --format: 9 s together, under the runner\'s 10 s, and 7 s fits the measured 5.07 s', () => {
+    const r = run(['eles'], PROD_NOW)
+    expect(r.limits).toEqual([2, 7])
+    expect(r.limits.reduce((a, b) => a + b, 0)).toBeLessThan(10)
+    expect(r.limits[1]).toBeGreaterThan(5.07)
   })
 
   it('an unreachable host exits non-zero: the runner fails open and wakes the agent, it is never read as SKIP', () => {
