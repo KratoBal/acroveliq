@@ -194,7 +194,7 @@ const PLACEHOLDER_IN_TEXT = /<[A-Z][A-Z_]*_\d+>/g
  */
 export function restorePlaceholders(text: string, restore: Record<string, string> | undefined): string {
   if (!restore) return text
-  return text.replace(PLACEHOLDER_IN_TEXT, (found) => (Object.prototype.hasOwnProperty.call(restore, found) ? restore[found]! : found))
+  return text.replace(PLACEHOLDER_IN_TEXT, (found) => (restore[found] ?? found))
 }
 
 // ---------------------------------------------------------------------------

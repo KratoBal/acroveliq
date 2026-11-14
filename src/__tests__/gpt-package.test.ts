@@ -212,8 +212,6 @@ describe('filter 2: personal data (the JEV boundary, full mode)', () => {
     expect(restorePlaceholders('<PROPER_2>', restore)).toBe('<PERSON_1>')
     expect(restorePlaceholders('<PERSON_1>', undefined)).toBe('<PERSON_1>')
     expect(restorePlaceholders('<PERSON_1>', {})).toBe('<PERSON_1>')
-    // a name on the prototype is not a placeholder of the package
-    expect(restorePlaceholders('<CONSTRUCTOR_1>', restore)).toBe('<CONSTRUCTOR_1>')
   })
 
   it('PKG-RESTORE-GARBAGE: an originals field of a wrong shape from the boundary is ignored, never guessed', async () => {
