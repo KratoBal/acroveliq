@@ -30,9 +30,24 @@ import { decideSubmitFollowup, detectsPastePlaceholder, liveBoxHoldsOnly, liveIn
  * barracuda's message 31054 (one of each) arrived about fourteen times over, each copy cut at
  * the separator, because every replay typed a new copy on top of the last (acrobot 31075).
  * A CRLF is one space, as the old `\r?\n` replacement made it.
+ *
+ * The zero-width characters U+FEFF (a byte order mark), U+200B, U+200C and U+2060 are one space too, and so
+ * is a U+200D that does not join two emoji. The Claude Code box draws none of them, so a message that
+ * carries one is typed as a line the box never shows the same: the landing check compares the box with what
+ * was typed, finds them different, calls the delivery not landed, and the replay types it again on a box
+ * that is not empty. barracuda's message 52794 (two U+FEFF, 2026-11-14 22:19) stuck its target's box that
+ * way: fleet-pane submit and clear did not free it, and after a restart the router typed it again (acrobot,
+ * card 0ac8f761). A space, not a deletion, for the same reason as the controls: the security-tag scrub counts
+ * these as a gap inside a tag (prompt-safety.ts TAG_GAP), so a tag split by one cannot be glued into a real
+ * tag by deleting it. A U+200D between two emoji (a family, a flag, a heart with a variation selector, a
+ * skin tone) is kept: it is what joins them, and it is drawn.
  */
+const LONE_ZERO_WIDTH_JOINER =
+  /(?<![\p{Extended_Pictographic}\ufe0f\u{1F3FB}-\u{1F3FF}])\u200d|\u200d(?!\p{Extended_Pictographic})/gu
 export function typedLine(text: string): string {
-  return text.replace(/\r\n|[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, ' ')
+  return text
+    .replace(/\r\n|[\x00-\x1f\x7f-\x9f\u2028\u2029\ufeff\u200b\u200c\u2060]/gu, ' ')
+    .replace(LONE_ZERO_WIDTH_JOINER, ' ')
 }
 
 /** Characters per send-keys write, as on the idle path. */
