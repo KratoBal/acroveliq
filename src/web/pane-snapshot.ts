@@ -29,6 +29,16 @@ interface Entry {
 export class PaneSnapshotCache {
   private readonly store = new Map<string, Entry>()
   private readonly inflight = new Map<string, Promise<string | null>>()
+  /**
+   * Bumped by invalidate() and clear(). A fetch that started under an older generation still answers its own waiters,
+   * but stores nothing and is never joined by a later reader: otherwise a poll that began BEFORE a start or stop would
+   * write the old state back with a fresh timestamp after the entry was dropped (barracuda, #363).
+   */
+  private readonly generations = new Map<string, number>()
+  private epoch = 0
+  private generationOf(key: string): number {
+    return this.epoch + (this.generations.get(key) ?? 0)
+  }
 
   constructor(
     private readonly ttlMs: number,
@@ -49,14 +59,15 @@ export class PaneSnapshotCache {
     if (entry && maxAgeMs > 0 && this.now() - entry.at < maxAgeMs) return Promise.resolve(entry.value)
     const running = this.inflight.get(key)
     if (running) return running
-    const p = fetch()
+    const generation = this.generationOf(key)
+    const p: Promise<string | null> = fetch()
       .catch((): string | null => null)
       .then((value) => {
-        this.store.set(key, { value, at: this.now() })
+        if (this.generationOf(key) === generation) this.store.set(key, { value, at: this.now() })
         return value
       })
       .finally(() => {
-        this.inflight.delete(key)
+        if (this.inflight.get(key) === p) this.inflight.delete(key)
       })
     this.inflight.set(key, p)
     return p
@@ -75,10 +86,14 @@ export class PaneSnapshotCache {
 
   invalidate(key: string): void {
     this.store.delete(key)
+    this.inflight.delete(key)
+    this.generations.set(key, (this.generations.get(key) ?? 0) + 1)
   }
 
-  /** Forget every snapshot (a test seam; in-flight fetches still land and re-store). */
+  /** Forget every snapshot (a test seam); a fetch still in flight stores nothing. */
   clear(): void {
     this.store.clear()
+    this.inflight.clear()
+    this.epoch += 1
   }
 }
