@@ -173,6 +173,48 @@ describe('shared snapshots: many readers, one child', () => {
   })
 })
 
+describe('PaneSnapshotCache: an invalidate beats a fetch that was already running (barracuda, #363)', () => {
+  it('the old fetch answers its own waiter but stores nothing, and a later read starts a fresh fetch', async () => {
+    const cache = new PaneSnapshotCache(3000, () => 5)
+    let releaseOld: (v: string) => void = () => undefined
+    const oldFetch = vi.fn(() => new Promise<string>((r) => (releaseOld = r)))
+    const waiter = cache.get('k', oldFetch)
+    cache.invalidate('k') // the agent was started or stopped while the poll was running
+    const fresh = vi.fn(async () => 'new')
+    expect(await cache.get('k', fresh)).toBe('new') // does not join the stale fetch
+    releaseOld('old')
+    expect(await waiter).toBe('old')
+    expect(cache.peek('k')).toBe('new') // the old answer did not overwrite the newer one
+    expect(oldFetch).toHaveBeenCalledTimes(1)
+    expect(fresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('a stale fetch that lands after the invalidate leaves the key empty, not holding the old value with a new time', async () => {
+    const cache = new PaneSnapshotCache(3000, () => 5)
+    let releaseOld: (v: string) => void = () => undefined
+    const waiter = cache.get('k', () => new Promise<string>((r) => (releaseOld = r)))
+    cache.invalidate('k')
+    releaseOld('old')
+    await waiter
+    expect(cache.peek('k')).toBeUndefined()
+  })
+
+  it('invalidating one key leaves the others alone; clear() drops a running fetch too', async () => {
+    const cache = new PaneSnapshotCache(3000, () => 5)
+    await cache.get('a', async () => 'A')
+    await cache.get('b', async () => 'B')
+    cache.invalidate('a')
+    expect(cache.peek('a')).toBeUndefined()
+    expect(cache.peek('b')).toBe('B')
+    let release: (v: string) => void = () => undefined
+    const running = cache.get('c', () => new Promise<string>((r) => (release = r)))
+    cache.clear()
+    release('late')
+    await running
+    expect(cache.peek('c')).toBeUndefined()
+  })
+})
+
 describe('PaneSnapshotCache', () => {
   it('re-fetches after the TTL and not before', async () => {
     let t = 1000
