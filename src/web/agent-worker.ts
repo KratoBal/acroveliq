@@ -7,7 +7,7 @@ import { resolveFromPath, tryResolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT, DEFAULT_AGENT_MODEL } from '../config.js'
 import {
-  capturePane,
+  capturePaneAsync,
   isSessionReadyForPrompt,
   sendPromptToSession,
   sessionExistsOnHost,
@@ -226,8 +226,8 @@ function seedWorkerCredentials(ctx: WorkerCtx): boolean {
 }
 
 /** Scan the worker pane tail for Claude Code's auth-failure chrome. */
-function workerPaneHasAuthFailure(ctx: WorkerCtx): boolean {
-  const pane = capturePane(ctx.session)
+async function workerPaneHasAuthFailure(ctx: WorkerCtx): Promise<boolean> {
+  const pane = await capturePaneAsync(ctx.session)
   if (!pane) return false
   const tail = pane.split('\n').slice(-30).join('\n')
   return WORKER_AUTH_FAILURE_RX.test(tail)
@@ -580,14 +580,14 @@ const WORKER_STUCK_ALERT_COOLDOWN_MS = 60 * 60 * 1000
  * the pane still is not healthy. Never touches a busy/idle/auth pane.
  * Returns true if it acted.
  */
-function selfHealWorkerOnce(ctx: WorkerCtx): boolean {
-  const cls = classifyWorkerPane(capturePane(ctx.session))
+async function selfHealWorkerOnce(ctx: WorkerCtx): Promise<boolean> {
+  const cls = classifyWorkerPane(await capturePaneAsync(ctx.session))
   if (!shouldSelfHeal(cls)) return false
   logger.warn({ cls, session: ctx.session }, 'agent-worker: pane parked on unexpected chrome -- bounded Escape self-heal')
   for (let i = 0; i < WORKER_SELF_HEAL_MAX_ESCAPES; i++) {
     try { execFileSync(TMUX, ['send-keys', '-t', ctx.session, 'Escape'], { timeout: 5000 }) } catch { break }
     try { execFileSync('/bin/sleep', ['0.5'], { timeout: 2000 }) } catch { /* best effort */ }
-    const now = classifyWorkerPane(capturePane(ctx.session))
+    const now = classifyWorkerPane(await capturePaneAsync(ctx.session))
     if (now === 'idle' || now === 'busy') {
       logger.info({ escapes: i + 1, session: ctx.session }, 'agent-worker: self-heal cleared the parked chrome via Escape')
       return true
@@ -624,11 +624,11 @@ async function ensureWorkerReady(ctx: WorkerCtx): Promise<boolean> {
     if (await isSessionReadyForPrompt(ctx.session)) return true
     if (!healed && Date.now() - start > WORKER_SELF_HEAL_GRACE_MS) {
       healed = true
-      try { selfHealWorkerOnce(ctx) } catch (err) { logger.warn({ err }, 'agent-worker: self-heal pass failed') }
+      try { await selfHealWorkerOnce(ctx) } catch (err) { logger.warn({ err }, 'agent-worker: self-heal pass failed') }
     }
     await sleepMs(2000)
   }
-  const pane = capturePane(ctx.session)
+  const pane = await capturePaneAsync(ctx.session)
   alertWorkerStuck(ctx, (pane ?? '').split('\n').slice(-12).join('\n'))
   return false
 }
@@ -675,7 +675,7 @@ async function runWorkerAttempt(ctx: WorkerCtx, message: string, timeoutMs: numb
   if (!ready) {
     // A non-ready worker can be a dead auth (the session boots, prints the
     // login/401 chrome, never reaches an idle prompt) -- distinguish it.
-    if (workerPaneHasAuthFailure(ctx)) return { kind: 'auth' }
+    if (await workerPaneHasAuthFailure(ctx)) return { kind: 'auth' }
     logger.warn({ session: ctx.session }, 'agent-worker: worker not ready, failing request (text=null)')
     return { kind: 'fail', error: 'worker session not ready' }
   }
@@ -714,7 +714,7 @@ async function runWorkerAttempt(ctx: WorkerCtx, message: string, timeoutMs: numb
       }
       // Not done yet: catch a mid-flight auth failure (the access token can
       // expire while the session is up) BEFORE burning the full timeout.
-      if (workerPaneHasAuthFailure(ctx)) {
+      if (await workerPaneHasAuthFailure(ctx)) {
         logger.warn({ reqId, session: ctx.session }, 'agent-worker: auth failure detected mid-request')
         return { kind: 'auth' }
       }

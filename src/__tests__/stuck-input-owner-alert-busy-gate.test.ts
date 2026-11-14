@@ -78,8 +78,9 @@ describe('wiring: the owner alert goes through the gate, recovery does not', () 
     expect(alertIdx).toBeGreaterThan(gateIdx)
   })
 
-  it('the pane state is read fresh at alert time (capturePane + detectPaneState)', () => {
-    expect(fnBody).toMatch(/capturePane\(session\)/)
+  it('the pane state is read fresh at alert time (capturePaneAsync + detectPaneState)', () => {
+    // async read since card b8ed4f45 slice b (the alert is decided on a fresh capture, never a shared one)
+    expect(fnBody).toMatch(/capturePaneAsync\(session\)/)
     expect(fnBody).toMatch(/detectPaneState\(pane\)/)
   })
 

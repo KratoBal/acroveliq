@@ -105,7 +105,7 @@ import {
   getAgentProcessInfo,
   agentSessionName,
   sendPromptToSession,
-  capturePane,
+  capturePaneAsync,
   capturePaneSnapshot,
   peekPaneSnapshot,
   delay,
@@ -1804,7 +1804,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       let authUrl: string | null = null
       for (let i = 0; i < 12; i++) {
         await delay(1000)
-        const pane = capturePane(session, host)
+        const pane = await capturePaneAsync(session, host)
         if (!pane) continue
         const urlMatch = pane.match(/https:\/\/console\.anthropic\.com\/[^\s"']+/)
           || pane.match(/https:\/\/auth\.anthropic\.com\/[^\s"']+/)

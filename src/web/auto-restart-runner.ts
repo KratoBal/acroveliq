@@ -7,7 +7,7 @@ import {
   agentRunState,
   agentSessionName,
   restartAgentProcess,
-  capturePane,
+  capturePaneAsync,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { respawnMainSessionFresh } from './channel-monitor.js'
@@ -66,8 +66,8 @@ function sessionFor(name: string): string {
   return name === MAIN_AGENT_ID ? MAIN_CHANNELS_SESSION : agentSessionName(name)
 }
 
-function paneIsIdle(session: string, host: string | null): boolean {
-  const pane = capturePane(session, host)
+async function paneIsIdle(session: string, host: string | null): Promise<boolean> {
+  const pane = await capturePaneAsync(session, host)
   if (pane == null) return false
   return paneLooksIdle(pane)
 }
@@ -157,7 +157,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   } else {
     openQuestionDeferrals.delete(name)
   }
-  const blocked = restartBlockedBy({ paneIdle: paneIsIdle(session, host), openQuestion })
+  const blocked = restartBlockedBy({ paneIdle: await paneIsIdle(session, host), openQuestion })
   if (blocked) {
     const streak = openQuestionDeferrals.get(name) ?? null
     const capMs = cfg.openQuestionDeferralCapHours * 60 * 60 * 1000

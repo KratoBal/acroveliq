@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { listAgentNames } from './agent-config.js'
-import { isAgentRunning, capturePane } from './agent-process.js'
+import { isAgentRunning, capturePaneAsync } from './agent-process.js'
 import {
   resolveAgentSession,
   resolveAgentProviderType,
@@ -89,7 +89,7 @@ export function getChannelHealth(agentName: string): ChannelHealthStatus {
   }
 }
 
-function checkAgent(agentName: string, session: string): void {
+async function checkAgent(agentName: string, session: string): Promise<void> {
   const now = Date.now()
   const state = reconnectState.get(agentName)
 
@@ -102,7 +102,7 @@ function checkAgent(agentName: string, session: string): void {
 
   if (state && now < state.nextRetryAt) return
 
-  const pane = capturePane(session)
+  const pane = await capturePaneAsync(session)
   if (!pane) return
 
   const providerType = resolveAgentProviderType(agentName)
@@ -141,9 +141,21 @@ function checkAgent(agentName: string, session: string): void {
 }
 
 export function startChannelHealthMonitor(): NodeJS.Timeout {
-  function check() {
+  // A pass reads panes through async children now (card b8ed4f45, slice b), so a slow pass could still be
+  // running when the next interval fires: one pass at a time, as the sync version was by construction.
+  let running = false
+  async function check() {
+    if (running) return
+    running = true
     try {
-      checkAgent(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION)
+      await checkPass()
+    } finally {
+      running = false
+    }
+  }
+  async function checkPass() {
+    try {
+      await checkAgent(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION)
     } catch (err) {
       logger.debug({ err }, 'channel-health-monitor: main agent check error')
     }
@@ -151,7 +163,7 @@ export function startChannelHealthMonitor(): NodeJS.Timeout {
     for (const name of listAgentNames()) {
       if (!isAgentRunning(name)) continue
       try {
-        checkAgent(name, resolveAgentSession(name))
+        await checkAgent(name, resolveAgentSession(name))
       } catch (err) {
         logger.debug({ err, agent: name }, 'channel-health-monitor: agent check error')
       }

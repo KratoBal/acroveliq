@@ -1,7 +1,7 @@
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
-import { isAgentRunning, captureParkedInputView, sendEnterToSession, capturePane } from './agent-process.js'
+import { isAgentRunning, captureParkedInputViewAsync, sendEnterToSession, capturePaneAsync } from './agent-process.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { recoverStuckInputForSession, sendAlert } from './channel-monitor.js'
@@ -138,13 +138,13 @@ const alertedSpells = new Set<string>()
 // Returns true when a parked-paste spell is active (recovered or still inside
 // its confirm/dedup window) so the caller SKIPS the normal recovery this tick;
 // false when there is no parked paste (caller runs the normal 'typing' path).
-function recoverParkedPaste(
+async function recoverParkedPaste(
   label: string,
   session: string,
   host: string | null,
   thresholds: StuckInputThresholds,
-): boolean {
-  const pane = captureParkedInputView(session, host)
+): Promise<boolean> {
+  const pane = await captureParkedInputViewAsync(session, host)
   const sig = pane == null ? null : parkedPasteSignature(pane)
   if (sig == null) return false
 
@@ -170,11 +170,11 @@ function recoverParkedPaste(
 // Bare-Enter recovery (host-aware). Used for the MAIN session (host null) and
 // for REMOTE sub-agents, where the local-tmux clear+re-inject is not
 // available. channel-monitor owns the clear+re-inject escalation for these.
-function bareEnterRecovery(label: string, session: string, host: string | null): void {
+async function bareEnterRecovery(label: string, session: string, host: string | null): Promise<void> {
   // Ghost-stripped capture: a bare recovery Enter submits whatever is parked,
   // so a dim autocomplete hint read as parked input would be Enter-submitted as
   // a forged message. captureParkedInputView removes the SGR-2 ghost first.
-  const pane = captureParkedInputView(session, host)
+  const pane = await captureParkedInputViewAsync(session, host)
   // A failed capture is treated as "nothing parked" -- it ends any active
   // spell rather than holding stale state across a transient tmux miss.
   const sig = pane == null ? null : stuckInputSignature(pane)
@@ -242,7 +242,7 @@ async function checkLocalSession(label: string, session: string, alertOnGiveUp: 
       // a wedge -- three false owner alerts in one afternoon came from
       // exactly this (the agent's own outbound messages bracketed every
       // alert). Recovery attempts above are untouched; only the alert gates.
-      const pane = capturePane(session)
+      const pane = await capturePaneAsync(session)
       const paneState = pane != null ? detectPaneState(pane) : null
       if (shouldAlertParkedGiveUp({
         attempts: next.attempts,
@@ -279,7 +279,7 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
       // Parked paste placeholder takes precedence (mutually exclusive with a
       // typing-parked box); only run the normal 'typing' recovery when there is
       // no stuck paste this tick.
-      if (!recoverParkedPaste(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, null, LOCAL_FAST_THRESHOLDS)) {
+      if (!(await recoverParkedPaste(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, null, LOCAL_FAST_THRESHOLDS))) {
         await checkLocalSession(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, false, false)
       }
     } catch (err) {
@@ -299,12 +299,12 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
         // handled first via a time-gated bare Enter (the 'typing'-gated paths
         // below never see it -- a placeholder reads as 'busy').
         if (host == null) {
-          if (!recoverParkedPaste(name, session, null, LOCAL_FAST_THRESHOLDS)) {
+          if (!(await recoverParkedPaste(name, session, null, LOCAL_FAST_THRESHOLDS))) {
             await checkLocalSession(name, session, true, true)
           }
         } else {
-          if (!recoverParkedPaste(name, session, host, THRESHOLDS)) {
-            bareEnterRecovery(name, session, host)
+          if (!(await recoverParkedPaste(name, session, host, THRESHOLDS))) {
+            await bareEnterRecovery(name, session, host)
           }
         }
       } catch (err) {

@@ -84,7 +84,7 @@ describe('schedule-runner: resubmit probe+act is a recover-mode critical section
     // The measurement must be atomic with the keystroke: a pane sampled outside
     // the lock can change before the Enter/clear lands.
     const lockIdx = SRC.indexOf("withSessionSendLock(session, host, 'recover'")
-    const captureIdx = SRC.indexOf('const pane = capturePane(session, host)', SRC.indexOf('const resubmit'))
+    const captureIdx = SRC.indexOf('const pane = await capturePaneAsync(session, host)', SRC.indexOf('const resubmit'))
     expect(lockIdx).toBeGreaterThan(-1)
     expect(captureIdx).toBeGreaterThan(lockIdx)
   })

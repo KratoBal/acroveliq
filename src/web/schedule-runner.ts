@@ -48,7 +48,7 @@ import {
   sendPromptToSession,
   startAgentProcess,
   sessionExistsOnHost,
-  capturePane,
+  capturePaneAsync,
   sendEnterToSession,
   clearStaleParkedInput,
   resolveAgentProvider,
@@ -863,7 +863,7 @@ async function attemptFireTask(
     // "varakozik" -- and 'first-run' is exempt from skipIfBusy in the caller,
     // because a gated session never frees up on its own the way a busy one
     // does (recovery is the channel-monitor's dialog answering).
-    const notReadyPane = capturePane(session, host)
+    const notReadyPane = await capturePaneAsync(session, host)
     const gate = notReadyPane != null ? detectsFirstRunGate(notReadyPane) : null
     if (gate) {
       logger.warn({ task: task.name, agent: agentName, session, gate }, 'Schedule target session parked on a Claude Code first-run dialog, deferring to retry queue')
@@ -896,7 +896,7 @@ async function attemptFireTask(
     // maps 'busy' to a retry row, exempt from skipIfBusy for forceSend); the
     // retry lands on the first tick after the session has been rescued. All
     // other busy states keep the bypass.
-    const pane = capturePane(session, host)
+    const pane = await capturePaneAsync(session, host)
     if (pane != null && paneShowsContextSaturation(pane)) {
       logger.warn({ task: task.name, agent: agentName, session }, 'forceSend target session is context-saturated (100%) -- deferring to retry queue instead of injecting into a wedged session')
       return 'busy'
@@ -1064,7 +1064,7 @@ async function attemptFireTask(
         const res = await withSessionSendLock(session, host, 'recover', async (): Promise<'done' | 'continue'> => {
           // Host-aware so a remote agent's post-send stuck-check + recovery
           // Enter hit the laptop session, not a (nonexistent) local one.
-          const pane = capturePane(session, host)
+          const pane = await capturePaneAsync(session, host)
           const stuck = isScheduledPromptStuck(pane, marker)
           const action = decideScheduledResubmitAction(attempt, stuck)
           if (action === 'none') return 'done'
@@ -1496,7 +1496,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // send a one-shot alert. Clear entries when the session goes idle (task done)
     // or the maximum tracking age is reached.
     for (const [key, entry] of taskInflightMap) {
-      const pane = capturePane(entry.session, entry.host)
+      const pane = await capturePaneAsync(entry.session, entry.host)
       const state = pane != null ? detectPaneState(pane) : null
       // Record evidence that the injection actually started a turn. 'busy' is
       // the direct observation; the transcript mtime covers the task that ran
