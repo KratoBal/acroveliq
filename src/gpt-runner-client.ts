@@ -11,7 +11,7 @@
 // tools-off flags is not provable from the 0.159.3 source, so there is no session (acrobot 30864).
 import { readFileSync } from 'node:fs'
 import type { Debate, DebateDeps, GptAnswer } from './debates.js'
-import { FINAL_MARK, GptOutputBlocked, type GptPackage } from './gpt-package.js'
+import { FINAL_MARK, GptOutputBlocked, restorePlaceholders, type GptPackage } from './gpt-package.js'
 
 /** The runner could not be reached (refused, reset, unreachable): most likely the service is not
  *  running (the systemd unit past its restart limit). Or it did not answer in time: then it may be
@@ -127,6 +127,10 @@ export function makeRunGpt(o: RunnerClientOptions): DebateDeps['runGpt'] {
     const text = body && typeof body === 'object' && typeof (body as { text?: unknown }).text === 'string' ? (body as { text: string }).text : null
     if (text == null || !text.trim()) throw new Error('a futtato valasza nem tartalmaz szoveget')
     if (!filters.allowOutput(text)) throw new GptOutputBlocked('a valasz a kimeneti titok-szuron fennakadt')
-    return { ...readFinal(text), ...(pkg.notice ? { notice: pkg.notice } : {}) }
+    // the placeholders GPT answered in go back to the originals of THIS package (the thread holds them already);
+    // the output filter looks at what will actually be posted, so it runs on the restored text too
+    const restored = restorePlaceholders(text, pkg.restore)
+    if (restored !== text && !filters.allowOutput(restored)) throw new GptOutputBlocked('a valasz a kimeneti titok-szuron fennakadt')
+    return { ...readFinal(restored), ...(pkg.notice ? { notice: pkg.notice } : {}) }
   }
 }

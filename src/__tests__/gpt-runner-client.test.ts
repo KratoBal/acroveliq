@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import { getDb, initDatabase } from '../db.js'
 import { handleOwnerMessage, type DebateConfig, type DebateDeps } from '../debates.js'
 import { isTimeout, makeRunGpt, readFinal, readRunnerToken, runnerEndpoint, type GptFilters, type RunnerClientOptions } from '../gpt-runner-client.js'
-import { GptBlocked } from '../gpt-package.js'
+import { FINAL_MARK, GptBlocked } from '../gpt-package.js'
 import { debateDeps, debateFilters } from '../web/debates-discord.js'
 
 const THREAD = '1559470238783770624'
@@ -127,6 +127,34 @@ describe('a call', () => {
   it('KLIENS-FILTER-OUT: an answer the output filter stops is not posted', async () => {
     await askGpt(makeRunGpt(opts({ filters: filters({ allowOutput: () => false }), fetchImpl: fakeFetch({ text: 'TITKOS-VALASZ' }) })))
     expect([fetches.length, posts.some((p) => p.includes('TITKOS-VALASZ'))]).toEqual([1, false])
+  })
+
+  it('KLIENS-RESTORE: GPT\'s placeholders go back to the originals of the package that was sent; an invented one and an answer without a map stay', async () => {
+    const restore = { '<PERSON_1>': 'Kovács Péter', '<DOMAIN_1>': 'aquacalculator.com' }
+    await askGpt(makeRunGpt(opts({
+      filters: filters({ buildPrompt: async (_d, ask) => ({ prompt: `CSOMAG: ${ask}`, restore }) }),
+      fetchImpl: fakeFetch({ text: '<PERSON_1> a <DOMAIN_1> oldalt ajanlja, <PERSON_7> nem.' }),
+    })))
+    expect(posts.some((p) => p.includes('Kovács Péter a aquacalculator.com oldalt ajanlja, <PERSON_7> nem.'))).toBe(true)
+    expect(fetches.every((f) => !String(f.init.body).includes('Kovács') && !String(f.init.body).includes('aquacalculator'))).toBe(true)
+  })
+
+  it('KLIENS-RESTORE-FILTER: the output filter looks at the restored text too: an original that would not be allowed out is not posted', async () => {
+    const restore = { '<PERSON_1>': 'TITKOS-ERTEK' }
+    await askGpt(makeRunGpt(opts({
+      filters: filters({ buildPrompt: async () => ({ prompt: 'CSOMAG', restore }), allowOutput: (t) => !t.includes('TITKOS-ERTEK') }),
+      fetchImpl: fakeFetch({ text: 'ide jon: <PERSON_1>' }),
+    })))
+    expect(posts.some((p) => p.includes('TITKOS-ERTEK'))).toBe(false)
+  })
+
+  it('KLIENS-RESTORE-MARK: the end mark is still read after the restore', async () => {
+    const restore = { '<PERSON_1>': 'Péter' }
+    await askGpt(makeRunGpt(opts({
+      filters: filters({ buildPrompt: async () => ({ prompt: 'CSOMAG', restore }) }),
+      fetchImpl: fakeFetch({ text: `<PERSON_1> kész.\n${FINAL_MARK}` }),
+    })))
+    expect(posts.some((p) => p.includes('Péter kész.') && !p.includes(FINAL_MARK))).toBe(true)
   })
 
   it('KLIENS-OUTPUT-BLOCKED: an answer the output filter stops is said as such in the thread, not as a runner failure (barracuda, #149)', async () => {
