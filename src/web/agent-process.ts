@@ -60,6 +60,7 @@ import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomy
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { clearAbandonedPrompt, recordAbandonedPrompt, recordInjectedPrompt } from './injected-prompt-registry.js'
 import { takeOverParkedDelivery } from './parked-takeover.js'
+import { PaneSnapshotCache } from './pane-snapshot.js'
 import { agentOfSession, brokerArgsForTmux, brokerInvocation, brokerStartAgent, callBroker, callBrokerSync, deliverOutcome, deliverTimeoutMs, fleetPaneBrokerOn } from './fleet-pane.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
@@ -1237,6 +1238,35 @@ function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opt
   // stdout piped (we return it); stderr piped too so tmux's `can't find session`
   // noise lands in err.stderr on failure rather than the parent stderr / dashboard.log.
   return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+}
+
+// The async twin of captureTmux: the SAME invocation (tmuxInvocationFor, so the
+// broker / runAsUser / ssh resolution is not copied), but the child runs without
+// holding the event loop. Rejects like execFileSync threw (callers keep their
+// null-on-error contract one level up).
+type CaptureExec = typeof execFile
+let captureExecImpl: CaptureExec = execFile
+/** Test seam: replace the child launcher for async pane captures; `null` restores the real one. */
+export function setCaptureExecForTest(e: CaptureExec | null): void {
+  captureExecImpl = e ?? execFile
+}
+
+function captureTmuxAsync(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): Promise<string> {
+  return new Promise((resolve, reject) => {
+    try {
+      const { host } = resolveTarget(target, tmuxArgs)
+      const inv = tmuxInvocationFor(tmuxArgs, target)
+      const child = captureExecImpl(
+        inv.file,
+        inv.args,
+        { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', maxBuffer: 4 * 1024 * 1024 },
+        (err, stdout) => (err ? reject(err) : resolve(String(stdout ?? ''))),
+      )
+      child.stdin?.end()
+    } catch (err) {
+      reject(err)
+    }
+  })
 }
 
 // Tri-state run state. For a remote agent a failed list-sessions query is
@@ -2790,6 +2820,46 @@ export function capturePane(session: string, host: string | null = null): string
   } catch {
     return null
   }
+}
+
+// ---- Non-blocking pane reads (card b8ed4f45) ------------------------------------
+// capturePane above stays for the many synchronous injection paths; the readers
+// below are for the event-loop-hot callers (dashboard polls, router readiness).
+// Same view, same post-processing, but the child does not hold the main thread and
+// the snapshot is shared per session (see pane-snapshot.ts).
+export const PANE_SNAPSHOT_TTL_MS = 3000
+const paneSnapshots = new PaneSnapshotCache(PANE_SNAPSHOT_TTL_MS)
+const paneSnapshotKey = (session: string, host: string | null): string => `${host ?? 'local'}:${session}`
+
+async function fetchPaneView(session: string, host: string | null): Promise<string | null> {
+  try {
+    return stripAllAnsi(stripSessionTitleBanner(await captureTmuxAsync(host, ['capture-pane', '-t', session, '-e', '-p'])))
+  } catch {
+    return null
+  }
+}
+
+/** A FRESH pane read that does not block the event loop: for decisions (readiness, keypresses). */
+export function capturePaneAsync(session: string, host: string | null = null): Promise<string | null> {
+  return paneSnapshots.get(paneSnapshotKey(session, host), () => fetchPaneView(session, host), 0)
+}
+
+/** A pane view at most `maxAgeMs` old (default 3 s), shared per session: for DISPLAY. */
+export function capturePaneSnapshot(session: string, host: string | null = null, maxAgeMs: number = PANE_SNAPSHOT_TTL_MS): Promise<string | null> {
+  return paneSnapshots.get(paneSnapshotKey(session, host), () => fetchPaneView(session, host), maxAgeMs)
+}
+
+/**
+ * For a synchronous list builder: the last known pane now, refreshed in the
+ * background when older than the TTL. undefined on the first read of a session.
+ */
+export function peekPaneSnapshot(session: string, host: string | null = null): string | null | undefined {
+  return paneSnapshots.peekAndRefresh(paneSnapshotKey(session, host), () => fetchPaneView(session, host))
+}
+
+/** Test seam: forget every cached pane view. */
+export function resetPaneSnapshotsForTest(): void {
+  paneSnapshots.clear()
 }
 
 // Capture a pane for STUCK-INPUT detection, with the editor's dim "ghost

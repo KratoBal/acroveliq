@@ -105,6 +105,8 @@ import {
   agentSessionName,
   sendPromptToSession,
   capturePane,
+  capturePaneSnapshot,
+  peekPaneSnapshot,
   delay,
 } from '../agent-process.js'
 import { addDesiredAgent, removeDesiredAgent } from '../agent-desired-state.js'
@@ -219,7 +221,6 @@ itt írhatod meg.
 // blocking ssh call per remote agent per request. Only remote agents are cached;
 // local agents fetch fresh (sub-ms tmux). See remote-status-cache.ts.
 const remoteRunStateCache = new RemoteStatusCache<AgentRunState>(5000)
-const remotePaneCache = new RemoteStatusCache<string | null>(3000)
 
 // Resolve an agent's run state, cached for remote agents to avoid blocking on
 // ssh. `isRemote` is passed by the caller (it already read the remote config).
@@ -478,7 +479,7 @@ function getAgentSummary(name: string): AgentSummary {
 
   // Reauth badge: only meaningful for a running session (a stopped agent has
   // no pane to inspect). One capture-pane per running agent on the list poll.
-  const reauth = running ? detectReauthNeeded(capturePane(agentSessionName(name))) : { needsReauth: false }
+  const reauth = running ? detectReauthNeeded(peekPaneSnapshot(agentSessionName(name)) ?? null) : { needsReauth: false }
 
   return {
     name,
@@ -756,7 +757,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
     // Main agent runs in the --channels session, not agent-<name>.
     {
-      const mainPane = capturePane(MAIN_CHANNELS_SESSION)
+      const mainPane = await capturePaneSnapshot(MAIN_CHANNELS_SESSION)
       const running = mainPane !== null
       entries.push({
         name: MAIN_AGENT_ID,
@@ -769,21 +770,20 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       })
     }
 
-    for (const name of withoutMainAgent(listAgentNames())) {
-      // Remote agents: resolve run state + pane through the short-TTL caches so
-      // this 3s-polled endpoint never blocks the event loop on an ssh timeout.
+    // One snapshot per session, read concurrently and without holding the event loop:
+    // this endpoint is polled every 3 s, and a synchronous `sudo fleet-pane capture`
+    // per agent froze the whole /api for 10-60 s (card b8ed4f45).
+    const workers = await Promise.all(withoutMainAgent(listAgentNames()).map(async (name) => {
+      // Remote agents: resolve run state through the short-TTL cache so this
+      // endpoint never blocks on an ssh timeout.
       const host = readAgentRemoteHost(name)
       const runState = agentRunStateCached(name, host != null)
       const running = runState === 'running'
-      let pane: string | null = null
-      if (running) {
-        pane = host
-          ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
-          : capturePane(agentSessionName(name))
-      }
+      const pane = running ? await capturePaneSnapshot(agentSessionName(name), host) : null
       const state = runState === 'unreachable' ? 'unreachable' : label(running, pane)
-      entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), prompt: promptOf(running, pane), tail: tailOf(pane) })
-    }
+      return { name, isMain: false, running, state, mode: modeOf(running, pane), prompt: promptOf(running, pane), tail: tailOf(pane) }
+    }))
+    entries.push(...workers)
 
     jsonMaybeGzip(req, res, ctx.surface === 'acroveliq' ? acroveliqActivityView(entries) : entries)
     return true
@@ -1404,7 +1404,6 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (!result.ok) { json(res, { error: result.error }, 400); return true }
     // Config changed -> drop any cached status so the next poll reflects it.
     remoteRunStateCache.invalidate(name)
-    remotePaneCache.invalidate(name)
     json(res, { ok: true, remoteHost: result.remote.host, remoteWorkdir: result.remote.workdir })
     return true
   }
