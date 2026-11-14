@@ -53,12 +53,12 @@ beforeEach(() => {
   keys.length = 0
 })
 
-const FEFF = '﻿'
-const ZWSP = '​'
-const ZWNJ = '‌'
-const WJ = '⁠'
-const ZWJ = '‍'
-const DRAWN_NOTHING = /[﻿​-‍⁠]/g
+const FEFF = '\uFEFF'
+const ZWSP = '\u200B'
+const ZWNJ = '\u200C'
+const WJ = '\u2060'
+const ZWJ = '\u200D'
+const DRAWN_NOTHING = /[\uFEFF\u200B-\u200D\u2060]/g
 
 describe('the typed line and the zero-width characters', () => {
   it('ZERO-WIDTH: a byte order mark, a zero-width space, a non-joiner and a word joiner are one space each', () => {
