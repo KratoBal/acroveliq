@@ -40,8 +40,10 @@ const SECURITY_TAG_NAMES = ['untrusted', 'trusted-peer', 'scheduled-task'] as co
 // A control character counts as whitespace inside a tag (`<` U+0001 `/untrusted>`): the typing
 // turns every control into a space (busy-pane-emit.ts typedLine), so a tag hidden by one from a
 // plain \s here would arrive in the receiver's pane as a spaced tag (barracuda, #173 review). The zero-width
-// characters the typing turns into a space as well (U+FEFF, U+200B to U+200D, U+2060) are a gap too.
-const TAG_GAP = '[\\s\\x00-\\x1f\\x7f-\\x9f\\uFEFF\\u200B-\\u200D\\u2060]*'
+// characters the typing turns into a space as well (U+FEFF, U+200B to U+200F, U+202A to U+202E, U+2060,
+// U+2066 to U+2069, and the tag characters U+E0000 to U+E007F, written as their surrogate pairs because this
+// pattern has no unicode flag) are a gap too.
+const TAG_GAP = '(?:[\\s\\x00-\\x1f\\x7f-\\x9f\\uFEFF\\u200B-\\u200F\\u202A-\\u202E\\u2060\\u2066-\\u2069]|\\uDB40[\\uDC00-\\uDC7F])*'
 // The closing ">" is optional (barracuda on acroveliq #315): an unclosed tag, or one cut by a length
 // limit, would take the wrapper's own closing tag and read as an open block. A ">" before the next
 // "<" takes the whole tag as before; without one only the opening part goes, so a message that

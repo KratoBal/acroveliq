@@ -40,14 +40,30 @@ import { decideSubmitFollowup, detectsPastePlaceholder, liveBoxHoldsOnly, liveIn
  * card 0ac8f761). A space, not a deletion, for the same reason as the controls: the security-tag scrub counts
  * these as a gap inside a tag (prompt-safety.ts TAG_GAP), so a tag split by one cannot be glued into a real
  * tag by deleting it. A U+200D between two emoji (a family, a flag, a heart with a variation selector, a
- * skin tone) is kept: it is what joins them, and it is drawn.
+ * skin tone) is kept: it is what joins them. Whether the box draws a kept joiner, so that tmux's capture
+ * shows it back, is NOT measured (barracuda, #370 review): if it does not, a message with a family emoji
+ * sticks the same way, and a live capture of one would decide it. It is no new loss: such a message was
+ * typed as it was before.
+ *
+ * The family is wider than five characters (barracuda, #370 review): the left-to-right and right-to-left
+ * marks (U+200E, U+200F), the bidi embeddings, overrides and isolates (U+202A to U+202E, U+2066 to U+2069)
+ * and the tag characters (U+E0000 to U+E007F) are drawn as nothing too, and can split a tag name the scrub
+ * does not see. The tag characters spell a hidden ASCII text a language model can read ("ASCII smuggling"),
+ * so ONLY the three well-formed subdivision flags stay, each exactly as the emoji standard writes it
+ * (U+1F3F4, the tag letters of gbeng, gbsct or gbwls, the cancel tag U+E007F: England, Scotland, Wales);
+ * every other tag-character run is one space, whatever its length and wherever it stands, also right after
+ * a black flag or a flag (barracuda, #373 review: an exemption for "a run after a black flag" let any hidden
+ * text through behind one).
  */
 const LONE_ZERO_WIDTH_JOINER =
   /(?<![\p{Extended_Pictographic}\ufe0f\u{1F3FB}-\u{1F3FF}])\u200d|\u200d(?!\p{Extended_Pictographic})/gu
+const SUBDIVISION_FLAG_OR_TAG_RUN =
+  /(\u{1F3F4}(?:\u{E0067}\u{E0062}(?:\u{E0065}\u{E006E}\u{E0067}|\u{E0073}\u{E0063}\u{E0074}|\u{E0077}\u{E006C}\u{E0073})\u{E007F}))|[\u{E0000}-\u{E007F}]+/gu
 export function typedLine(text: string): string {
   return text
-    .replace(/\r\n|[\x00-\x1f\x7f-\x9f\u2028\u2029\ufeff\u200b\u200c\u2060]/gu, ' ')
+    .replace(/\r\n|[\x00-\x1f\x7f-\x9f\u2028\u2029\ufeff\u200b\u200c\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069]/gu, ' ')
     .replace(LONE_ZERO_WIDTH_JOINER, ' ')
+    .replace(SUBDIVISION_FLAG_OR_TAG_RUN, (found, flag?: string) => (flag ? found : ' '))
 }
 
 /** Characters per send-keys write, as on the idle path. */
