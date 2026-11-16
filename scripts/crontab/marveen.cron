@@ -26,3 +26,7 @@
 # never a checkout or a pull (work may be in progress there). barracuda asked for a manual fetch twice on
 # 2026-11-10. The log holds only changes and failures.
 */5 * * * * /home/marveen/marveen/scripts/munka-klon-fetch.sh >>/home/marveen/marveen/store/munka-klon-fetch.log 2>&1
+# The pinned question set against the test AI (task t-20261116-kerdeskeszlet-or): every 15 minutes it reads the AI's
+# /health, and the 16 model calls happen only when the AI's code or instruction text changed, or weekly. It tells
+# acrobot only on a regression or a setup failure; a clean run is one log line.
+*/15 * * * * /home/marveen/marveen/scripts/ai-kerdeskeszlet-or.sh >>/home/marveen/marveen/store/ai-kerdeskeszlet-or.log 2>&1
