@@ -480,24 +480,38 @@ if _c2 == '200':
 # KET UT UGYANARRA A KERDESRE, mert a check-runs vegpont repotol fuggoen 403-at ad.
 # A 403 NEM azt jelenti, hogy nincs ellenorzes -- ezert TILOS ures listakent kezelni:
 # az pontosan az a nema atengedes lenne, ami miatt ez a szkript letezik.
-# NEVENKENT CSAK A LEGUJABB FUTAS SZAMIT (kartya 055f4676, 2026-11-16: a #2631 ujrafuttatott CI-jenel a regi, bukott
-# verify-db sora a commit check-runs listajaban benne maradt, es a bukott-lista azt is szamolta, a szkript megallt egy
-# zold fejen). Ujrafuttatasnal (close+reopen, uj run) ugyanazzal a nevvel uj sor keletkezik, nagyobb azonositoval;
-# ami nevenkent nem a legujabb, azt NEM dobjuk el nema modon: a naplo kiirja, mit hagytunk ki. Az "ures lista" kerdese
-# marad a regi: a szuro csak a MAR LEVO sorokat valogatja, nem tud sort eltuntetni egy nev utolso elofordulasarol.
-def _legujabb_nevenkent(sorok):
-    legujabb = {}
-    for s in sorok:
-        kulcs = (s.get('id') or 0, s.get('started_at') or '')
-        reg = legujabb.get(s['name'])
-        if reg is None or kulcs > reg[0]:
-            legujabb[s['name']] = (kulcs, s)
-    return [v[1] for v in legujabb.values()]
+# CSAK AZ UJRAFUTTATAS VONODIK OSSZE, A NEVAZONOSSAG NEM (kartya 055f4676, 2026-11-16; barracuda a #374 review-jan): a #2631
+# ujrafuttatott CI-jenel a regi, bukott verify-db sora a commit check-runs listajaban benne maradt, es a bukott-lista azt is
+# szamolta, a szkript megallt egy zold fejen. DE a check-run neve nem egyedi: ket kulon workflow-nak lehet azonos nevu jobja, es
+# egy "legnagyobb id nyer" szabaly a bukott sort eltunteti a mellette futo zold mogott: nema atengedes. Ezert egy REGEBBI sor
+# csak akkor marad ki, ha ugyanazon a neven (es ugyanattol az apptol / workflow-tol) van egy UJABB sor, amely a regebbi
+# BEFEJEZESE UTAN indult (ujabb.kezdes > regebbi.befejezes): ez az ujrafuttatas alakja (close+reopen, "re-run failed jobs").
+# Ket egyszerre futo, azonos nevu sor mindketto szamit. Ha a regebbi meg fut (nincs befejezes), vagy az ujnak nincs kezdese,
+# nem bizonyithato az ujrafuttatas, es a sor BENT MARAD. A kihagyott sort a naplo kiirja, nem dobjuk el nema modon.
+# Maradek, kimondva: ket SORBAN, kulon workflow-ban futo azonos nevu job (azonos app) ugyanigy osszevonodna.
+def _ujrafuttatasok_osszevonva(sorok):
+    def _csoport(s):
+        return (s['name'], s.get('app'))
+    megmarad = []
+    for r in sorok:
+        befejezes = r.get('completed_at')
+        felulirva = False
+        if befejezes:
+            for u in sorok:
+                if (u is not r and _csoport(u) == _csoport(r)
+                        and (u.get('id') or 0) > (r.get('id') or 0)
+                        and u.get('started_at') and u['started_at'] > befejezes):
+                    felulirva = True
+                    break
+        if not felulirva:
+            megmarad.append(r)
+    return megmarad
 
 text, code = api('GET', f'/commits/{sha}/check-runs')
 if code == '200':
     runs = [{'name': c['name'], 'status': c['status'], 'conclusion': c.get('conclusion'),
-             'id': c.get('id'), 'started_at': c.get('started_at')}
+             'id': c.get('id'), 'started_at': c.get('started_at'), 'completed_at': c.get('completed_at'),
+             'app': (c.get('app') or {}).get('slug')}
             for c in json.loads(text).get('check_runs', [])]
     forras = 'check-runs'
 else:
@@ -506,15 +520,18 @@ else:
         print(f'NEM OLVASZTOK: az ellenorzeseket NEM tudom elolvasni '
               f'(check-runs {code}, actions/runs {code2}).'); sys.exit(1)
     runs = [{'name': r['name'], 'status': r['status'], 'conclusion': r.get('conclusion'),
-             'id': r.get('id'), 'started_at': r.get('run_started_at') or r.get('created_at')}
+             'id': r.get('id'), 'started_at': r.get('run_started_at') or r.get('created_at'),
+             # a workflow-futasnak nincs kulon befejezese: lezart futasnal az updated_at a legkorabbi biztos pont
+             'completed_at': r.get('updated_at') if r.get('status') == 'completed' else None,
+             'app': r.get('workflow_id')}
             for r in json.loads(text2).get('workflow_runs', [])]
     forras = f'actions/runs (a check-runs {code}-at adott)'
 print(f'   [az ellenorzesek forrasa: {forras}]')
 _osszes = runs
-runs = _legujabb_nevenkent(_osszes)
+runs = _ujrafuttatasok_osszevonva(_osszes)
 _kimaradt = [c for c in _osszes if c not in runs]
 for c in _kimaradt:
-    print(f"   [regebbi futas, nem szamit: {c['name'][:40]} {c['status']} {c['conclusion']}]")
+    print(f"   [ujrafuttatva, a regi futas nem szamit: {c['name'][:40]} {c['status']} {c['conclusion']}]")
 
 if not runs:
     print('NEM OLVASZTOK: egyetlen ellenorzes sincs ezen a fejen.'); sys.exit(1)
