@@ -480,9 +480,24 @@ if _c2 == '200':
 # KET UT UGYANARRA A KERDESRE, mert a check-runs vegpont repotol fuggoen 403-at ad.
 # A 403 NEM azt jelenti, hogy nincs ellenorzes -- ezert TILOS ures listakent kezelni:
 # az pontosan az a nema atengedes lenne, ami miatt ez a szkript letezik.
+# NEVENKENT CSAK A LEGUJABB FUTAS SZAMIT (kartya 055f4676, 2026-11-16: a #2631 ujrafuttatott CI-jenel a regi, bukott
+# verify-db sora a commit check-runs listajaban benne maradt, es a bukott-lista azt is szamolta, a szkript megallt egy
+# zold fejen). Ujrafuttatasnal (close+reopen, uj run) ugyanazzal a nevvel uj sor keletkezik, nagyobb azonositoval;
+# ami nevenkent nem a legujabb, azt NEM dobjuk el nema modon: a naplo kiirja, mit hagytunk ki. Az "ures lista" kerdese
+# marad a regi: a szuro csak a MAR LEVO sorokat valogatja, nem tud sort eltuntetni egy nev utolso elofordulasarol.
+def _legujabb_nevenkent(sorok):
+    legujabb = {}
+    for s in sorok:
+        kulcs = (s.get('id') or 0, s.get('started_at') or '')
+        reg = legujabb.get(s['name'])
+        if reg is None or kulcs > reg[0]:
+            legujabb[s['name']] = (kulcs, s)
+    return [v[1] for v in legujabb.values()]
+
 text, code = api('GET', f'/commits/{sha}/check-runs')
 if code == '200':
-    runs = [{'name': c['name'], 'status': c['status'], 'conclusion': c.get('conclusion')}
+    runs = [{'name': c['name'], 'status': c['status'], 'conclusion': c.get('conclusion'),
+             'id': c.get('id'), 'started_at': c.get('started_at')}
             for c in json.loads(text).get('check_runs', [])]
     forras = 'check-runs'
 else:
@@ -490,10 +505,16 @@ else:
     if code2 != '200':
         print(f'NEM OLVASZTOK: az ellenorzeseket NEM tudom elolvasni '
               f'(check-runs {code}, actions/runs {code2}).'); sys.exit(1)
-    runs = [{'name': r['name'], 'status': r['status'], 'conclusion': r.get('conclusion')}
+    runs = [{'name': r['name'], 'status': r['status'], 'conclusion': r.get('conclusion'),
+             'id': r.get('id'), 'started_at': r.get('run_started_at') or r.get('created_at')}
             for r in json.loads(text2).get('workflow_runs', [])]
     forras = f'actions/runs (a check-runs {code}-at adott)'
 print(f'   [az ellenorzesek forrasa: {forras}]')
+_osszes = runs
+runs = _legujabb_nevenkent(_osszes)
+_kimaradt = [c for c in _osszes if c not in runs]
+for c in _kimaradt:
+    print(f"   [regebbi futas, nem szamit: {c['name'][:40]} {c['status']} {c['conclusion']}]")
 
 if not runs:
     print('NEM OLVASZTOK: egyetlen ellenorzes sincs ezen a fejen.'); sys.exit(1)
