@@ -44,6 +44,10 @@ function world(runnerCode = 0, runnerSleepSec = 0) {
   const reports = join(dir, 'reports')
   const token = join(dir, 'token')
   writeFileSync(token, 'titok-token-123')
+  // the heavy lock as it stands live: there already, and not writable for this user (fleet-bootstrap.sh 2d, another user's 0644)
+  const lock = join(dir, 'lock')
+  writeFileSync(lock, '')
+  chmodSync(lock, 0o444)
   const msgLog = join(dir, 'msg.txt')
   const msg = join(dir, 'msg.sh')
   writeFileSync(msg, `#!/usr/bin/env bash\necho "TO=$1 $2" >> '${msgLog}'\ncat >> '${msgLog}'\n`)
@@ -71,7 +75,7 @@ exit ${runnerCode}
     KERDES_REPORT_DIR: reports,
     KERDES_MSG: msg,
     KERDES_RUNNER: `bash ${runner}`,
-    KERDES_LOCK: join(dir, 'lock'),
+    KERDES_LOCK: lock,
     KERDES_RUN_LOCK: join(dir, 'run.lock'),
   }
   const run = (extra: Record<string, string> = {}) =>
@@ -206,6 +210,31 @@ describe('ai-kerdeskeszlet-or.sh', () => {
       dirtyMessage: /az AI-futtato nem epult .*FAIL a klon nem tiszta/.test(w.messages()),
       dirtyKept: readFileSync(join(klon, 'sajat.txt'), 'utf-8'),
     }).toEqual({ clean: 0, atRemoteMain: true, builtOnce: 'built\n', dirty: 2, dirtyMessage: true, dirtyKept: 'local work\n' })
+  })
+
+  // the first live tick (2026-11-17 09:21): "Permission denied" on the lock, then "flock: 9: Bad file descriptor", and the
+  // build ran WITHOUT the lock. A lock that cannot be held now stops the round as a setup failure
+  it('the heavy lock cannot be opened: a setup message and exit 2, and no build without it', async () => {
+    health = { version: 'eeee5555aaaa', instructionsVersion: '5789d9bc8eb1' }
+    const w = world(0)
+    const klon = join(w.dir, 'klon')
+    execFileSync('git', ['-c', 'init.defaultBranch=main', 'init', '-q', klon])
+    const gitAuth = join(w.dir, 'git-auth.sh')
+    writeFileSync(gitAuth, '#!/usr/bin/env bash\nexit 0\n')
+    const built = join(w.dir, 'built.txt')
+    const r = await w.run({
+      KERDES_RUNNER: '',
+      KERDES_KLON: klon,
+      KERDES_GIT_AUTH: gitAuth,
+      KERDES_LOCK: join(w.dir, 'nincs', 'lock'),
+      KERDES_BUILD: `echo built >> '${built}'`,
+    })
+    expect({
+      code: r.code,
+      message: /az AI-futtato nem epult .*FAIL a nehez-zar nem nyithato/.test(w.messages()),
+      built: existsSync(built),
+      ran: w.args(),
+    }).toEqual({ code: 2, message: true, built: false, ran: '' })
   })
 
   it('the cron line runs the script from the repo, and the script is executable', () => {

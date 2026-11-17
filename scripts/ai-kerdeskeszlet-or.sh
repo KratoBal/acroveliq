@@ -130,8 +130,11 @@ if [ -z "$RUNNER" ]; then
     exit 2
   fi
   epites="$(
-    exec 9>"$LOCK"
-    flock 9
+    # READ-ONLY, like every other user of the heavy lock (fleet-bootstrap.sh 2d creates it 0644 as one agent user): the
+    # first tick, as marveen, could not open it for writing ("Permission denied", 2026-11-17 09:21), flock then failed on
+    # a closed descriptor, and the build ran WITHOUT the lock. Now a lock that cannot be held stops the round.
+    exec 9<"$LOCK" || { echo "FAIL a nehez-zar nem nyithato: $LOCK"; exit 1; }
+    flock 9 || { echo "FAIL a nehez-zar nem veheto fel: $LOCK"; exit 1; }
     bash "$GIT_AUTH" -C "$KLON" fetch --quiet --no-tags --no-auto-maintenance origin '+refs/heads/main:refs/remotes/origin/main' 2>&1 || { echo "FAIL fetch"; exit 1; }
     if [ -n "$(git -C "$KLON" status --porcelain)" ]; then echo "FAIL a klon nem tiszta"; exit 1; fi
     cel="$(git -C "$KLON" rev-parse refs/remotes/origin/main)"
