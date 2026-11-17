@@ -732,11 +732,15 @@ export function ensureEgressGate(name: string): boolean {
 }
 
 // The read-only-command gate: auto-allows a Bash call ONLY when every
-// segment's program is on the agent's OWN profile.filesystem.allow list
+// segment's program is on the read-only list taken from
+// templates/profiles/researcher-reader.json's filesystem.allow -- the SAME
+// list for every agent that has the gate, NOT the agent's own profile
+// (card 31a2e450: this comment said "the agent's OWN" list, the hook reads
+// one fixed file; a per-agent list would be a permission change, not made)
 // (grep, cat, head, tail, wc, sort, uniq, cut, sed -n, stat, file, md5sum,
 // tr, nl, pwd, echo, date, df, ps, a scoped find), no argument (after
-// resolving same-block NAME=value assignments) touches a deny-listed path
-// fragment, and there is no redirection, substitution or sed -i. Every
+// resolving same-block NAME=value assignments) touches a path fragment on
+// that file's filesystem.deny, and there is no redirection, substitution or sed -i. Every
 // command it does not confidently recognise falls through to the normal
 // permission flow unchanged -- it only ever emits "allow", never "deny".
 // See scripts/hooks/readonly-command-gate.py's own module docstring for
