@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { chatIdFromAccessConfig, channelDeliveryName, resolveSchedulerAlertToken } from '../web/schedule-runner.js'
-import { PROJECT_ROOT } from '../config.js'
+import { chatIdFromAccessConfig, channelDeliveryName, resolveBoundChannel, resolveSchedulerAlertToken, scheduleDeliveryOverride } from '../web/schedule-runner.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 
 // Regression guard for 2026-07-27 (Zara report, Marveen diagnosis): the
@@ -44,6 +44,41 @@ describe('chatIdFromAccessConfig (pure core)', () => {
     expect(chatIdFromAccessConfig({})).toBeNull()
     expect(chatIdFromAccessConfig({ allowFrom: [], groups: {} })).toBeNull()
     expect(chatIdFromAccessConfig({ allowFrom: [''] })).toBeNull()
+  })
+})
+
+// Balázs 2026-11-17 (msg 1572162399912468521): the main agent's scheduled results went to Telegram every morning because
+// CHANNEL_PROVIDER=telegram; his channel is Discord. SCHEDULE_DELIVERY_PROVIDER + SCHEDULE_DELIVERY_CHAT_ID name the
+// target without touching CHANNEL_PROVIDER.
+describe('scheduleDeliveryOverride (both or neither)', () => {
+  it('neither: no override, no problem (today\'s behaviour)', () => {
+    expect(scheduleDeliveryOverride(undefined, undefined)).toEqual({ override: null, problem: null })
+    expect(scheduleDeliveryOverride('  ', '')).toEqual({ override: null, problem: null })
+  })
+  it('both, valid: the override, trimmed', () => {
+    expect(scheduleDeliveryOverride(' discord ', ' 1538522302277353505 ')).toEqual({
+      override: { provider: 'discord', chatId: '1538522302277353505' },
+      problem: null,
+    })
+  })
+  it('one alone, an unknown provider or a chat id with whitespace: no override, and the problem is named', () => {
+    for (const [p, c] of [['discord', undefined], [undefined, '1538522302277353505'], ['discrod', '1538522302277353505'], ['discord', '15385 22302']] as const) {
+      const r = scheduleDeliveryOverride(p, c)
+      expect(r.override).toBeNull()
+      expect(r.problem).toMatch(/SCHEDULE_DELIVERY/)
+    }
+  })
+})
+
+describe('resolveBoundChannel with a delivery override', () => {
+  const override = { provider: 'discord' as const, chatId: '1538522302277353505' }
+  it('the main agent\'s scheduled results go to the configured target', () => {
+    expect(resolveBoundChannel(MAIN_AGENT_ID, override)).toEqual(override)
+    expect(channelDeliveryName(resolveBoundChannel(MAIN_AGENT_ID, override).provider)).toBe('Discordon')
+  })
+  it('a sub-agent keeps its own bound channel: the override is the main agent\'s only', () => {
+    expect(resolveBoundChannel('nincs-ilyen-agens-teszt', override)).not.toEqual(override)
+    expect(resolveBoundChannel('nincs-ilyen-agens-teszt', override).chatId).not.toBe(override.chatId)
   })
 })
 

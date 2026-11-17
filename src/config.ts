@@ -432,6 +432,10 @@ export const KANBAN_LABEL_COLORS = rawKanbanLabelColors.length > 0 ? rawKanbanLa
 export const CHANNEL_PROVIDER: ChannelProviderType = getProviderType(env['CHANNEL_PROVIDER'])
 export const CHANNEL_TOKEN = getChannelToken(CHANNEL_PROVIDER, env)
 export const CHANNEL_CHAT_ID = getChannelChatId(CHANNEL_PROVIDER, env)
+// Where the main agent's scheduled-task results go, apart from CHANNEL_PROVIDER (which also starts the channel plugin).
+// Both or neither; read and checked by scheduleDeliveryOverride (web/schedule-runner.ts).
+export const SCHEDULE_DELIVERY_PROVIDER = env['SCHEDULE_DELIVERY_PROVIDER']
+export const SCHEDULE_DELIVERY_CHAT_ID = env['SCHEDULE_DELIVERY_CHAT_ID']
 
 // Respawn / keep-alive gate.
 // The in-process channel-plugin monitor (main-agent respawn + sub-agent

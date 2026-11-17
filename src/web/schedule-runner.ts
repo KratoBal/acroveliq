@@ -11,6 +11,8 @@ import {
   BOT_NAME,
   APP_TZ_INVALID,
   CHANNEL_PROVIDER,
+  SCHEDULE_DELIVERY_PROVIDER,
+  SCHEDULE_DELIVERY_CHAT_ID,
 } from '../config.js'
 import { resolveOwnerChatId, configuredOwnerChatFor } from '../owner-chat.js'
 import {
@@ -509,6 +511,32 @@ export function channelDeliveryName(provider: ChannelProviderType): string {
   }
 }
 
+const PROVIDERS: readonly ChannelProviderType[] = ['telegram', 'slack', 'discord', 'googlechat', 'teams']
+
+/**
+ * WHERE THE MAIN AGENT'S SCHEDULED-TASK RESULTS GO, APART FROM CHANNEL_PROVIDER (Balázs 2026-11-17, msg
+ * 1572162399912468521: "Ezt minden reggel eljatszuk. En biztos nem kerek telegramra ilyet."). The main agent's provider
+ * comes from CHANNEL_PROVIDER, which also starts the channel plugin, so it cannot simply be switched; the owner's
+ * channel today is Discord. SCHEDULE_DELIVERY_PROVIDER and SCHEDULE_DELIVERY_CHAT_ID name the target instead.
+ * Both or neither: one of the two alone, an unknown provider or a chat id with whitespace is a reported problem and
+ * no override (today's behaviour), never a half-applied target.
+ */
+export function scheduleDeliveryOverride(
+  rawProvider: string | undefined,
+  rawChatId: string | undefined,
+): { override: { provider: ChannelProviderType; chatId: string } | null; problem: string | null } {
+  const provider = rawProvider?.trim() ?? ''
+  const chatId = rawChatId?.trim() ?? ''
+  if (!provider && !chatId) return { override: null, problem: null }
+  if (!provider || !chatId) return { override: null, problem: 'SCHEDULE_DELIVERY_PROVIDER and SCHEDULE_DELIVERY_CHAT_ID are set together or not at all' }
+  if (!(PROVIDERS as readonly string[]).includes(provider)) return { override: null, problem: `SCHEDULE_DELIVERY_PROVIDER is not a known provider: ${provider}` }
+  if (/\s/.test(chatId)) return { override: null, problem: 'SCHEDULE_DELIVERY_CHAT_ID holds whitespace' }
+  return { override: { provider: provider as ChannelProviderType, chatId }, problem: null }
+}
+
+const SCHEDULE_DELIVERY = scheduleDeliveryOverride(SCHEDULE_DELIVERY_PROVIDER, SCHEDULE_DELIVERY_CHAT_ID)
+if (SCHEDULE_DELIVERY.problem) logger.warn({ problem: SCHEDULE_DELIVERY.problem }, 'scheduled-task delivery override ignored; the main agent keeps its bound channel')
+
 export interface BoundChannel {
   /** The provider the agent is bound to (main: CHANNEL_PROVIDER; sub-agent:
    *  its agent-config.json channelProvider, falling back to CHANNEL_PROVIDER). */
@@ -523,7 +551,12 @@ export interface BoundChannel {
  *  deliverable by construction. Deliberately NOT falling back to
  *  ALLOWED_CHAT_ID: that is the boss's chat, and pointing a sub-agent's result
  *  there is the precise bug the old sentinel existed to avoid. */
-export function resolveBoundChannel(agentName: string): BoundChannel {
+export function resolveBoundChannel(
+  agentName: string,
+  override: { provider: ChannelProviderType; chatId: string } | null = SCHEDULE_DELIVERY.override,
+): BoundChannel {
+  // the main agent's configured target wins; a sub-agent's result still goes to its own owner
+  if (agentName === MAIN_AGENT_ID && override) return { provider: override.provider, chatId: override.chatId }
   const provider = resolveAgentProvider(agentName)
   const dir = agentName === MAIN_AGENT_ID
     ? channelStateDir(provider)
