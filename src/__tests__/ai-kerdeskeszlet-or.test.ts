@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFile, execFileSync } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -15,11 +15,11 @@ const SCRIPT = join(process.cwd(), 'scripts', 'ai-kerdeskeszlet-or.sh')
 const root = mkdtempSync(join(tmpdir(), 'kerdeskeszlet-or-'))
 let server: Server
 let base = ''
-let health: Record<string, unknown> = { version: 'aaaa1111bbbb', instructionsVersion: '5789d9bc8eb1' }
+let health: Record<string, unknown> | null = { version: 'aaaa1111bbbb', instructionsVersion: '5789d9bc8eb1' }
 
 beforeAll(async () => {
   server = createServer((req, res) => {
-    if (req.url !== '/health') {
+    if (req.url !== '/health' || health === null) {
       res.writeHead(404)
       res.end()
       return
@@ -37,7 +37,7 @@ afterAll(() => {
 
 let n = 0
 /** A fresh world: report dir, token file, message and runner stand-ins that write down what they got. */
-function world(runnerCode = 0) {
+function world(runnerCode = 0, runnerSleepSec = 0) {
   n += 1
   const dir = join(root, `w${n}`)
   mkdirSync(dir)
@@ -54,10 +54,11 @@ function world(runnerCode = 0) {
   writeFileSync(
     runner,
     `#!/usr/bin/env bash
+sleep ${runnerSleepSec}
 echo "$*" >> '${argsLog}'
 echo "\${AI_API_TOKEN:-}" >> '${envLog}'
 out=""; while [ $# -gt 0 ]; do [ "$1" = "--out" ] && out="$2"; shift; done
-python3 -c 'import json,sys,datetime; json.dump({"serverVersion": sys.argv[2], "instructionsVersion": sys.argv[3], "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()}, open(sys.argv[1], "w"))' "$out" '${String(health.version)}' '${String(health.instructionsVersion)}'
+python3 -c 'import json,sys,datetime; json.dump({"serverVersion": sys.argv[2], "instructionsVersion": sys.argv[3], "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()}, open(sys.argv[1], "w"))' "$out" '${String(health?.version)}' '${String(health?.instructionsVersion)}'
 echo "compared ... REGRESSION glossary-not-forced: pass -> fail"
 exit ${runnerCode}
 `,
@@ -71,6 +72,7 @@ exit ${runnerCode}
     KERDES_MSG: msg,
     KERDES_RUNNER: `bash ${runner}`,
     KERDES_LOCK: join(dir, 'lock'),
+    KERDES_RUN_LOCK: join(dir, 'run.lock'),
   }
   const run = (extra: Record<string, string> = {}) =>
     new Promise<{ code: number; out: string }>((resolve) =>
@@ -213,5 +215,45 @@ describe('ai-kerdeskeszlet-or.sh', () => {
       line: /^\*\/15 \* \* \* \* \/home\/marveen\/marveen\/scripts\/ai-kerdeskeszlet-or\.sh >>/.test(line ?? ''),
       executable: (statSync(SCRIPT).mode & 0o111) !== 0,
     }).toEqual({ line: true, executable: true })
+  })
+
+  it('two ticks at once (barracuda #375): one round runs the set, the other leaves it to that round and exits 0', async () => {
+    health = { version: 'aaaa1111bbbb', instructionsVersion: 'dddddddddddd' }
+    const w = world(0, 1)
+    const [a, b] = await Promise.all([w.run(), w.run()])
+    const skipped = [a, b].filter((r) => r.out.includes('fut egy korabbi kor')).length
+    expect({
+      codes: [a.code, b.code],
+      runnerCalls: w.args().split('\n').filter(Boolean).length,
+      skipped,
+      reports: readdirSync(w.reports).filter((f) => f.startsWith('qs-')).length,
+      messages: w.messages(),
+    }).toEqual({ codes: [0, 0], runnerCalls: 1, skipped: 1, reports: 1, messages: '' })
+  })
+
+  it('a test AI that stays down: a log line per tick, and ONE message once the last good read is a day old', async () => {
+    const w = world(0)
+    mkdirSync(w.reports, { recursive: true })
+    health = null
+    // the first tick that finds no mark starts the clock: no message
+    const first = await w.run()
+    const ok = join(w.reports, '.health-ok')
+    const dayAgo = new Date(Date.now() - 25 * 3_600_000)
+    utimesSync(ok, dayAgo, dayAgo)
+    const second = await w.run()
+    const third = await w.run()
+    const alerts = (w.messages().match(/nem olvashato/g) ?? []).length
+    // a good read clears the mark, so the next outage is said again
+    health = { version: 'aaaa1111bbbb', instructionsVersion: '5789d9bc8eb1' }
+    report(w.reports, 'qs-friss.json', { serverVersion: 'aaaa1111bbbb', instructionsVersion: '5789d9bc8eb1' }, 1)
+    const good = await w.run()
+    expect({
+      codes: [first.code, second.code, third.code, good.code],
+      logged: [first, second, third].every((r) => r.out.includes('a /health nem olvashato')),
+      alerts,
+      alertedAfterGood: existsSync(join(w.reports, '.health-alerted')),
+      okFresh: Date.now() - statSync(ok).mtimeMs < 60_000,
+      ran: w.args(),
+    }).toEqual({ codes: [1, 1, 1, 0], logged: true, alerts: 1, alertedAfterGood: false, okFresh: true, ran: '' })
   })
 })

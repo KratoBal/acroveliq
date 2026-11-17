@@ -21,10 +21,11 @@
 #
 # WHO HEARS ABOUT IT: acrobot, one inter-agent line, ONLY when the runner exits non-zero: 3 a regression (a pass turned
 # fail or replaced, more fails, replaced answers or avoided glossary forms, an error), 1 a failed call, 2 a setup
-# problem; and when the clone, the build or the token is missing. A clean run or an improvement is only a log line.
+# problem; and when the clone, the build or the token is missing; and ONCE when the test AI's /health has been unreadable
+# for KERDES_HEALTH_ALERT_HOURS (24). A clean run or an improvement is only a log line.
 # Never Balázs's channel: this is a measurement, not a decision.
 #
-# Exit: 0 nothing to do or a clean run; 1 the health read failed; otherwise the runner's code, or 2 for a setup failure.
+# Exit: 0 nothing to do, a clean run, or an earlier round still running (KERDES_RUN_LOCK, not waited on); 1 the health read failed; otherwise the runner's code, or 2 for a setup failure.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -35,6 +36,8 @@ KLON="${KERDES_KLON:-/home/marveen/work/acropora-ai-agent-or}"
 GIT_AUTH="${KERDES_GIT_AUTH:-$ROOT/scripts/git-auth.sh}"
 MSG="${KERDES_MSG:-$ROOT/scripts/agent-msg.sh}"
 LOCK="${KERDES_LOCK:-/tmp/flotta-nehez.lock}"
+RUN_LOCK="${KERDES_RUN_LOCK:-/tmp/ai-kerdeskeszlet-or.lock}"
+HEALTH_ALERT_HOURS="${KERDES_HEALTH_ALERT_HOURS:-24}"
 MAX_AGE_DAYS="${KERDES_MAX_AGE_DAYS:-7}"
 # the two steps a test replaces: building the runner, and running it (KERDES_RUNNER gets the runner's arguments)
 BUILD="${KERDES_BUILD:-}"
@@ -50,9 +53,30 @@ szol() {
   rm -f "$body"
 }
 
-health="$(curl -fsS --max-time 15 "$AI_URL/health" 2>/dev/null)" || { log "a /health nem olvashato ($AI_URL)"; exit 1; }
+# ONE RUN AT A TIME (barracuda #375): a "changed" round (fetch, npm ci, a build waiting on the heavy lock, then 16 calls
+# of up to 43 s each) can outlast the 15-minute tick, and the next tick would read the same "changed" from /health,
+# because the new report is written only at the end: 16 calls paid twice, two messages. Not waiting: a tick that finds
+# a round running leaves it to that round.
+exec 8>"$RUN_LOCK"
+flock -n 8 || { log "fut egy korabbi kor, ez a tick kimarad"; exit 0; }
 
 mkdir -p "$REPORT_DIR"
+# A TEST AI THAT STAYS DOWN IS SAID ONCE (barracuda #375): an unreadable /health is a log line per tick, and while it
+# lasts the weekly run does not happen either. After HEALTH_ALERT_HOURS since the last good read, acrobot hears it
+# ONCE; the marker is cleared by the next good read. The clock starts at the first tick that finds no mark.
+HEALTH_OK="$REPORT_DIR/.health-ok"
+HEALTH_ALERTED="$REPORT_DIR/.health-alerted"
+[ -e "$HEALTH_OK" ] || touch "$HEALTH_OK"
+health_down() {
+  log "$1"
+  if [ ! -e "$HEALTH_ALERTED" ] && [ -n "$(find "$HEALTH_OK" -mmin "+$((HEALTH_ALERT_HOURS * 60))" 2>/dev/null)" ]; then
+    szol "[AI kerdeskeszlet-or] a teszt AI /health-je $HEALTH_ALERT_HOURS oranal regebben nem olvashato ($AI_URL): a kerdeskeszlet addig nem fut. Utolso jo olvasas: $(date -r "$HEALTH_OK" -Is)."
+    touch "$HEALTH_ALERTED"
+  fi
+  exit 1
+}
+
+health="$(curl -fsS --max-time 15 "$AI_URL/health" 2>/dev/null)" || health_down "a /health nem olvashato ($AI_URL)"
 elozo="$(ls -1t "$REPORT_DIR"/qs-*.json 2>/dev/null | head -n 1)"
 
 # decide in one python call: prints "run <reason>" or "skip", then the server sha for the file name
@@ -81,9 +105,11 @@ age = datetime.datetime.now(datetime.timezone.utc) - started
 print(f"run weekly {server}" if age.total_seconds() >= max_age * 86400 else "skip")
 DONTES
 )"
+# a JSON /health is a good read, whatever comes of it
+[ "$dontes" = "health-not-json" ] || { touch "$HEALTH_OK"; rm -f "$HEALTH_ALERTED"; }
 case "$dontes" in
   skip) exit 0 ;;
-  health-not-json) log "a /health valasza nem JSON ($AI_URL)"; exit 1 ;;
+  health-not-json) health_down "a /health valasza nem JSON ($AI_URL)" ;;
   run\ *) ;;
   *) log "ismeretlen dontes: $dontes"; exit 2 ;;
 esac
