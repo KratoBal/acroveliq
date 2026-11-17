@@ -153,8 +153,10 @@ def _basename(tok: str) -> str:
 
 def read_only_binaries_from_profile(profile: dict) -> set:
     """The set of program names/paths this gate treats as read-only,
-    derived from the profile's OWN filesystem.allow list -- not a second,
-    hand-typed copy (acrobot's explicit condition A). Only entries of the
+    derived from the given profile's filesystem.allow list -- not a second,
+    hand-typed copy (acrobot's explicit condition A). The hook passes
+    researcher-reader.json (PROFILE_PATH_DEFAULT) for EVERY agent, not the
+    calling agent's own profile (card 31a2e450). Only entries of the
     exact shape `Bash(<prog>:*)` are taken, and only for a fixed set of
     known-read-only coreutils; the profile also allow-lists specific
     scripts (jsonl.sh, unas.sh, ...) that this gate deliberately does NOT
