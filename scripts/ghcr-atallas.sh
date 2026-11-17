@@ -33,8 +33,8 @@
 #      web and partner: GET <fqdn>/ must answer a 2xx or 3xx.
 # AUTO-DEPLOY (acrobot 54774, measured 2026-11-17 16:0x): the stage api has is_auto_deploy_enabled false, but the stage WEB and PARTNER
 # have it TRUE: a half-switched web or partner app would deploy by itself on the next push to main. So on web and partner, elore
-# turns it off BEFORE the PATCH (read back), and vissza turns it back to the measured value only AFTER its deploy and measure (a
-# failed deploy leaves it off). The api is checked, not changed: it must read false. The record file has no such field, so the measured
+# turns it off BEFORE the PATCH (read back), and vissza turns it back to the measured value only AFTER its deploy and a SUCCESSFUL
+# measure (a failed deploy, or a measure that does not confirm, leaves it off and says so). The api is checked, not changed: it must read false. The record file has no such field, so the measured
 # values are constants here. WHERE IT IS READ (acrobot, 2026-11-17 16:10): the GET /applications/<uuid> answer carries it NOT at the top
 # level but in the "settings" object (settings.is_auto_deploy_enabled). WHERE IT IS WRITTEN is not measured (the top-level
 # is_auto_deploy_enabled is the usual Coolify PATCH field, but nobody has seen it taken): the write is read back from settings, and a
@@ -326,7 +326,7 @@ if mode in ("terv", "vissza"):
     print("  3. POST /api/v1/deploy?uuid=<uuid>: teljes epites a git-bol, varakozas")
     print("  4. a /health allapota kiirva (a git fej commitja), az app rogzitett mezoi visszaolvasva")
     if auto_measured:
-        print(f"  5. PATCH /api/v1/applications/<uuid>  {json.dumps({AUTO_DEPLOY_FIELD: True})}  (a mert ertek, a deploy es a meres UTAN, visszaolvasva; elobb nem, hogy ne induljon masodik telepites)")
+        print(f"  5. PATCH /api/v1/applications/<uuid>  {json.dumps({AUTO_DEPLOY_FIELD: True})}  (a mert ertek, a deploy UTAN es CSAK SIKERES meres eseten, visszaolvasva; elobb nem, hogy ne induljon masodik telepites; ha a meres nem igazol, kikapcsolva marad es kiirja)")
 if mode == "terv" or not vegrehajt:
     print("\nSZARAZ FUTAS: semmi nem ment ki." + ("" if mode == "terv" else " Iraskor: --vegrehajt"))
     sys.exit(0)
@@ -373,7 +373,12 @@ print("env-sorok: egyeznek a rogzitettel")
 deploy_and_wait()
 ok = measure(None)
 if auto_measured:
-    patch_and_check({AUTO_DEPLOY_FIELD: True}, "auto-telepites-vissza")
+    if ok:
+        patch_and_check({AUTO_DEPLOY_FIELD: True}, "auto-telepites-vissza")
+    else:
+        # barracuda on #380: a switched-back app that does not answer would be redeployed by the next push to main, unverified
+        journal("auto-telepites-vissza", False, "a meres nem igazolt: kikapcsolva marad")
+        print(f"AZ AUTOMATIKUS TELEPITES KIKAPCSOLVA MARAD (a meres nem igazolt). A mert ertek ({auto_measured!r}) visszaallitasa a mérés rendbejovetele utan kezzel: PATCH /api/v1/applications/{uuid} {json.dumps({AUTO_DEPLOY_FIELD: auto_measured})}", file=sys.stderr)
 print("VISSZA KESZ: a rogzitett mezok visszaolvasva, a telepites lefutott." if ok else "A /health nem valaszolt: nezd meg kezzel.")
 sys.exit(0 if ok else 1)
 PY

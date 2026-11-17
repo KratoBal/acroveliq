@@ -67,6 +67,7 @@ let platformReleaseVar = false // the Coolify RELEASE_COMMIT_SHA row exists on t
 let healthStale = false
 let autoPatchIgnored = false // the mock Coolify takes no is_auto_deploy_enabled write
 let omitAutoField = false // the app answer carries no is_auto_deploy_enabled field
+let webDown = false // the web and partner front pages answer 503: the measure does not confirm
 const AUTO_MEASURED: Record<string, boolean> = { 'acropora-stage-api': false, 'acropora-staging-web': true, 'acropora-staging-partner': true, 'acropora-staging-jatek': false }
 
 const RECORDED_ENVS_API = [envRow('NODE_ENV', { is_build_time: true }), envRow('RELEASE_COMMIT_SHA', { is_build_time: true }), envRow('RELEASE_COMMIT_SHA', { is_preview: true, is_build_time: true })]
@@ -156,7 +157,7 @@ beforeAll(async () => {
         const runtimeCommit = platformReleaseVar ? (healthStale ? GIT_HEAD : GIT_HEAD) : imageCommit
         return send(200, { application: { status: 'ok', imageCommit, runtimeCommit, commitSourceState: imageCommit === runtimeCommit ? 'match' : 'mismatch' } })
       }
-      if (url.pathname === '/web-host/' || url.pathname === '/partner-host/') return send(200, { ok: true })
+      if (url.pathname === '/web-host/' || url.pathname === '/partner-host/') return send(webDown ? 503 : 200, { ok: !webDown })
       send(404, { message: 'not found' })
     })
   })
@@ -193,6 +194,7 @@ beforeEach(() => {
   healthStale = false
   autoPatchIgnored = false
   omitAutoField = false
+  webDown = false
   freshState()
   rmSync(join(journalDir, `atallas-${API}.jsonl`), { force: true })
 })
@@ -566,6 +568,21 @@ describe('the automatic deploy (acrobot 54774: off on the api, ON on web and par
     expect(r.err).toContain('KIKAPCSOLVA marad')
     expect(patches().some((b) => b.is_auto_deploy_enabled === true)).toBe(false)
     expect(apps[WEB].settings.is_auto_deploy_enabled).toBe(false)
+  })
+
+  it('vissza keeps it OFF and says how to set it back when the measure does not confirm', async () => {
+    expect((await run('elore', WEB, SHA, '--vegrehajt')).code).toBe(0)
+    calls = []
+    webDown = true
+    const r = await run('vissza', WEB, '--vegrehajt')
+    expect(r.code).toBe(1)
+    expect(r.err).toContain('KIKAPCSOLVA MARAD')
+    expect(r.err).toContain('"is_auto_deploy_enabled": true')
+    expect(patches().some((b) => b.is_auto_deploy_enabled === true)).toBe(false)
+    expect(apps[WEB].settings.is_auto_deploy_enabled).toBe(false)
+    const last = readFileSync(join(journalDir, `atallas-${WEB}.jsonl`), 'utf-8').trim().split('\n').map((l) => JSON.parse(l)).filter((j) => j.step === 'auto-telepites-vissza')
+    // the journal of this app is shared by the tests above: the LAST line of the step is this run's
+    expect(last.at(-1)?.ok).toBe(false)
   })
 
   it('vissza on the api writes no auto-deploy flag', async () => {
