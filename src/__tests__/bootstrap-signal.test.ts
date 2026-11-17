@@ -13,6 +13,7 @@ import {
   onlyStaleImageSymptoms,
   pinKeyForScript,
   pinsOf,
+  processStartEpoch,
   stalePinNote,
   STATUS_FILE,
   REPORTED_FILE,
@@ -290,4 +291,64 @@ describe('a stale image', () => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+})
+
+// d8ca9afb (barracuda, #217 review, 2026-10-16): a MISSING or OLD status file is itself a fault after the image swap. The bootstrap
+// writes the file at every container start, before supervisord; a file older than this start (or none) means this start has no
+// bootstrap result, and the silence read as RENDBEN. WHAT TURNS THIS RED: no card for a missing or older file when the start is
+// known, a second card for the same start, or a card when the start cannot be read (that keeps the old, quiet behaviour).
+describe('checkBootstrapStatus: no result for this container start', () => {
+  const START = 1794915496
+  const withStart = (files: Record<string, string>, start: number | null) => {
+    const t = deps(files)
+    t.d.containerStartedAt = () => start
+    return t
+  }
+
+  it('no status file at all: one urgent card for this start, and not a second one', () => {
+    const { d, cards, files } = withStart({}, START)
+    expect(checkBootstrapStatus(d)).toBe('missing-result')
+    expect(cards).toHaveLength(1)
+    expect(cards[0]!.priority).toBe('urgent')
+    expect(cards[0]!.title).toContain('nem írt eredményt')
+    expect(files[REPORTED_FILE]).toBe(`${START}\n`)
+    expect(checkBootstrapStatus(d)).toBe('already-reported')
+    expect(cards).toHaveLength(1)
+  })
+
+  it('a RENDBEN written before this start is an old result: a card, not "ok"', () => {
+    const { d, cards } = withStart({ [STATUS_FILE]: `${START - 3600} RENDBEN\n` }, START)
+    expect(checkBootstrapStatus(d)).toBe('missing-result')
+    expect(cards).toHaveLength(1)
+    expect(cards[0]!.description).toContain('régebbi')
+  })
+
+  it('a HIBA of an earlier start, already reported, still says this start has no result', () => {
+    const { d, cards } = withStart({ [STATUS_FILE]: HIBA, [REPORTED_FILE]: '1792140000\n' }, START)
+    expect(checkBootstrapStatus(d)).toBe('missing-result')
+    expect(cards).toHaveLength(1)
+  })
+
+  it('a result written at this start is read as before', () => {
+    const { d, cards } = withStart({ [STATUS_FILE]: `${START + 25} RENDBEN\n` }, START)
+    expect(checkBootstrapStatus(d)).toBe('ok')
+    expect(cards).toHaveLength(0)
+  })
+
+  it('the start cannot be read: the old behaviour, no card for a missing file', () => {
+    const { d, cards } = withStart({}, null)
+    expect(checkBootstrapStatus(d)).toBe('no-file')
+    expect(cards).toHaveLength(0)
+  })
+})
+
+describe('processStartEpoch', () => {
+  it('reads field 22 after the command name (which may hold spaces and parentheses) as clock ticks since boot', () => {
+    const stat = '1 (tini (x) y) S 0 1 1 0 -1 4194560 1234 0 0 0 5 3 0 0 20 0 1 0 2500 2306048 140 18446744073709551615'
+    expect(processStartEpoch(stat, 1794915496)).toBe(1794915496 + 25)
+  })
+  it('a line it cannot read gives null, not a guess', () => {
+    expect(processStartEpoch('garbage', 1794915496)).toBeNull()
+    expect(processStartEpoch(null, 1794915496)).toBeNull()
+  })
 })

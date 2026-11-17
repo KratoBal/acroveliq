@@ -129,6 +129,11 @@ export interface BootstrapSignalDeps {
   /** The newest open card of this signal (not done, not archived), to be updated instead of opening another. */
   findOpenCard: () => string | null
   addComment: (cardId: string, text: string) => void
+  /**
+   * When this container started (epoch seconds), or null when it cannot be read; absent in the old tests. Known, a status file
+   * that is missing or older than it means this start has no bootstrap result (d8ca9afb, barracuda on #217).
+   */
+  containerStartedAt?: () => number | null
 }
 
 const realDeps: BootstrapSignalDeps = {
@@ -157,7 +162,31 @@ const realDeps: BootstrapSignalDeps = {
   addComment: (cardId, text) => {
     addKanbanComment(cardId, MAIN_AGENT_ID, text)
   },
+  containerStartedAt: () => {
+    const btime = /^btime (\d+)$/m.exec(readOrNull('/proc/stat') ?? '')
+    const start = btime ? processStartEpoch(readOrNull('/proc/1/stat'), Number(btime[1])) : null
+    // silent here would read as "no fault": say why the missing-result check is off
+    if (start === null) logger.warn('fleet-bootstrap status: the container start (/proc/1/stat, /proc/stat btime) is not readable, not checking for a missing result')
+    return start
+  },
 }
+
+/**
+ * A process's start as epoch seconds, from its /proc/<pid>/stat line and the boot time (/proc/stat btime). Field 22 is the start in
+ * clock ticks since boot; the fields are counted after the LAST ')', since the command name may hold spaces and parentheses. The
+ * tick is USER_HZ, 100 on Linux. Null for a line it cannot read.
+ */
+export function processStartEpoch(stat: string | null, btime: number, hz = 100): number | null {
+  if (stat === null) return null
+  const close = stat.lastIndexOf(')')
+  if (close < 0) return null
+  const ticks = Number(stat.slice(close + 2).split(' ')[19])
+  return Number.isFinite(ticks) && ticks >= 0 ? btime + Math.floor(ticks / hz) : null
+}
+
+const MISSING_TITLE_PREFIX = '[flotta] A fleet-bootstrap ehhez a konténer-indításhoz nem írt eredményt'
+/** A bootstrap result may carry a time a few seconds BEFORE the start read from /proc (rounding of the tick count). */
+const START_TOLERANCE_S = 5
 
 function readOrNull(path: string): string | null {
   try {
@@ -167,22 +196,46 @@ function readOrNull(path: string): string | null {
   }
 }
 
-export type BootstrapSignalResult = 'no-file' | 'unreadable' | 'ok' | 'already-reported' | 'card' | 'updated'
+export type BootstrapSignalResult = 'no-file' | 'unreadable' | 'ok' | 'already-reported' | 'card' | 'updated' | 'missing-result'
 
 /** Read the status file once; open one card for a HIBA not reported yet. Never throws. */
 export function checkBootstrapStatus(deps: BootstrapSignalDeps = realDeps): BootstrapSignalResult {
   try {
     const text = deps.read(STATUS_FILE)
+    const startedAt = deps.containerStartedAt?.() ?? null
+    const firstLine = /^(\d{9,11}) (RENDBEN|HIBA)$/.exec((text?.split('\n')[0] ?? '').trim())
+    const reported = Number((deps.read(REPORTED_FILE) ?? '').trim()) || 0
+    // THIS START HAS NO RESULT: no file, or one written before this container started (an earlier start's RENDBEN or HIBA)
+    if (startedAt !== null && (text === null || (firstLine && Number(firstLine[1]) < startedAt - START_TOLERANCE_S))) {
+      if (startedAt <= reported) return 'already-reported'
+      const when = new Date(startedAt * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ })
+      deps.createCard({
+        id: deps.newId(),
+        title: `${MISSING_TITLE_PREFIX} (${when})`,
+        description: [
+          'A fleet-bootstrap minden konténer-indításkor, a supervisord előtt írja a store/fleet-bootstrap-utolso.txt fájlt.',
+          text === null
+            ? 'A fájl nincs meg: ennek az indításnak nincs bootstrap-eredménye.'
+            : `A fájl régebbi, mint a konténer indulása (${new Date(Number(firstLine![1]) * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ })}): egy korábbi indításé, ennek az indításnak nincs bootstrap-eredménye.`,
+          'A csend eddig RENDBEN-nek látszott (barracuda, #217). Első lépés: docker compose logs marveen, az entrypoint bootstrap-sora.',
+        ].join('\n'),
+        status: 'planned',
+        assignee: MAIN_AGENT_ID,
+        priority: 'urgent',
+      })
+      deps.write(REPORTED_FILE, `${startedAt}\n`)
+      logger.warn({ startedAt, file: text === null ? 'missing' : 'older' }, 'fleet-bootstrap status: no result for this container start, card opened')
+      return 'missing-result'
+    }
     if (text === null) return 'no-file'
     const lines = text.split('\n')
-    const m = /^(\d{9,11}) (RENDBEN|HIBA)$/.exec((lines[0] ?? '').trim())
+    const m = firstLine
     if (!m) {
       logger.warn({ file: STATUS_FILE }, 'fleet-bootstrap status: first line unreadable')
       return 'unreadable'
     }
     if (m[2] === 'RENDBEN') return 'ok'
     const at = Number(m[1])
-    const reported = Number((deps.read(REPORTED_FILE) ?? '').trim()) || 0
     if (at <= reported) return 'already-reported'
     const allProblems = lines
       .slice(1)
