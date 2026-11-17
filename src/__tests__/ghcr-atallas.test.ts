@@ -65,6 +65,9 @@ let deleteWorks = true
 let deployStatus = 'finished'
 let platformReleaseVar = false // the Coolify RELEASE_COMMIT_SHA row exists on the api: while it does, the runtime commit is the platform value
 let healthStale = false
+let autoPatchIgnored = false // the mock Coolify takes no is_auto_deploy_enabled write
+let omitAutoField = false // the app answer carries no is_auto_deploy_enabled field
+const AUTO_MEASURED: Record<string, boolean> = { 'acropora-stage-api': false, 'acropora-staging-web': true, 'acropora-staging-partner': true, 'acropora-staging-jatek': false }
 
 const RECORDED_ENVS_API = [envRow('NODE_ENV', { is_build_time: true }), envRow('RELEASE_COMMIT_SHA', { is_build_time: true }), envRow('RELEASE_COMMIT_SHA', { is_preview: true, is_build_time: true })]
 let recorded: any
@@ -84,7 +87,7 @@ function freshState() {
   envRows = {}
   for (const a of recorded.stage) {
     const { envs, ...rest } = a
-    apps[a.uuid] = { ...rest }
+    apps[a.uuid] = { ...rest, settings: { is_static: false, is_auto_deploy_enabled: AUTO_MEASURED[a.name] } }
     envRows[a.uuid] = (envs as any[]).map((e, i) => ({ uuid: `env-${a.uuid.slice(0, 4)}-${i}`, key: e.key, is_preview: e.is_preview, is_build_time: e.is_build_time, is_runtime: e.is_runtime }))
   }
   platformReleaseVar = true
@@ -108,11 +111,20 @@ beforeAll(async () => {
         const app = apps[id]
         if (!app) return send(404, { message: 'not found' })
         if (!envPart) {
-          if (req.method === 'GET') return send(200, app)
+          if (req.method === 'GET') {
+            const { is_auto_deploy_enabled: _top, settings, ...rest } = app
+            const { is_auto_deploy_enabled: _auto, ...settingsWithoutAuto } = settings
+            return send(200, { ...rest, settings: omitAutoField ? settingsWithoutAuto : settings })
+          }
           if (req.method === 'PATCH') {
             if (patchMode === 'reject') return send(422, { message: 'The selected build pack is invalid.' })
             for (const [k, v] of Object.entries(body)) {
               if (patchMode === 'ignore-null' && v === null) continue
+              if (k === 'is_auto_deploy_enabled') {
+                // the usual Coolify write field is the top-level one; the answer shows it under settings
+                if (!autoPatchIgnored) app.settings.is_auto_deploy_enabled = v
+                continue
+              }
               app[k] = v
             }
             if (patchMode === 'also-change') app.ports_exposes = '9999'
@@ -179,6 +191,8 @@ beforeEach(() => {
   deleteWorks = true
   deployStatus = 'finished'
   healthStale = false
+  autoPatchIgnored = false
+  omitAutoField = false
   freshState()
   rmSync(join(journalDir, `atallas-${API}.jsonl`), { force: true })
 })
@@ -325,7 +339,7 @@ describe('elore', () => {
       calls = []
       const r = await run('elore', uuid, SHA, '--vegrehajt')
       expect(r.code, uuid).toBe(0)
-      const patch = writes().find((c) => c.method === 'PATCH')!
+      const patch = writes().find((c) => c.method === 'PATCH' && c.body.docker_registry_image_name)!
       expect(patch.body.docker_registry_image_name).toBe(`ghcr.io/kratobal/${name}`)
       expect(writes().some((c) => c.method === 'DELETE')).toBe(false)
     }
@@ -460,5 +474,110 @@ describe('the journal and the output', () => {
     expect(text).toMatch(/^TOKEN_FILE_RW="\/home\/marveen\/marveen\/store\/\.coolify-token-ai-rw"$/m)
     expect(text.match(/read_token\(token_rw_file\)/g)?.length).toBe(1)
     expect(text).not.toMatch(/os\.environ|getenv/)
+  })
+})
+
+describe('the automatic deploy (acrobot 54774: off on the api, ON on web and partner)', () => {
+  const AUTO_OFF = { is_auto_deploy_enabled: false }
+  const AUTO_ON = { is_auto_deploy_enabled: true }
+  const patches = () => writes().filter((c) => c.method === 'PATCH').map((c) => c.body)
+  const deployIndex = () => writes().findIndex((c) => c.path.startsWith('/api/v1/deploy'))
+
+  it('terv shows the auto-deploy step for web and partner, and for the api only that it is already off', async () => {
+    for (const uuid of [WEB, PARTNER]) {
+      const r = await run('terv', uuid)
+      expect(r.out, uuid).toContain('"is_auto_deploy_enabled": false')
+      expect(r.out, uuid).toContain('"is_auto_deploy_enabled": true')
+    }
+    const api = await run('terv', API)
+    expect(api.out).toContain('mar ki van kapcsolva')
+    expect(api.out).not.toContain('"is_auto_deploy_enabled": true')
+    expect(wasWritten()).toBe(false)
+  })
+
+  it('refuses an app whose auto-deploy differs from the measured state, or whose answer has no such field, with no write', async () => {
+    apps[WEB].settings.is_auto_deploy_enabled = false
+    let r = await run('elore', WEB, SHA, '--vegrehajt')
+    expect(r.code).toBe(1)
+    expect(r.err).toContain('automatikus telepites')
+    apps[API].settings.is_auto_deploy_enabled = true
+    r = await run('elore', API, SHA, '--vegrehajt')
+    expect(r.code).toBe(1)
+    expect(r.err).toContain('automatikus telepites')
+    omitAutoField = true
+    for (const [mode, uuid] of [['elore', API], ['elore', PARTNER], ['terv', WEB], ['vissza', WEB]] as const) {
+      r = await run(mode, uuid, ...(mode === 'elore' ? [SHA] : mode === 'vissza' ? ['--vegrehajt'] : []))
+      expect(r.code, `${mode} ${uuid}`).toBe(1)
+      // a clean refusal that says why, not a crash that happens to name the field
+      expect(r.err).toContain('nem ellenorizheto')
+      expect(r.err).not.toContain('Traceback')
+    }
+    expect(wasWritten()).toBe(false)
+  })
+
+  it('elore on web and partner turns it off BEFORE the switch PATCH and the deploy, and leaves it off', async () => {
+    for (const uuid of [WEB, PARTNER]) {
+      calls = []
+      const r = await run('elore', uuid, SHA, '--vegrehajt')
+      expect(r.code, uuid).toBe(0)
+      const p = patches()
+      expect(p[0]).toEqual(AUTO_OFF)
+      expect(p[1].build_pack).toBe('dockerimage')
+      expect(writes().findIndex((c) => c.method === 'PATCH' && c.body.build_pack === 'dockerimage')).toBeLessThan(deployIndex())
+      expect(apps[uuid].settings.is_auto_deploy_enabled).toBe(false)
+    }
+  })
+
+  it('a write the Coolify does not take stops elore before the switch: no switch PATCH, no deploy', async () => {
+    autoPatchIgnored = true
+    const r = await run('elore', WEB, SHA, '--vegrehajt')
+    expect(r.code).toBe(1)
+    expect(r.err).toContain('is_auto_deploy_enabled')
+    expect(patches()).toEqual([AUTO_OFF])
+    expect(deployIndex()).toBe(-1)
+    expect(apps[WEB].build_pack).toBe('dockerfile')
+  })
+
+  it('elore on the api writes no auto-deploy flag at all', async () => {
+    await run('elore', API, SHA, '--vegrehajt')
+    expect(JSON.stringify(patches())).not.toContain('is_auto_deploy_enabled')
+  })
+
+  it('vissza on web turns it back on only AFTER its deploy, and ends on the measured value', async () => {
+    expect((await run('elore', WEB, SHA, '--vegrehajt')).code).toBe(0)
+    calls = []
+    const r = await run('vissza', WEB, '--vegrehajt')
+    expect(r.code).toBe(0)
+    const w = writes()
+    const last = w[w.length - 1]
+    expect(last.method).toBe('PATCH')
+    expect(last.body).toEqual(AUTO_ON)
+    expect(w.findIndex((c) => c.path.startsWith('/api/v1/deploy'))).toBeLessThan(w.length - 1)
+    expect(patches()[0].build_pack).toBe('dockerfile')
+    expect(apps[WEB].settings.is_auto_deploy_enabled).toBe(true)
+  })
+
+  it('a failed vissza deploy leaves it OFF and says so', async () => {
+    expect((await run('elore', WEB, SHA, '--vegrehajt')).code).toBe(0)
+    calls = []
+    deployStatus = 'failed'
+    const r = await run('vissza', WEB, '--vegrehajt')
+    expect(r.code).toBe(1)
+    expect(r.err).toContain('KIKAPCSOLVA marad')
+    expect(patches().some((b) => b.is_auto_deploy_enabled === true)).toBe(false)
+    expect(apps[WEB].settings.is_auto_deploy_enabled).toBe(false)
+  })
+
+  it('vissza on the api writes no auto-deploy flag', async () => {
+    expect((await run('elore', API, SHA, '--vegrehajt')).code).toBe(0)
+    calls = []
+    await run('vissza', API, '--vegrehajt')
+    expect(JSON.stringify(patches())).not.toContain('is_auto_deploy_enabled')
+  })
+
+  it('a dry run of web sends nothing, whatever the auto-deploy says', async () => {
+    const r = await run('elore', WEB, SHA)
+    expect(r.code).toBe(0)
+    expect(wasWritten()).toBe(false)
   })
 })

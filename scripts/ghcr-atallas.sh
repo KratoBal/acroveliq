@@ -31,6 +31,14 @@
 #   3. POST /deploy?uuid=<uuid>, then poll /deployments/<deployment_uuid> until finished or failed.
 #   4. measure: api: GET <fqdn>/health must say imageCommit == runtimeCommit == the tag's commit and commitSourceState "match";
 #      web and partner: GET <fqdn>/ must answer a 2xx or 3xx.
+# AUTO-DEPLOY (acrobot 54774, measured 2026-11-17 16:0x): the stage api has is_auto_deploy_enabled false, but the stage WEB and PARTNER
+# have it TRUE: a half-switched web or partner app would deploy by itself on the next push to main. So on web and partner, elore
+# turns it off BEFORE the PATCH (read back), and vissza turns it back to the measured value only AFTER its deploy and measure (a
+# failed deploy leaves it off). The api is checked, not changed: it must read false. The record file has no such field, so the measured
+# values are constants here. WHERE IT IS READ (acrobot, 2026-11-17 16:10): the GET /applications/<uuid> answer carries it NOT at the top
+# level but in the "settings" object (settings.is_auto_deploy_enabled). WHERE IT IS WRITTEN is not measured (the top-level
+# is_auto_deploy_enabled is the usual Coolify PATCH field, but nobody has seen it taken): the write is read back from settings, and a
+# write that does not show there STOPS the script. An app whose settings have no such field is refused (its state cannot be checked).
 # vissza writes the recorded values back, re-creates the env row, deploys (a full build from git again), polls, and prints the
 # /health state (the commit of the git head this time: it is printed, not compared).
 #
@@ -84,11 +92,20 @@ IMAGE_BY_NAME = {
 REGISTRY = "ghcr.io/kratobal/"
 RELEASE_ENV = "RELEASE_COMMIT_SHA"
 RELEASE_ENV_RESTORE_VALUE = "${SOURCE_COMMIT}"
+AUTO_DEPLOY_FIELD = "is_auto_deploy_enabled"  # read from app["settings"][...], written as a top-level PATCH field
+# MEASURED by acrobot, Coolify app settings, 2026-11-17 16:0x: the stage apps' automatic deploy (the record file has no such field)
+AUTO_DEPLOY_MEASURED = {"acropora-stage-api": False, "acropora-staging-web": True, "acropora-staging-partner": True}
 # the recorded app fields compared before and after every write (everything the record has except the envs and the live status)
 SKIP_FIELDS = {"envs", "status"}
 
 def die(code, text):
     print(text, file=sys.stderr); sys.exit(code)
+
+_MISSING = object()
+def auto_of(app):
+    """The app's automatic deploy as the GET answer gives it: settings.is_auto_deploy_enabled, or _MISSING when the answer has none."""
+    settings = app.get("settings")
+    return settings.get(AUTO_DEPLOY_FIELD, _MISSING) if isinstance(settings, dict) else _MISSING
 
 try:
     with open(recorded_file, encoding="utf-8") as f:
@@ -102,6 +119,7 @@ image = IMAGE_BY_NAME.get(rec.get("name"))
 if image is None:
     die(2, f"MEGTAGADVA: a(z) {rec.get('name')} nem kap GHCR-kepet (api, web, partner igen; jatek es reefclub nem).")
 is_api = rec.get("name") == "acropora-stage-api"
+auto_measured = AUTO_DEPLOY_MEASURED[rec["name"]]
 fqdn = (rec.get("fqdn") or "").rstrip("/")
 
 def read_token(path):
@@ -188,6 +206,10 @@ def preflight(allow_switched=False):
         die(1, msg)
     if not allow_switched and not str(app.get("status", "")).startswith("running"):
         die(1, f"MEGALLOK: az app allapota {app.get('status')!r}, nem 'running...': felebredt telepites vagy hiba, nem kapcsolok at.")
+    if auto_of(app) is _MISSING:
+        die(1, f"MEGALLOK: az app valaszanak settings objektuma nem tartalmazza a(z) {AUTO_DEPLOY_FIELD} mezot: az automatikus telepites allapota nem ellenorizheto, nem kapcsolok at.")
+    if not allow_switched and auto_of(app) != auto_measured:
+        die(1, f"ELTERES: az automatikus telepites most {auto_of(app)!r}, a mert allapot {auto_measured!r} (acrobot, 2026-11-17): nem nyulok hozza, mert a felig atallitott app maga telepulhetne.")
     return app
 
 def deploy_and_wait():
@@ -211,7 +233,8 @@ def deploy_and_wait():
     journal("deploy-vege", ok, status)
     print(f"a telepites vege: {status}")
     if not ok:
-        die(1, f"A TELEPITES NEM SIKERULT ({status}). Naplo: kirakat-telepites.sh naplo {dep}. Visszaallitas: ghcr-atallas.sh vissza {uuid} --vegrehajt")
+        die(1, f"A TELEPITES NEM SIKERULT ({status}). Naplo: kirakat-telepites.sh naplo {dep}. Visszaallitas: ghcr-atallas.sh vissza {uuid} --vegrehajt"
+               + (" Az automatikus telepites KIKAPCSOLVA marad, amig a vissza vegig nem fut." if mode == "vissza" and auto_measured else ""))
     return dep
 
 def fetch(url):
@@ -259,7 +282,9 @@ def patch_and_check(fields, label, ignore_after=()):
         journal(label, False, f"HTTP {code}: {str(ans)[:150]}")
         die(1, f"NEM IRTA AT ({label}, HTTP {code}): {str(ans)[:300]}\nA kerest a Coolify elutasitotta, az app valtozatlan.")
     app = read_app()
-    rows = drift(app, {**rec, **fields}, ignore=ignore_after)
+    rows = drift(app, {**rec, **{k: v for k, v in fields.items() if k != AUTO_DEPLOY_FIELD}}, ignore=ignore_after)
+    if AUTO_DEPLOY_FIELD in fields and auto_of(app) != fields[AUTO_DEPLOY_FIELD]:
+        rows.append((f"settings.{AUTO_DEPLOY_FIELD}", fields[AUTO_DEPLOY_FIELD], None if auto_of(app) is _MISSING else auto_of(app)))
     if rows:
         journal(label, False, "elteres: " + ",".join(f for f, _w, _g in rows))
         die(1, f"ELTERES a(z) {label} UTAN (a Coolify mast tarol, mint amit kuldtunk, vagy mashoz is hozzanyult):\n" + show_drift(rows)
@@ -284,6 +309,10 @@ else:
 
 if mode in ("terv", "elore"):
     print("\nELORE (Docker Image tipusra):")
+    if auto_measured:
+        print(f"  0. PATCH /api/v1/applications/<uuid>  {json.dumps({AUTO_DEPLOY_FIELD: False})}  (az automatikus telepites BE van kapcsolva ezen az appon: a felig atallitott app maga telepulne; visszaolvasva)")
+    else:
+        print(f"  0. az automatikus telepites mar ki van kapcsolva ({AUTO_DEPLOY_FIELD}: false, acrobot merese): nincs lepes, az ellenorzes a futas elejen")
     print("  1. PATCH /api/v1/applications/<uuid>  " + json.dumps(fwd_fields if sha else {**fwd_fields, "docker_registry_image_tag": "sha-<a commit>"}))
     if is_api:
         print(f"  2. {RELEASE_ENV} env sor torlese (nem-preview), mert a kep hordozza a commitot, es a platform-ertek felulirna")
@@ -296,12 +325,16 @@ if mode in ("terv", "vissza"):
         print(f"  2. {RELEASE_ENV} env sor ujra: {json.dumps({k: v for k, v in release_row.items()})} (az ERTEKET nem lehet visszaolvasni)")
     print("  3. POST /api/v1/deploy?uuid=<uuid>: teljes epites a git-bol, varakozas")
     print("  4. a /health allapota kiirva (a git fej commitja), az app rogzitett mezoi visszaolvasva")
+    if auto_measured:
+        print(f"  5. PATCH /api/v1/applications/<uuid>  {json.dumps({AUTO_DEPLOY_FIELD: True})}  (a mert ertek, a deploy es a meres UTAN, visszaolvasva; elobb nem, hogy ne induljon masodik telepites)")
 if mode == "terv" or not vegrehajt:
     print("\nSZARAZ FUTAS: semmi nem ment ki." + ("" if mode == "terv" else " Iraskor: --vegrehajt"))
     sys.exit(0)
 
 journal("kezdet", True, "vegrehajt")
 if mode == "elore":
+    if auto_measured:
+        patch_and_check({AUTO_DEPLOY_FIELD: False}, "auto-telepites-ki")
     patch_and_check(fwd_fields, "atallitas")
     if is_api:
         rows = release_rows()
@@ -339,6 +372,8 @@ journal("env-visszaolvasas", True)
 print("env-sorok: egyeznek a rogzitettel")
 deploy_and_wait()
 ok = measure(None)
+if auto_measured:
+    patch_and_check({AUTO_DEPLOY_FIELD: True}, "auto-telepites-vissza")
 print("VISSZA KESZ: a rogzitett mezok visszaolvasva, a telepites lefutott." if ok else "A /health nem valaszolt: nezd meg kezzel.")
 sys.exit(0 if ok else 1)
 PY
