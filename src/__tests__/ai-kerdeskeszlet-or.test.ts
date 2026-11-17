@@ -133,6 +133,22 @@ describe('ai-kerdeskeszlet-or.sh', () => {
     }).toEqual({ code: 3, compareNewest: true, to: true, regression: true })
   })
 
+  // barracuda on AI #111: a partial run (--only/--repeat) written into this folder by mistake is not a baseline. Taken as
+  // the newest, its matching pair would skip the whole run the code change asks for
+  it('a partial report (a "repeat" field) is skipped as the previous one: the whole run goes on and compares with the whole report', async () => {
+    health = { version: 'aaaa1111bbbb', instructionsVersion: 'eeeeeeeeeeee' }
+    const w = world(0)
+    report(w.reports, 'qs-egesz.json', { serverVersion: 'aaaa1111bbbb', instructionsVersion: '5789d9bc8eb1' }, 1)
+    const old = new Date(Date.now() - 3_600_000)
+    utimesSync(join(w.reports, 'qs-egesz.json'), old, old)
+    writeFileSync(
+      join(w.reports, 'qs-reszleges.json'),
+      JSON.stringify({ serverVersion: 'aaaa1111bbbb', instructionsVersion: 'eeeeeeeeeeee', startedAt: new Date().toISOString(), repeat: { only: 'x', times: 5 } }),
+    )
+    const r = await w.run()
+    expect({ code: r.code, compareWhole: w.args().includes(`--compare ${join(w.reports, 'qs-egesz.json')}`) }).toEqual({ code: 0, compareWhole: true })
+  })
+
   it('a week-old report with nothing changed: the weekly run', async () => {
     health = { version: 'aaaa1111bbbb', instructionsVersion: '5789d9bc8eb1' }
     const w = world(0)

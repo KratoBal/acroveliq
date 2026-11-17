@@ -77,7 +77,21 @@ health_down() {
 }
 
 health="$(curl -fsS --max-time 15 "$AI_URL/health" 2>/dev/null)" || health_down "a /health nem olvashato ($AI_URL)"
-elozo="$(ls -1t "$REPORT_DIR"/qs-*.json 2>/dev/null | head -n 1)"
+# the newest WHOLE-SET report (barracuda on AI #111): a partial run (--only/--repeat, it carries a "repeat" field) written
+# here by mistake is not a baseline. Taken as the newest, it would skip the next whole run until the weekly limit, or
+# turn the questions it lacks into regressions in the comparison. An unreadable file stays a candidate, as before.
+elozo="$(python3 - "$REPORT_DIR" <<'ELOZO'
+import glob, json, os, sys
+for path in sorted(glob.glob(os.path.join(sys.argv[1], "qs-*.json")), key=os.path.getmtime, reverse=True):
+    try:
+        if "repeat" in json.load(open(path, encoding="utf-8")):
+            continue
+    except (OSError, ValueError):
+        pass
+    print(path)
+    break
+ELOZO
+)"
 
 # decide in one python call: prints "run <reason>" or "skip", then the server sha for the file name
 dontes="$(python3 - "$health" "$elozo" "$MAX_AGE_DAYS" <<'DONTES'
