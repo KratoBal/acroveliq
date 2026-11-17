@@ -18,6 +18,7 @@ Stage api uuid: `vrjxxwffsxytstq8oepgbhii`. A `<sha40>` a #2661 utan a main egy 
 
 | lepes | iras | visszaolvasas |
 | --- | --- | --- |
+| 0 | csak web, partner: `PATCH /api/v1/applications/<uuid>` `{"is_auto_deploy_enabled": false}` | `is_auto_deploy_enabled` false, minden rogzitett mezo valtozatlan |
 | 1 | `PATCH /api/v1/applications/<uuid>`: `build_pack` `dockerimage`, `docker_registry_image_name` `ghcr.io/kratobal/<kep>`, `docker_registry_image_tag` `sha-<40>` | az app MINDEN rogzitett mezoje a vartat adja (a harom uj, a tobbi valtozatlan) |
 | 2 | csak api: a nem-preview `RELEASE_COMMIT_SHA` env sor torlese (`DELETE .../envs/<env-uuid>`) | nincs nem-preview sor |
 | 3 | `POST /api/v1/deploy?uuid=<uuid>`, varakozas a `/deployments/<uuid>` `finished` allapotra | |
@@ -29,14 +30,15 @@ Miert kell a `RELEASE_COMMIT_SHA` sort torolni az api-n: a kep a commitot alaper
 
 ## Mit ir a `vissza`
 
-`PATCH` a rogzitett ertekekkel: `build_pack` `dockerfile`, `dockerfile_location`, `base_directory`, `dockerfile_target_build`, es a ket registry mezo `null` (a rogzitett allapotban nincs kep); az api-n a `RELEASE_COMMIT_SHA` sor ujra (`${SOURCE_COMMIT}`, build es runtime, nem preview); visszaolvasas (minden rogzitett mezo, az env sorok kulcs/preview/build/runtime szerint); telepites (TELJES epites a git-bol, percek); a /health allapota kiirva.
+`PATCH` a rogzitett ertekekkel: `build_pack` `dockerfile`, `dockerfile_location`, `base_directory`, `dockerfile_target_build`, es a ket registry mezo `null` (a rogzitett allapotban nincs kep); az api-n a `RELEASE_COMMIT_SHA` sor ujra (`${SOURCE_COMMIT}`, build es runtime, nem preview); visszaolvasas (minden rogzitett mezo, az env sorok kulcs/preview/build/runtime szerint); telepites (TELJES epites a git-bol, percek); a /health allapota kiirva; csak web, partner: a deploy es a meres UTAN `PATCH {"is_auto_deploy_enabled": true}` (a mert ertek), visszaolvasva.
 
 ## Vedelem
 
 - Fix stage cim (az AI gep Coolifyja a tailnet-en), nem kornyezetbol. Olvasni az olvaso token, irni CSAK a `--vegrehajt` agon az rw token. A /health-kerés nem visel tokent.
 - Egy app egy futasban. Szaraz alapertelmezes. Nincs automatikus visszaallitas (egy tartos hibat egy ciklus vegtelenul probalna): egy bukott lepes megall es kiirja a `vissza` parancsot.
 - Indulas elott az elo app EGYEZNI kell a rogzitett allapottal (mezonkent, az env sorok kulcs/preview/build/runtime szerint) es `running` allapotban kell lennie; elteres eseten megtagad, mert a visszaallitas egy olyan allapotra allna vissza, ami sosem volt az elottunk allo.
-- **Felig atallitott allapot es az automatikus telepites.** A PATCH utani visszaolvasas MINDEN rogzitett mezot osszevet: ha a Coolify a `build_pack` valtasakor magatol kitolt vagy kiurit egy mezot (pl. `custom_labels`, `dockerfile_location`), a szkript a PATCH UTAN, a telepites ELOTT megall, es az app felig atallitott konfiguracioval all (`build_pack` `dockerimage`). Ilyenkor azonnal a `vissza` parancs (a szkript kiirja). A stage api es web automatikus telepitese 2026-10-16 ota KI VAN KAPCSOLVA (acrobot, 2026-11-17): nem szuneteltetni kell, hanem nincs, tehat egy zold main-fejre nem indul magatol telepites a felig atallitott appon; a telepitest a szkript maga inditja (`POST /deploy`). Ha ez valaha visszakapcsol, az elso valodi futas idejere ujra ki kell venni, vagy megallas utan azonnal `vissza`.
+- **Felig atallitott allapot es az automatikus telepites (acrobot merese, 2026-11-17 16:0x, Coolify app beallitasok).** A stage **api** automatikus telepitese KI van kapcsolva (`is_auto_deploy_enabled` false), a stage **web** es **partner** appon **BE van kapcsolva**: egy felig atallitott web vagy partner app a kovetkezo main-push utan maga telepulne (a dockerimage beallitassal, vagy egy elavult allapottal). Ezert az `elore` web es partner eseten a PATCH ELOTT kikapcsolja (`PATCH {"is_auto_deploy_enabled": false}`, visszaolvasva), a `vissza` a mert erteket (true) csak a SAJAT telepitese es merese UTAN allitja vissza (visszaolvasva), hogy ne induljon masodik telepites; egy bukott telepites utan KIKAPCSOLVA marad. Az api eseten nincs iras, csak ellenorzes: a futas elejen false-t kell olvasnia. A rogzitett fajlban ez a mezo nincs, ezert a mert ertekek a szkriptben allnak, es az az app, amelynek a valasza nem tartalmazza a mezot, megtagadva (az allapota nem ellenorizheto).
+- **Felig atallitott allapot.** A PATCH utani visszaolvasas MINDEN rogzitett mezot osszevet: ha a Coolify a `build_pack` valtasakor magatol kitolt vagy kiurit egy mezot (pl. `custom_labels`, `dockerfile_location`), a szkript a PATCH UTAN, a telepites ELOTT megall, es az app felig atallitott konfiguracioval all (`build_pack` `dockerimage`). Ilyenkor azonnal a `vissza` parancs (a szkript kiirja).
 - A cimke csak `sha-<40 kisbetus hexa>`; `latest` es mas regiszter nem megy.
 - Naplo: `exchange/ghcr/atallas-<uuid>.jsonl`, lepesenkent egy sor (nincs token, nincs env-ertek).
 
@@ -47,4 +49,5 @@ Miert kell a `RELEASE_COMMIT_SHA` sort torolni az api-n: a kep a commitot alaper
 3. A `DELETE /api/v1/applications/<uuid>/envs/<env-uuid>` utvonal, es hogy az env-sorok a GET-ben viselnek `uuid`-ot.
 4. Hogy a `RELEASE_COMMIT_SHA` volt erteke `${SOURCE_COMMIT}` volt (a rogzitett allapotban nincs ertek, a Coolify nem adja): a `vissza` ezt irja vissza, es NEM tudja visszaolvasni.
 5. Hogy a GHCR csomag lathatosaga a Coolify gepen huzhato (publikus csomag kell, vagy `docker login` a gepen: a Balazs-lista 3. pontja).
-6. A web es a partner `API_URL`-je epitesi idoju: a kepek kornyezetenkent kulonallnak (stage, prod), a stage kep a `vars.STAGE_API_URL`-bol epul.
+6. Hogy az `is_auto_deploy_enabled` a `GET /applications/<uuid>` valaszaban szerepel-e, es hogy a PATCH elfogadja-e (a szkript megall, ha nincs a mezo az olvasasban, es a PATCH utani visszaolvasas jelzi, ha nem lett kiirva).
+7. A web es a partner `API_URL`-je epitesi idoju: a kepek kornyezetenkent kulonallnak (stage, prod), a stage kep a `vars.STAGE_API_URL`-bol epul.
