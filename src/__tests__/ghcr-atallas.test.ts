@@ -87,7 +87,7 @@ function freshState() {
   envRows = {}
   for (const a of recorded.stage) {
     const { envs, ...rest } = a
-    apps[a.uuid] = { ...rest, is_auto_deploy_enabled: AUTO_MEASURED[a.name] }
+    apps[a.uuid] = { ...rest, settings: { is_static: false, is_auto_deploy_enabled: AUTO_MEASURED[a.name] } }
     envRows[a.uuid] = (envs as any[]).map((e, i) => ({ uuid: `env-${a.uuid.slice(0, 4)}-${i}`, key: e.key, is_preview: e.is_preview, is_build_time: e.is_build_time, is_runtime: e.is_runtime }))
   }
   platformReleaseVar = true
@@ -112,14 +112,19 @@ beforeAll(async () => {
         if (!app) return send(404, { message: 'not found' })
         if (!envPart) {
           if (req.method === 'GET') {
-            const { is_auto_deploy_enabled: _auto, ...withoutAuto } = app
-            return send(200, omitAutoField ? withoutAuto : app)
+            const { is_auto_deploy_enabled: _top, settings, ...rest } = app
+            const { is_auto_deploy_enabled: _auto, ...settingsWithoutAuto } = settings
+            return send(200, { ...rest, settings: omitAutoField ? settingsWithoutAuto : settings })
           }
           if (req.method === 'PATCH') {
             if (patchMode === 'reject') return send(422, { message: 'The selected build pack is invalid.' })
             for (const [k, v] of Object.entries(body)) {
               if (patchMode === 'ignore-null' && v === null) continue
-              if (autoPatchIgnored && k === 'is_auto_deploy_enabled') continue
+              if (k === 'is_auto_deploy_enabled') {
+                // the usual Coolify write field is the top-level one; the answer shows it under settings
+                if (!autoPatchIgnored) app.settings.is_auto_deploy_enabled = v
+                continue
+              }
               app[k] = v
             }
             if (patchMode === 'also-change') app.ports_exposes = '9999'
@@ -491,11 +496,11 @@ describe('the automatic deploy (acrobot 54774: off on the api, ON on web and par
   })
 
   it('refuses an app whose auto-deploy differs from the measured state, or whose answer has no such field, with no write', async () => {
-    apps[WEB].is_auto_deploy_enabled = false
+    apps[WEB].settings.is_auto_deploy_enabled = false
     let r = await run('elore', WEB, SHA, '--vegrehajt')
     expect(r.code).toBe(1)
     expect(r.err).toContain('automatikus telepites')
-    apps[API].is_auto_deploy_enabled = true
+    apps[API].settings.is_auto_deploy_enabled = true
     r = await run('elore', API, SHA, '--vegrehajt')
     expect(r.code).toBe(1)
     expect(r.err).toContain('automatikus telepites')
@@ -519,7 +524,7 @@ describe('the automatic deploy (acrobot 54774: off on the api, ON on web and par
       expect(p[0]).toEqual(AUTO_OFF)
       expect(p[1].build_pack).toBe('dockerimage')
       expect(writes().findIndex((c) => c.method === 'PATCH' && c.body.build_pack === 'dockerimage')).toBeLessThan(deployIndex())
-      expect(apps[uuid].is_auto_deploy_enabled).toBe(false)
+      expect(apps[uuid].settings.is_auto_deploy_enabled).toBe(false)
     }
   })
 
@@ -549,7 +554,7 @@ describe('the automatic deploy (acrobot 54774: off on the api, ON on web and par
     expect(last.body).toEqual(AUTO_ON)
     expect(w.findIndex((c) => c.path.startsWith('/api/v1/deploy'))).toBeLessThan(w.length - 1)
     expect(patches()[0].build_pack).toBe('dockerfile')
-    expect(apps[WEB].is_auto_deploy_enabled).toBe(true)
+    expect(apps[WEB].settings.is_auto_deploy_enabled).toBe(true)
   })
 
   it('a failed vissza deploy leaves it OFF and says so', async () => {
@@ -560,7 +565,7 @@ describe('the automatic deploy (acrobot 54774: off on the api, ON on web and par
     expect(r.code).toBe(1)
     expect(r.err).toContain('KIKAPCSOLVA marad')
     expect(patches().some((b) => b.is_auto_deploy_enabled === true)).toBe(false)
-    expect(apps[WEB].is_auto_deploy_enabled).toBe(false)
+    expect(apps[WEB].settings.is_auto_deploy_enabled).toBe(false)
   })
 
   it('vissza on the api writes no auto-deploy flag', async () => {

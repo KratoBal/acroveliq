@@ -35,7 +35,10 @@
 # have it TRUE: a half-switched web or partner app would deploy by itself on the next push to main. So on web and partner, elore
 # turns it off BEFORE the PATCH (read back), and vissza turns it back to the measured value only AFTER its deploy and measure (a
 # failed deploy leaves it off). The api is checked, not changed: it must read false. The record file has no such field, so the measured
-# values are constants here, and an app whose answer has no is_auto_deploy_enabled field is refused (its state cannot be checked).
+# values are constants here. WHERE IT IS READ (acrobot, 2026-11-17 16:10): the GET /applications/<uuid> answer carries it NOT at the top
+# level but in the "settings" object (settings.is_auto_deploy_enabled). WHERE IT IS WRITTEN is not measured (the top-level
+# is_auto_deploy_enabled is the usual Coolify PATCH field, but nobody has seen it taken): the write is read back from settings, and a
+# write that does not show there STOPS the script. An app whose settings have no such field is refused (its state cannot be checked).
 # vissza writes the recorded values back, re-creates the env row, deploys (a full build from git again), polls, and prints the
 # /health state (the commit of the git head this time: it is printed, not compared).
 #
@@ -89,7 +92,7 @@ IMAGE_BY_NAME = {
 REGISTRY = "ghcr.io/kratobal/"
 RELEASE_ENV = "RELEASE_COMMIT_SHA"
 RELEASE_ENV_RESTORE_VALUE = "${SOURCE_COMMIT}"
-AUTO_DEPLOY_FIELD = "is_auto_deploy_enabled"
+AUTO_DEPLOY_FIELD = "is_auto_deploy_enabled"  # read from app["settings"][...], written as a top-level PATCH field
 # MEASURED by acrobot, Coolify app settings, 2026-11-17 16:0x: the stage apps' automatic deploy (the record file has no such field)
 AUTO_DEPLOY_MEASURED = {"acropora-stage-api": False, "acropora-staging-web": True, "acropora-staging-partner": True}
 # the recorded app fields compared before and after every write (everything the record has except the envs and the live status)
@@ -97,6 +100,12 @@ SKIP_FIELDS = {"envs", "status"}
 
 def die(code, text):
     print(text, file=sys.stderr); sys.exit(code)
+
+_MISSING = object()
+def auto_of(app):
+    """The app's automatic deploy as the GET answer gives it: settings.is_auto_deploy_enabled, or _MISSING when the answer has none."""
+    settings = app.get("settings")
+    return settings.get(AUTO_DEPLOY_FIELD, _MISSING) if isinstance(settings, dict) else _MISSING
 
 try:
     with open(recorded_file, encoding="utf-8") as f:
@@ -197,10 +206,10 @@ def preflight(allow_switched=False):
         die(1, msg)
     if not allow_switched and not str(app.get("status", "")).startswith("running"):
         die(1, f"MEGALLOK: az app allapota {app.get('status')!r}, nem 'running...': felebredt telepites vagy hiba, nem kapcsolok at.")
-    if AUTO_DEPLOY_FIELD not in app:
-        die(1, f"MEGALLOK: az app valasza nem tartalmazza a(z) {AUTO_DEPLOY_FIELD} mezot: az automatikus telepites allapota nem ellenorizheto, nem kapcsolok at.")
-    if not allow_switched and app[AUTO_DEPLOY_FIELD] != auto_measured:
-        die(1, f"ELTERES: az automatikus telepites most {app[AUTO_DEPLOY_FIELD]!r}, a mert allapot {auto_measured!r} (acrobot, 2026-11-17): nem nyulok hozza, mert a felig atallitott app maga telepulhetne.")
+    if auto_of(app) is _MISSING:
+        die(1, f"MEGALLOK: az app valaszanak settings objektuma nem tartalmazza a(z) {AUTO_DEPLOY_FIELD} mezot: az automatikus telepites allapota nem ellenorizheto, nem kapcsolok at.")
+    if not allow_switched and auto_of(app) != auto_measured:
+        die(1, f"ELTERES: az automatikus telepites most {auto_of(app)!r}, a mert allapot {auto_measured!r} (acrobot, 2026-11-17): nem nyulok hozza, mert a felig atallitott app maga telepulhetne.")
     return app
 
 def deploy_and_wait():
@@ -273,7 +282,9 @@ def patch_and_check(fields, label, ignore_after=()):
         journal(label, False, f"HTTP {code}: {str(ans)[:150]}")
         die(1, f"NEM IRTA AT ({label}, HTTP {code}): {str(ans)[:300]}\nA kerest a Coolify elutasitotta, az app valtozatlan.")
     app = read_app()
-    rows = drift(app, {**rec, **fields}, ignore=ignore_after)
+    rows = drift(app, {**rec, **{k: v for k, v in fields.items() if k != AUTO_DEPLOY_FIELD}}, ignore=ignore_after)
+    if AUTO_DEPLOY_FIELD in fields and auto_of(app) != fields[AUTO_DEPLOY_FIELD]:
+        rows.append((f"settings.{AUTO_DEPLOY_FIELD}", fields[AUTO_DEPLOY_FIELD], None if auto_of(app) is _MISSING else auto_of(app)))
     if rows:
         journal(label, False, "elteres: " + ",".join(f for f, _w, _g in rows))
         die(1, f"ELTERES a(z) {label} UTAN (a Coolify mast tarol, mint amit kuldtunk, vagy mashoz is hozzanyult):\n" + show_drift(rows)
