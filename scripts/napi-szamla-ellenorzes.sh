@@ -89,12 +89,16 @@ else:
     # the other lines stand either way: one unreadable answer does not take the summary down
     lines.append(f'• Olvasatlan dokumentum: {g("olvasatlan_dokumentum")[0]}; számla nélküli banki terhelés: {g("terheles_szamla_nelkul")[0]} (a Hiányzó számlák {why}, ezért ez a régi felső becslés: csak a kézi párosítást látja)')
 # what is new since yesterday, per list; a list that cannot be compared is said so, not guessed. Only when the shell named
-# yesterday's file and the module's folder (the summary's tests run this block without them)
+# yesterday's file and the module's folder (the summary's tests run this block without them). It is an addition: if it fails
+# (a yesterday's file not in UTF-8, an unexpected line), one line says so and the rest of the summary still goes out
 if os.environ.get('NAPI_ELOZO') and os.environ.get('NAPI_LIB'):
-    sys.path.insert(0, os.environ['NAPI_LIB'])
-    from napi_szamla_uj import new_since
-    elozo = os.environ['NAPI_ELOZO']
-    yesterday = open(elozo, encoding='utf-8').read() if os.path.exists(elozo) else None
-    lines.extend(new_since(open(sys.argv[1], encoding='utf-8').read(), yesterday))
+    try:
+        sys.path.insert(0, os.environ['NAPI_LIB'])
+        from napi_szamla_uj import new_since
+        elozo = os.environ['NAPI_ELOZO']
+        yesterday = open(elozo, encoding='utf-8').read() if os.path.exists(elozo) else None
+        lines.extend(new_since(open(sys.argv[1], encoding='utf-8').read(), yesterday))
+    except Exception as e:
+        lines.append(f'• Új a tegnapihoz képest: nem számolható ({type(e).__name__})')
 print('\n'.join(lines))
 PY
