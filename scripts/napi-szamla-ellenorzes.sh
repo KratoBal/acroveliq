@@ -27,8 +27,11 @@ timeout 90 python3 "$ROOT/scripts/os-hianyzo-honapok.py" > "$APP" 2>/dev/null ||
 # UNASSIGNED PDFs waiting for a decision for more than 60 days (acropora-os #1833, card 5f8a2714)
 SUG="$OUT_DIR/$NAP-javaslat.json"
 timeout 90 python3 "$ROOT/scripts/os-hianyzo-honapok.py" suggestions > "$SUG" 2>/dev/null || : > "$SUG"
+# yesterday's raw file, for "what is new" (acrobot 55376): the summary names only the new items, the raw file keeps every list
+# (in the environment, not argv: the summary's tests run this block with the three files only, and pin this very call)
+export NAPI_ELOZO="$OUT_DIR/$(date -d "$NAP -1 day" +%F).txt" NAPI_LIB="$ROOT/scripts/lib"
 python3 - "$NYERS" "$APP" "$SUG" <<'PY'
-import json, sys
+import json, os, sys
 from decimal import Decimal, ROUND_HALF_UP
 rows = {}
 for line in open(sys.argv[1], encoding='utf-8'):
@@ -85,5 +88,13 @@ if bank:
 else:
     # the other lines stand either way: one unreadable answer does not take the summary down
     lines.append(f'• Olvasatlan dokumentum: {g("olvasatlan_dokumentum")[0]}; számla nélküli banki terhelés: {g("terheles_szamla_nelkul")[0]} (a Hiányzó számlák {why}, ezért ez a régi felső becslés: csak a kézi párosítást látja)')
+# what is new since yesterday, per list; a list that cannot be compared is said so, not guessed. Only when the shell named
+# yesterday's file and the module's folder (the summary's tests run this block without them)
+if os.environ.get('NAPI_ELOZO') and os.environ.get('NAPI_LIB'):
+    sys.path.insert(0, os.environ['NAPI_LIB'])
+    from napi_szamla_uj import new_since
+    elozo = os.environ['NAPI_ELOZO']
+    yesterday = open(elozo, encoding='utf-8').read() if os.path.exists(elozo) else None
+    lines.extend(new_since(open(sys.argv[1], encoding='utf-8').read(), yesterday))
 print('\n'.join(lines))
 PY
