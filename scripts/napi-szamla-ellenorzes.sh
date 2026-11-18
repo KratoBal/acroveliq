@@ -27,8 +27,12 @@ timeout 90 python3 "$ROOT/scripts/os-hianyzo-honapok.py" > "$APP" 2>/dev/null ||
 # UNASSIGNED PDFs waiting for a decision for more than 60 days (acropora-os #1833, card 5f8a2714)
 SUG="$OUT_DIR/$NAP-javaslat.json"
 timeout 90 python3 "$ROOT/scripts/os-hianyzo-honapok.py" suggestions > "$SUG" 2>/dev/null || : > "$SUG"
-python3 - "$NYERS" "$APP" "$SUG" <<'PY'
-import json, sys
+# yesterday's raw file, for "what is new" (acrobot 55376): the summary names only the new items, the raw file keeps every list
+ELOZO="$OUT_DIR/$(date -d "$NAP -1 day" +%F).txt"
+python3 - "$NYERS" "$APP" "$SUG" "$ELOZO" "$ROOT/scripts/lib" <<'PY'
+import json, os, sys
+sys.path.insert(0, sys.argv[5])
+from napi_szamla_uj import new_since
 from decimal import Decimal, ROUND_HALF_UP
 rows = {}
 for line in open(sys.argv[1], encoding='utf-8'):
@@ -85,5 +89,8 @@ if bank:
 else:
     # the other lines stand either way: one unreadable answer does not take the summary down
     lines.append(f'• Olvasatlan dokumentum: {g("olvasatlan_dokumentum")[0]}; számla nélküli banki terhelés: {g("terheles_szamla_nelkul")[0]} (a Hiányzó számlák {why}, ezért ez a régi felső becslés: csak a kézi párosítást látja)')
+# what is new since yesterday, per list; a list that cannot be compared is said so, not guessed
+yesterday = open(sys.argv[4], encoding='utf-8').read() if os.path.exists(sys.argv[4]) else None
+lines.extend(new_since(open(sys.argv[1], encoding='utf-8').read(), yesterday))
 print('\n'.join(lines))
 PY
