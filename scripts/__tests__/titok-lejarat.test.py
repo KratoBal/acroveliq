@@ -48,6 +48,7 @@ class FakeHttp:
         self.calls = []
         self.github = (200, "%s 10:04:00 UTC" % day(40))
         self.meta = {}
+        self.meta_read = 200
         self.google = (200, {"access_token": "AT-" + MARK, "refresh_token": "NEWRT-" + MARK})
         self.status = 200
         self.health = 200
@@ -58,6 +59,8 @@ class FakeHttp:
         if "api.github.com" in url:
             st, h = self.github
             return st, ({"github-authentication-token-expiration": h} if h else {}), {"message": "echo " + MARK}
+        if url.startswith("https://graph.facebook.com/me?"):
+            return self.meta_read, {}, {"error": {"message": "echo " + MARK}} if self.meta_read != 200 else {"id": "1"}
         if "graph.facebook.com" in url:
             tok = url.split("input_token=")[1]
             return 200, {}, {"data": self.meta.get(tok, {"is_valid": True, "expires_at": 0, "data_access_expires_at": 0})}
@@ -113,29 +116,44 @@ class Sources(Base):
                           t2: {"is_valid": True, "expires_at": stamp(50), "data_access_expires_at": stamp(90)}}
         rows, _, _ = self.run_check()
         self.assertEqual(self.row(rows, ".fb-page-tokens.json")["lejarat"], time.strftime("%Y-%m-%d", time.gmtime(stamp(50))))
-        self.assertIn("legkorabbi: expires_at", self.row(rows, ".fb-page-tokens.json")["ok"])
         self.http.meta[t2] = {"is_valid": False}
         rows, msgs, _ = self.run_check()
         self.assertEqual(self.row(rows, ".fb-page-tokens.json")["eredmeny"], "ERVENYTELEN")
         self.assertEqual(len(msgs), 1)
 
-    def test_meta_row_names_the_field_that_gave_the_date(self):
-        # c4b7c534: a page token with expires_at 0 and a passed data_access_expires_at read "OK" with a bare
-        # date, and nothing said that the date was the data access, not the token's end
+    def test_a_passed_data_access_is_info_and_only_a_failing_read_alarms(self):
+        # c4b7c534: page tokens (expires_at 0) 3 days past data_access_expires_at read "OK" with that
+        # past date; measured, they still read everything we use. The date is expires_at alone, the data
+        # access is INFO, and past it a read call decides
         tok = "PT" + MARK
         self.put(".fb-page-token", tok)
         self.http.meta = {tok: {"is_valid": True, "expires_at": 0, "data_access_expires_at": int(NOW - 3 * 86400)}}
+        rows, msgs, _ = self.run_check(names=[".fb-page-token"])
+        r = self.row(rows, ".fb-page-token")
+        self.assertEqual((r["eredmeny"], r["lejarat"], r["nap"], msgs), ("OK", None, None, []))
+        self.assertIn("INFO data_access", r["ok"])
+        self.assertIn("lejart, olvasas megy", r["ok"])
+        self.assertIn(("GET", "https://graph.facebook.com/me?fields=id"), self.http.calls)
+        self.http.meta_read = 400
+        rows, msgs, _ = self.run_check(names=[".fb-page-token"])
+        r = self.row(rows, ".fb-page-token")
+        self.assertEqual((r["eredmeny"], len(msgs)), ("ERVENYTELEN", 1))
+        self.assertIn("olvaso hivas 400", r["ok"])
+        # a data access still ahead is INFO too, and no read call is spent on it
+        self.http.calls.clear()
+        self.http.meta = {tok: {"is_valid": True, "expires_at": int(NOW + 50 * 86400),
+                                "data_access_expires_at": int(NOW + 5 * 86400)}}
         rows, _, _ = self.run_check(names=[".fb-page-token"])
         r = self.row(rows, ".fb-page-token")
-        self.assertEqual(r["eredmeny"], "OK")
-        self.assertLess(r["nap"], 0)  # the date is UTC, the day count local: -3 or -4 by the hour
-        self.assertEqual(r["ok"], "meta debug_token data_access_expires_at")
+        self.assertEqual(r["lejarat"], time.strftime("%Y-%m-%d", time.gmtime(int(NOW + 50 * 86400))))
+        self.assertIn("INFO data_access", r["ok"])
+        self.assertNotIn(("GET", "https://graph.facebook.com/me?fields=id"), self.http.calls)
+
+    def test_the_summary_counts_a_passed_date(self):
+        self.put(".github-token")
+        self.http.github = (200, "%s 10:04:00 UTC" % day(-2))
+        rows, _, _ = self.run_check(names=[".github-token"])
         self.assertIn("LEJART DATUM 1", tl.summary_line(rows))
-        self.http.meta = {tok: {"is_valid": True, "expires_at": 0, "data_access_expires_at": 0}}
-        rows, _, _ = self.run_check(names=[".fb-page-token"])
-        self.assertEqual((self.row(rows, ".fb-page-token")["lejarat"], self.row(rows, ".fb-page-token")["ok"]),
-                         (None, "meta debug_token: nincs lejarat"))
-        self.assertIn("LEJART DATUM 0", tl.summary_line(rows))
 
     def test_google_measures_the_renewal_and_drops_what_it_gets(self):
         for f in (".yt-client-id", ".yt-client-secret", ".gdrive-refresh-token"):

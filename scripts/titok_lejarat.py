@@ -13,9 +13,10 @@ Meta error can echo a token): only the HTTP status and a fixed reason word.
 WHERE THE DATE COMES FROM, by kind (scripts/titok-lejarat.json, no values in it):
   github      the github-authentication-token-expiration header; 401 means invalid
   meta        graph.facebook.com debug_token, the token inspecting itself: the earlier of
-              expires_at and data_access_expires_at (0 = none), and the row names which field it was:
-              a page token has expires_at 0, so its date is the data access, and is_valid stays true
-              after it (c4b7c534); is_valid false means invalid
+              expires_at (0 = none; a page token's). data_access_expires_at is INFO in the row, not a
+              date: past it the tokens stayed valid and every read we use answered (c4b7c534), so
+              past it one read call (/me) decides, and only a failing read is an alarm (invalid);
+              is_valid false means invalid
   meta-json   the same for every token in the fb-insights.sh vault; the earliest counts
   google      one refresh exchange with the token's own client: 200 means the renewal WORKS
               (the brief's point 2), invalid_grant means it is dead. No date exists. Two things
@@ -118,7 +119,7 @@ def measure_github(token, http):
             "ok": "github fejlec" if v else "github: nincs lejarati fejlec"}
 
 
-def _meta_one(token, http):
+def _meta_one(token, http, now=None):
     st, _, d = http("GET", "https://graph.facebook.com/debug_token?" + urllib.parse.urlencode({"input_token": token}),
                     {"Authorization": "Bearer " + token})
     if st != 200 or not isinstance(d, dict) or not isinstance(d.get("data"), dict):
@@ -126,22 +127,34 @@ def _meta_one(token, http):
     data = d["data"]
     if not data.get("is_valid"):
         return {"eredmeny": "ERVENYTELEN", "lejarat": None, "ok": "meta is_valid=false"}
-    # the earlier of the two counts, and the row names which one it was: the two do not mean the same
-    # (expires_at ends the token, data_access_expires_at ends its access to the user's data)
-    stamps = [(int(data.get(k) or 0), k) for k in ("expires_at", "data_access_expires_at")]
-    stamps = [s for s in stamps if s[0] > 0]
-    if not stamps:
-        return {"eredmeny": "OK", "lejarat": None, "ok": "meta debug_token: nincs lejarat"}
-    ts, field = min(stamps)
-    return {"eredmeny": "OK", "lejarat": time.strftime("%Y-%m-%d", time.gmtime(ts)), "ok": "meta debug_token " + field,
-            "mezo": field}
+    # The date is expires_at alone: the token's end (0 for a page token: none). data_access_expires_at
+    # is INFO, not an expiry (c4b7c534, measured 2026-11-19): three page tokens 3 days past it stayed
+    # is_valid, and the page fields, the post list, the post and page insights all answered 200.
+    # Past it, one read call decides: the alarm is a read that fails, not the date.
+    exp = int(data.get("expires_at") or 0)
+    out = {"eredmeny": "OK", "lejarat": time.strftime("%Y-%m-%d", time.gmtime(exp)) if exp > 0 else None,
+           "ok": "meta debug_token expires_at" if exp > 0 else "meta debug_token: nem jar le", "adat_lejart": False}
+    da = int(data.get("data_access_expires_at") or 0)
+    if da <= 0:
+        return out
+    da_day = time.strftime("%Y-%m-%d", time.gmtime(da))
+    if da > (time.time() if now is None else now):
+        out["ok"] += "; INFO data_access %s" % da_day
+        return out
+    rst, _, _ = http("GET", "https://graph.facebook.com/me?fields=id", {"Authorization": "Bearer " + token})
+    if rst != 200:
+        return {"eredmeny": "ERVENYTELEN", "lejarat": None,
+                "ok": "meta: data_access %s lejart, olvaso hivas %d" % (da_day, rst)}
+    out["ok"] += "; INFO data_access %s lejart, olvasas megy" % da_day
+    out["adat_lejart"] = True
+    return out
 
 
-def measure_meta(token, http):
-    return _meta_one(token, http)
+def measure_meta(token, http, now=None):
+    return _meta_one(token, http, now)
 
 
-def measure_meta_json(raw, http):
+def measure_meta_json(raw, http, now=None):
     try:
         vault = json.loads(raw)
         tokens = [v["token"] for v in vault.values() if isinstance(v, dict) and v.get("token")]
@@ -149,14 +162,15 @@ def measure_meta_json(raw, http):
         return {"eredmeny": "NEM_MERT", "lejarat": None, "ok": "a vault nem olvashato JSON"}
     if not tokens:
         return {"eredmeny": "NEM_MERT", "lejarat": None, "ok": "a vault ures"}
-    results = [_meta_one(t, http) for t in tokens]
+    results = [_meta_one(t, http, now) for t in tokens]
     if any(r["eredmeny"] == "ERVENYTELEN" for r in results):
         return {"eredmeny": "ERVENYTELEN", "lejarat": None, "ok": "meta: egy oldal-token ervenytelen"}
-    dated = sorted((r["lejarat"], r["mezo"]) for r in results if r["lejarat"])
+    dates = sorted(r["lejarat"] for r in results if r["lejarat"])
     bad = sum(r["eredmeny"] != "OK" for r in results)
-    return {"eredmeny": "OK" if not bad else "NEM_MERT", "lejarat": dated[0][0] if dated else None,
-            "ok": "meta debug_token, %d token" % len(tokens) + (" (legkorabbi: %s)" % dated[0][1] if dated else "")
-            + (", %d nem mert" % bad if bad else "")}
+    passed = sum(r.get("adat_lejart", False) for r in results)
+    return {"eredmeny": "OK" if not bad else "NEM_MERT", "lejarat": dates[0] if dates else None,
+            "ok": "meta debug_token, %d token" % len(tokens) + (", %d nem mert" % bad if bad else "")
+            + ("; INFO %d token data_access lejart, olvasas megy" % passed if passed else "")}
 
 
 GOOGLE_CLIENTS = {
@@ -213,7 +227,7 @@ def measure_expo(token, http):
     return {"eredmeny": "NEM_MERT", "lejarat": None, "ok": "expo %s, nincs meActor" % st}
 
 
-def measure(name, rule, store, annotations, http):
+def measure(name, rule, store, annotations, http, now=None):
     kind = rule["fajta"] if rule else "ismeretlen"
     if kind in ("nem-jar-le", "rovid-eletu", "mentes", "nem-titok"):
         return {"eredmeny": kind.upper(), "lejarat": None, "ok": rule.get("indok", "")}
@@ -230,9 +244,9 @@ def measure(name, rule, store, annotations, http):
     if kind == "github":
         return measure_github(raw, http)
     if kind == "meta":
-        return measure_meta(raw, http)
+        return measure_meta(raw, http, now)
     if kind == "meta-json":
-        return measure_meta_json(raw, http)
+        return measure_meta_json(raw, http, now)
     if kind == "google":
         return measure_google(raw, rule.get("kliens", "yt"), store, http)
     if kind in ("coolify", "expo"):
@@ -263,7 +277,7 @@ def check(store, registry, annotations, state, base_names, now, http=None):
     for h in registry.get("host", []):
         entries.append((h["kulcs"], dict(h, fajta=h.get("fajta", "rogzitett"))))
     for name, rule in entries:
-        m = measure(name, rule, store, annotations, http)
+        m = measure(name, rule, store, annotations, http, now)
         d = days_until(m["lejarat"], now) if m["lejarat"] else None
         rows.append(dict(m, nev=name, nap=d, fajta=(rule or {}).get("fajta", "ismeretlen"),
                          cel=(rule or {}).get("cel", "?")))
