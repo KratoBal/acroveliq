@@ -15,7 +15,8 @@ WHERE THE DATE COMES FROM, by kind (scripts/titok-lejarat.json, no values in it)
   meta        graph.facebook.com debug_token, the token inspecting itself: the earlier of
               expires_at (0 = none; a page token's). data_access_expires_at is INFO in the row, not a
               date: past it the tokens stayed valid and every read we use answered (c4b7c534), so
-              past it one read call (/me) decides, and only a failing read is an alarm (invalid);
+              past it one read call (/me) decides: an auth answer (400/401/403) is the alarm (invalid),
+              a 5xx, a 429 or no answer is not measured;
               is_valid false means invalid
   meta-json   the same for every token in the fb-insights.sh vault; the earliest counts
   google      one refresh exchange with the token's own client: 200 means the renewal WORKS
@@ -142,8 +143,14 @@ def _meta_one(token, http, now=None):
         out["ok"] += "; INFO data_access %s" % da_day
         return out
     rst, _, _ = http("GET", "https://graph.facebook.com/me?fields=id", {"Authorization": "Bearer " + token})
-    if rst != 200:
+    # only an auth answer is invalid (Meta's OAuthException comes as 400); a 5xx, a 429 or no answer
+    # (0) is not measured, and the next round measures again (barracuda 57366): an invalid is the
+    # one alarm someone replaces a token for
+    if rst in (400, 401, 403):
         return {"eredmeny": "ERVENYTELEN", "lejarat": None,
+                "ok": "meta: data_access %s lejart, olvaso hivas %d" % (da_day, rst)}
+    if rst != 200:
+        return {"eredmeny": "NEM_MERT", "lejarat": None,
                 "ok": "meta: data_access %s lejart, olvaso hivas %d" % (da_day, rst)}
     out["ok"] += "; INFO data_access %s lejart, olvasas megy" % da_day
     out["adat_lejart"] = True

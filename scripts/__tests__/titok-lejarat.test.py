@@ -139,6 +139,12 @@ class Sources(Base):
         r = self.row(rows, ".fb-page-token")
         self.assertEqual((r["eredmeny"], len(msgs)), ("ERVENYTELEN", 1))
         self.assertIn("olvaso hivas 400", r["ok"])
+        # a Meta outage, a rate limit or no answer is not a dead token: not measured, no message (barracuda 57366)
+        for st in (503, 429, 0):
+            self.http.meta_read = st
+            rows, msgs, _ = self.run_check(names=[".fb-page-token"])
+            with self.subTest(status=st):
+                self.assertEqual((self.row(rows, ".fb-page-token")["eredmeny"], msgs), ("NEM_MERT", []))
         # a data access still ahead is INFO too, and no read call is spent on it
         self.http.calls.clear()
         self.http.meta = {tok: {"is_valid": True, "expires_at": int(NOW + 50 * 86400),
