@@ -13,7 +13,11 @@ Meta error can echo a token): only the HTTP status and a fixed reason word.
 WHERE THE DATE COMES FROM, by kind (scripts/titok-lejarat.json, no values in it):
   github      the github-authentication-token-expiration header; 401 means invalid
   meta        graph.facebook.com debug_token, the token inspecting itself: the earlier of
-              expires_at and data_access_expires_at (0 = none); is_valid false means invalid
+              expires_at (0 = none; a page token's). data_access_expires_at is INFO in the row, not a
+              date: past it the tokens stayed valid and every read we use answered (c4b7c534), so
+              past it one read call (/me) decides: an auth answer (400/401/403) is the alarm (invalid),
+              a 5xx, a 429 or no answer is not measured;
+              is_valid false means invalid
   meta-json   the same for every token in the fb-insights.sh vault; the earliest counts
   google      one refresh exchange with the token's own client: 200 means the renewal WORKS
               (the brief's point 2), invalid_grant means it is dead. No date exists. Two things
@@ -33,7 +37,8 @@ WHERE THE DATE COMES FROM, by kind (scripts/titok-lejarat.json, no values in it)
   nem-jar-le, rovid-eletu, mentes, nem-titok: no date by nature, the reason is in the registry
   ismeretlen  not known: counted, never an alarm. The count is the list Balazs wants at zero.
 
-THE MESSAGE: per secret ONE at 14 days, ONE at 3 days, ONE when a measurement says invalid;
+THE MESSAGE: per secret ONE at 14 days, ONE at 3 days, ONE when the date has passed (the 3-day one
+may have gone out before it), ONE when a measurement says invalid;
 the sent thresholds live in store/secrets-lejarat-allapot.json (names, dates, words: no
 value). A renewed secret (a new date) starts over. The text is printed in a KULDENDO block,
 and the heartbeat posts it to the Eldontendo thread as it is.
@@ -115,7 +120,7 @@ def measure_github(token, http):
             "ok": "github fejlec" if v else "github: nincs lejarati fejlec"}
 
 
-def _meta_one(token, http):
+def _meta_one(token, http, now=None):
     st, _, d = http("GET", "https://graph.facebook.com/debug_token?" + urllib.parse.urlencode({"input_token": token}),
                     {"Authorization": "Bearer " + token})
     if st != 200 or not isinstance(d, dict) or not isinstance(d.get("data"), dict):
@@ -123,17 +128,40 @@ def _meta_one(token, http):
     data = d["data"]
     if not data.get("is_valid"):
         return {"eredmeny": "ERVENYTELEN", "lejarat": None, "ok": "meta is_valid=false"}
-    stamps = [int(data.get(k) or 0) for k in ("expires_at", "data_access_expires_at")]
-    stamps = [s for s in stamps if s > 0]
-    exp = time.strftime("%Y-%m-%d", time.gmtime(min(stamps))) if stamps else None
-    return {"eredmeny": "OK", "lejarat": exp, "ok": "meta debug_token"}
+    # The date is expires_at alone: the token's end (0 for a page token: none). data_access_expires_at
+    # is INFO, not an expiry (c4b7c534, measured 2026-11-19): three page tokens 3 days past it stayed
+    # is_valid, and the page fields, the post list, the post and page insights all answered 200.
+    # Past it, one read call decides: the alarm is a read that fails, not the date.
+    exp = int(data.get("expires_at") or 0)
+    out = {"eredmeny": "OK", "lejarat": time.strftime("%Y-%m-%d", time.gmtime(exp)) if exp > 0 else None,
+           "ok": "meta debug_token expires_at" if exp > 0 else "meta debug_token: nem jar le", "adat_lejart": False}
+    da = int(data.get("data_access_expires_at") or 0)
+    if da <= 0:
+        return out
+    da_day = time.strftime("%Y-%m-%d", time.gmtime(da))
+    if da > (time.time() if now is None else now):
+        out["ok"] += "; INFO data_access %s" % da_day
+        return out
+    rst, _, _ = http("GET", "https://graph.facebook.com/me?fields=id", {"Authorization": "Bearer " + token})
+    # only an auth answer is invalid (Meta's OAuthException comes as 400); a 5xx, a 429 or no answer
+    # (0) is not measured, and the next round measures again (barracuda 57366): an invalid is the
+    # one alarm someone replaces a token for
+    if rst in (400, 401, 403):
+        return {"eredmeny": "ERVENYTELEN", "lejarat": None,
+                "ok": "meta: data_access %s lejart, olvaso hivas %d" % (da_day, rst)}
+    if rst != 200:
+        return {"eredmeny": "NEM_MERT", "lejarat": None,
+                "ok": "meta: data_access %s lejart, olvaso hivas %d" % (da_day, rst)}
+    out["ok"] += "; INFO data_access %s lejart, olvasas megy" % da_day
+    out["adat_lejart"] = True
+    return out
 
 
-def measure_meta(token, http):
-    return _meta_one(token, http)
+def measure_meta(token, http, now=None):
+    return _meta_one(token, http, now)
 
 
-def measure_meta_json(raw, http):
+def measure_meta_json(raw, http, now=None):
     try:
         vault = json.loads(raw)
         tokens = [v["token"] for v in vault.values() if isinstance(v, dict) and v.get("token")]
@@ -141,13 +169,15 @@ def measure_meta_json(raw, http):
         return {"eredmeny": "NEM_MERT", "lejarat": None, "ok": "a vault nem olvashato JSON"}
     if not tokens:
         return {"eredmeny": "NEM_MERT", "lejarat": None, "ok": "a vault ures"}
-    results = [_meta_one(t, http) for t in tokens]
+    results = [_meta_one(t, http, now) for t in tokens]
     if any(r["eredmeny"] == "ERVENYTELEN" for r in results):
         return {"eredmeny": "ERVENYTELEN", "lejarat": None, "ok": "meta: egy oldal-token ervenytelen"}
     dates = sorted(r["lejarat"] for r in results if r["lejarat"])
     bad = sum(r["eredmeny"] != "OK" for r in results)
+    passed = sum(r.get("adat_lejart", False) for r in results)
     return {"eredmeny": "OK" if not bad else "NEM_MERT", "lejarat": dates[0] if dates else None,
-            "ok": "meta debug_token, %d token" % len(tokens) + (", %d nem mert" % bad if bad else "")}
+            "ok": "meta debug_token, %d token" % len(tokens) + (", %d nem mert" % bad if bad else "")
+            + ("; INFO %d token data_access lejart, olvasas megy" % passed if passed else "")}
 
 
 GOOGLE_CLIENTS = {
@@ -204,7 +234,7 @@ def measure_expo(token, http):
     return {"eredmeny": "NEM_MERT", "lejarat": None, "ok": "expo %s, nincs meActor" % st}
 
 
-def measure(name, rule, store, annotations, http):
+def measure(name, rule, store, annotations, http, now=None):
     kind = rule["fajta"] if rule else "ismeretlen"
     if kind in ("nem-jar-le", "rovid-eletu", "mentes", "nem-titok"):
         return {"eredmeny": kind.upper(), "lejarat": None, "ok": rule.get("indok", "")}
@@ -221,9 +251,9 @@ def measure(name, rule, store, annotations, http):
     if kind == "github":
         return measure_github(raw, http)
     if kind == "meta":
-        return measure_meta(raw, http)
+        return measure_meta(raw, http, now)
     if kind == "meta-json":
-        return measure_meta_json(raw, http)
+        return measure_meta_json(raw, http, now)
     if kind == "google":
         return measure_google(raw, rule.get("kliens", "yt"), store, http)
     if kind in ("coolify", "expo"):
@@ -254,7 +284,7 @@ def check(store, registry, annotations, state, base_names, now, http=None):
     for h in registry.get("host", []):
         entries.append((h["kulcs"], dict(h, fajta=h.get("fajta", "rogzitett"))))
     for name, rule in entries:
-        m = measure(name, rule, store, annotations, http)
+        m = measure(name, rule, store, annotations, http, now)
         d = days_until(m["lejarat"], now) if m["lejarat"] else None
         rows.append(dict(m, nev=name, nap=d, fajta=(rule or {}).get("fajta", "ismeretlen"),
                          cel=(rule or {}).get("cel", "?")))
@@ -263,6 +293,8 @@ def check(store, registry, annotations, state, base_names, now, http=None):
         due = None
         if m["eredmeny"] == "ERVENYTELEN":
             due = "ervenytelen"
+        elif d is not None and d < 0:
+            due = "lejart"  # its own message: the 3-day one may have gone out before the date passed
         elif d is not None:
             for limit in sorted(WARN_DAYS):
                 if d <= limit:
@@ -296,7 +328,9 @@ def summary_line(rows):
     unknown = sum(r["eredmeny"] in ("ISMERETLEN",) for r in rows)
     not_measured = sum(r["eredmeny"] == "NEM_MERT" for r in rows)
     invalid = sum(r["eredmeny"] == "ERVENYTELEN" for r in rows)
-    return "TITOK-LEJARAT: %d titok, ISMERETLEN %d, NEM MERT %d, ERVENYTELEN %d" % (len(rows), unknown, not_measured, invalid)
+    expired = sum(r["eredmeny"] == "OK" and r["nap"] is not None and r["nap"] < 0 for r in rows)
+    return "TITOK-LEJARAT: %d titok, ISMERETLEN %d, NEM MERT %d, ERVENYTELEN %d, LEJART DATUM %d" % (
+        len(rows), unknown, not_measured, invalid, expired)
 
 
 def table(rows):
