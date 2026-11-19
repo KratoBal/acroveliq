@@ -13,7 +13,9 @@ Meta error can echo a token): only the HTTP status and a fixed reason word.
 WHERE THE DATE COMES FROM, by kind (scripts/titok-lejarat.json, no values in it):
   github      the github-authentication-token-expiration header; 401 means invalid
   meta        graph.facebook.com debug_token, the token inspecting itself: the earlier of
-              expires_at and data_access_expires_at (0 = none); is_valid false means invalid
+              expires_at and data_access_expires_at (0 = none), and the row names which field it was:
+              a page token has expires_at 0, so its date is the data access, and is_valid stays true
+              after it (c4b7c534); is_valid false means invalid
   meta-json   the same for every token in the fb-insights.sh vault; the earliest counts
   google      one refresh exchange with the token's own client: 200 means the renewal WORKS
               (the brief's point 2), invalid_grant means it is dead. No date exists. Two things
@@ -33,7 +35,8 @@ WHERE THE DATE COMES FROM, by kind (scripts/titok-lejarat.json, no values in it)
   nem-jar-le, rovid-eletu, mentes, nem-titok: no date by nature, the reason is in the registry
   ismeretlen  not known: counted, never an alarm. The count is the list Balazs wants at zero.
 
-THE MESSAGE: per secret ONE at 14 days, ONE at 3 days, ONE when a measurement says invalid;
+THE MESSAGE: per secret ONE at 14 days, ONE at 3 days, ONE when the date has passed (the 3-day one
+may have gone out before it), ONE when a measurement says invalid;
 the sent thresholds live in store/secrets-lejarat-allapot.json (names, dates, words: no
 value). A renewed secret (a new date) starts over. The text is printed in a KULDENDO block,
 and the heartbeat posts it to the Eldontendo thread as it is.
@@ -123,10 +126,15 @@ def _meta_one(token, http):
     data = d["data"]
     if not data.get("is_valid"):
         return {"eredmeny": "ERVENYTELEN", "lejarat": None, "ok": "meta is_valid=false"}
-    stamps = [int(data.get(k) or 0) for k in ("expires_at", "data_access_expires_at")]
-    stamps = [s for s in stamps if s > 0]
-    exp = time.strftime("%Y-%m-%d", time.gmtime(min(stamps))) if stamps else None
-    return {"eredmeny": "OK", "lejarat": exp, "ok": "meta debug_token"}
+    # the earlier of the two counts, and the row names which one it was: the two do not mean the same
+    # (expires_at ends the token, data_access_expires_at ends its access to the user's data)
+    stamps = [(int(data.get(k) or 0), k) for k in ("expires_at", "data_access_expires_at")]
+    stamps = [s for s in stamps if s[0] > 0]
+    if not stamps:
+        return {"eredmeny": "OK", "lejarat": None, "ok": "meta debug_token: nincs lejarat"}
+    ts, field = min(stamps)
+    return {"eredmeny": "OK", "lejarat": time.strftime("%Y-%m-%d", time.gmtime(ts)), "ok": "meta debug_token " + field,
+            "mezo": field}
 
 
 def measure_meta(token, http):
@@ -144,10 +152,11 @@ def measure_meta_json(raw, http):
     results = [_meta_one(t, http) for t in tokens]
     if any(r["eredmeny"] == "ERVENYTELEN" for r in results):
         return {"eredmeny": "ERVENYTELEN", "lejarat": None, "ok": "meta: egy oldal-token ervenytelen"}
-    dates = sorted(r["lejarat"] for r in results if r["lejarat"])
+    dated = sorted((r["lejarat"], r["mezo"]) for r in results if r["lejarat"])
     bad = sum(r["eredmeny"] != "OK" for r in results)
-    return {"eredmeny": "OK" if not bad else "NEM_MERT", "lejarat": dates[0] if dates else None,
-            "ok": "meta debug_token, %d token" % len(tokens) + (", %d nem mert" % bad if bad else "")}
+    return {"eredmeny": "OK" if not bad else "NEM_MERT", "lejarat": dated[0][0] if dated else None,
+            "ok": "meta debug_token, %d token" % len(tokens) + (" (legkorabbi: %s)" % dated[0][1] if dated else "")
+            + (", %d nem mert" % bad if bad else "")}
 
 
 GOOGLE_CLIENTS = {
@@ -263,6 +272,8 @@ def check(store, registry, annotations, state, base_names, now, http=None):
         due = None
         if m["eredmeny"] == "ERVENYTELEN":
             due = "ervenytelen"
+        elif d is not None and d < 0:
+            due = "lejart"  # its own message: the 3-day one may have gone out before the date passed
         elif d is not None:
             for limit in sorted(WARN_DAYS):
                 if d <= limit:
@@ -296,7 +307,9 @@ def summary_line(rows):
     unknown = sum(r["eredmeny"] in ("ISMERETLEN",) for r in rows)
     not_measured = sum(r["eredmeny"] == "NEM_MERT" for r in rows)
     invalid = sum(r["eredmeny"] == "ERVENYTELEN" for r in rows)
-    return "TITOK-LEJARAT: %d titok, ISMERETLEN %d, NEM MERT %d, ERVENYTELEN %d" % (len(rows), unknown, not_measured, invalid)
+    expired = sum(r["eredmeny"] == "OK" and r["nap"] is not None and r["nap"] < 0 for r in rows)
+    return "TITOK-LEJARAT: %d titok, ISMERETLEN %d, NEM MERT %d, ERVENYTELEN %d, LEJART DATUM %d" % (
+        len(rows), unknown, not_measured, invalid, expired)
 
 
 def table(rows):
