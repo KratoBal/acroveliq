@@ -28,6 +28,10 @@
 # mint a src/prompt-safety.ts wrapUntrusted-jeben: egy targy nem zarhatja le a boritekot, es nem
 # nyithat trusted-peer blokkot. A fetch a torzset es a fejleceket nem irja ki, csak a fajlok utjat
 # es meretet; a fajl tartalma kulso szoveg (a lezarasa a terv 2. es 6. pontja).
+# A headers.txt a kozvetlen (nem kozvetitos) uton a hitelesitesi fejleceket is tartalmazza (kartya e09190c8):
+# Return-Path, Received-SPF, Authentication-Results, ARC-Authentication-Results, es a DKIM-Signature d= es s= erteke,
+# a levelbeli sorrendben (az elso Authentication-Results a legfelso, a fogado Google szervere). Egy-egy ertek egy sorba
+# hajtva, hosszkorlattal. A kozvetitos ut (GCAL_KOZVETITO=1, 2026-10-19 ota kikapcsolva) ezeket nem adja.
 #
 # MIERT KESON KERULT BE AZ UTOLSO KETTO: a hozzaferes 2026-08-21-en elkeszult, de
 # lekerdezo parancs nem volt hozza, es a reggeli napindito NEGY egymast koveto reggelen
@@ -425,10 +429,29 @@ elif CMD == "fetch":
     tgt = os.path.join(outdir, mid)
     os.makedirs(tgt, exist_ok=True)
     pl = d.get("payload", {})
+    # The mail's origin, for checking a forwarded invoice letter before INVOICE_SUPPLIER_RULES=live (card e09190c8,
+    # acrobot 58423): the authentication verdicts and the path, in the order the message carries them, so the FIRST
+    # Authentication-Results line is the topmost one (the receiving Google server's own). Each value folded onto one line
+    # and capped; of DKIM-Signature only the signing domain and selector (d=, s=): the b= and bh= are signature blobs.
+    # These are DATA written by the sender's side too (only the topmost verdict is Google's): read through the quarantine.
+    AUTH_HEADERS = ("Return-Path", "Received-SPF", "Authentication-Results", "ARC-Authentication-Results", "DKIM-Signature")
+    def one_line(v, cap=2000):
+        return " ".join(str(v).split())[:cap]
+    def dkim_ds(v):
+        tags = {}
+        for part in one_line(v, 4000).split(";"):
+            k, _, val = part.strip().partition("=")
+            if k.strip() in ("d", "s") and k.strip() not in tags:
+                tags[k.strip()] = "".join(val.split())[:255]
+        return "; ".join("%s=%s" % (k, tags[k]) for k in ("d", "s") if k in tags) or "(nincs d= es s=)"
     with open(os.path.join(tgt, "headers.txt"), "w", encoding="utf-8") as f:
         for x in pl.get("headers", []):
             if x["name"] in ("Date", "From", "To", "Cc", "Subject", "Message-ID", "In-Reply-To"):
                 f.write("%s: %s\n" % (x["name"], x["value"]))
+        for x in pl.get("headers", []):
+            name = next((h for h in AUTH_HEADERS if h.lower() == x["name"].lower()), None)
+            if name:
+                f.write("%s: %s\n" % (name, dkim_ds(x["value"]) if name == "DKIM-Signature" else one_line(x["value"])))
     def walk(p):
         yield p
         for x in p.get("parts", []) or []:
