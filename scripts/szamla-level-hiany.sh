@@ -99,10 +99,12 @@ NOISE = re.compile(r"unsubscribe|leiratkoz|facebook\.com|instagram\.com|linkedin
 def excluded_sender(sender_env):
     """A GitHub ertesitoje (github.com es aldomainjei) vagy egy hirlevel-kuldo (newsletter.<domain>), a felado CIMEBOL."""
     text = re.sub(r'^<untrusted source="gmail">|</untrusted>$', "", sender_env)
-    m = re.search(r"<([^<>@\s]+@[^<>\s]+)>", text) or re.search(r"([^\s<>\"]+@[^\s<>\"]+)", text)
-    if not m:
+    # the LAST address decides (barracuda, #390): the display name before it is the sender's text too, and an address
+    # written into it ("x <a@github.com>" <real@vendor.hu>) would otherwise hide a real invoice sender
+    found = re.findall(r"<([^<>@\s]+@[^<>\s]+)>", text) or re.findall(r"([^\s<>\"]+@[^\s<>\"]+)", text)
+    if not found:
         return False
-    domain = m.group(1).rsplit("@", 1)[1].lower().rstrip(".")
+    domain = found[-1].rsplit("@", 1)[1].lower().rstrip(".")
     return domain == "github.com" or domain.endswith(".github.com") or domain.startswith("newsletter.")
 
 seen = {}

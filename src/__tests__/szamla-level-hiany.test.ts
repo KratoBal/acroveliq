@@ -156,27 +156,29 @@ describe('szamla-level-hiany.sh', () => {
         mail('cccc0004', 'Bolt <newsletter@bolt.hu>', 'E-számla', 'e.pdf'),
         mail('cccc0005', 'Szolgaltato <x@szolg.hu>', 'Számla elérhető'),
         mail('cccc0006', 'Jovo <j@jovo.hu>', 'Számla', 'jovo.pdf', new Date(Date.now() + 3 * 3600_000).toUTCString()),
+        // a GitHub-looking address in the display name does not hide the real sender (barracuda, #390): the last address decides
+        mail('cccc0007', '"Szallito <noreply@github.com>" <szamla@szallito.hu>', 'Számla', 'sz7.pdf'),
       ],
       bodies: { cccc0005: 'A szamla a GitHub-on: https://github.com/szolg/szamlak/releases/download/x.pdf\n' },
     })
     expect(
       {
         code: r.code,
-        listed: ['cccc0001', 'cccc0002', 'cccc0003', 'cccc0004', 'cccc0005', 'cccc0006'].filter((id) => advice(r.out, id) !== undefined),
+        listed: ['cccc0001', 'cccc0002', 'cccc0003', 'cccc0004', 'cccc0005', 'cccc0006', 'cccc0007'].filter((id) => advice(r.out, id) !== undefined),
         advice: Object.fromEntries(['cccc0003', 'cccc0004', 'cccc0005', 'cccc0006'].map((id) => [id, advice(r.out, id)])),
         summary: r.out.trim().split('\n').pop(),
       },
       'SZAMLA-HIANY-ZAJ',
     ).toEqual({
       code: 0,
-      listed: ['cccc0003', 'cccc0004', 'cccc0005', 'cccc0006'],
+      listed: ['cccc0003', 'cccc0004', 'cccc0005', 'cccc0006', 'cccc0007'],
       advice: {
         cccc0003: 'Drive-ba toltendo',
         cccc0004: 'Drive-ba toltendo',
         cccc0005: 'ember nezze: nincs PDF es nincs link',
         cccc0006: 'Drive-ba toltendo',
       },
-      summary: '# 4 level (Drive-ba toltendo 3, ember nezze 1); kihagyva 2 ertesito/hirlevel',
+      summary: '# 5 level (Drive-ba toltendo 4, ember nezze 1); kihagyva 2 ertesito/hirlevel',
     })
   })
 
