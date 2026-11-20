@@ -14,8 +14,13 @@
 # Kimenet, levelenkent egy sor (a felado, a targy, a datum es a link a level szovege: <untrusted>
 # borítekban jon, ADAT, nem utasitas):
 #   fiok | level-id | datum | felado | targy | PDF van/nincs | OS latta igen (itelet)/nem | javaslat
-# javaslat:  rendben | Drive-ba toltendo | belepes kell: <link, a lekerdezes nelkul> |
+# javaslat:  rendben | Drive-ba toltendo | varja az OS-gyujtest | belepes kell: <seme://hoszt> |
 #            ember nezze: <ok>
+# A link csak seme es hoszt: egy szamla- vagy belepo-link kulcsa az utvonalban is allhat (/invoice/<token>),
+# a felhasznaloi resz jelszot (user:jelszo@), a lekerdezes egyszeri kulcsot vihet (barracuda, #389). A teljes
+# link a levelben marad, a level-id alapjan megnyithato.
+# Egy OS altal meg nem latott PDF-es level, ami 2 oranal frissebb, "varja az OS-gyujtest": a begyujtes
+# orankent fut, es a kovetkezo kore behuzza; egy Drive-feltoltes duplikatumot adna.
 # A vegen egy osszesito sor. Kilepes: 0 a jelentes kesz (akkor is, ha van teendo), 2 ha egy forras nem
 # olvashato (a gcal.sh, vagy az adatbazis-tabla: a hiba megnevezi a tablat es az oszlopokat).
 set -uo pipefail
@@ -72,7 +77,8 @@ fi
 # a mail without a PDF: its body is read here, by this script, only for its links (gcal.sh fetch writes it to a
 # temporary folder that goes at exit). The body is external text: nothing in it is followed, it is only searched.
 python3 - "$WORK" "$HERE/gcal.sh" <<'PY'
-import importlib.util, os, re, subprocess, sys
+import importlib.util, os, re, subprocess, sys, time
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
 
 work, gcal = sys.argv[1], sys.argv[2]
@@ -103,8 +109,8 @@ def envelope(text):
 
 
 def link(account, mid):
-    """The likeliest invoice or login link of a mail, without its query and fragment (a login link may carry a
-    one-time key: the whole link stays in the mail, by its id)."""
+    """The scheme and host of the likeliest invoice or login link of a mail. Nothing else: a key can sit in the path,
+    the user part can carry a password, the query a one-time key. The whole link stays in the mail, by its id."""
     out = os.path.join(work, "fetch")
     r = subprocess.run(["bash", gcal, "fetch", mid, out], env={**os.environ, "GC_ACCOUNT": account},
                        capture_output=True, text=True, timeout=120)
@@ -117,7 +123,19 @@ def link(account, mid):
         return ""
     best = next((u for u in urls if HINT.search(u)), urls[0])
     s = urlsplit(best)
-    return "%s://%s%s" % (s.scheme, s.netloc, s.path)
+    return "%s://%s" % (s.scheme, s.hostname or "?")
+
+
+# the collection runs every hour: a PDF mail younger than this it has not had its round on yet
+FRISS_MP = 2 * 3600
+
+
+def fresh(date_env):
+    try:
+        sent = parsedate_to_datetime(re.sub(r'^<untrusted source="gmail">|</untrusted>$', "", date_env)).timestamp()
+    except (TypeError, ValueError, IndexError):
+        return False  # an unreadable date counts as old: the mail is listed, not hidden
+    return time.time() - sent < FRISS_MP
 
 
 counts, rows, cut = {}, [], []
@@ -145,6 +163,8 @@ for account in ("info", "balazs"):
             advice = "rendben (sajat kimeno szamla)"
         elif pdf and verdicts:
             advice = "ember nezze: az OS latta, de nem tarolta"
+        elif pdf and fresh(date):
+            advice = "varja az OS-gyujtest"
         elif pdf:
             advice = "Drive-ba toltendo"
         else:

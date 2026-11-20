@@ -13,8 +13,9 @@ const root = mkdtempSync(join(tmpdir(), 'szamla-hiany-'))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
 const env = (text: string) => `<untrusted source="gmail">${text}</untrusted>`
-const mail = (id: string, from: string, subject: string, att = '') =>
-  `${id} | ${env('Thu, 19 Nov 2026 10:00:00 +0100')} | ${env(from)} | ${env(subject)} | ${att ? env(att) : ''}`
+const mail = (id: string, from: string, subject: string, att = '', date = 'Thu, 19 Nov 2026 10:00:00 +0100') =>
+  `${id} | ${env(date)} | ${env(from)} | ${env(subject)} | ${att ? env(att) : ''}`
+const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toUTCString()
 
 type World = {
   info?: string[]
@@ -73,6 +74,13 @@ describe('szamla-level-hiany.sh', () => {
         mail('aaaa0003', 'Portal <noreply@portal.hu>', 'Új számlája érkezett | 2026/11 [[SECURITY_TAG_REMOVED_ab12cd34]]'),
         mail('aaaa0004', 'Harmadik <x@harmadik.hu>', 'Díjbekérő', 'dijbekero.pdf'),
         mail('aaaa0005', 'Negyedik <y@negyedik.hu>', 'Rechnung', ''),
+        // barracuda, #389: a key in the path, a password in the user part
+        mail('aaaa0006', 'Otodik <z@otodik.hu>', 'Számla letöltés'),
+        mail('aaaa0007', 'Hatodik <w@hatodik.hu>', 'Invoice ready'),
+        // younger than two hours: the hourly collection has not had its round yet; older, or no readable date, has
+        mail('aaaa0008', 'Hetedik <v@hetedik.hu>', 'Számla', 'friss.pdf', ago(30)),
+        mail('aaaa0009', 'Nyolcadik <u@nyolcadik.hu>', 'Számla', 'regi.pdf', ago(180)),
+        mail('aaaa000a', 'Kilencedik <t@kilencedik.hu>', 'Számla', 'rossz-datum.pdf', 'nem datum'),
       ],
       balazs: [
         mail('bbbb0001', 'Bolt <bolt@bolt.hu>', 'E-számla', 'e-szamla.pdf'),
@@ -82,6 +90,8 @@ describe('szamla-level-hiany.sh', () => {
         aaaa0003:
           'Leiratkozas: https://portal.hu/unsubscribe?u=1\nKovess minket: https://facebook.com/portal\nA szamla: https://portal.hu/ugyfel/szamlak/letoltes?token=EGYSZERI-KULCS#top.\n',
         aaaa0005: 'Csak szoveg, link nelkul.\n',
+        aaaa0006: 'Letoltes: https://szamla.otodik.hu/invoice/download/UTVONAL-KULCS-77.pdf\n',
+        aaaa0007: 'Belepes: https://ugyfel:JELSZO-99@portal.hatodik.hu:8443/login\n',
       },
       db: [
         'item|INFO_MAIL|aaaa0001|STORED|',
@@ -93,14 +103,14 @@ describe('szamla-level-hiany.sh', () => {
         '',
       ].join('\n'),
     })
-    const ids = ['aaaa0001', 'aaaa0002', 'aaaa0003', 'aaaa0004', 'aaaa0005', 'bbbb0001', 'bbbb0002']
+    const ids = ['aaaa0001', 'aaaa0002', 'aaaa0003', 'aaaa0004', 'aaaa0005', 'aaaa0006', 'aaaa0007', 'aaaa0008', 'aaaa0009', 'aaaa000a', 'bbbb0001', 'bbbb0002']
     expect(
       {
         code: r.code,
         advice: Object.fromEntries(ids.map((id) => [id, advice(r.out, id)])),
         os: Object.fromEntries(['aaaa0001', 'aaaa0002', 'aaaa0004', 'bbbb0001', 'bbbb0002'].map((id) => [id, osCol(r.out, id)])),
         pdfCol: tail(r.out, 'aaaa0003')?.[1],
-        keyLeaked: r.out.includes('EGYSZERI-KULCS'),
+        keyLeaked: ['EGYSZERI-KULCS', 'UTVONAL-KULCS', 'JELSZO-99', 'ugyfel:', '/ugyfel/szamlak'].filter((k) => r.out.includes(k)),
         summary: r.out.trim().split('\n').pop(),
         // fetch only for the two mails without a PDF
         fetched: r.calls.filter((c) => c.endsWith(' fetch')),
@@ -111,9 +121,14 @@ describe('szamla-level-hiany.sh', () => {
       advice: {
         aaaa0001: 'rendben',
         aaaa0002: 'Drive-ba toltendo',
-        aaaa0003: `belepes kell: ${env('https://portal.hu/ugyfel/szamlak/letoltes')}`,
+        aaaa0003: `belepes kell: ${env('https://portal.hu')}`,
         aaaa0004: 'ember nezze: az OS latta, de nem tarolta',
         aaaa0005: 'ember nezze: nincs PDF es nincs link',
+        aaaa0006: `belepes kell: ${env('https://szamla.otodik.hu')}`,
+        aaaa0007: `belepes kell: ${env('https://portal.hatodik.hu')}`,
+        aaaa0008: 'varja az OS-gyujtest',
+        aaaa0009: 'Drive-ba toltendo',
+        aaaa000a: 'Drive-ba toltendo',
         bbbb0001: 'Drive-ba toltendo',
         bbbb0002: 'rendben (sajat kimeno szamla)',
       },
@@ -125,9 +140,9 @@ describe('szamla-level-hiany.sh', () => {
         bbbb0002: 'OS latta igen (OWN_INVOICE)',
       },
       pdfCol: 'PDF nincs',
-      keyLeaked: false,
-      summary: '# 7 level (Drive-ba toltendo 2, belepes kell 1, ember nezze 2, rendben 1, rendben (sajat kimeno szamla) 1)',
-      fetched: ['gcal info fetch', 'gcal info fetch'],
+      keyLeaked: [],
+      summary: '# 12 level (Drive-ba toltendo 4, belepes kell 3, ember nezze 2, rendben 1, rendben (sajat kimeno szamla) 1, varja az OS-gyujtest 1)',
+      fetched: ['gcal info fetch', 'gcal info fetch', 'gcal info fetch', 'gcal info fetch'],
     })
   })
 
