@@ -20,7 +20,16 @@ mis-hit (2026-11-20, the five migrations of that day as the measure):
   - a DROP CONSTRAINT that is not added back passed (a lost unique or foreign key)
   - an UPDATE not at the start of a line passed
 A DROP CONSTRAINT that the same file adds back under the same name (the check replaced on
-2026-11-19 in service_job_event_kind_linked_check) passes.
+2026-11-19 in service_job_event_kind_linked_check) passes. It passes also when the new form is narrower and so
+can fail on existing rows: that cannot be told from the text, and the rollout owner decided to let it through.
+
+barracuda's review of #387 added what the earlier list left out:
+  - ADD CONSTRAINT (UNIQUE, PRIMARY KEY, FOREIGN KEY, CHECK, EXCLUDE) and CREATE UNIQUE INDEX on a table that
+    has rows can fail on them. Each stops, unless NOT VALID, or the table is created in the same file, or (for a
+    UNIQUE or a FOREIGN KEY) every key column is one this file adds without a default: NULL in every existing
+    row, which a unique key and a foreign key both accept. Prisma's new optional relation is that last shape.
+  - DROP VIEW / MATERIALIZED VIEW / FUNCTION / PROCEDURE / TRIGGER / SEQUENCE / POLICY / EXTENSION / RULE /
+    DOMAIN: no data goes, but an older reader or a row-level rule does.
 """
 import re
 import sys
@@ -57,11 +66,54 @@ def strip_comments(sql: str) -> str:
     return "".join(out)
 
 
+def mask_strings(sql: str) -> str:
+    """String literals to ''; identifiers stay (the table and column names are read from this)."""
+    return re.sub(r"'(?:[^']|'')*'", "''", sql)
+
+
 def mask(sql: str) -> str:
     """Quoted identifiers to "ID" (keeping a _key suffix: a unique index's name), strings to ''."""
     # one pass, so the masked "ID_key" is not masked again to "ID"
     sql = re.sub(r'"(?:[^"]|"")*"', lambda m: '"ID_key"' if m.group(0).endswith('_key"') else '"ID"', sql)
-    return re.sub(r"'(?:[^']|'')*'", "''", sql)
+    return mask_strings(sql)
+
+
+NAME = r'(?:"(?:[^"]|"")+"|[A-Za-z_][\w$]*)'
+# a table, schema-qualified or not: the last name is the table
+TABLE = rf"({NAME}(?:\s*\.\s*{NAME})?)"
+
+
+def norm(name: str) -> str:
+    """The name Postgres stores: a quoted one as written, an unquoted one lowercased; for a.b the b."""
+    name = re.findall(NAME, name)[-1]
+    return name[1:-1].replace('""', '"') if name.startswith('"') else name.lower()
+
+
+def paren_list(text: str):
+    """The comma-separated items of the first parenthesized list in text, or None."""
+    i = text.find("(")
+    if i < 0:
+        return None
+    depth = 0
+    for j in range(i, len(text)):
+        depth += text[j] == "("
+        depth -= text[j] == ")"
+        if depth == 0:
+            return [x.strip() for x in top_level_clauses(text[i + 1 : j])]
+    return None
+
+
+def plain_columns(items):
+    """The column names of a key list, or None if an item is an expression (it may hit any row)."""
+    if items is None:
+        return None
+    cols = []
+    for it in items:
+        m = re.fullmatch(rf"({NAME})(\s+(ASC|DESC))?(\s+NULLS\s+(FIRST|LAST))?", it, FLAGS)
+        if not m:
+            return None
+        cols.append(norm(m.group(1)))
+    return cols
 
 
 def top_level_clauses(stmt: str) -> list:
@@ -83,7 +135,11 @@ def top_level_clauses(stmt: str) -> list:
 
 # (rule name, pattern) on one masked statement
 RULES = [
-    ("DROP TABLE/COLUMN/TYPE/SCHEMA", r"\bDROP\s+(TABLE|COLUMN|TYPE|SCHEMA)\b"),
+    # data goes (TABLE, COLUMN, TYPE, SCHEMA), or an older reader or a row-level rule does (VIEW, FUNCTION, POLICY...)
+    (
+        "DROP of a schema object",
+        r"\bDROP\s+(TABLE|COLUMN|TYPE|SCHEMA|VIEW|MATERIALIZED\s+VIEW|FUNCTION|PROCEDURE|TRIGGER|SEQUENCE|POLICY|EXTENSION|RULE|DOMAIN)\b",
+    ),
     ("DROP unique index", r"\bDROP\s+INDEX\b.*\"ID_key\""),
     ("RENAME", r"\bRENAME\b"),
     ("SET NOT NULL", r"\bSET\s+NOT\s+NULL\b"),
@@ -100,30 +156,85 @@ RULES = [
 
 def findings(sql: str) -> list:
     clean = strip_comments(sql)
-    masked = mask(clean)
-    hits = []
-    for stmt in masked.split(";"):
-        flat = " ".join(stmt.split())
-        if not flat:
-            continue
+    # one list of statements, read twice: with the names (which table, which column) and with everything masked
+    # (keywords only, so a name or a string never matches one)
+    stmts = [" ".join(x.split()) for x in mask_strings(clean).split(";")]
+    stmts = [x for x in stmts if x]
+
+    # what this file creates, adds and drops, whatever the order: an index or constraint on a table that only
+    # exists from this file on, or on a column this file adds with no default (NULL in every existing row), cannot
+    # fail on existing rows
+    created, newcols, dropped = set(), {}, set()
+    for st in stmts:
+        m = re.match(rf"CREATE\s+(UNLOGGED\s+)?TABLE\s+(IF\s+NOT\s+EXISTS\s+)?{TABLE}", st, FLAGS)
+        if m:
+            created.add(norm(m.group(3)))
+        m = re.match(rf"ALTER\s+TABLE\s+(IF\s+EXISTS\s+)?(ONLY\s+)?{TABLE}\s+(.*)$", st, FLAGS)
+        if m:
+            t = norm(m.group(3))
+            for clause in top_level_clauses(m.group(4)):
+                c = re.match(
+                    rf"\s*ADD\s+(COLUMN\s+)?(IF\s+NOT\s+EXISTS\s+)?(?!(CONSTRAINT|UNIQUE|PRIMARY|FOREIGN|CHECK|EXCLUDE)\b)({NAME})",
+                    clause,
+                    FLAGS,
+                )
+                if c and not re.search(r"\bDEFAULT\b|\bGENERATED\b", clause, FLAGS):
+                    newcols.setdefault(t, set()).add(norm(c.group(4)))
+                d = re.match(rf"\s*DROP\s+CONSTRAINT\s+(IF\s+EXISTS\s+)?({NAME})", clause, FLAGS)
+                if d:
+                    dropped.add((t, norm(d.group(2))))
+
+    def harmless_on_rows(t, kind, rest):
+        """True if the new UNIQUE / FOREIGN KEY / index cannot fail on the rows the table already has."""
+        if t in created:
+            return True
+        if kind not in ("UNIQUE", "FOREIGN KEY") or re.match(r"\s*NULLS\s+NOT\s+DISTINCT", rest, FLAGS):
+            return False
+        cols = plain_columns(paren_list(rest))
+        return bool(cols) and all(c in newcols.get(t, ()) for c in cols)
+
+    hits, added = [], set()
+    for st in stmts:
+        flat = " ".join(mask(st).split())
         for name, pat in RULES:
             if re.search(pat, flat, FLAGS):
                 hits.append((name, flat))
-        if re.search(r"\bALTER\s+TABLE\b", flat, FLAGS):
-            for clause in top_level_clauses(flat):
+        m = re.match(rf"ALTER\s+TABLE\s+(IF\s+EXISTS\s+)?(ONLY\s+)?{TABLE}\s+(.*)$", st, FLAGS)
+        if m:
+            t = norm(m.group(3))
+            for clause in top_level_clauses(m.group(4)):
                 if (
-                    re.search(r"\bADD\s+(COLUMN\s+)?(IF\s+NOT\s+EXISTS\s+)?\"ID\"", clause, FLAGS)
+                    re.search(rf"\bADD\s+(COLUMN\s+)?(IF\s+NOT\s+EXISTS\s+)?(?!(CONSTRAINT|UNIQUE|PRIMARY|FOREIGN|CHECK|EXCLUDE)\b){NAME}", clause, FLAGS)
                     and re.search(r"\bNOT\s+NULL\b", clause, FLAGS)
                     and not re.search(r"\bDEFAULT\b|\bGENERATED\b", clause, FLAGS)
                 ):
                     hits.append(("ADD COLUMN NOT NULL without DEFAULT", flat))
-    # the names are masked above, so the pairing reads the unmasked text
-    name = r'("(?:[^"]|"")+"|\w+)'
-    dropped = re.findall(r"\bDROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?" + name, clean, FLAGS)
-    added = set(re.findall(r"\bADD\s+CONSTRAINT\s+" + name, clean, FLAGS))
-    for d in dropped:
-        if d not in added:
-            hits.append(("DROP CONSTRAINT not added back", f"DROP CONSTRAINT {d}"))
+                a = re.match(
+                    rf"\s*ADD\s+(CONSTRAINT\s+({NAME})\s+)?(UNIQUE|PRIMARY\s+KEY|FOREIGN\s+KEY|CHECK|EXCLUDE)\b(.*)$",
+                    clause,
+                    FLAGS,
+                )
+                if not a:
+                    continue
+                cname = norm(a.group(2)) if a.group(2) else None
+                if cname:
+                    added.add((t, cname))
+                kind = " ".join(a.group(3).upper().split())
+                if re.search(r"\bNOT\s+VALID\b", a.group(4), FLAGS):
+                    continue  # existing rows are not checked
+                if (t, cname) in dropped:
+                    continue  # a replacement under the same name (it may narrow: see the module text)
+                if not harmless_on_rows(t, kind, a.group(4)):
+                    hits.append(("ADD CONSTRAINT on an existing table", " ".join(mask(clause).split())))
+        u = re.match(
+            rf"CREATE\s+UNIQUE\s+INDEX\s+(CONCURRENTLY\s+)?(IF\s+NOT\s+EXISTS\s+)?((?!ON\b){NAME}\s+)?ON\s+(ONLY\s+)?{TABLE}\s*(USING\s+\w+\s*)?(.*)$",
+            st,
+            FLAGS,
+        )
+        if u and not harmless_on_rows(norm(u.group(5)), "UNIQUE", u.group(7)):
+            hits.append(("CREATE UNIQUE INDEX on an existing table", flat))
+    for t, d in sorted(dropped - added):
+        hits.append(("DROP CONSTRAINT not added back", f'DROP CONSTRAINT "{d}" on "{t}"'))
     return hits
 
 
