@@ -53,6 +53,7 @@ PARTNER_UUID=iknrqjk9xeyydc5fibrk5tbp
 TESZT_API=https://api-staging.acropora.hu
 TESZT_WEB=https://staging.acropora.hu
 ELES_API=https://api.acropora.hu
+ELES_WEB=https://app.acropora.hu
 # the production database, read only (psql-ro as fleet_ro), host key pinned to the repo's file
 ELES_GEP=fleet@162.55.216.28
 ELES_DB=iwm34jaqp9xmwb72qkrqkwhy
@@ -69,8 +70,8 @@ stop() {
   say "MEGALLT: $*"
   if [ "$NEZ" = 0 ]; then
     printf '%s\n' "[ELES-FELHOZAS] Ma nem ment ki az eles OS. Ok: $*  Naplo: store/eles-napi-felhozas.log" > "$WORK/msg.txt"
-    bash $ROOT/scripts/agent-msg.sh acrobot acrobot - < "$WORK/msg.txt" >/dev/null 2>&1
-    bash $ROOT/scripts/daily-log.sh acrobot "Eles napi felhozas" "MEGALLT: $*" >/dev/null 2>&1
+    bash "$HERE/agent-msg.sh" acrobot acrobot - < "$WORK/msg.txt" >/dev/null 2>&1
+    bash "$HERE/daily-log.sh" acrobot "Eles napi felhozas" "MEGALLT: $*" >/dev/null 2>&1
   fi
   exit 1
 }
@@ -142,9 +143,8 @@ d=json.load(open('$WORK/cmp.json'))
 for f in d['files']:
   if not f['filename'].endswith('.env.production.example'): continue
   if 'patch' not in f: print(f['filename']+': a valtozas nem olvashato (nincs patch)'); continue
-  was={m.group(1) for m in re.finditer(r'^-\\s*([A-Z0-9_]+)\\s*=\\s*(true|yes|on)\\s*$', f['patch'], re.M|re.I)}
-  for m in re.finditer(r'^\\+\\s*([A-Z0-9_]+)\\s*=\\s*(true|yes|on)\\s*$', f['patch'], re.M|re.I):
-    if m.group(1) not in was: print(m.group(1))")
+  on=lambda sign: {m.group(1) for m in re.finditer(r'^'+sign+r'\\s*([A-Z0-9_]+)\\s*=\\s*(true|yes|on|1)\\s*$', f['patch'], re.M|re.I) if not m.group(1).endswith('_VERSION')}
+  for k in sorted(on(r'\\+') - on('-')): print(k)")
 [ -z "$ONSW" ] || stop "a P..S tartomany bekapcsol egy kapcsolot a .env.production.example-ben: $(echo $ONSW), Balazs szava kell"
 
 mkdir -p "$ALLAPOT"
@@ -183,10 +183,26 @@ echo "$MREF" > "$ALLAPOT/medusa-ref.txt"
 say "kapuk rendben: $AHEAD commit, $NFILES fajl, $NMIG migracio (mind bovito), CI zold, a fo agon; nincs uj eles kapcsolo, Medusa $MREF"
 
 
-if [ "$NEZ" = 1 ]; then say "--nez: itt telepitene ${S:0:12}-t (api, web, partner)"; exit 0; fi
+# the commit each production app is pinned to, read back from Coolify (empty: unreadable)
+app_sha() { coolify "$COOLIFY/applications/$1" | python3 -c "import json,sys
+try: print(json.load(sys.stdin).get('git_commit_sha') or '')
+except Exception: print('')"; }
+nev() { case "$1" in $API_UUID) echo api;; $WEB_UUID) echo web;; *) echo partner;; esac; }
+
+if [ "$NEZ" = 1 ]; then
+  # --nez measures that the pin can be read back (the field the live run relies on), and changes nothing
+  MOST=""
+  for u in $API_UUID $WEB_UUID $PARTNER_UUID; do
+    v=$(app_sha "$u"); [ -n "$v" ] || stop "a Coolify nem adja vissza a(z) $(nev "$u") git_commit_sha mezojet: a rogzites nem volna ellenorizheto"
+    MOST="$MOST $(nev "$u")=${v:0:12}"
+  done
+  say "--nez: itt telepitene ${S:0:12}-t (api, web, partner); a rogzites most:$MOST"
+  exit 0
+fi
 
 pin() { coolify -X PATCH -H 'Content-Type: application/json' -d "{\"git_commit_sha\":\"$2\"}" "$COOLIFY/applications/$1" >/dev/null; }
-unpin_all() { for u in $API_UUID $WEB_UUID $PARTNER_UUID; do pin "$u" HEAD; done; }
+# its own loop variable: the callers name the failed app from theirs ($u) after unpinning
+unpin_all() { local a; for a in $API_UUID $WEB_UUID $PARTNER_UUID; do pin "$a" HEAD; done; }
 deploy_wait() {
   local dep st i
   dep=$(coolify -X POST "$COOLIFY/deploy?uuid=$1" | python3 -c "import json,sys
@@ -204,15 +220,26 @@ except Exception: print('')")
 }
 
 for u in $API_UUID $WEB_UUID $PARTNER_UUID; do pin "$u" "$S"; done
+# A PIN THAT DID NOT TAKE BUILDS THE HEAD OF MAIN, NOT S (barracuda, #387): its migrations past S, which the gate never
+# read, would run on the production database, and the web and the partner have no check after their deploy. So every
+# pin is read back BEFORE any deploy starts.
+for u in $API_UUID $WEB_UUID $PARTNER_UUID; do
+  v=$(app_sha "$u")
+  [ "$v" = "$S" ] || { unpin_all; stop "a(z) $(nev "$u") rogzitese nem sikerult (git_commit_sha=${v:-olvashatatlan}, nem ${S:0:12}); semmi nem telepult"; }
+done
 R=$(deploy_wait $API_UUID) || { unpin_all; stop "az eles API telepitese: $R (a Coolify a regi kontenert hagyja futni)"; }
 say "api: $R"
-NOW=$(health_commit https://api.acropora.hu)
+NOW=$(health_commit "$ELES_API")
 [ "$NOW" = "$S" ] || { unpin_all; stop "az API telepites utan az eles /health commit ${NOW:0:12}, nem ${S:0:12}"; }
 R=$(deploy_wait $WEB_UUID) || { unpin_all; stop "az eles web telepitese: $R (az API mar ${S:0:12})"; }
 say "web: $R"
+# the production web says its commit only once RELEASE_COMMIT_SHA is set there; until then this is logged, not a stop
+NOW=$(health_commit "$ELES_WEB")
+if [ -z "$NOW" ]; then say "web: a /health nem mondja meg a commitjat (RELEASE_COMMIT_SHA), a rogzites visszaolvasasa az ellenorzes"
+elif [ "$NOW" != "$S" ]; then unpin_all; stop "a web telepites utan az eles web /health commit ${NOW:0:12}, nem ${S:0:12} (az API mar ${S:0:12}, a partner nem telepult)"; fi
 R=$(deploy_wait $PARTNER_UUID) || { unpin_all; stop "az eles partner telepitese: $R (az API es a web mar ${S:0:12})"; }
 say "partner: $R"
 unpin_all
 say "KESZ: az eles OS ${P:0:12} -> ${S:0:12} ($AHEAD commit, $NMIG migracio)"
-bash $ROOT/scripts/daily-log.sh acrobot "Eles napi felhozas" "Kesz: az eles OS (api, web, partner) ${P:0:12} -> ${S:0:12}, $AHEAD commit, $NMIG bovito migracio. A commerce nem resze." >/dev/null 2>&1
+bash "$HERE/daily-log.sh" acrobot "Eles napi felhozas" "Kesz: az eles OS (api, web, partner) ${P:0:12} -> ${S:0:12}, $AHEAD commit, $NMIG bovito migracio. A commerce nem resze." >/dev/null 2>&1
 exit 0

@@ -19,9 +19,11 @@ mis-hit (2026-11-20, the five migrations of that day as the measure):
   - `ADD COLUMN ... NOT NULL` without DEFAULT passed (it fails on a table with rows)
   - a DROP CONSTRAINT that is not added back passed (a lost unique or foreign key)
   - an UPDATE not at the start of a line passed
-A DROP CONSTRAINT that the same file adds back under the same name (the check replaced on
-2026-11-19 in service_job_event_kind_linked_check) passes. It passes also when the new form is narrower and so
-can fail on existing rows: that cannot be told from the text, and the rollout owner decided to let it through.
+A DROP CONSTRAINT that the same file adds back under the same name is not a pass by itself: the added form is
+checked like any other ADD CONSTRAINT, so a CHECK replaced on a table with rows stops unless NOT VALID (acrobot,
+2026-11-20 09:55: a narrower new CHECK fails on the existing rows, and a failed production migration (P3009)
+blocks every later deploy, which costs more than a person looking in the morning). The check replaced on
+2026-11-19 in service_job_event_kind_linked_check is such a stop.
 
 barracuda's review of #387 added what the earlier list left out:
   - ADD CONSTRAINT (UNIQUE, PRIMARY KEY, FOREIGN KEY, CHECK, EXCLUDE) and CREATE UNIQUE INDEX on a table that
@@ -222,8 +224,6 @@ def findings(sql: str) -> list:
                 kind = " ".join(a.group(3).upper().split())
                 if re.search(r"\bNOT\s+VALID\b", a.group(4), FLAGS):
                     continue  # existing rows are not checked
-                if (t, cname) in dropped:
-                    continue  # a replacement under the same name (it may narrow: see the module text)
                 if not harmless_on_rows(t, kind, a.group(4)):
                     hits.append(("ADD CONSTRAINT on an existing table", " ".join(mask(clause).split())))
         u = re.match(

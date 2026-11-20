@@ -27,15 +27,19 @@ const gate = (sql: string) => {
 const rules = (out: string) => out.trim().split('\n').filter(Boolean).map((l) => l.split(': ')[0])
 
 describe('migracio_kapu.py', () => {
-  it('MIGRACIO-KAPU-MAI-OT: the five migrations of 2026-11-20 pass, the DROP CONSTRAINT + ADD CONSTRAINT swap among them', () => {
+  // acrobot 57807: the CHECK replaced under the same name on a table with rows stops (it may narrow), the other four pass
+  it('MIGRACIO-KAPU-MAI-OT: four of the five migrations of 2026-11-20 pass; the CHECK swap stops', () => {
     const names = readdirSync(FIXTURES).sort()
-    const got = Object.fromEntries(names.map((n) => [n, gate(readFileSync(join(FIXTURES, n), 'utf-8'))]))
+    const got = Object.fromEntries(names.map((n) => {
+      const r = gate(readFileSync(join(FIXTURES, n), 'utf-8'))
+      return [n, { code: r.code, rules: rules(r.out) }]
+    }))
     expect(got, 'MIGRACIO-KAPU-MAI-OT').toEqual({
-      '20261118230000_gls_cod_webshop_parcel.sql': { code: 0, out: '' },
-      '20261119060000_stripe_settlement.sql': { code: 0, out: '' },
-      '20261119100000_worksheet_follows_job_assignees.sql': { code: 0, out: '' },
-      '20261119150000_service_job_linked_worksheets.sql': { code: 0, out: '' },
-      '20261119160000_service_job_event_kind_linked_check.sql': { code: 0, out: '' },
+      '20261118230000_gls_cod_webshop_parcel.sql': { code: 0, rules: [] },
+      '20261119060000_stripe_settlement.sql': { code: 0, rules: [] },
+      '20261119100000_worksheet_follows_job_assignees.sql': { code: 0, rules: [] },
+      '20261119150000_service_job_linked_worksheets.sql': { code: 0, rules: [] },
+      '20261119160000_service_job_event_kind_linked_check.sql': { code: 1, rules: ['ADD CONSTRAINT on an existing table'] },
     })
   })
 
@@ -68,6 +72,8 @@ describe('migracio_kapu.py', () => {
       dropView: 'DROP VIEW "WorksheetLatestVersion";',
       dropPolicy: 'DROP POLICY "own_rows" ON "Order";',
       dropFunction: 'DROP FUNCTION IF EXISTS "redeem"(text);',
+      // acrobot 57807: a CHECK replaced under the same name may narrow, and fail on the rows
+      constraintSwap: 'ALTER TABLE "P"\n  DROP CONSTRAINT "P_kind_check";\nALTER TABLE "P"\n  ADD CONSTRAINT "P_kind_check" CHECK ("a" IS NOT NULL);',
     }
     const got = Object.fromEntries(Object.entries(cases).map(([k, sql]) => {
       const r = gate(sql)
@@ -98,6 +104,7 @@ describe('migracio_kapu.py', () => {
       dropView: { code: 1, rules: ['DROP of a schema object'] },
       dropPolicy: { code: 1, rules: ['DROP of a schema object'] },
       dropFunction: { code: 1, rules: ['DROP of a schema object'] },
+      constraintSwap: { code: 1, rules: ['ADD CONSTRAINT on an existing table'] },
     })
   })
 
@@ -109,7 +116,8 @@ describe('migracio_kapu.py', () => {
       loosen: 'ALTER TABLE "P" ALTER COLUMN "a" DROP NOT NULL, ALTER COLUMN "b" DROP DEFAULT;',
       addNotNullWithDefault: 'ALTER TABLE "P" ADD COLUMN "c" INTEGER NOT NULL DEFAULT 0;',
       dropPlainIndex: 'DROP INDEX "P_a_idx";',
-      constraintSwap: 'ALTER TABLE "P"\n  DROP CONSTRAINT "P_kind_check";\nALTER TABLE "P"\n  ADD CONSTRAINT "P_kind_check" CHECK ("a" IS NOT NULL);',
+      // the swap passes only NOT VALID (acrobot 57807)
+      constraintSwapNotValid: 'ALTER TABLE "P"\n  DROP CONSTRAINT "P_kind_check";\nALTER TABLE "P"\n  ADD CONSTRAINT "P_kind_check" CHECK ("a" IS NOT NULL) NOT VALID;',
       enumAddValue: 'ALTER TYPE "Kind" ADD VALUE \'NEW\';',
       // Prisma's new optional relation: the key column is new and NULL in every existing row
       fkOnNewColumn: 'ALTER TABLE "User" ADD COLUMN "customerId" TEXT;\nALTER TABLE "User" ADD CONSTRAINT "User_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE RESTRICT ON UPDATE CASCADE;',
@@ -129,14 +137,18 @@ describe('migracio_kapu.py', () => {
 })
 
 describe('eles-napi-felhozas.sh', () => {
-  // The script runs as written: curl, ssh and sudo are stand-ins on PATH. curl answers from a folder (host/path, the
-  // query dropped) and logs every call; a POST or a PATCH (a pin or a deploy) is logged and answers {}. ssh answers
-  // the psql-ro line; sudo is the token broker. --nez: a stop is logged only, nothing is sent, and it never deploys.
+  // The script runs as written, from a copy of the scripts folder whose agent-msg.sh and daily-log.sh are stand-ins
+  // (a stop of a live run must not reach acrobot from a test). curl, ssh and sudo are stand-ins on PATH. curl answers
+  // from a folder (host/path, the query dropped) and logs every call; a PATCH (a pin) answers {}, a POST (a deploy)
+  // answers a deployment and moves the production /health to what the world says comes after it. ssh answers the
+  // psql-ro line; sudo is the token broker.
   const S = 'a'.repeat(40)
   const P = 'b'.repeat(40)
   const GH = 'api.github.com/repos/KratoBal/acropora-os'
   const ENVS = '162.55.216.28:8000/api/v1/applications/t9gxx94ecwekwruxngps5i6v/envs'
   const MIG = 'packages/database/prisma/migrations/20261120000000_x/migration.sql'
+  const COOLIFY = '162.55.216.28:8000/api/v1'
+  const APPS = { api: 't9gxx94ecwekwruxngps5i6v', web: 'dnt6jzza68wnuamvi93whn28', partner: 'iknrqjk9xeyydc5fibrk5tbp' }
   type World = {
     web?: string | null
     eles?: string
@@ -148,13 +160,17 @@ describe('eles-napi-felhozas.sh', () => {
     savedKeys?: string[] | null
     medusa?: string
     savedMedusa?: string | null
+    live?: boolean // the real run: pins, deploys (into the stand-ins); default --nez
+    pinRead?: { api?: string; web?: string; partner?: string } // what Coolify returns for git_commit_sha
+    webAfter?: string | null // the production web's /health commit after its deploy
   }
   let n = 0
   const run = (w: World = {}) => {
     const dir = join(root, `vilag-${(n += 1)}`)
+    // every answer is <host>/<path>/_body, so a path and a longer one under it (applications/<uuid>, .../envs) both fit
     const put = (rel: string, body: unknown) => {
-      mkdirSync(join(dir, 'net', rel, '..'), { recursive: true })
-      writeFileSync(join(dir, 'net', rel), typeof body === 'string' ? body : JSON.stringify(body))
+      mkdirSync(join(dir, 'net', rel), { recursive: true })
+      writeFileSync(join(dir, 'net', rel, '_body'), typeof body === 'string' ? body : JSON.stringify(body))
     }
     const web = w.web === undefined ? S : w.web
     put('api-staging.acropora.hu/health', { application: { commit: S } })
@@ -167,6 +183,15 @@ describe('eles-napi-felhozas.sh', () => {
     put(`${GH}/commits/${S}/check-runs`, { check_runs: [{ name: 'verify', conclusion: 'success', started_at: '2026-11-20T05:00:00Z' }] })
     put(`${GH}/contents/${MIG}`, w.migration ?? 'ALTER TABLE "Order" ADD COLUMN "note" TEXT;\n')
     put(ENVS, (w.envKeys ?? ['MEDUSA_PROJECTION_SCHEDULE_ENABLED']).map((key) => ({ key, value: 'TITOK-ERTEK' })))
+    const pinned = w.live ? S : 'HEAD'
+    for (const [app, uuid] of Object.entries(APPS)) put(`${COOLIFY}/applications/${uuid}`, { uuid, git_commit_sha: w.pinRead?.[app as keyof typeof APPS] ?? pinned })
+    put(`${COOLIFY}/deployments/dep-1`, { status: 'finished' })
+    // after a deploy: the production API runs S, the web says what the world says
+    const after = join(dir, 'after')
+    mkdirSync(join(after, 'api.acropora.hu', 'health'), { recursive: true })
+    mkdirSync(join(after, 'app.acropora.hu', 'health'), { recursive: true })
+    writeFileSync(join(after, 'api.acropora.hu', 'health', '_body'), JSON.stringify({ application: { commit: S } }))
+    writeFileSync(join(after, 'app.acropora.hu', 'health', '_body'), JSON.stringify({ application: { commit: w.webAfter === undefined ? null : w.webAfter } }))
     const allapot = join(dir, 'allapot')
     mkdirSync(allapot, { recursive: true })
     const savedKeys = w.savedKeys === undefined ? ['MEDUSA_PROJECTION_SCHEDULE_ENABLED'] : w.savedKeys
@@ -177,13 +202,23 @@ describe('eles-napi-felhozas.sh', () => {
     const bin = join(dir, 'bin')
     mkdirSync(bin)
     const calls = join(dir, 'calls.txt')
+    // the scripts folder, copied: the script reads its gate, its token library and its host keys next to itself
+    const scripts = join(dir, 'scripts')
+    mkdirSync(join(scripts, 'lib'), { recursive: true })
+    mkdirSync(join(scripts, 'host'), { recursive: true })
+    for (const f of ['eles-napi-felhozas.sh', 'lib/migracio_kapu.py', 'lib/github-token.sh', 'host/known_hosts'])
+      writeFileSync(join(scripts, f), readFileSync(join(process.cwd(), 'scripts', f)))
+    for (const f of ['agent-msg.sh', 'daily-log.sh']) writeFileSync(join(scripts, f), `echo "${f} $*" >> '${calls}'\n`)
     writeFileSync(join(bin, 'curl'), `#!/usr/bin/env bash
 m=GET; u=
 while [ $# -gt 0 ]; do case "$1" in -X) m=$2; shift 2;; -H|-d|--max-time) shift 2;; http*) u=$1; shift;; *) shift;; esac; done
 echo "$m $u" >> '${calls}'
-case "$m" in POST|PATCH) echo '{}'; exit 0;; esac
+case "$m" in
+  PATCH) echo '{}'; exit 0;;
+  POST) cp -r '${after}/.' '${join(dir, 'net')}/'; echo '{"deployments":[{"deployment_uuid":"dep-1"}]}'; exit 0;;
+esac
 f='${join(dir, 'net')}/'$(printf '%s' "\${u#*://}" | sed 's/?.*//')
-[ -f "$f" ] && cat "$f"
+[ -f "$f/_body" ] && cat "$f/_body"
 exit 0
 `, { mode: 0o755 })
     writeFileSync(join(bin, 'ssh'), `#!/usr/bin/env bash\ncat > /dev/null\necho "ssh $*" >> '${calls}'\necho 'medusa_ref|${w.medusa ?? '1|2026-09-04T16:02:00.000'}'\n`, { mode: 0o755 })
@@ -191,13 +226,14 @@ exit 0
     const log = join(dir, 'log.txt')
     const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env.PATH}`, ELES_FELHOZAS_LOG: log, ELES_FELHOZAS_ALLAPOT: allapot }
     delete env.FLEET_GITHUB_APP
-    const r = spawnSync('bash', [SCRIPT, '--nez'], { env, encoding: 'utf-8' })
+    const r = spawnSync('bash', [join(scripts, 'eles-napi-felhozas.sh'), ...(w.live ? [] : ['--nez'])], { env, encoding: 'utf-8' })
     const lines = existsSync(log) ? readFileSync(log, 'utf-8').trim().split('\n') : ['']
     const callLines = existsSync(calls) ? readFileSync(calls, 'utf-8').trim().split('\n') : []
     return {
       code: r.status,
       last: lines[lines.length - 1].replace(/^\S+ \S+ /, ''),
       writes: callLines.filter((l) => /^(POST|PATCH) /.test(l)).length,
+      calls: callLines.map((l) => l.replace(/^(\w+) https?:\/\/[^/]+\/api\/v1\//, '$1 ').replace(/^(\w+) https?:\/\//, '$1 ')),
       allapot,
       leaked: readFileSync(log, 'utf-8').includes('TITOK-ERTEK') || r.stdout.includes('TITOK-ERTEK'),
     }
@@ -209,7 +245,7 @@ exit 0
     const r = run({ envPatch: '@@ -1,2 +1,3 @@\n MEDUSA_A=false\n+MEDUSA_NEW=false\n+# STRIPE_SETTLEMENT_SYNC_ENABLED=true is Balazs\'s call\n' })
     expect({ ...brief(r), writes: r.writes, leaked: r.leaked, medusa: readFileSync(join(r.allapot, 'medusa-ref.txt'), 'utf-8') }, 'ELES-FELHOZAS-ATMEGY').toEqual({
       code: 0,
-      last: `--nez: itt telepitene ${s12}-t (api, web, partner)`,
+      last: `--nez: itt telepitene ${s12}-t (api, web, partner); a rogzites most: api=HEAD web=HEAD partner=HEAD`,
       writes: 0,
       leaked: false,
       medusa: '1|2026-09-04T16:02:00.000\n',
@@ -251,6 +287,8 @@ exit 0
       {
         flipped: brief(run({ envPatch: '@@ -1 +1 @@\n-MEDUSA_ENSURE_BRAND_COLLECTIONS=false\n+MEDUSA_ENSURE_BRAND_COLLECTIONS=true\n' })),
         newOn: brief(run({ envPatch: '@@ -1 +1,2 @@\n A=1\n+WEBSHOP_GIFT_CARDS=on\n' })),
+        oneOn: brief(run({ envPatch: '@@ -1 +1 @@\n-GLS_STATUS_SYNC_ENABLED=0\n+GLS_STATUS_SYNC_ENABLED=1\n' })),
+        keyVersion: run({ envPatch: '@@ -1 +1,2 @@\n A=1\n+STRIPE_CREDENTIAL_ACTIVE_KEY_VERSION=1\n' }).code,
         alreadyOn: run({ envPatch: '@@ -1 +1 @@\n-MEDUSA_PROJECT_BARCODES=true\n+MEDUSA_PROJECT_BARCODES=true \n' }).code,
         newKey: brief(run({ envKeys: ['MEDUSA_PROJECTION_SCHEDULE_ENABLED', 'STRIPE_SETTLEMENT_SYNC_ENABLED', 'OTHER_FLAG'] })),
         removedKey: run({ envKeys: [] }).code,
@@ -260,6 +298,8 @@ exit 0
     ).toEqual({
       flipped: { code: 1, last: 'MEGALLT: a P..S tartomany bekapcsol egy kapcsolot a .env.production.example-ben: MEDUSA_ENSURE_BRAND_COLLECTIONS, Balazs szava kell' },
       newOn: { code: 1, last: 'MEGALLT: a P..S tartomany bekapcsol egy kapcsolot a .env.production.example-ben: WEBSHOP_GIFT_CARDS, Balazs szava kell' },
+      oneOn: { code: 1, last: 'MEGALLT: a P..S tartomany bekapcsol egy kapcsolot a .env.production.example-ben: GLS_STATUS_SYNC_ENABLED, Balazs szava kell' },
+      keyVersion: 0,
       alreadyOn: 0,
       newKey: {
         code: 1,
@@ -303,6 +343,54 @@ exit 0
         code: 1,
         last: `MEGALLT: nem volt mentett eles Medusa-vetites allapot; most mentve (${was}: sorok|max lastSyncedAt), a kovetkezo futas ehhez mer`,
         saved: `${was}\n`,
+      },
+    })
+  })
+
+  it('ELES-FELHOZAS-ROGZITES: a pin that did not take stops before any deploy and unpins; --nez stops if the pin cannot be read', () => {
+    const pins = ['api', 'web', 'partner'].map((a) => `PATCH applications/${APPS[a as keyof typeof APPS]}`)
+    const webHead = run({ live: true, pinRead: { web: 'HEAD' } })
+    const unreadable = run({ live: true, pinRead: { partner: '' } })
+    expect(
+      {
+        webHead: { ...brief(webHead), deploys: webHead.calls.filter((c) => c.startsWith('POST')).length, patches: webHead.calls.filter((c) => c.startsWith('PATCH')) },
+        unreadable: { ...brief(unreadable), deploys: unreadable.calls.filter((c) => c.startsWith('POST')).length },
+        told: webHead.calls.filter((c) => /^(agent-msg|daily-log)\.sh/.test(c)).length,
+        nezUnreadable: brief(run({ pinRead: { api: '' } })),
+      },
+      'ELES-FELHOZAS-ROGZITES',
+    ).toEqual({
+      webHead: {
+        code: 1,
+        last: `MEGALLT: a(z) web rogzitese nem sikerult (git_commit_sha=HEAD, nem ${s12}); semmi nem telepult`,
+        deploys: 0,
+        // three pins to S, then three unpins to HEAD
+        patches: [...pins, ...pins],
+      },
+      unreadable: { code: 1, last: `MEGALLT: a(z) partner rogzitese nem sikerult (git_commit_sha=olvashatatlan, nem ${s12}); semmi nem telepult`, deploys: 0 },
+      told: 2,
+      nezUnreadable: { code: 1, last: 'MEGALLT: a Coolify nem adja vissza a(z) api git_commit_sha mezojet: a rogzites nem volna ellenorizheto' },
+    })
+  })
+
+  it('ELES-FELHOZAS-TELEPIT: pinned and read back: api, then web, then partner; a web that names another commit stops before the partner', () => {
+    const ok = run({ live: true })
+    const webOther = run({ live: true, webAfter: 'c'.repeat(40) })
+    const deploys = (r: ReturnType<typeof run>) => r.calls.filter((c) => c.startsWith('POST')).map((c) => c.replace(/^POST deploy\?uuid=/, ''))
+    expect(
+      {
+        ok: { ...brief(ok), deploys: deploys(ok), unpinned: ok.calls.filter((c) => c.startsWith('PATCH')).length },
+        webSaidNothing: ok.calls.length > 0,
+        webOther: { ...brief(webOther), deploys: deploys(webOther) },
+      },
+      'ELES-FELHOZAS-TELEPIT',
+    ).toEqual({
+      ok: { code: 0, last: `KESZ: az eles OS ${P.slice(0, 12)} -> ${s12} (3 commit, 1 migracio)`, deploys: [APPS.api, APPS.web, APPS.partner], unpinned: 6 },
+      webSaidNothing: true,
+      webOther: {
+        code: 1,
+        last: `MEGALLT: a web telepites utan az eles web /health commit cccccccccccc, nem ${s12} (az API mar ${s12}, a partner nem telepult)`,
+        deploys: [APPS.api, APPS.web],
       },
     })
   })
