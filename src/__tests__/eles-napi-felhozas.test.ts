@@ -191,7 +191,7 @@ describe('eles-napi-felhozas.sh', () => {
     mkdirSync(join(after, 'api.acropora.hu', 'health'), { recursive: true })
     mkdirSync(join(after, 'app.acropora.hu', 'health'), { recursive: true })
     writeFileSync(join(after, 'api.acropora.hu', 'health', '_body'), JSON.stringify({ application: { commit: S } }))
-    writeFileSync(join(after, 'app.acropora.hu', 'health', '_body'), JSON.stringify({ application: { commit: w.webAfter === undefined ? null : w.webAfter } }))
+    writeFileSync(join(after, 'app.acropora.hu', 'health', '_body'), JSON.stringify({ application: { commit: w.webAfter === undefined ? S : w.webAfter } }))
     const allapot = join(dir, 'allapot')
     mkdirSync(allapot, { recursive: true })
     const savedKeys = w.savedKeys === undefined ? ['MEDUSA_PROJECTION_SCHEDULE_ENABLED'] : w.savedKeys
@@ -373,23 +373,28 @@ exit 0
     })
   })
 
-  it('ELES-FELHOZAS-TELEPIT: pinned and read back: api, then web, then partner; a web that names another commit stops before the partner', () => {
+  it('ELES-FELHOZAS-TELEPIT: pinned and read back: api, then web, then partner; a web that names another commit, or none, stops before the partner', () => {
     const ok = run({ live: true })
     const webOther = run({ live: true, webAfter: 'c'.repeat(40) })
+    const webSilent = run({ live: true, webAfter: null })
     const deploys = (r: ReturnType<typeof run>) => r.calls.filter((c) => c.startsWith('POST')).map((c) => c.replace(/^POST deploy\?uuid=/, ''))
     expect(
       {
         ok: { ...brief(ok), deploys: deploys(ok), unpinned: ok.calls.filter((c) => c.startsWith('PATCH')).length },
-        webSaidNothing: ok.calls.length > 0,
         webOther: { ...brief(webOther), deploys: deploys(webOther) },
+        webSilent: { ...brief(webSilent), deploys: deploys(webSilent) },
       },
       'ELES-FELHOZAS-TELEPIT',
     ).toEqual({
       ok: { code: 0, last: `KESZ: az eles OS ${P.slice(0, 12)} -> ${s12} (3 commit, 1 migracio)`, deploys: [APPS.api, APPS.web, APPS.partner], unpinned: 6 },
-      webSaidNothing: true,
       webOther: {
         code: 1,
-        last: `MEGALLT: a web telepites utan az eles web /health commit cccccccccccc, nem ${s12} (az API mar ${s12}, a partner nem telepult)`,
+        last: `MEGALLT: a web telepites utan az eles web /health commit cccccccccccccccccccccccccccccccccccccccc, nem ${s12} (az API mar ${s12}, a partner nem telepult)`,
+        deploys: [APPS.api, APPS.web],
+      },
+      webSilent: {
+        code: 1,
+        last: `MEGALLT: a web telepites utan az eles web /health commit ures, nem ${s12} (az API mar ${s12}, a partner nem telepult)`,
         deploys: [APPS.api, APPS.web],
       },
     })
