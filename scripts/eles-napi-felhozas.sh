@@ -233,10 +233,10 @@ NOW=$(health_commit "$ELES_API")
 [ "$NOW" = "$S" ] || { unpin_all; stop "az API telepites utan az eles /health commit ${NOW:0:12}, nem ${S:0:12}"; }
 R=$(deploy_wait $WEB_UUID) || { unpin_all; stop "az eles web telepitese: $R (az API mar ${S:0:12})"; }
 say "web: $R"
-# the production web says its commit only once RELEASE_COMMIT_SHA is set there; until then this is logged, not a stop
+# the production web says its commit since RELEASE_COMMIT_SHA=${SOURCE_COMMIT} is set there (acrobot, 2026-11-20 10:06):
+# a silent or another commit stops before the partner
 NOW=$(health_commit "$ELES_WEB")
-if [ -z "$NOW" ]; then say "web: a /health nem mondja meg a commitjat (RELEASE_COMMIT_SHA), a rogzites visszaolvasasa az ellenorzes"
-elif [ "$NOW" != "$S" ]; then unpin_all; stop "a web telepites utan az eles web /health commit ${NOW:0:12}, nem ${S:0:12} (az API mar ${S:0:12}, a partner nem telepult)"; fi
+[ "$NOW" = "$S" ] || { unpin_all; stop "a web telepites utan az eles web /health commit ${NOW:-ures}, nem ${S:0:12} (az API mar ${S:0:12}, a partner nem telepult)"; }
 R=$(deploy_wait $PARTNER_UUID) || { unpin_all; stop "az eles partner telepitese: $R (az API es a web mar ${S:0:12})"; }
 say "partner: $R"
 unpin_all
