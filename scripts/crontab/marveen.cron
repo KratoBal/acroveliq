@@ -30,3 +30,7 @@
 # /health, and the 16 model calls happen only when the AI's code or instruction text changed, or weekly. It tells
 # acrobot only on a regression or a setup failure; a clean run is one log line.
 */15 * * * * /home/marveen/marveen/scripts/ai-kerdeskeszlet-or.sh >>/home/marveen/marveen/store/ai-kerdeskeszlet-or.log 2>&1
+# The daily production rollout of Acropora OS (Balazs, 2026-11-20): api, web and partner go to the commit the test API
+# runs, only when the test web runs the same, the CI is green and every new migration is additive
+# (scripts/lib/migracio_kapu.py). Any gate that fails stops it and tells acrobot. Commerce is not part of it.
+30 5 * * * /home/marveen/marveen/scripts/eles-napi-felhozas.sh >>/home/marveen/marveen/store/eles-napi-felhozas-cron.log 2>&1
