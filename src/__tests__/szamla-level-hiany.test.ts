@@ -146,6 +146,40 @@ describe('szamla-level-hiany.sh', () => {
     })
   })
 
+  it('SZAMLA-HIANY-ZAJ: GitHub and newsletter senders are skipped and counted; a github.com link is never a login; a future date is not fresh', () => {
+    const r = run({
+      info: [
+        mail('cccc0001', 'GitHub <notifications@github.com>', 'Re: [KratoBal/acropora-os] invoice export (PR #2700)'),
+        mail('cccc0002', 'Aquarioom <hello@newsletter.aquarioom.com>', 'Novemberi akciók, számla nélkül', 'katalogus.pdf'),
+        // the nearest look-alikes stay: another domain that only ends in "github.com", and "newsletter" before the @
+        mail('cccc0003', 'Bolt <noreply@notgithub.com>', 'Számla', 'sz.pdf'),
+        mail('cccc0004', 'Bolt <newsletter@bolt.hu>', 'E-számla', 'e.pdf'),
+        mail('cccc0005', 'Szolgaltato <x@szolg.hu>', 'Számla elérhető'),
+        mail('cccc0006', 'Jovo <j@jovo.hu>', 'Számla', 'jovo.pdf', new Date(Date.now() + 3 * 3600_000).toUTCString()),
+      ],
+      bodies: { cccc0005: 'A szamla a GitHub-on: https://github.com/szolg/szamlak/releases/download/x.pdf\n' },
+    })
+    expect(
+      {
+        code: r.code,
+        listed: ['cccc0001', 'cccc0002', 'cccc0003', 'cccc0004', 'cccc0005', 'cccc0006'].filter((id) => advice(r.out, id) !== undefined),
+        advice: Object.fromEntries(['cccc0003', 'cccc0004', 'cccc0005', 'cccc0006'].map((id) => [id, advice(r.out, id)])),
+        summary: r.out.trim().split('\n').pop(),
+      },
+      'SZAMLA-HIANY-ZAJ',
+    ).toEqual({
+      code: 0,
+      listed: ['cccc0003', 'cccc0004', 'cccc0005', 'cccc0006'],
+      advice: {
+        cccc0003: 'Drive-ba toltendo',
+        cccc0004: 'Drive-ba toltendo',
+        cccc0005: 'ember nezze: nincs PDF es nincs link',
+        cccc0006: 'Drive-ba toltendo',
+      },
+      summary: '# 4 level (Drive-ba toltendo 3, ember nezze 1); kihagyva 2 ertesito/hirlevel',
+    })
+  })
+
   it('SZAMLA-HIANY-FORRAS: the query, the SQL (hex ids only, no file name), a refused table named with its columns, a failed mailbox', () => {
     const ok = run({ info: [mail('aaaa0001', 'a', 'Számla', 'x.pdf'), "x');DROP | rossz sor"] }, '3')
     const refused = run({ info: [mail('aaaa0001', 'a', 'Számla', 'x.pdf')], db: 'ERROR:  permission denied for table InvoiceCollectionItem\n' })

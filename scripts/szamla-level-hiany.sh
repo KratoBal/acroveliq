@@ -20,7 +20,11 @@
 # a felhasznaloi resz jelszot (user:jelszo@), a lekerdezes egyszeri kulcsot vihet (barracuda, #389). A teljes
 # link a levelben marad, a level-id alapjan megnyithato.
 # Egy OS altal meg nem latott PDF-es level, ami 2 oranal frissebb, "varja az OS-gyujtest": a begyujtes
-# orankent fut, es a kovetkezo kore behuzza; egy Drive-feltoltes duplikatumot adna.
+# orankent fut, es a kovetkezo kore behuzza; egy Drive-feltoltes duplikatumot adna. Egy JOVOBELI datum (a felado
+# szovege) nem friss: az ilyen level a listan marad, nem rejtozik el minden ejjel (barracuda, #389).
+# A ZAJ KIMARAD (acrobot, az elso eles futas utan, 2026-11-20: 34 levelbol 11): a GitHub ertesitoi (egy PR-cimben
+# az "invoice" szo) es a hirlevel-kuldok (newsletter.<domain>) nem szamla-jeloltek; a kihagyott levelek SZAMA az
+# osszesitoben all. Egy github.com link pedig soha nem "belepes kell".
 # A vegen egy osszesito sor. Kilepes: 0 a jelentes kesz (akkor is, ha van teendo), 2 ha egy forras nem
 # olvashato (a gcal.sh, vagy az adatbazis-tabla: a hiba megnevezi a tablat es az oszlopokat).
 set -uo pipefail
@@ -89,7 +93,17 @@ STORED = {"STORED", "SUGGESTED", "DUPLICATE"}
 SOURCE = {"info": "INFO_MAIL", "balazs": "BALAZS_MAIL"}
 # a link whose address says it leads to the invoice or a login, before any other link of the mail
 HINT = re.compile(r"szamla|számla|invoice|rechnung|billing|bill|download|letolt|letölt|portal|account|fiok|fiók|login|bejelentkez|ugyfel|ügyfél", re.I)
-NOISE = re.compile(r"unsubscribe|leiratkoz|facebook\.com|instagram\.com|linkedin\.com|twitter\.com|x\.com/|youtube\.com|google\.com/maps|w3\.org", re.I)
+NOISE = re.compile(r"unsubscribe|leiratkoz|facebook\.com|instagram\.com|linkedin\.com|twitter\.com|x\.com/|youtube\.com|google\.com/maps|w3\.org|github\.com", re.I)
+
+
+def excluded_sender(sender_env):
+    """A GitHub ertesitoje (github.com es aldomainjei) vagy egy hirlevel-kuldo (newsletter.<domain>), a felado CIMEBOL."""
+    text = re.sub(r'^<untrusted source="gmail">|</untrusted>$', "", sender_env)
+    m = re.search(r"<([^<>@\s]+@[^<>\s]+)>", text) or re.search(r"([^\s<>\"]+@[^\s<>\"]+)", text)
+    if not m:
+        return False
+    domain = m.group(1).rsplit("@", 1)[1].lower().rstrip(".")
+    return domain == "github.com" or domain.endswith(".github.com") or domain.startswith("newsletter.")
 
 seen = {}
 for l in open(os.path.join(work, "os.txt"), encoding="utf-8"):
@@ -135,10 +149,11 @@ def fresh(date_env):
         sent = parsedate_to_datetime(re.sub(r'^<untrusted source="gmail">|</untrusted>$', "", date_env)).timestamp()
     except (TypeError, ValueError, IndexError):
         return False  # an unreadable date counts as old: the mail is listed, not hidden
-    return time.time() - sent < FRISS_MP
+    # a jovobeli datum (a felado szovege) nem friss: kulonben minden ejjel "varja az OS-gyujtest" lenne
+    return 0 <= time.time() - sent < FRISS_MP
 
 
-counts, rows, cut = {}, [], []
+counts, rows, cut, skipped = {}, [], [], 0
 for account in ("info", "balazs"):
     for l in open(os.path.join(work, account + ".txt"), encoding="utf-8"):
         l = l.rstrip("\n")
@@ -153,6 +168,9 @@ for account in ("info", "balazs"):
                 sys.exit(2)
             continue
         mid, date, sender, subject, att = m.groups()
+        if excluded_sender(sender):
+            skipped += 1
+            continue
         names = re.sub(r'^<untrusted source="gmail">|</untrusted>$', "", att.strip())
         pdf = any(n.strip().lower().endswith(".pdf") for n in names.split(";") if n.strip())
         verdicts = seen.get((SOURCE[account], mid), [])
@@ -182,5 +200,6 @@ for account in ("info", "balazs"):
 for r in rows:
     print(r)
 summary = ", ".join("%s %d" % kv for kv in sorted(counts.items())) or "nincs szamla-jellegu level"
-print("# %d level (%s)%s" % (len(rows), summary, "; A LIMIT VAGTA: " + ", ".join(cut) + "@ (200 talalat)" if cut else ""))
+print("# %d level (%s)%s%s" % (len(rows), summary, "; kihagyva %d ertesito/hirlevel" % skipped if skipped else "",
+                               "; A LIMIT VAGTA: " + ", ".join(cut) + "@ (200 talalat)" if cut else ""))
 PY
