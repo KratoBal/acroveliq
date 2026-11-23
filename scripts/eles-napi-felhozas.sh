@@ -145,7 +145,18 @@ for f in d['files']:
   if 'patch' not in f: print(f['filename']+': a valtozas nem olvashato (nincs patch)'); continue
   on=lambda sign: {m.group(1) for m in re.finditer(r'^'+sign+r'\\s*([A-Z0-9_]+)\\s*=\\s*(true|yes|on|1)\\s*$', f['patch'], re.M|re.I) if not m.group(1).endswith('_VERSION')}
   for k in sorted(on(r'\\+') - on('-')): print(k)")
-[ -z "$ONSW" ] || stop "a P..S tartomany bekapcsol egy kapcsolot a .env.production.example-ben: $(echo $ONSW), Balazs szava kell"
+# Accepted switches: store/eles-felhozas/kapcsolo-elfogadva.txt, one line per switch:
+#   NAME <tab> who/when/message id (the decision that turned it on)
+# A name listed there no longer stops the rollout; it is logged instead.
+ELF="$ALLAPOT/kapcsolo-elfogadva.txt"
+if [ -n "$ONSW" ] && [ -f "$ELF" ]; then
+  REST=""
+  for k in $ONSW; do
+    if grep -q "^$k[[:space:]]" "$ELF"; then say "kapcsolo elfogadva: $k ($(grep "^$k[[:space:]]" "$ELF" | cut -f2- | head -1))"; else REST="$REST $k"; fi
+  done
+  ONSW=$(echo $REST)
+fi
+[ -z "$ONSW" ] || stop "a P..S tartomany bekapcsol egy kapcsolot a .env.production.example-ben: $(echo $ONSW), Balazs szava kell (elfogadas: a nev es a dontes sora a store/eles-felhozas/kapcsolo-elfogadva.txt fajlba)"
 
 mkdir -p "$ALLAPOT"
 # 4b. new MEDUSA_ / STRIPE_ / WEBSHOP_ keys in the production API's environment: the names only, never a value
