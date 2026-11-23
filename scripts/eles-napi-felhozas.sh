@@ -157,7 +157,7 @@ if [ -n "$ONSW" ] && [ -f "$ELF" ]; then
   for k in $ONSW; do
     sor="$(grep "^$k[[:space:]]" "$ELF" | head -1)"
     dontes="$(printf '%s' "$sor" | cut -f2-)"
-    if [ -n "$sor" ] && printf '%s' "$dontes" | grep -Eq '[0-9]{15,}'; then
+    if [ -n "$sor" ] && grep -Eq '[0-9]{15,}' <<< "$dontes"; then
       say "kapcsolo elfogadva: $k ($dontes)"
     else
       [ -z "$sor" ] || say "kapcsolo-sor uzenet-azonosito nelkul, nem elfogadas: $k"

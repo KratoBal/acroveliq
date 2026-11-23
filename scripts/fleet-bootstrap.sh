@@ -765,11 +765,11 @@ else
   # Any tag list (NOPASSWD:, SETENV:, NOEXEC: ...) and ALL anywhere in the comma list,
   # as its own item (barracuda, #24 review): "(ALL) SETENV: NOPASSWD: ALL" and
   # "(ALL) NOPASSWD: /usr/bin/tmux, ALL" are both unrestricted.
-  if printf '%s\n' "$allowed" | grep -Eq '\((ALL|root)( ?: ?(ALL|root))?\) +([A-Z_]+: *)*(.*, *)?ALL *(,|$)'; then
+  if grep -Eq '\((ALL|root)( ?: ?(ALL|root))?\) +([A-Z_]+: *)*(.*, *)?ALL *(,|$)' <<< "$allowed"; then
     fail "an unrestricted sudo rule is still granted to $ROUTER_USER"
   fi
   # A shell or an editor of sudo itself is unrestricted under another name.
-  if printf '%s\n' "$allowed" | grep -Eq '\((ALL|root)( ?: ?(ALL|root))?\) .*((/usr)?/bin/(ba|da|z)?sh|/usr/bin/env|(/usr)?/bin/su|/usr/bin/sudo|/usr/sbin/visudo|/usr/bin/tee)( |,|$)'; then
+  if grep -Eq '\((ALL|root)( ?: ?(ALL|root))?\) .*((/usr)?/bin/(ba|da|z)?sh|/usr/bin/env|(/usr)?/bin/su|/usr/bin/sudo|/usr/sbin/visudo|/usr/bin/tee)( |,|$)' <<< "$allowed"; then
     fail "a root shell-equivalent sudo rule (sh, bash, env, su, sudo, visudo, tee) is granted to $ROUTER_USER"
   fi
   echo "ok: $ROUTER_USER has no unrestricted sudo rule"

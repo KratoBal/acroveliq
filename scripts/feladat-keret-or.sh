@@ -83,7 +83,7 @@ PY
     SENDOUT="$(bash "$ROOT/scripts/agent-msg.sh" acrobot "$AGENT" - < "$MSG")"; SENDRC=$?
     rm -rf "$MSGDIR"
     printf '%s\n' "$SENDOUT"
-    if [ "$SENDRC" -eq 0 ] && printf '%s\n' "$SENDOUT" | grep -q '^OK id='; then
+    if [ "$SENDRC" -eq 0 ] && grep -q '^OK id=' <<< "$SENDOUT"; then
       SENT="uzenet sorba kerult (a kezbesitest a message-status mondja meg) ($(printf '%s\n' "$SENDOUT" | grep -o '^OK id=[0-9]*' | head -1))."
       RC=3
     else

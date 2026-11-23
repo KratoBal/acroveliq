@@ -136,7 +136,7 @@ else
   _fail "ffmpeg not found after install"
 fi
 _enc=$(ffmpeg -encoders 2>&1 || true)
-if echo "$_enc" | grep -q libopus; then
+if grep -q libopus <<< "$_enc"; then
   _pass "libopus encoder present"
 else
   _fail "libopus encoder missing"
@@ -205,7 +205,7 @@ PYEOF
   echo "    Transcript: $TRANSCRIPT"
   if [[ -n "$TRANSCRIPT" ]]; then
     _pass "STT produced non-empty transcript"
-    if echo "$TRANSCRIPT" | grep -qi "$EXPECTED_KW"; then
+    if grep -qi "$EXPECTED_KW" <<< "$TRANSCRIPT"; then
       _pass "STT transcript contains expected keyword: '$EXPECTED_KW'"
     else
       # Whisper-small is imperfect on short Hungarian; non-fatal warning
