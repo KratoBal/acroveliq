@@ -214,12 +214,20 @@ if [ "$rc" -ne 0 ] && [ -f "$kimenet" ] && [ "$(halozati_hiba "$kimenet")" = ige
     sleep "$RETRY_POLL_S"
     varva=$((varva + RETRY_POLL_S))
   done
-  server="$(printf '%s' "$health" | python3 -c 'import json,sys
+  uj_server="$(printf '%s' "$health" | python3 -c 'import json,sys
 try:
     v = json.load(sys.stdin).get("version")
 except ValueError:
     v = None
 print(v if isinstance(v, str) else "unknown")')"
+  # A NEW SERVER IS A NEW ROUND, NOT A RERUN (barracuda on #394): a network error mid-run is mostly a redeploy, and then /health comes back
+  # with new code, maybe with a new question set; the runner built at this round's start would measure the new server with the old set,
+  # and the next tick would find the report's server equal to /health and run nothing. So when the version moved, the round ends here
+  # (exit 0, a log line); the next tick sees "changed" against the old baseline and runs a whole round, fetched and built afresh.
+  if [ "$uj_server" != "$server" ]; then
+    log "a /health uj verzioval jott vissza (${server:0:8} -> ${uj_server:0:8}): nem futtatom ujra, a kovetkezo tick teljes kort fut"
+    exit 0
+  fi
   kimenet="$REPORT_DIR/qs-$(date -u +%Y-%m-%dT%H%MZ)-${server:0:8}-ujra.json"
   sorok="$(AI_API_TOKEN="$(cat "$TOKEN_FILE")" $RUNNER --url "$AI_URL" --out "$kimenet" "${osszevet[@]}" 2>&1)"
   rc=$?

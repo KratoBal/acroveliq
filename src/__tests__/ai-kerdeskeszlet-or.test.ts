@@ -341,7 +341,7 @@ PY
     )
     chmodSync(runner, 0o755)
     const attemptsMade = () => (existsSync(counter) ? Number(readFileSync(counter, 'utf-8')) : 0)
-    return { ...w, flag, attemptsMade, go: () => w.run({ KERDES_RUNNER: `bash ${runner}`, KERDES_RETRY_WAIT_S: '2', KERDES_RETRY_POLL_S: '1' }) }
+    return { ...w, flag, attemptsMade, runnerCmd: `bash ${runner}`, go: () => w.run({ KERDES_RUNNER: `bash ${runner}`, KERDES_RETRY_WAIT_S: '2', KERDES_RETRY_POLL_S: '1' }) }
   }
   const files = (dir: string) => (existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.json')).sort() : [])
 
@@ -385,6 +385,31 @@ PY
     expect(w.attemptsMade()).toBe(1)
     expect(w.messages()).toMatch(/sem valaszolt ujra a \/health/)
     expect(w.messages()).not.toMatch(/ROMLAS/)
+  })
+
+  it('a /health that comes back with another version (a redeploy): no rerun with the old runner, no message, exit 0', async () => {
+    const w = plannedWorld([
+      { code: 1, errors: ['network: ECONNREFUSED connect ECONNREFUSED 100.88.199.87:3110'], downHealth: true },
+      { code: 0, errors: [] },
+    ])
+    healthDownFlag = w.flag
+    const saved = health
+    // the redeploy: /health is down while the flag exists; the test then brings it back with a new version
+    const back = setTimeout(() => {
+      health = { ...(saved as Record<string, unknown>), version: 'cccc2222dddd' }
+      rmSync(w.flag, { force: true })
+    }, 1500)
+    try {
+      const r = await w.run({ KERDES_RUNNER: w.runnerCmd, KERDES_RETRY_WAIT_S: '10', KERDES_RETRY_POLL_S: '1' })
+      expect(r.code, r.out).toBe(0)
+      expect(w.attemptsMade()).toBe(1)
+      expect(w.messages()).toBe('')
+      expect(r.out).toMatch(/uj verzioval jott vissza/)
+      expect(files(w.reports).some((f) => f.startsWith('halozati-qs-'))).toBe(true)
+    } finally {
+      clearTimeout(back)
+      health = saved
+    }
   })
 
   it("an HTTP error, the provider's 504 among them, is no missing service: no rerun, said as before", async () => {
