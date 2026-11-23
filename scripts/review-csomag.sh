@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ANSWERS: Hogyan adok at egy PR-t barracudanak atnezesre ugy, hogy a diff tenyleg nala legyen?
 #
-# review-csomag.sh <os|commerce|marveen|ai|cap> <PR> <task_id> [cimke]
+# review-csomag.sh <os|commerce|marveen|ai|cap|barka> <PR> <task_id> [cimke]
 #   -> review-csomagok/pr-<PR> (os), pr-c<PR> (commerce), pr-marveen<PR> (a flotta
-#      repoja, KratoBal/acroveliq, 2026-10-15 elott KratoBal/marveen) vagy pr-ai<PR> (KratoBal/acropora-ai-agent), vagy pr-cap<PR> (KratoBal/caparium-napplo): diff.patch + README.md
+#      repoja, KratoBal/acroveliq, 2026-10-15 elott KratoBal/marveen) vagy pr-ai<PR> (KratoBal/acropora-ai-agent), vagy pr-cap<PR> (KratoBal/caparium-napplo), vagy pr-barka<PR> (KratoBal/Barka): diff.patch + README.md
 #      (pr: owner/repo#N, task_id, fej, merge-base, origin/main). Ha a mappa mar letezik, diff-vN.patch-et ir,
 #      a kovetkezo szabad N-nel, a README-hez egy sort fuz.
 #   Ha a pr-<N> mappa egy MASIK csomagoloe (atvett PR, kartya efdce058), a kor egy sajat testver-mappaba
@@ -57,7 +57,7 @@ GH_API=https://api.github.com
 declare -F kor_legutobbi >/dev/null || { echo "FAIL: a kor-segedfuggvenyek nem toltodtek be (scripts/lib/review-kor.sh)" >&2; exit 1; }
 # the caller's uid, one line: the takeover test replaces it in a copy (a second real uid is not available there)
 ME_UID="$(id -u)"
-USAGE="usage: [REVIEW_CSOMAG_REPO=<sajat klon>] review-csomag.sh <os|commerce|marveen|ai|cap> <PR> <task_id> [cimke]
+USAGE="usage: [REVIEW_CSOMAG_REPO=<sajat klon>] review-csomag.sh <os|commerce|marveen|ai|cap|barka> <PR> <task_id> [cimke]
        review-csomag.sh docs <fajl> <task_id> [cimke]"
 ZONA="${REVIEW_CSOMAG_DIR:-/home/marveen/marveen/review-csomagok}"
 
@@ -152,6 +152,8 @@ case "${1:-}" in
   ai) DEFAULT_REPO=/home/marveen/work/acropora-ai-agent; PFX="pr-ai"; SLUG=KratoBal/acropora-ai-agent ;;
   # the first customer project (Cápárium nAPPló, acrobot 32393, 2026-10-19): pr-cap<N>
   cap) DEFAULT_REPO=/home/marveen/work/caparium-napplo; PFX="pr-cap"; SLUG=KratoBal/caparium-napplo ;;
+  # Barka (acrobot 60141, 2026-11-23: the Next security fix was its first PR): pr-barka<N>
+  barka) DEFAULT_REPO=/home/marveen/work/Barka; PFX="pr-barka"; SLUG=KratoBal/Barka ;;
   *) echo "$USAGE" >&2; exit 2 ;;
 esac
 REPO="${REVIEW_CSOMAG_REPO:-$DEFAULT_REPO}"

@@ -225,6 +225,20 @@ mkdir "$Z/pr-cap4"; printf 'cap PR 4 \npr: KratoBal/acropora-commerce#4\ntask_id
 check 'a cap packet whose README pr: names another repo -> 1' 1 "$(ell cap4 tsk-a APPROVE)"
 check 'one event, from the good cap packet only' "$((n + 1))" "$(events)"
 
+echo 'Barka (acrobot 60141): pr-barka<N> is KratoBal/Barka#N, b<N> is nothing'
+n="$(events)"
+mkdir "$Z/pr-barka1"
+printf 'barka PR 1 \npr: KratoBal/Barka#1\ntask_id: tsk-a\nfej: 4444444444444444444444444444444444444444\n' > "$Z/pr-barka1/README.md"
+cp "$Z/pr-marveen70/diff.patch" "$Z/pr-barka1/diff.patch"
+check 'olvas: a barka packet -> 0' 0 "$(olv barka1)"
+check 'ellenoriz: a barka packet -> 0' 0 "$(ell barka1 tsk-a APPROVE)"
+check '... the ref names the Barka repo' \
+  "task-event tsk-a verdict $ACTOR  APPROVE KratoBal/Barka#1 pr-barka1 fej 4444444444444444444444444444444444444444" "$(tail -n1 "$EV")"
+mkdir "$Z/pr-barka2"; printf 'barka PR 2 \npr: KratoBal/caparium-napplo#2\ntask_id: tsk-a\nfej: 1234567\n' > "$Z/pr-barka2/README.md"
+check 'a barka packet whose README pr: names another repo -> 1' 1 "$(ell barka2 tsk-a APPROVE)"
+check 'a bare b<N> name is no packet name -> 2' 2 "$(ell b1 tsk-a APPROVE)"
+check 'one event, from the good barka packet only' "$((n + 1))" "$(events)"
+
 echo 'a document packet (task review-docs-verdict): the file path in the ref, the copy checked'
 n="$(events)"
 mkdir "$Z/doc-tsk-d"; printf 'terv\n' > "$Z/doc-tsk-d/v1-terv.md"
