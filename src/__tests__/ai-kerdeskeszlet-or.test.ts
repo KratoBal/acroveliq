@@ -93,8 +93,11 @@ exit ${runnerCode}
 /** A report as the runner writes it, at a given age. */
 function report(reports: string, name: string, versions: { serverVersion: string; instructionsVersion: string }, ageDays: number) {
   mkdirSync(reports, { recursive: true })
-  const startedAt = new Date(Date.now() - ageDays * 86_400_000).toISOString()
-  writeFileSync(join(reports, name), JSON.stringify({ ...versions, startedAt }))
+  const at = new Date(Date.now() - ageDays * 86_400_000)
+  writeFileSync(join(reports, name), JSON.stringify({ ...versions, startedAt: at.toISOString() }))
+  // the guard picks the newest report by mtime: two files written in the same instant tie, and the directory order decided
+  // (a CI failure on #399, "compareNewest: false"); the file's mtime is the report's age, as a real report's would be
+  utimesSync(join(reports, name), at, at)
 }
 
 describe('ai-kerdeskeszlet-or.sh', () => {

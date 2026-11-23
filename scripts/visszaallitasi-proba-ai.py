@@ -14,6 +14,11 @@ UNTIL THE HOST GATE IS REINSTALLED its restore-probe prints no newest=. Then the
 every week (no FAIL): the counts still are. A FAIL on freshness is first a question of the zone (`date +%z`: an empty zone file
 once made glibc read local times as UTC, which moves the dump's time later and lets later live rows in), then of a row written
 afterwards with an older created_at (an import, a restore). Exit 0 when every measured check passes, 1 otherwise.
+
+THE ZONE IS THE SAME ON BOTH SIDES (barracuda on #397, measured 2026-11-23): the dump is NAMED in the fleet container, not on the AI
+machine (scripts/ai-db-nas-mentes.sh runs here from cron, mentes-cron.sh ai; its STAMP=$(date ...) is taken here and the dump only
+streams in over ssh), and the probe reads that name here too, so a UTC AI machine cannot shift it; and messages.created_at is
+TIMESTAMPTZ (acropora-ai-agent apps/api/src/db.ts), so the to_timestamp comparison does not depend on the session's zone.
 """
 import sys
 
