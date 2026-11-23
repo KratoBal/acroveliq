@@ -32,9 +32,12 @@ describe('pipefail: no printf/echo piped into grep -q, a here-string instead', (
   it('the premise: on a big input that matches on its first line, the piped form fails and the here-string passes', () => {
     const script = `set -o pipefail
 x="$(printf 'MATCH\\n'; head -c 400000 /dev/zero | tr '\\0' 'a')"
-if printf '%s\\n' "$x" | grep -q MATCH; then echo pipe=match; else echo pipe=miss; fi
+if { echo MATCH; yes; } | grep -q MATCH; then echo pipe=match; else echo pipe=miss; fi
 if grep -q MATCH <<< "$x"; then echo here=match; else echo here=miss; fi`
-    const r = spawnSync('bash', ['-c', script], { encoding: 'utf-8' })
+    // the piped writer never ends (`yes`): a finite 400 KB writer can finish before grep -q leaves, as it did on the
+    // ubuntu-26.04 CI runner in pipefail-korai-olvaso.test.ts (#404, f9efae6a), and then this premise flaps on an
+    // unrelated PR; with `yes`, grep -q must kill it, and a reader that never leaves times out
+    const r = spawnSync('bash', ['-c', script], { encoding: 'utf-8', timeout: 20000 })
     expect(r.stdout, r.stderr).toContain('here=match')
     expect(r.stdout, r.stderr).toContain('pipe=miss')
   })
