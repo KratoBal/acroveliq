@@ -148,11 +148,21 @@ for f in d['files']:
 # Accepted switches: store/eles-felhozas/kapcsolo-elfogadva.txt, one line per switch:
 #   NAME <tab> who/when/message id (the decision that turned it on)
 # A name listed there no longer stops the rollout; it is logged instead.
+# THE DECISION MUST NAME ITS MESSAGE (barracuda on #398): the rule "Balazs szava kell" stood only on who may write the file;
+# now a line whose decision carries no Discord message id (15 or more digits) is no acceptance: the switch stops, and the log
+# says the line is there but names no decision. The file's one live line (JATEK_MAIL_QUEUE_AUTO, 2026-11-23) carries one.
 ELF="$ALLAPOT/kapcsolo-elfogadva.txt"
 if [ -n "$ONSW" ] && [ -f "$ELF" ]; then
   REST=""
   for k in $ONSW; do
-    if grep -q "^$k[[:space:]]" "$ELF"; then say "kapcsolo elfogadva: $k ($(grep "^$k[[:space:]]" "$ELF" | cut -f2- | head -1))"; else REST="$REST $k"; fi
+    sor="$(grep "^$k[[:space:]]" "$ELF" | head -1)"
+    dontes="$(printf '%s' "$sor" | cut -f2-)"
+    if [ -n "$sor" ] && printf '%s' "$dontes" | grep -Eq '[0-9]{15,}'; then
+      say "kapcsolo elfogadva: $k ($dontes)"
+    else
+      [ -z "$sor" ] || say "kapcsolo-sor uzenet-azonosito nelkul, nem elfogadas: $k"
+      REST="$REST $k"
+    fi
   done
   ONSW=$(echo $REST)
 fi
