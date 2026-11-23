@@ -476,6 +476,8 @@ case "$OP" in
   restore-probe)
     # restore-probe: an AI dump on stdin goes into a throwaway postgres:16,
     # one fixed count query runs on it, the container is removed in any case.
+    # newest= is the restored messages' newest created_at in epoch seconds (card f7d08f28): the caller compares it
+    # with what the live database held at the dump's time, so a dump with old content under a fresh name fails.
     args 0; allow restore-probe
     for old in $("$DOCKER" ps -a --format '{{.Names}}'); do
       case "$old" in restore-proba-ai-*) "$DOCKER" rm -f "$old" >/dev/null 2>&1 || true ;; esac
@@ -497,7 +499,7 @@ case "$OP" in
     [ -n "$ready" ] || { echo "fleet-gate: a próba-adatbázis nem állt fel" >&2; exit 1; }
     "$DOCKER" exec -i "$C" pg_restore --no-owner --no-privileges -U acropora_ai -d acropora_ai || { echo "fleet-gate: a pg_restore hibával tért vissza" >&2; exit 1; }
     "$DOCKER" exec "$C" psql -X -U acropora_ai -d acropora_ai -Atc \
-      "select 'conversations='||(select count(*) from conversations)||' messages='||(select count(*) from messages)||' answer_ratings='||(select count(*) from answer_ratings)"
+      "select 'conversations='||(select count(*) from conversations)||' messages='||(select count(*) from messages)||' answer_ratings='||(select count(*) from answer_ratings)||' newest='||coalesce((select extract(epoch from max(created_at))::bigint from messages)::text, 'none')"
     ;;
   env-get)
     # env-get: the values of a fixed few variables of one fixed container,

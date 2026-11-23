@@ -351,6 +351,8 @@ describe('fleet-gate: what passes', () => {
       [r.code, r.out.trim(), steps[0], steps.includes('[rm] [-f]'), steps.at(-1), ['[--network] [none]', '[--memory] [1g]', '[--cpus] [1]', '[--pull] [never]'].map((o) => run.includes(o))],
       'GATE-RESTORE-PROBE',
     ).toEqual([0, 'conversations=1 messages=2 answer_ratings=3', '[ps] [-a]', true, '[rm] [-f]', [true, true, true, true]])
+    // the fixed query also names the restored messages' newest created_at (card f7d08f28)
+    expect(r.calls.some((c) => c.includes('[psql]') && c.includes("' newest='||coalesce((select extract(epoch from max(created_at))::bigint from messages)::text, 'none')")), 'GATE-RESTORE-PROBE newest').toBe(true)
   }, 15_000) // one 2-second wait while the TCP probe is not ready yet
 
   it('GATE-RESTORE-PROBE-TCP: the restore waits for postgres over TCP, not for the initdb socket server', () => {

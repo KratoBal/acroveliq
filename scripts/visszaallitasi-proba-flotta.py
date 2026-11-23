@@ -17,6 +17,11 @@ The checks, each one a FAIL line of its own:
 The file name's time is the backup's local time (fleet-backup.sh: date +%Y-%m-%d_%H-%M-%S, taken before the snapshot), read
 here in the same local zone. created_at is epoch seconds (src/db.ts: Math.floor(Date.now() / 1000)); a value in milliseconds
 is read as such. Exit 0 when every check passes, 1 otherwise.
+
+A FAIL ON FRESHNESS, the order to look (barracuda on #396; both err towards a false FAIL, never a false pass): first the zone,
+`date +%z` (2026-08-20..21 the Budapest zone file was empty and glibc read local times as UTC: the file's time moves one or two
+hours later, live rows written after the backup count as "before it", and an active fleet fails); then a row written afterwards
+with an older created_at (an import, a restore, a hand fix), which live holds and the backup cannot.
 """
 import re
 import sqlite3
