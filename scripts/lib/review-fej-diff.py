@@ -293,7 +293,12 @@ def run(argv):
         raise Stop(f'a csomag patch-e nincs meg: {patch}')
     if not stat.S_ISREG(st.st_mode):
         raise Stop(f'a csomag patch-e symlink vagy nem fajl: {patch}')
-    ps = parse_diff(open(patch, encoding='utf-8', errors='replace').read())
+    # read as bytes and decoded as the head's diff is: a text-mode open translates \r\n to \n, so a CRLF
+    # file's packet lines lost their \r while the head's kept it, and the same patch ended in ELTER
+    # (commerce #744 google-pay-mark.svg, barracuda 47502). Not normalised on both sides: an LF packet
+    # for a CRLF head is another content, and stays an ELTER.
+    with open(patch, 'rb') as f:
+        ps = parse_diff(f.read().decode('utf-8', 'replace'))
     diffs = compare(hs, ps)
     if diffs:
         lines.append(f'ELTER: a csomag {os.path.basename(patch)} NEM a fej diffje ({len(diffs)} elteres). A fejbol eloallitottat olvasd:')
