@@ -158,6 +158,7 @@ describe('eles-napi-felhozas.sh', () => {
     envPatch?: string
     envKeys?: string[]
     savedKeys?: string[] | null
+    accepted?: string[] // the lines of kapcsolo-elfogadva.txt: NAME<TAB>the decision
     medusa?: string
     savedMedusa?: string | null
     live?: boolean // the real run: pins, deploys (into the stand-ins); default --nez
@@ -196,6 +197,7 @@ describe('eles-napi-felhozas.sh', () => {
     mkdirSync(allapot, { recursive: true })
     const savedKeys = w.savedKeys === undefined ? ['MEDUSA_PROJECTION_SCHEDULE_ENABLED'] : w.savedKeys
     if (savedKeys) writeFileSync(join(allapot, 'env-kulcsok.txt'), savedKeys.map((k) => `${k}\n`).join(''))
+    if (w.accepted) writeFileSync(join(allapot, 'kapcsolo-elfogadva.txt'), w.accepted.map((l) => `${l}\n`).join(''))
     const savedMedusa = w.savedMedusa === undefined ? '1|2026-09-04T16:02:00.000' : w.savedMedusa
     if (savedMedusa) writeFileSync(join(allapot, 'medusa-ref.txt'), `${savedMedusa}\n`)
 
@@ -236,6 +238,7 @@ exit 0
       calls: callLines.map((l) => l.replace(/^(\w+) https?:\/\/[^/]+\/api\/v1\//, '$1 ').replace(/^(\w+) https?:\/\//, '$1 ')),
       allapot,
       leaked: readFileSync(log, 'utf-8').includes('TITOK-ERTEK') || r.stdout.includes('TITOK-ERTEK'),
+      log: existsSync(log) ? readFileSync(log, 'utf-8') : '',
     }
   }
   const brief = (r: ReturnType<typeof run>) => ({ code: r.code, last: r.last })
@@ -281,6 +284,34 @@ exit 0
     })
   })
 
+  // A SWITCH BALAZS ALREADY TURNED ON is named in store/eles-felhozas/kapcsolo-elfogadva.txt (NAME, a tab, the decision): it no longer
+  // stops the rollout, it is logged with its decision (the live script's branch, brought to main; acrobot 59592). WHAT TURNS IT RED:
+  // a listed switch still stopping; an unlisted one beside it passing; a name that only starts the same accepted.
+  it('ELES-FELHOZAS-KAPCSOLO-ELFOGADVA: an accepted switch passes and is logged; an unlisted one still stops, a prefix is not a match', () => {
+    const flip = (name: string) => `@@ -1 +1 @@\n-${name}=false\n+${name}=true\n`
+    const accepted = run({ envPatch: flip('GLS_STATUS_SYNC_ENABLED'), accepted: ['GLS_STATUS_SYNC_ENABLED\tBalazs 2026-11-20, Eldontendo 1573'] })
+    const two = run({
+      envPatch: '@@ -1,2 +1,2 @@\n-GLS_STATUS_SYNC_ENABLED=0\n-WEBSHOP_GIFT_CARDS=0\n+GLS_STATUS_SYNC_ENABLED=1\n+WEBSHOP_GIFT_CARDS=1\n',
+      accepted: ['GLS_STATUS_SYNC_ENABLED\tBalazs 2026-11-20'],
+    })
+    // a LONGER listed name that starts with the switch's name is another switch, not this one
+    const prefix = run({ envPatch: flip('GLS_STATUS_SYNC_ENABLED'), accepted: ['GLS_STATUS_SYNC_ENABLED_V2\tegy masik kapcsolo'] })
+    expect(
+      {
+        acceptedCode: accepted.code,
+        acceptedLogged: accepted.log.includes('kapcsolo elfogadva: GLS_STATUS_SYNC_ENABLED (Balazs 2026-11-20, Eldontendo 1573)'),
+        two: brief(two),
+        prefix: brief(prefix).code,
+      },
+      'ELES-FELHOZAS-KAPCSOLO-ELFOGADVA',
+    ).toEqual({
+      acceptedCode: 0,
+      acceptedLogged: true,
+      two: { code: 1, last: 'MEGALLT: a P..S tartomany bekapcsol egy kapcsolot a .env.production.example-ben: WEBSHOP_GIFT_CARDS, Balazs szava kell (elfogadas: a nev es a dontes sora a store/eles-felhozas/kapcsolo-elfogadva.txt fajlba)' },
+      prefix: 1,
+    })
+  })
+
   it('ELES-FELHOZAS-KAPCSOLO: a switch turned on in .env.production.example, or a new MEDUSA_/STRIPE_/WEBSHOP_ key in production, stops', () => {
     const saveKeys = run({ savedKeys: null })
     expect(
@@ -296,9 +327,9 @@ exit 0
       },
       'ELES-FELHOZAS-KAPCSOLO',
     ).toEqual({
-      flipped: { code: 1, last: 'MEGALLT: a P..S tartomany bekapcsol egy kapcsolot a .env.production.example-ben: MEDUSA_ENSURE_BRAND_COLLECTIONS, Balazs szava kell' },
-      newOn: { code: 1, last: 'MEGALLT: a P..S tartomany bekapcsol egy kapcsolot a .env.production.example-ben: WEBSHOP_GIFT_CARDS, Balazs szava kell' },
-      oneOn: { code: 1, last: 'MEGALLT: a P..S tartomany bekapcsol egy kapcsolot a .env.production.example-ben: GLS_STATUS_SYNC_ENABLED, Balazs szava kell' },
+      flipped: { code: 1, last: 'MEGALLT: a P..S tartomany bekapcsol egy kapcsolot a .env.production.example-ben: MEDUSA_ENSURE_BRAND_COLLECTIONS, Balazs szava kell (elfogadas: a nev es a dontes sora a store/eles-felhozas/kapcsolo-elfogadva.txt fajlba)' },
+      newOn: { code: 1, last: 'MEGALLT: a P..S tartomany bekapcsol egy kapcsolot a .env.production.example-ben: WEBSHOP_GIFT_CARDS, Balazs szava kell (elfogadas: a nev es a dontes sora a store/eles-felhozas/kapcsolo-elfogadva.txt fajlba)' },
+      oneOn: { code: 1, last: 'MEGALLT: a P..S tartomany bekapcsol egy kapcsolot a .env.production.example-ben: GLS_STATUS_SYNC_ENABLED, Balazs szava kell (elfogadas: a nev es a dontes sora a store/eles-felhozas/kapcsolo-elfogadva.txt fajlba)' },
       keyVersion: 0,
       alreadyOn: 0,
       newKey: {
