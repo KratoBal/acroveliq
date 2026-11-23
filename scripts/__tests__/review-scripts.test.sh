@@ -237,19 +237,45 @@ check '... the ref carries the path, the packet and the hash' \
 printf 'terv v2\n' > "$Z/doc-tsk-d/v2-terv2.md"
 H2="$(sha256sum < "$Z/doc-tsk-d/v2-terv2.md")"; H2="${H2%% *}"
 printf 'v2: task_id tsk-d, fajl exchange/acroveliq/terv2.md, sha256 %s masodik kor\n' "$H2" >> "$Z/doc-tsk-d/README.md"
-check 'a later round -> 0' 0 "$(ell doc-tsk-d tsk-d CHANGES)"
+# card 5e47a789 (barracuda 46663): two files in a packet, a renamed document or an attachment, and the path cannot tell
+n="$(events)"
+check 'two files and no --fajl -> 1' 1 "$(ell doc-tsk-d tsk-d CHANGES)"
+check '... nothing written' "$n" "$(events)"
+check '... both files named, and the form to use' 1 "$(grep -c '^FAIL: a dokumentum-csomagban tobb fajl van: exchange/acroveliq/terv.md exchange/acroveliq/terv2.md\. Nevezd meg, melyikre szol az itelet: review-ellenoriz.sh --fajl <ut> doc-tsk-d tsk-d CHANGES$' "$T/out")"
+check 'a --fajl the packet does not hold -> 1' 1 "$(ell --fajl exchange/acroveliq/mas.md doc-tsk-d tsk-d CHANGES)"
+check '... says which files it holds' 1 "$(grep -c '^FAIL: a --fajl (exchange/acroveliq/mas.md) nem a csomag fajlja; a csomag fajljai: exchange/acroveliq/terv.md exchange/acroveliq/terv2.md$' "$T/out")"
+check '... nothing written' "$n" "$(events)"
+check '--fajl on a PR packet -> usage 2' 2 "$(ell --fajl exchange/acroveliq/terv.md 1705 tsk-a APPROVE)"
+check '--fajl without the rest -> usage 2' 2 "$(ell --fajl exchange/acroveliq/terv.md doc-tsk-d tsk-d)"
+check '--fajl the first file -> 0' 0 "$(ell --fajl exchange/acroveliq/terv.md doc-tsk-d tsk-d APPROVE)"
+check '... the ref names the first file and its hash' \
+  "task-event tsk-d verdict $ACTOR  APPROVE exchange/acroveliq/terv.md doc-tsk-d sha256 ${H1:0:12}" "$(tail -n1 "$EV")"
+check 'a later round -> 0' 0 "$(ell --fajl exchange/acroveliq/terv2.md doc-tsk-d tsk-d CHANGES)"
 check '... the ref names THAT round file and hash' \
   "task-event tsk-d verdict $ACTOR  CHANGES exchange/acroveliq/terv2.md doc-tsk-d sha256 ${H2:0:12}" "$(tail -n1 "$EV")"
 check 'olvas lists both rounds' 2 "$(olv doc-tsk-d >/dev/null; grep -c '^   olvasd: ' "$T/out")"
 # acrobot 31015: a verdict whose event carries data (a would_reject mark) was recorded, and
 # the read-back still failed, because the timeline prints the data after the ref
 touch "$T/with-data"
-check 'a recorded verdict with data on its event -> 0' 0 "$(ell doc-tsk-d tsk-d CHANGES)"
-check '... a second identical one too (the count before already holds the first)' 0 "$(ell doc-tsk-d tsk-d CHANGES)"
+check 'a recorded verdict with data on its event -> 0' 0 "$(ell --fajl exchange/acroveliq/terv2.md doc-tsk-d tsk-d CHANGES)"
+check '... a second identical one too (the count before already holds the first)' 0 "$(ell --fajl exchange/acroveliq/terv2.md doc-tsk-d tsk-d CHANGES)"
 check '... and the would_reject mark is named as a warning' 1 "$(grep -c '^FIGYELEM: a szerver would_reject jelet tett az esemenyre (kenyszerit modban 409 lenne): a verdict ref mezojebol hianyzik a repo#PR$' "$T/out")"
 rm "$T/with-data"
-check 'without data, no warning' 0 "$(ell doc-tsk-d tsk-d APPROVE)"
+check 'without data, no warning' 0 "$(ell --fajl exchange/acroveliq/terv2.md doc-tsk-d tsk-d APPROVE)"
 check '... none printed' 0 "$(grep -c '^FIGYELEM' "$T/out")"
+# the reported shape (doc-f5b8f7ba-eloszures-visszameres): the plan in two rounds, then an attachment; the verdict on the
+# plan is its LATEST round, not the attachment and not the first round
+printf '2026-10-13 19:00:00+0200  esemeny  review_requested nautilus   exchange/x/terv.md\n' > "$T/tl-tsk-m"
+mkdir "$Z/doc-tsk-m"; printf 'terv 1\n' > "$Z/doc-tsk-m/v1-terv.md"; printf 'terv 2\n' > "$Z/doc-tsk-m/v2-terv.md"; printf 'meres\n' > "$Z/doc-tsk-m/v3-meres.txt"
+HM1="$(sha256sum < "$Z/doc-tsk-m/v1-terv.md")"; HM1="${HM1%% *}"; HM2="$(sha256sum < "$Z/doc-tsk-m/v2-terv.md")"; HM2="${HM2%% *}"
+HM3="$(sha256sum < "$Z/doc-tsk-m/v3-meres.txt")"; HM3="${HM3%% *}"
+printf 'docs exchange/x/terv.md \ntask_id: tsk-m\nfajl: exchange/x/terv.md\nsha256: %s\nv2: task_id tsk-m, fajl exchange/x/terv.md, sha256 %s \nv3: task_id tsk-m, fajl exchange/x/mellekletek/meres.txt, sha256 %s \n' "$HM1" "$HM2" "$HM3" > "$Z/doc-tsk-m/README.md"
+check 'plan and attachment, no --fajl -> 1 (not the attachment in silence)' 1 "$(ell doc-tsk-m tsk-m APPROVE)"
+check '--fajl the plan -> 0' 0 "$(ell --fajl exchange/x/terv.md doc-tsk-m tsk-m APPROVE)"
+check '... the ref names the plan round 2, not the attachment' \
+  "task-event tsk-m verdict $ACTOR  APPROVE exchange/x/terv.md doc-tsk-m sha256 ${HM2:0:12}" "$(tail -n1 "$EV")"
+check '--fajl the attachment -> 0, and the ref names it' "0|task-event tsk-m verdict $ACTOR  CHANGES exchange/x/mellekletek/meres.txt doc-tsk-m sha256 ${HM3:0:12}" \
+  "$(ell --fajl exchange/x/mellekletek/meres.txt doc-tsk-m tsk-m CHANGES)|$(tail -n1 "$EV")"
 n="$(events)"
 for x in e f g h i j; do printf '2026-10-13 19:00:00+0200  esemeny  review_requested nautilus   x/a.md\n' > "$T/tl-tsk-$x"; done
 mkdir "$Z/doc-tsk-e"; printf 'eredeti\n' > "$Z/doc-tsk-e/v1-a.md"
@@ -448,7 +474,7 @@ check 'the form takes exactly a packet and a task: a verdict word after it -> us
 check 'one argument -> usage 2' 2 "$(ell4 --csak-github-review marveen70)"
 r="$(roots)"; a0="$(ac)"
 check 'an APPROVE with the match marker missing never reaches approve' "1|$a0" "$(ell4 marveen70 tsk-b APPROVE)|$(ac)"
-check 'a document verdict -> 0' 0 "$(ell4 doc-tsk-d tsk-d APPROVE)"
+check 'a document verdict -> 0' 0 "$(ell4 --fajl exchange/acroveliq/terv2.md doc-tsk-d tsk-d APPROVE)"
 check '... has no PR: no root record' "$r" "$(roots)"
 check 'a refused verdict (another task) never reaches the approver' "1|$r" "$(ell4 marveen70 tsk-b APPROVE)|$(roots)"
 echo 'review-olvas --fej (the D4 step list E3 (b)): the diff made from the head, not taken from the packet'

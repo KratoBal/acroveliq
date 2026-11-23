@@ -2,6 +2,7 @@
 # ANSWERS: Hogyan rogziti a reviewer az iteletet ugy, hogy CSAK azt az egyet irhassa?
 #
 # review-ellenoriz.sh <csomag> <task_id> <APPROVE|CHANGES>
+# review-ellenoriz.sh --fajl <ut> doc-<task_id> <task_id> <APPROVE|CHANGES>   (a document packet with more than one file)
 #   csomag: a review-csomag neve a pr- utan (1650, c512, marveen68, ai37, cap3), VAGY egy dokumentum-
 #      csomag teljes neve (doc-<task_id>, review-csomag.sh docs)
 #   -> egy `verdict` esemeny a feladaton, a szereplo a HIVO (az OS-felhasznalobol), a
@@ -12,8 +13,10 @@
 # A DOCUMENT packet (task review-docs-verdict, acrobot 2026-10-14, msg 30226): a docs or
 # ops task is reviewed as a file, and its verdict could not be recorded here (30212). The
 # ref carries the file's path, which the Task Core takes for a docs/ops profile; the round
-# is the latest `vN:` line (or the first one), and the copy the reviewer read must still
-# hash to the README's sha256, so a copy swapped after packaging is refused.
+# is the latest `vN:` line (or the first one) of that file, and the copy the reviewer read must
+# still hash to the README's sha256, so a copy swapped after packaging is refused. A packet with
+# more than one file (an attachment, or a renamed document) needs `--fajl <ut>`, one of the
+# paths its README names: without it the record stops (card 5e47a789, barracuda 46663).
 #
 # WHY (reviewer-profil, Balazs 2026-10-13 18:07 UTC, msg 1559628609390383170, condition 2):
 # this script may record only the proper verdict OF THE GIVEN REVIEW, and gives no general
@@ -97,7 +100,13 @@ FLEET_API=/home/marveen/marveen/scripts/fleet-api.sh
 FLEET_APPROVE=/usr/local/sbin/fleet-approve
 SUDO="sudo -n"
 
-usage() { echo "usage: review-ellenoriz.sh <csomag> <task_id> <APPROVE|CHANGES>" >&2; echo "       review-ellenoriz.sh --csak-github-review <csomag> <task_id>" >&2; exit 2; }
+usage() { echo "usage: review-ellenoriz.sh <csomag> <task_id> <APPROVE|CHANGES>" >&2; echo "       review-ellenoriz.sh --fajl <ut> doc-<task_id> <task_id> <APPROVE|CHANGES>" >&2; echo "       review-ellenoriz.sh --csak-github-review <csomag> <task_id>" >&2; exit 2; }
+# which of a document packet's files the verdict is on (card 5e47a789): one the README names, nothing else
+PICK=""
+if [ "${1:-}" = --fajl ]; then
+  [ "$#" -eq 5 ] || usage
+  PICK="$2"; shift 2
+fi
 [ "$#" -eq 3 ] || usage
 # the GitHub-review-only form: the verdict is already recorded, only the approve step runs (see the header)
 ONLYGH=0
@@ -121,6 +130,7 @@ elif [[ "$C" =~ ^(cap|c|marveen|ai)?([1-9][0-9]{0,5})$ ]]; then
 else
   echo "FAIL: a csomag neve szam, c<szam>, marveen<szam>, ai<szam>, cap<szam> vagy doc-<task_id>: '$C'" >&2; exit 2
 fi
+[ -z "$PICK" ] || [ "$DOCS" = 1 ] || { echo "FAIL: a --fajl csak dokumentum-csomagra (doc-<task_id>) szol, ez PR-csomag: '$C'" >&2; exit 2; }
 # the repo the approver knows: the current name, also for a packet made before the rename
 PRREF_ROOT="$PRREF"
 [[ "$TASK" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || { echo "FAIL: ervenytelen task_id: '$TASK'" >&2; exit 2; }
@@ -156,8 +166,9 @@ DO="$(stat -c %U "$D")"; RO="$(stat -c %U "$README")"
 # start, `vN: task_id X,` (review-csomag.sh's later rounds), and "task X" in the TITLE line
 # (the hand-made packets before 2026-10-13).
 NAMED=" "; HEAD7=""; first=1; README_PR=""
-# a document packet: the file, its copy's sha256 and the round (the first, or the latest vN:)
-FAJL=""; SHA=""; ROUND=1
+# a document packet: every round's number, file and copy's sha256 (the first from the fajl:/sha256: lines, the later ones
+# from vN:), and the one the verdict is on chosen after the README is read
+FAJL=""; SHA=""; ROUND=1; F1=""; S1=""; RN=(); RF=(); RS=()
 ID_RE='([A-Za-z0-9][A-Za-z0-9._-]*)'
 while IFS= read -r line || [ -n "$line" ]; do
   if [[ "$line" =~ ^task(_id)?:[[:space:]]+$ID_RE([[:space:]]|$) ]]; then
@@ -168,7 +179,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     [[ "$line" =~ [[:space:]]fej[[:space:]]+([0-9a-f]{7,40}) ]] && HEAD7="${BASH_REMATCH[1]}"
     # ... and for a document, its file and its copy's hash
     if [[ "$line" =~ ^v([0-9]+):.*[[:space:]]fajl[[:space:]]+([^,[:space:]]+),[[:space:]]+sha256[[:space:]]+([0-9a-f]{64})([[:space:]]|$) ]]; then
-      ROUND="${BASH_REMATCH[1]}"; FAJL="${BASH_REMATCH[2]}"; SHA="${BASH_REMATCH[3]}"
+      ROUND="${BASH_REMATCH[1]}"; RN+=("${BASH_REMATCH[1]}"); RF+=("${BASH_REMATCH[2]}"); RS+=("${BASH_REMATCH[3]}")
     fi
   elif [ "$first" = 1 ] && [[ "$line" =~ (^|[[:space:],])task[[:space:]]+$ID_RE([[:space:],]|$) ]]; then
     NAMED="$NAMED${BASH_REMATCH[2]} "
@@ -180,9 +191,10 @@ while IFS= read -r line || [ -n "$line" ]; do
   if [ -z "$HEAD7" ] && [[ "$line" =~ ^(fej|head):?[[:space:]]+([0-9a-f]{7,40}) ]]; then
     HEAD7="${BASH_REMATCH[2]}"
   fi
-  if [ "$ROUND" = 1 ] && [[ "$line" =~ ^fajl:[[:space:]]+([^[:space:]]+)[[:space:]]*$ ]]; then FAJL="${BASH_REMATCH[1]}"; fi
-  if [ "$ROUND" = 1 ] && [[ "$line" =~ ^sha256:[[:space:]]+([0-9a-f]{64})[[:space:]]*$ ]]; then SHA="${BASH_REMATCH[1]}"; fi
+  if [ "$ROUND" = 1 ] && [[ "$line" =~ ^fajl:[[:space:]]+([^[:space:]]+)[[:space:]]*$ ]]; then F1="${BASH_REMATCH[1]}"; fi
+  if [ "$ROUND" = 1 ] && [[ "$line" =~ ^sha256:[[:space:]]+([0-9a-f]{64})[[:space:]]*$ ]]; then S1="${BASH_REMATCH[1]}"; fi
 done < "$README"
+if [ -n "$F1$S1" ]; then RN=(1 "${RN[@]}"); RF=("$F1" "${RF[@]}"); RS=("$S1" "${RS[@]}"); fi
 case "$NAMED" in
   *" $TASK "*) ;;
   *) echo "FAIL: a csomag ($README) nem ezt a feladatot nevezi meg: '$TASK' (a README-ben: ${NAMED# })" >&2; exit 1 ;;
@@ -192,6 +204,26 @@ if [ "$DOCS" = 1 ]; then
   # the packet folder is the task's own: a hand-made doc-<x> naming another task is refused
   [ "$C" = "doc-$TASK" ] || { echo "FAIL: a dokumentum-csomag ($C) nem ennek a feladatnak a mappaja: doc-$TASK" >&2; exit 1; }
   [ -z "$README_PR" ] || { echo "FAIL: dokumentum-csomag ($C), a README megis PR-t nevez: '$README_PR'" >&2; exit 1; }
+  # WHICH FILE (card 5e47a789, barracuda 46663): the latest round was taken, and in a packet with attachments that is an
+  # attachment (doc-f5b8f7ba-eloszures-visszameres: the verdict named v5, a measurement file, not the plan in v2). A later
+  # round under a new path is also how a renamed document goes in, so the path cannot tell the two apart: with more than
+  # one file the reviewer names it (--fajl), and without that the record stops here instead of naming the wrong one.
+  if [ "${#RF[@]}" -gt 0 ]; then
+    FILES=" "
+    for f in "${RF[@]}"; do case "$FILES" in *" $f "*) ;; *) FILES="$FILES$f " ;; esac; done
+    WANT="$PICK"
+    if [ -z "$WANT" ]; then
+      if [ "$(wc -w <<< "$FILES")" -gt 1 ]; then
+        echo "FAIL: a dokumentum-csomagban tobb fajl van:${FILES% }. Nevezd meg, melyikre szol az itelet: review-ellenoriz.sh --fajl <ut> $C $TASK $V" >&2; exit 1
+      fi
+      WANT="${RF[${#RF[@]}-1]}"
+    fi
+    case "$FILES" in *" $WANT "*) ;; *) echo "FAIL: a --fajl ($WANT) nem a csomag fajlja; a csomag fajljai:${FILES% }" >&2; exit 1 ;; esac
+    # the latest round of that file
+    for i in "${!RF[@]}"; do
+      [ "${RF[$i]}" = "$WANT" ] && { ROUND="${RN[$i]}"; FAJL="${RF[$i]}"; SHA="${RS[$i]}"; }
+    done
+  fi
   { [ -n "$FAJL" ] && [ -n "$SHA" ]; } || { echo "FAIL: a dokumentum-csomag README-je nem nevez fajlt es sha256-ot (fajl:, sha256: vagy vN: ... fajl X, sha256 Y)" >&2; exit 1; }
   SEG='[A-Za-z0-9_][A-Za-z0-9._-]*'
   [[ "$FAJL" =~ ^$SEG(/$SEG)+$ ]] || { echo "FAIL: a README fajl-utja nem relativ ut mappaval: '$FAJL'" >&2; exit 1; }
