@@ -289,19 +289,23 @@ exit 0
   // a listed switch still stopping; an unlisted one beside it passing; a name that only starts the same accepted.
   it('ELES-FELHOZAS-KAPCSOLO-ELFOGADVA: an accepted switch passes and is logged; an unlisted one still stops, a prefix is not a match', () => {
     const flip = (name: string) => `@@ -1 +1 @@\n-${name}=false\n+${name}=true\n`
-    const accepted = run({ envPatch: flip('GLS_STATUS_SYNC_ENABLED'), accepted: ['GLS_STATUS_SYNC_ENABLED\tBalazs 2026-11-20, Eldontendo 1573'] })
+    const accepted = run({ envPatch: flip('GLS_STATUS_SYNC_ENABLED'), accepted: ['GLS_STATUS_SYNC_ENABLED\tBalazs 2026-11-20, Eldontendo 1573408316686172161'] })
     const two = run({
       envPatch: '@@ -1,2 +1,2 @@\n-GLS_STATUS_SYNC_ENABLED=0\n-WEBSHOP_GIFT_CARDS=0\n+GLS_STATUS_SYNC_ENABLED=1\n+WEBSHOP_GIFT_CARDS=1\n',
-      accepted: ['GLS_STATUS_SYNC_ENABLED\tBalazs 2026-11-20'],
+      accepted: ['GLS_STATUS_SYNC_ENABLED\tBalazs 2026-11-20, msg 1573408316686172161'],
     })
     // a LONGER listed name that starts with the switch's name is another switch, not this one
-    const prefix = run({ envPatch: flip('GLS_STATUS_SYNC_ENABLED'), accepted: ['GLS_STATUS_SYNC_ENABLED_V2\tegy masik kapcsolo'] })
+    const prefix = run({ envPatch: flip('GLS_STATUS_SYNC_ENABLED'), accepted: ['GLS_STATUS_SYNC_ENABLED_V2\tegy masik kapcsolo, 1573408316686172161'] })
+    // barracuda on #398: a line whose decision names no message (15+ digits) is no acceptance, and the log says so
+    const noId = run({ envPatch: flip('GLS_STATUS_SYNC_ENABLED'), accepted: ['GLS_STATUS_SYNC_ENABLED\tBalazs szoban mondta, 1573'] })
     expect(
       {
         acceptedCode: accepted.code,
-        acceptedLogged: accepted.log.includes('kapcsolo elfogadva: GLS_STATUS_SYNC_ENABLED (Balazs 2026-11-20, Eldontendo 1573)'),
+        acceptedLogged: accepted.log.includes('kapcsolo elfogadva: GLS_STATUS_SYNC_ENABLED (Balazs 2026-11-20, Eldontendo 1573408316686172161)'),
         two: brief(two),
         prefix: brief(prefix).code,
+        noId: noId.code,
+        noIdSaid: noId.log.includes('kapcsolo-sor uzenet-azonosito nelkul, nem elfogadas: GLS_STATUS_SYNC_ENABLED'),
       },
       'ELES-FELHOZAS-KAPCSOLO-ELFOGADVA',
     ).toEqual({
@@ -309,6 +313,8 @@ exit 0
       acceptedLogged: true,
       two: { code: 1, last: 'MEGALLT: a P..S tartomany bekapcsol egy kapcsolot a .env.production.example-ben: WEBSHOP_GIFT_CARDS, Balazs szava kell (elfogadas: a nev es a dontes sora a store/eles-felhozas/kapcsolo-elfogadva.txt fajlba)' },
       prefix: 1,
+      noId: 1,
+      noIdSaid: true,
     })
   })
 
