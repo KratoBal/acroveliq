@@ -15,7 +15,9 @@
 #                                                    and the newest rows as fresh as live was at the file's time
 #   ai     Acropora_Backup/acropora-ai/*.dump        pg_restore into a throwaway postgres:16
 #                                                    container on the stage machine, row counts
-#                                                    vs the live AI database, then removed
+#                                                    vs the live AI database, then removed; the
+#                                                    newest message as fresh as live was at the
+#                                                    dump's time (needs the reinstalled host gate)
 #   os, commerce, docstore                           NOT restored here: only the RESULT is read
 #                    Acropora_Backup/acropora-restore-probe/result-*.json  (the newest one)
 #
@@ -85,7 +87,14 @@ if [ "$WHAT" = all ] || [ "$WHAT" = ai ]; then
     # EXACT counts, not pg_stat n_live_tup: the statistics are estimates, and on 2026-10-07 the
     # live database reported 6 messages where count(*) gave hundreds (never analyzed). The
     # restore-probe runs this same query on the restored copy (the query is fixed in the gate).
-    Q="select 'conversations='||(select count(*) from conversations)||' messages='||(select count(*) from messages)||' answer_ratings='||(select count(*) from answer_ratings)"
+    # newest= (card f7d08f28): the newest live message AT the dump's time (its name, local time, taken before the dump); the gate
+    # prints the restored copy's newest. Measured against live, as on the fleet branch, so a quiet AI does not fail a good dump.
+    FT=$(python3 -c 'import re,sys,time
+m = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})", sys.argv[1])
+print(int(time.mktime(time.strptime("%s %s:%s:%s" % m.groups(), "%Y-%m-%d %H:%M:%S"))) if m else "")' "$F")
+    # a name without a time would compare against nothing and pass in silence (to_timestamp(0) has no live row before it)
+    [ -n "$FT" ] || fail ai "a fajlnevbol nem olvashato ki az ido: $F"
+    Q="select 'conversations='||(select count(*) from conversations)||' messages='||(select count(*) from messages)||' answer_ratings='||(select count(*) from answer_ratings)||' newest='||coalesce((select extract(epoch from max(created_at))::bigint from messages where created_at <= to_timestamp(${FT:-0}))::text, 'none')"
     if ! GOT=$(T=900 sssh restore-probe < "$WORK/ai.dump" 2> "$WORK/ai-restore.err"); then
       fail ai "a visszatoltes hibaval tert vissza: $(head -c 300 "$WORK/ai-restore.err")"
     fi
@@ -93,14 +102,7 @@ if [ "$WHAT" = all ] || [ "$WHAT" = ai ]; then
     echo "   $F"; echo "   visszatoltve: $GOT"; echo "   elo:          $LIVE"
     # Every count must be a positive number and not above the live one; an empty or schema-only
     # restore prints "conversations=0 ..." which is not an empty string (barracuda's review).
-    python3 - "$GOT" "$LIVE" <<'PY' || FAILS=$((FAILS + 1))
-import sys
-def p(s): return dict(kv.split("=") for kv in s.split()) if s.strip() else {}
-g, l = p(sys.argv[1]), p(sys.argv[2])
-bad = [k for k in ("conversations", "messages", "answer_ratings") if not g.get(k, "").isdigit() or not l.get(k, "").isdigit() or int(g[k]) > int(l[k])]
-if not l or bad or int(g.get("messages", "0") or 0) == 0 or int(g.get("conversations", "0") or 0) == 0:  # answer_ratings may legitimately be 0
-    print("FAIL[ai]: visszatoltve=%s elo=%s gyanus=%s" % (g, l, bad)); sys.exit(1)
-PY
+    python3 "$ROOT/scripts/visszaallitasi-proba-ai.py" "$GOT" "$LIVE" "$F" || FAILS=$((FAILS + 1))
     rm -f "$WORK/ai.dump"
   fi
 fi
