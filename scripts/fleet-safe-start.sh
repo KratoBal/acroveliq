@@ -84,7 +84,7 @@ start_one() {
   local ok
   ok="$(curl -s --max-time 30 -X POST -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") -H "Content-Type: application/json" \
         -d "$body" "$DASH/api/agents/$name/start" 2>/dev/null)"
-  if printf '%s' "$ok" | grep -q '"ok":true'; then
+  if grep -q '"ok":true' <<< "$ok"; then
     log "started: $name"; return 0
   fi
   log "start failed for $name: $ok"; return 1

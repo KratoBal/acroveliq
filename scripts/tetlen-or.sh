@@ -32,7 +32,7 @@ IDLE=""
 for A in murena nautilus barracuda; do
   PANE=$(bash "$ROOT/scripts/agent-pane.sh" "$A" 2>/dev/null | tail -25)
   # a kor fut: nincs mit nezni
-  printf '%s' "$PANE" | grep -q 'esc to interrupt' && continue
+  grep -q 'esc to interrupt' <<< "$PANE" && continue
   DONE=$(printf '%s' "$PANE" | grep -oE 'done [0-9]{1,2}:[0-9]{2} (AM|PM)' | tail -1 | cut -d' ' -f2-)
   [ -z "$DONE" ] && continue
   T=$(date -d "today $DONE" +%s 2>/dev/null) || continue

@@ -45,7 +45,7 @@ _has_ffmpeg_opus() {
   command -v ffmpeg &>/dev/null || return 1
   local _enc
   _enc=$(ffmpeg -encoders 2>&1 || true)
-  echo "$_enc" | grep -q libopus
+  grep -q libopus <<< "$_enc"
 }
 _has_python_venv() {
   python3 -m venv --help &>/dev/null 2>&1
