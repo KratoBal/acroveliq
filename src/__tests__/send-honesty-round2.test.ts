@@ -166,6 +166,15 @@ describe('github-pr-monitor.sh: failed alert keeps the snapshot for retry', () =
     expect(r2.stdout).toContain('change detected, alerted')
     expect(readFileSync(state, 'utf-8')).toContain('OPEN|none|0|1|') // fresh snapshot persisted
   })
+  // errexit-ertekolvaso-20261123: a PR opened after the baseline is not in the snapshot; `grep | head` exited 1 on it
+  // under set -e and pipefail, and the run stopped with no word before the snapshot was written, every run again
+  linuxOnly('a PR missing from the snapshot neither stops the run nor hides the other PR\'s change', () => {
+    const { bin, state } = setup()
+    const r = run('github-pr-monitor.sh', { GITHUB_PR_MONITOR_PRS: '8 7', GITHUB_PR_MONITOR_REPO: 'o/r' }, bin)
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('change detected, alerted')
+    expect(readFileSync(state, 'utf-8')).toMatch(/^8\tOPEN\|none\|0\|1\|/m) // the new PR is in the snapshot from now on
+  })
 })
 
 describe('watchdog-replay.py: the injection path now leaves a record (MSGSZIVARGAS826)', () => {

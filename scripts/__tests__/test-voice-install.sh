@@ -237,7 +237,11 @@ fi
 
 # C7: Idempotence -- re-run installer, nothing breaks
 _section "C7: Idempotence (re-run)"
-INSTALL_DIR="$DEST" bash /marveen/scripts/install-voice.sh 2>&1 | grep -E "SKIP|PASS|complete" | head -10
+# the output in a variable, not a pipe into head (errexit-ertekolvaso-20261123): under set -e and pipefail a re-run
+# whose lines held no SKIP/PASS/complete (grep 1), or a long one SIGPIPE-d at head, stopped the suite with no summary
+rerun_out="$(INSTALL_DIR="$DEST" bash /marveen/scripts/install-voice.sh 2>&1)" \
+  || _fail "installer re-run exited non-zero"
+grep -m 10 -E "SKIP|PASS|complete" <<< "$rerun_out" || true
 "$DEST/venv/bin/python" -c "import faster_whisper, piper" \
   && _pass "packages still importable after re-run" \
   || _fail "packages broken after re-run"
