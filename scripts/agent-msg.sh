@@ -248,7 +248,9 @@ fi
 
 SENT_AT="$("$(dirname "${BASH_SOURCE[0]}")/local-now.sh" full 2>/dev/null || true)"
 PRE_STAMP=""
-if printf '%s' "$C" | /bin/grep -qF -- "--- a kuldes mert ideje:"; then
+# a here-string, not a pipe (pipefail-korai-olvaso-20261123): grep -q leaves at its first match, and under pipefail a
+# printf still writing a body past ~130 KB died of SIGPIPE, so a body that DID hold the line got no warning (200/200 at 160 KB)
+if /bin/grep -qF -- "--- a kuldes mert ideje:" <<< "$C"; then
   PRE_STAMP="  FIGYELEM: a kuldo torzsében MAR allt ilyen alaku sor, azt NEM a szkript irta."
   echo "FIGYELEM: a torzsben mar all egy 'a kuldes mert ideje' alaku sor." >&2
   echo "  A szkript sora az UTOLSO. A korabbi a kuldo sajat szovege, nem mert ertek." >&2

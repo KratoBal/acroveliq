@@ -131,7 +131,9 @@ check "az eredmeny 0644 a NAS-on" '[ "$(stat -c %a "$UP")" = 644 ]'
 check "a mappa 0755 a NAS-on" '[ "$(stat -c %a "$(dirname "$UP")")" = 755 ]'
 check "nem maradt proba-kontener (a korabbi maradek is eltunt)" '[ -z "$(ls -A "$W/containers")" ]'
 check "nem maradt munkakonyvtar" '[ ! -e "$W/tmp/acropora-restore-probe" ]'
-check "elo kontenerre CSAK csak-olvaso psql ment" '! grep -E "docker exec .*($OS_LIVE|$COM_LIVE)" "$W/calls.log" | grep -v -q "PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=600000 -c lock_timeout=10000 [^ ]* psql "'
+# no grep -q under the `!` (pipefail-korai-olvaso-20261123): a writer killed by SIGPIPE when grep -q left early made the
+# pipeline fail, and the `!` turned that into a pass; an empty grep -v output says the same without an early reader
+check "elo kontenerre CSAK csak-olvaso psql ment" '[ -z "$(grep -E "docker exec .*($OS_LIVE|$COM_LIVE)" "$W/calls.log" | grep -v "PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=600000 -c lock_timeout=10000 [^ ]* psql ")" ]'
 check "elo kontenerre volt psql (a szamlalas futott)" 'grep -q "docker exec -i -e PGOPTIONS=.* $OS_LIVE psql" "$W/calls.log"'
 check "proba-kontener halozat nelkul, kep letoltese nelkul" 'grep "docker run" "$W/calls.log" | grep -q -- "--network none .*--pull never"'
 check "proba-kontener: no-new-privileges, minden kepesseg elveve, csak az entrypointe vissza" 'grep "docker run" "$W/calls.log" | grep -q -- "--security-opt no-new-privileges --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add DAC_OVERRIDE --cap-add FOWNER "'

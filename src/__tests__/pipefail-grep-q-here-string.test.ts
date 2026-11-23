@@ -11,7 +11,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const ROOT = join(__dirname, '..', '..')
-const PIPE_TO_GREP_Q = /(printf|echo)[^|]*\|\s*grep\s+-[A-Za-z]*q/
+// a path prefix too (pipefail-korai-olvaso-20261123): agent-msg.sh's `| /bin/grep -qF` stood outside the first scan
+const PIPE_TO_GREP_Q = /(printf|echo)[^|]*\|\s*(?:\/(?:usr\/)?bin\/)?grep\s+-[A-Za-z]*q/
 
 /** Every non-comment line of a tracked .sh file with pipefail that pipes printf/echo into grep -q, as file:line. */
 function offenders(): string[] {

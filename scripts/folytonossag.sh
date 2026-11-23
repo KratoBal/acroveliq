@@ -88,7 +88,10 @@ for J in $JELOLTEK; do
   # A `ls` a NEVEKET nezi: egy fajl, aminek a tartalma nem olvashato, ITT meg
   # latszik -- es ez fontos, mert kulonben a jogosultsagi fal ures konyvtarnak
   # nezne ki, es a szkript tovabblepne egy masik jeloltre.
-  if /bin/ls "$J" 2>/dev/null | /bin/grep -q '\.jsonl$'; then
+  # A here-string, nem cso (pipefail-korai-olvaso-20261123): a grep -q az elso talalatnal kilep, es pipefail alatt a
+  # meg iro ls SIGPIPE-ot kap, tehat egy atiratos konyvtar uresnek latszott, es a kovetkezo jelolt (a foagense) lett
+  # a valasz. Merve: 400 fajlnal 11/200, 1000 fajlnal 179/200 teves kihagyas; 2026-11-23-an a legnagyobb 55 fajl.
+  if /bin/grep -q '\.jsonl$' <<< "$(/bin/ls "$J" 2>/dev/null)"; then
     DIR="$J"
     break
   fi
