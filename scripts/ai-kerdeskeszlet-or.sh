@@ -21,7 +21,8 @@
 #
 # WHO HEARS ABOUT IT: acrobot, one inter-agent line, ONLY when the runner exits non-zero: 3 a regression (a pass turned
 # fail or replaced, more fails, replaced answers or avoided glossary forms, an error), 1 a failed call, 2 a setup
-# problem; and when the clone, the build or the token is missing; and ONCE when the test AI's /health has been unreadable
+# problem (the provider timeouts of a slower run in which nothing moved, the weekly run, are none of these: the runner
+# names them as a provider slowdown and exits 0, acropora-ai-agent #138); and when the clone, the build or the token is missing; and ONCE when the test AI's /health has been unreadable
 # for KERDES_HEALTH_ALERT_HOURS (24). A clean run or an improvement is only a log line.
 # Never Balázs's channel: this is a measurement, not a decision.
 #
