@@ -23,7 +23,9 @@
 # fail or replaced, more fails, replaced answers or avoided glossary forms, an error), 1 a failed call, 2 a setup
 # problem (the provider timeouts of a slower run in which nothing moved, the weekly run, are none of these: the runner
 # names them as a provider slowdown and exits 0, acropora-ai-agent #138); and when the clone, the build or the token is missing; and ONCE when the test AI's /health has been unreadable
-# for KERDES_HEALTH_ALERT_HOURS (24). A clean run or an improvement is only a log line.
+# for KERDES_HEALTH_ALERT_HOURS (24). A clean run or an improvement is only a log line. A run with a NETWORK error (the test AI
+# not there, e.g. redeployed mid-run) is rerun once after /health answers again, and only a second one is said, as a failed
+# measurement (see "A SERVICE THAT WAS NOT THERE" below).
 # Never Balázs's channel: this is a measurement, not a decision.
 #
 # Exit: 0 nothing to do, a clean run, or an earlier round still running (KERDES_RUN_LOCK, not waited on); 1 the health read failed; otherwise the runner's code, or 2 for a setup failure.
@@ -40,6 +42,9 @@ LOCK="${KERDES_LOCK:-/tmp/flotta-nehez.lock}"
 RUN_LOCK="${KERDES_RUN_LOCK:-/tmp/ai-kerdeskeszlet-or.lock}"
 HEALTH_ALERT_HOURS="${KERDES_HEALTH_ALERT_HOURS:-24}"
 MAX_AGE_DAYS="${KERDES_MAX_AGE_DAYS:-7}"
+# a run with a network error (the test AI not there, e.g. redeployed mid-run) waits this long for /health, polling this often, then reruns once
+RETRY_WAIT_S="${KERDES_RETRY_WAIT_S:-900}"
+RETRY_POLL_S="${KERDES_RETRY_POLL_S:-30}"
 # the two steps a test replaces: building the runner, and running it (KERDES_RUNNER gets the runner's arguments)
 BUILD="${KERDES_BUILD:-}"
 RUNNER="${KERDES_RUNNER:-}"
@@ -177,6 +182,56 @@ sorok="$(AI_API_TOKEN="$(cat "$TOKEN_FILE")" $RUNNER --url "$AI_URL" --out "$kim
 rc=$?
 utolso="$(printf '%s\n' "$sorok" | tail -n 2 | tr '\n' ' ')"
 log "futas ($ok, szerver ${server:0:8}): kod $rc. $utolso"
+
+# A SERVICE THAT WAS NOT THERE IS NO MEASUREMENT (task kerdeskeszlet-or-halozati-ujrafutas-20261123; acrobot 59534): the 2026-11-23 10:00Z
+# run lost 8 of its 16 questions to a redeploy of the test AI mid-run (UND_ERR_SOCKET, then ECONNREFUSED, and a follow-up whose parent had
+# no conversation), and the guard reported it as a failed run. A run with a network error ("network: ...", the runner's own label for a
+# call that got no HTTP answer) is set aside under another name (not a baseline for the next comparison, kept as evidence), the guard
+# waits for /health (up to RETRY_WAIT_S), and runs the set ONCE more; that run's outcome is the round's. Only a second network failure,
+# or a /health that does not come back, is said, and as a failed measurement, not as a regression. An HTTP error, the provider's
+# timeout among them ("HTTP 504 ai_provider_timeout"), is an answer, not a missing service: it stays with the runner's rules.
+halozati_hiba() {
+  python3 - "$1" <<'HALO'
+import json, sys
+try:
+    results = json.load(open(sys.argv[1], encoding="utf-8")).get("results") or []
+except (OSError, ValueError):
+    results = []
+errors = [r.get("error") for r in results if isinstance(r, dict) and isinstance(r.get("error"), str)]
+print("igen" if any(e.startswith("network:") for e in errors) else "nem")
+HALO
+}
+if [ "$rc" -ne 0 ] && [ -f "$kimenet" ] && [ "$(halozati_hiba "$kimenet")" = igen ]; then
+  felre="$REPORT_DIR/halozati-$(basename "$kimenet")"
+  mv "$kimenet" "$felre"
+  log "halozati hiba a futasban: a jelentes felreteve ($felre), varok a /health-re (legfeljebb $RETRY_WAIT_S mp), utana egyszer ujrafuttatom"
+  varva=0
+  until health="$(curl -fsS --max-time 15 "$AI_URL/health" 2>/dev/null)"; do
+    if [ "$varva" -ge "$RETRY_WAIT_S" ]; then
+      szol "[AI kerdeskeszlet-or] HIBA, a meres nem sikerult ($ok, szerver ${server:0:8}): a futas kozben a teszt AI nem volt elerheto (halozati hiba), es $RETRY_WAIT_S mp alatt sem valaszolt ujra a /health. Ez nem romlas. Felretett jelentes: $felre"
+      exit 1
+    fi
+    sleep "$RETRY_POLL_S"
+    varva=$((varva + RETRY_POLL_S))
+  done
+  server="$(printf '%s' "$health" | python3 -c 'import json,sys
+try:
+    v = json.load(sys.stdin).get("version")
+except ValueError:
+    v = None
+print(v if isinstance(v, str) else "unknown")')"
+  kimenet="$REPORT_DIR/qs-$(date -u +%Y-%m-%dT%H%MZ)-${server:0:8}-ujra.json"
+  sorok="$(AI_API_TOKEN="$(cat "$TOKEN_FILE")" $RUNNER --url "$AI_URL" --out "$kimenet" "${osszevet[@]}" 2>&1)"
+  rc=$?
+  utolso="$(printf '%s\n' "$sorok" | tail -n 2 | tr '\n' ' ')"
+  log "ujrafuttatas ($ok, szerver ${server:0:8}): kod $rc. $utolso"
+  if [ "$rc" -ne 0 ] && [ -f "$kimenet" ] && [ "$(halozati_hiba "$kimenet")" = igen ]; then
+    masodik="$REPORT_DIR/halozati-$(basename "$kimenet")"
+    mv "$kimenet" "$masodik"
+    szol "[AI kerdeskeszlet-or] HIBA, a meres nem sikerult ($ok, szerver ${server:0:8}): az ujrafuttatasban is halozati hiba volt (a teszt AI nem valaszolt minden hivasra). Ez nem romlas. Felretett jelentesek: $felre, $masodik"
+    exit 1
+  fi
+fi
 case "$rc" in
   0) ;;
   3) szol "[AI kerdeskeszlet-or] ROMLAS ($ok, szerver ${server:0:8}): $utolso Jelentes: $kimenet" ;;

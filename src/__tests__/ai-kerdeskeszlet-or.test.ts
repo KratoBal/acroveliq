@@ -16,10 +16,12 @@ const root = mkdtempSync(join(tmpdir(), 'kerdeskeszlet-or-'))
 let server: Server
 let base = ''
 let health: Record<string, unknown> | null = { version: 'aaaa1111bbbb', instructionsVersion: '5789d9bc8eb1' }
+// a file that, while it exists, makes /health answer 404 (a stand-in runner creates it to play a test AI that went away mid-run)
+let healthDownFlag = ''
 
 beforeAll(async () => {
   server = createServer((req, res) => {
-    if (req.url !== '/health' || health === null) {
+    if (req.url !== '/health' || health === null || (healthDownFlag !== '' && existsSync(healthDownFlag))) {
       res.writeHead(404)
       res.end()
       return
@@ -300,5 +302,98 @@ describe('ai-kerdeskeszlet-or.sh', () => {
       okFresh: Date.now() - statSync(ok).mtimeMs < 60_000,
       ran: w.args(),
     }).toEqual({ codes: [1, 1, 1, 0], logged: true, alerts: 1, alertedAfterGood: false, okFresh: true, ran: '' })
+  })
+})
+
+/*
+  A SERVICE THAT WAS NOT THERE IS NO MEASUREMENT (task kerdeskeszlet-or-halozati-ujrafutas-20261123; acrobot 59534): the 10:00Z run of
+  2026-11-23 lost half its questions to a redeploy mid-run and was reported as a failed run. WHAT TURNS THIS RED: a network-error run said
+  without a rerun, or as a regression; the broken report left as the next baseline; no rerun after /health answers again; the rerun's
+  outcome not used; a second network failure, or a /health that does not come back, not said as a failed measurement; and on the other
+  side, an HTTP error (the provider's 504 among them) rerun as if the service were missing.
+*/
+describe('a network error mid-run: wait, rerun once, then a failed measurement', () => {
+  /** A runner stand-in that plays one attempt per call: its exit code, its errors, and whether it takes /health down. */
+  function plannedWorld(attempts: Array<{ code: number; errors: string[]; downHealth?: boolean }>) {
+    const w = world()
+    const plan = join(w.dir, 'plan.json')
+    writeFileSync(plan, JSON.stringify(attempts))
+    const counter = join(w.dir, 'attempt')
+    const flag = join(w.dir, 'health-down')
+    const runner = join(w.dir, 'planned-runner.sh')
+    writeFileSync(
+      runner,
+      `#!/usr/bin/env bash
+out=""; while [ $# -gt 0 ]; do [ "$1" = "--out" ] && out="$2"; shift; done
+python3 - "$out" '${plan}' '${counter}' '${flag}' '${String(health?.version)}' '${String(health?.instructionsVersion)}' <<'PY'
+import json, os, sys, datetime
+out, plan, counter, flag, server, instr = sys.argv[1:7]
+i = int(open(counter).read()) if os.path.exists(counter) else 0
+open(counter, "w").write(str(i + 1))
+a = json.load(open(plan))[i]
+if a.get("downHealth"):
+    open(flag, "w").write("down")
+results = [{"id": f"q{k}", "error": e} for k, e in enumerate(a["errors"])] + [{"id": "ok", "error": None}]
+json.dump({"serverVersion": server, "instructionsVersion": instr, "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(), "results": results}, open(out, "w"))
+sys.exit(a["code"])
+PY
+`,
+    )
+    chmodSync(runner, 0o755)
+    const attemptsMade = () => (existsSync(counter) ? Number(readFileSync(counter, 'utf-8')) : 0)
+    return { ...w, flag, attemptsMade, go: () => w.run({ KERDES_RUNNER: `bash ${runner}`, KERDES_RETRY_WAIT_S: '2', KERDES_RETRY_POLL_S: '1' }) }
+  }
+  const files = (dir: string) => (existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.json')).sort() : [])
+
+  it('a network error, then a clean rerun: no message, exit 0, the broken report set aside, the rerun the new baseline', async () => {
+    const w = plannedWorld([
+      { code: 1, errors: ['network: ECONNREFUSED connect ECONNREFUSED 100.88.199.87:3110', 'the question it follows (q0) has no conversation'] },
+      { code: 0, errors: [] },
+    ])
+    healthDownFlag = w.flag
+    const r = await w.go()
+    expect(r.code, r.out).toBe(0)
+    expect(w.attemptsMade()).toBe(2)
+    expect(w.messages()).toBe('')
+    const got = files(w.reports)
+    expect(got.some((f) => f.startsWith('halozati-qs-'))).toBe(true)
+    expect(got.some((f) => /^qs-.*-ujra\.json$/.test(f))).toBe(true)
+    // the set-aside report does not match the baseline pattern: only the rerun does
+    expect(got.filter((f) => f.startsWith('qs-'))).toHaveLength(1)
+  })
+
+  it('a network error twice: said once as a failed measurement, never as a regression, exit 1', async () => {
+    const w = plannedWorld([
+      { code: 1, errors: ['network: UND_ERR_SOCKET other side closed'] },
+      { code: 1, errors: ['network: ECONNREFUSED connect ECONNREFUSED 100.88.199.87:3110'] },
+    ])
+    healthDownFlag = w.flag
+    const r = await w.go()
+    expect(r.code).toBe(1)
+    expect(w.attemptsMade()).toBe(2)
+    expect(w.messages()).toMatch(/HIBA, a meres nem sikerult/)
+    expect(w.messages()).toMatch(/ujrafuttatasban is halozati hiba/)
+    expect(w.messages()).not.toMatch(/ROMLAS/)
+    expect(files(w.reports).filter((f) => f.startsWith('halozati-qs-'))).toHaveLength(2)
+  })
+
+  it('a /health that does not come back within the limit: said as a failed measurement, no rerun, exit 1', async () => {
+    const w = plannedWorld([{ code: 1, errors: ['network: ECONNREFUSED connect ECONNREFUSED 100.88.199.87:3110'], downHealth: true }])
+    healthDownFlag = w.flag
+    const r = await w.go()
+    expect(r.code).toBe(1)
+    expect(w.attemptsMade()).toBe(1)
+    expect(w.messages()).toMatch(/sem valaszolt ujra a \/health/)
+    expect(w.messages()).not.toMatch(/ROMLAS/)
+  })
+
+  it("an HTTP error, the provider's 504 among them, is no missing service: no rerun, said as before", async () => {
+    const w = plannedWorld([{ code: 1, errors: ['HTTP 504 ai_provider_timeout'] }])
+    healthDownFlag = w.flag
+    const r = await w.go()
+    expect(r.code).toBe(1)
+    expect(w.attemptsMade()).toBe(1)
+    expect(w.messages()).toMatch(/hivasi hiba a futasban/)
+    expect(files(w.reports).some((f) => f.startsWith('halozati-'))).toBe(false)
   })
 })
