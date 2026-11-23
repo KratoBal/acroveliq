@@ -134,7 +134,10 @@ CHANGES=""
 while IFS=$'\t' read -r pr sig; do
   [ -n "$pr" ] || continue
   [ "${sig%%|*}" = "ERR" ] && continue   # skip transient fetch failure
-  old="$(grep -P "^${pr}\t" "$STATE_FILE" 2>/dev/null | head -1 | cut -f2-)"
+  # awk on the file, not grep | head (errexit-ertekolvaso-20261123): under set -e and pipefail a PR not yet in the
+  # snapshot (opened after the baseline) made grep exit 1, the assignment stopped the script with no word before the
+  # snapshot was written, and every later run stopped at the same PR; a long match could also SIGPIPE grep at head
+  old="$(awk -F'\t' -v p="$pr" '$1 == p { sub(/^[^\t]*\t/, ""); print; exit }' "$STATE_FILE")"
   if [ -n "$old" ] && [ "$old" != "$sig" ]; then
     IFS='|' read -r st rd nrev ncom last <<< "$sig"
     CHANGES="${CHANGES}- PR #${pr}: state=${st}, review=${rd}, reviews=${nrev}, comments=${ncom}${last:+, utolso: ${last}}

@@ -93,3 +93,103 @@ if grep -q MATCH <<< "$x"; then echo grep-here=match; else echo grep-here=miss; 
     expect(readFileSync(join(ROOT, 'scripts/folytonossag.sh'), 'utf-8')).toMatch(/grep -q '\\\.jsonl\$' <<< "\$\(\/bin\/ls "\$J"/)
   })
 })
+
+// ERREXIT (errexit-ertekolvaso-20261123, card 1a69029e; barracuda 59722 on #403): the value readers above are harmless
+// when the status is dropped, but under `set -e` the status of `x="$(writer | head -1)"`, or of a plain
+// `writer | grep -m 1 x` statement, IS used: a writer killed by SIGPIPE (141), or a grep that found nothing (1), stops
+// the script with no word. github-pr-monitor.sh did the second on every PR opened after its baseline, before the
+// snapshot was written, so each later run stopped at the same PR. Scope: tracked .sh files with pipefail and errexit,
+// heredoc bodies aside (the post-checkout hook that install-prod-tree-guard-hook.sh writes has neither).
+// WHAT TURNS THIS RED: such an assignment or plain statement whose pipe ends in head or grep -m, with no `||` after it
+// and not under if/while/until/!; and the premise, the silent stop itself, no longer reproducing.
+const EARLY_STAGE = /(?<!\|)\|\s*(?:head\b(?!\s+-n\s*-)|(?:\/(?:usr\/)?bin\/)?grep\b[^|]*\s-[A-Za-z]*m\s*\d)/g
+const CONDITION_START = /^\s*(?:if|elif|while|until|!|\[\[?|case|for|function)\b|^\s*!|^\s*[A-Za-z_][A-Za-z0-9_]*\s*\(\)/
+
+/** Non-comment logical lines of the errexit + pipefail .sh files, heredoc bodies skipped. */
+function errexitLines(): { file: string; line: number; text: string }[] {
+  const files = execFileSync('git', ['ls-files', '*.sh'], { cwd: ROOT, encoding: 'utf-8' }).split('\n').filter(Boolean)
+  const out: { file: string; line: number; text: string }[] = []
+  for (const file of files) {
+    const src = readFileSync(join(ROOT, file), 'utf-8')
+    if (!src.includes('pipefail') || !/^\s*set\s+-[A-Za-z]*e|set\s+-o\s+errexit/m.test(src)) continue
+    const lines = src.split('\n')
+    let heredocEnd: string | null = null
+    for (let i = 0; i < lines.length; i++) {
+      if (heredocEnd !== null) {
+        if (lines[i].trim() === heredocEnd) heredocEnd = null
+        continue
+      }
+      const start = i
+      let text = lines[i]
+      while (i + 1 < lines.length && (/(\\|\|)\s*$/.test(text) || /^\s*\|(?!\|)/.test(lines[i + 1]))) text = text.replace(/\\\s*$/, ' ') + ' ' + lines[++i]
+      if (/^\s*#/.test(text)) continue
+      // a heredoc's body is another program's text (here-strings, <<<, are not heredocs)
+      const doc = /(?<!<)<<-?(?!<)\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/.exec(text)
+      if (doc) heredocEnd = doc[1]
+      out.push({ file, line: start + 1, text })
+    }
+  }
+  return out
+}
+
+/** The command-substitution depth ($( ... )) at each index of a line; quotes are not tracked (good enough for a scan). */
+function depthAt(text: string, at: number): number {
+  let depth = 0
+  for (let i = 0; i < at; i++) {
+    if (text[i] === '$' && text[i + 1] === '(') { depth++; i++ } else if (text[i] === ')' && depth > 0) depth--
+  }
+  return depth
+}
+
+/** Assignments and plain statements whose status errexit acts on and whose pipe ends in an early value reader. */
+function silentStops() {
+  return errexitLines().filter(({ text }) => {
+    if (CONDITION_START.test(text)) return false
+    const stages = [...text.matchAll(EARLY_STAGE)].map((m) => m.index ?? 0)
+    if (stages.length === 0) return false
+    const assignment = /^\s*[A-Za-z_][A-Za-z0-9_]*="?\$\(/.test(text)
+    return stages.some((at) => {
+      const depth = depthAt(text, at)
+      // a plain statement reads at depth 0, an assignment inside its own $( ); a deeper read is inside a string or message
+      if (!(depth === 0 || (assignment && depth === 1))) return false
+      // an `||` after the reader takes the status (|| true, || fail ...): at the statement's level, or for an
+      // assignment also inside its own $( ), where `a | head -1 || true` makes the substitution's status 0
+      const rest = text.slice(at)
+      return ![...rest.matchAll(/\|\|/g)].some((m) => depthAt(text, at + (m.index ?? 0)) <= depth)
+    })
+  })
+}
+
+describe('pipefail + errexit: no value reader on a pipe whose status stops the script', () => {
+  it('the premise: an assignment from a pipe into head stops a set -e script with no word, on SIGPIPE and on no match', () => {
+    const r1 = spawnSync('bash', ['-c', `set -euo pipefail
+x="$({ echo first; head -c 400000 /dev/zero; } | head -1)"
+echo "after x=$x"`], { encoding: 'utf-8' })
+    expect(r1.stdout).not.toContain('after')
+    expect(r1.status).toBe(141)
+    const r2 = spawnSync('bash', ['-c', `set -euo pipefail
+old="$(printf '7\\tA\\n' | grep -P '^8\\t' | head -1 | cut -f2-)"
+echo "after old=$old"`], { encoding: 'utf-8' })
+    expect(r2.stdout).not.toContain('after')
+    expect(r2.status).toBe(1)
+    const r3 = spawnSync('bash', ['-c', `set -euo pipefail
+f=$(mktemp); printf '7\\tA\\n' > "$f"
+old="$(awk -F'\\t' -v p=8 '$1 == p { sub(/^[^\\t]*\\t/, ""); print; exit }' "$f")"; rm -f "$f"
+echo "after old=[$old]"`], { encoding: 'utf-8' })
+    expect(r3.stdout, r3.stderr).toContain('after old=[]')
+  })
+
+  it('no errexit .sh file assigns from, or runs as a statement, a pipe ending in head or grep -m', () => {
+    const found = silentStops()
+    expect(found.map((s) => `${s.file}:${s.line}`), 'read the file directly (awk/grep -m on the file), or end with || ...').toEqual([])
+  })
+
+  it('the scan sees the tree: it finds the shapes it is meant to find, and skips the heredoc body', () => {
+    const lines = errexitLines()
+    expect(lines.length).toBeGreaterThan(1000)
+    // the hook body the installer writes is a heredoc: its own `| head -n 1` line must not be read as the installer's
+    expect(lines.some((l) => l.file === 'scripts/install-prod-tree-guard-hook.sh' && l.text.includes('prod-tree-guard.conf" 2>/dev/null | head -n 1)"'))).toBe(false)
+    expect(lines.some((l) => l.file === 'scripts/install-prod-tree-guard-hook.sh' && l.text.includes('CONF_ID="$(sed -n'))).toBe(true)
+    expect(readFileSync(join(ROOT, 'scripts/github-pr-monitor.sh'), 'utf-8')).toMatch(/old="\$\(awk -F'\\t' -v p="\$pr"/)
+  })
+})
