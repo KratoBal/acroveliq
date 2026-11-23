@@ -57,13 +57,16 @@ function earlyReaders() {
   })
 }
 
-const run = (script: string) => spawnSync('bash', ['-c', `set -o pipefail\n${script}`], { encoding: 'utf-8' })
+// THE WRITER NEVER ENDS (`yes`): a reader that leaves early must kill it, whatever the pipe buffer or the scheduling.
+// A finite 400 KB writer sometimes finished first on the ubuntu-26.04 CI runner (#404, f9efae6a: grep-pipe=match),
+// while here it failed 200 of 200; with `yes` both sides are 200 of 200 here, and a reader that never leaves times out.
+const run = (script: string) => spawnSync('bash', ['-c', `set -o pipefail\n${script}`], { encoding: 'utf-8', timeout: 20000 })
 
 describe('pipefail: no early reader on a pipe whose status decides, a here-string instead', () => {
   it('the premise: a big writer into grep -q or an early awk exit fails piped and passes as a here-string', () => {
     const r = run(`x="$(printf 'MATCH\\n'; head -c 400000 /dev/zero | tr '\\0' 'a')"
-if { echo MATCH; head -c 400000 /dev/zero; } | grep -q MATCH; then echo grep-pipe=match; else echo grep-pipe=miss; fi
-printf '%s\\n' "$x" | awk '/MATCH/ {print; exit}' >/dev/null; echo "awk-pipe=$?"
+if { echo MATCH; yes; } | grep -q MATCH; then echo grep-pipe=match; else echo grep-pipe=miss; fi
+{ echo MATCH; yes; } | awk '/MATCH/ {print; exit}' >/dev/null; echo "awk-pipe=$?"
 awk '/MATCH/ {print; exit}' <<< "$x" >/dev/null; echo "awk-here=$?"
 if grep -q MATCH <<< "$x"; then echo grep-here=match; else echo grep-here=miss; fi`)
     expect(r.stdout, r.stderr).toContain('grep-pipe=miss')
@@ -161,13 +164,12 @@ function silentStops() {
 }
 
 describe('pipefail + errexit: no value reader on a pipe whose status stops the script', () => {
-  // the SIGPIPE half reads with grep -m1, not head -1: on the CI runner `| head -1` let a 400 KB writer finish (the
-  // assignment passed, run of dc02b9a5), while here both gave 141 in 200 of 200; grep leaving early is what #403's
-  // premise already measured on CI, and the no-match half (r2) does not depend on any reader's timing
+  // the writer never ends (`yes`, see `run` above): on the CI runner a finite 400 KB writer into `| head -1` finished
+  // first and the assignment passed (#404, dc02b9a5); the no-match half (r2) does not depend on any timing
   it('the premise: an assignment from a pipe into a value reader stops a set -e script with no word, on SIGPIPE and on no match', () => {
     const r1 = spawnSync('bash', ['-c', `set -euo pipefail
-x="$({ echo first; head -c 4000000 /dev/zero; } | grep -m1 first)"
-echo "after x=$x"`], { encoding: 'utf-8' })
+x="$({ echo first; yes; } | head -1)"
+echo "after x=$x"`], { encoding: 'utf-8', timeout: 20000 })
     expect(r1.stdout).not.toContain('after')
     expect(r1.status).toBe(141)
     const r2 = spawnSync('bash', ['-c', `set -euo pipefail
