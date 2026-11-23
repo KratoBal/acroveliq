@@ -44,6 +44,9 @@ ZONA=/home/marveen/marveen/review-csomagok
 GIT_BIN=/usr/bin/git
 GH_API=https://api.github.com
 FEJ_DIFF=/home/marveen/marveen/scripts/lib/review-fej-diff.py
+KOR_LIB=/home/marveen/marveen/scripts/lib/review-kor.sh
+. "$KOR_LIB"   # the rounds of a PR packet across pr-<N> and its pr-<N>.r<K> siblings (card efdce058)
+declare -F kor_legutobbi >/dev/null || { echo "FAIL: a kor-segedfuggvenyek nem toltodtek be (scripts/lib/review-kor.sh)" >&2; exit 1; }
 
 FEJ=0
 if [ "$#" -eq 2 ] && [ "$1" = --fej ]; then FEJ=1; shift; fi
@@ -69,6 +72,31 @@ for r in README.md README; do
 done
 [ "$found" = 1 ] || echo "!! nincs README a csomagban"
 
+# A TAKEN-OVER PR (card efdce058): later rounds can sit in pr-<N>.r<K> siblings, each its writer's. Every sibling
+# and its README is shown, and the round reviewed (the highest) is named with its AUTHOR, loudly when that author
+# is not the first rounds' packager: whoever can create a sibling can put a round on top (acrobot 59968).
+DK="$D"; KK=""
+if [ "$DOCS" = 0 ]; then
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    f="$ZONA/$b"
+    if [ -L "$f" ] || [ ! -d "$f" ]; then echo "!! $b: symlink vagy nem mappa, kihagyva"; continue; fi
+    echo "== testver-mappa: $f (tulajdonos: $(stat -c %U "$f"))"
+    rd="$(kor_readme "$f")"
+    if [ -n "$rd" ]; then echo "== ${rd##*/} (tulajdonos: $(stat -c %U "$rd"))"; cat "$rd"; else echo "!! nincs olvashato README a testver-mappaban"; fi
+  done < <(kor_testverek "$ZONA" "${D##*/}")
+  if L="$(kor_legutobbi "$ZONA" "${D##*/}")"; then
+    KK="${L%% *}"; DK="${L#* }"
+    echo
+    echo "== A REVIEW ALAPJA: a(z) v$KK kor, mappa: $DK, SZERZO: $(stat -c %U "$DK")"
+    if [ "$DK" != "$D" ]; then
+      echo "!! TESTVER-MAPPA KOR: a szerzoje $(stat -c %U "$DK"), az elso korok csomagoloja $(stat -c %U "$D"). Egy testver-mappat barmelyik csomagolo letrehozhat: a review-ellenoriz.sh a szerzot a feladat review_requested esemenyeivel veti ossze."
+    fi
+  elif [ "$FEJ" = 1 ]; then
+    exit 1
+  fi
+fi
+
 if [ "$FEJ" = 1 ]; then
   [ "$DOCS" = 0 ] || { echo "FAIL: --fej csak PR-csomagra: egy dokumentumnak nincs feje" >&2; exit 2; }
   [ "$found" = 1 ] || exit 1
@@ -80,15 +108,16 @@ if [ "$FEJ" = 1 ]; then
   PRN="${BASH_REMATCH[2]}"
   # the latest round's head and patch: review-csomag.sh writes `fej: <sha>` and diff.patch for the
   # first round, a `vN: task_id X, fej <sha>, ...` line and diff-vN.patch for each later one
-  HEAD="" PATCH="$D/diff.patch"
+  # the latest round's folder (DK: pr-<N> itself, or a taken-over round's sibling)
+  HEAD="" PATCH="$DK/diff.patch"
   for r in README.md README; do
-    { [ -f "$D/$r" ] && [ ! -L "$D/$r" ]; } || continue
+    { [ -f "$DK/$r" ] && [ ! -L "$DK/$r" ]; } || continue
     while IFS= read -r line || [ -n "$line" ]; do
       if [[ "$line" =~ ^fej:[[:space:]]+([0-9a-f]+)[[:space:]]*$ ]] && [ -z "$HEAD" ]; then HEAD="${BASH_REMATCH[1]}"
       elif [[ "$line" =~ ^v([0-9]+):.*[[:space:]]fej[[:space:]]+([0-9a-f]+)(,|[[:space:]]|$) ]]; then
-        HEAD="${BASH_REMATCH[2]}"; PATCH="$D/diff-v${BASH_REMATCH[1]}.patch"
+        HEAD="${BASH_REMATCH[2]}"; PATCH="$DK/diff-v${BASH_REMATCH[1]}.patch"
       fi
-    done < "$D/$r"
+    done < "$DK/$r"
     break
   done
   [[ "$HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo "FAIL: a csomag legutolso feje nem 40 jegyu ('$HEAD'): a fejbol nem allithato elo diff" >&2; exit 1; }
@@ -120,8 +149,14 @@ n_patch=0
 # globbing is off for the whole script (set -f); this one list is the only glob, on a
 # fixed folder with a fixed suffix
 set +f; shopt -s nullglob; PATCHES=("$D"/*.patch); shopt -u nullglob; set -f
+# ... and a taken-over PR's sibling folders (pr-<N>.r<K>), each its writer's
+while IFS= read -r b; do
+  [ -n "$b" ] || continue
+  { [ -d "$ZONA/$b" ] && [ ! -L "$ZONA/$b" ]; } || continue
+  set +f; shopt -s nullglob; PATCHES+=("$ZONA/$b"/*.patch); shopt -u nullglob; set -f
+done < <(kor_testverek "$ZONA" "${D##*/}")
 for f in "${PATCHES[@]}"; do
-  b="${f##*/}"
+  b="${f#"$ZONA"/}"   # the folder too: a sibling round names its own
   if [ -L "$f" ] || [ ! -f "$f" ]; then echo "!! $b: symlink vagy nem fajl, kihagyva"; continue; fi
   n_patch=$((n_patch + 1))
   echo

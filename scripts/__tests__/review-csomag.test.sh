@@ -153,6 +153,7 @@ sed -e "s|^GIT_AUTH=.*|GIT_AUTH=$T/git-auth-stub.sh|" -e "s|^GH_API=.*|GH_API=fi
 mkdir -p "$T/lib"
 sed -e "s|^GITHUB_OWNER_TOKEN_FILE=.*|GITHUB_OWNER_TOKEN_FILE=$T/tok|" -e "s|^GITHUB_TOKEN_BROKER=.*|GITHUB_TOKEN_BROKER=$T/nincs-broker|" \
   "$HERE/../lib/github-token.sh" > "$T/lib/github-token.sh"
+cp "$HERE/../lib/review-kor.sh" "$T/lib/review-kor.sh"   # the rounds across folders (card efdce058), sourced next to the script
 check 'the copy points at the stubs' 2 "$(grep -cE "^(GIT_AUTH=$T/git-auth-stub.sh|GH_API=file://$T/api)\$" "$T/csomag.sh")"
 check '... and its helper at the test token, the broker nowhere' 2 "$(grep -cE "^(GITHUB_OWNER_TOKEN_FILE=$T/tok|GITHUB_TOKEN_BROKER=$T/nincs-broker)\$" "$T/lib/github-token.sh")"
 pk() { FLEET_GITHUB_APP=off REVIEW_CSOMAG_REPO="$F" REVIEW_CSOMAG_DIR="$T/zona" bash "$T/csomag.sh" marveen "$1" tcl-proba 2>&1; }
@@ -185,6 +186,31 @@ fi
 chmod 600 "$T/tok"
 check 'the token is not on the command line: read inside python, sent on stdin' 1 \
   "$(grep -c '"curl", "-s", "-H", "@-"' "$S")"
+
+echo 'card efdce058: a taken-over PR, the next round in a sibling folder of the caller'
+# the second packager: a copy that believes its uid is another (a second real uid is not available here)
+sed -e 's|^ME_UID=.*|ME_UID=999999|' "$T/csomag.sh" > "$T/csomag-masik.sh"
+check 'the copy names another uid' 1 "$(grep -cx 'ME_UID=999999' "$T/csomag-masik.sh")"
+pkm() { FLEET_GITHUB_APP=off REVIEW_CSOMAG_REPO="$F" REVIEW_CSOMAG_DIR="$T/zona" bash "$T/csomag-masik.sh" marveen "$1" "${2:-tcl-atvett}" >"$T/pk.out" 2>&1; echo $?; }
+B120="$(cat "$T/zona/pr-marveen120/README.md")"
+check 'the guard alone on a foreign pr-N: a takeover, the next round named' 1 \
+  "$(FLEET_GITHUB_APP=off REVIEW_CSOMAG_REPO="$F" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GUARD_ONLY=1 bash "$T/csomag-masik.sh" marveen 120 tcl-atvett 2>&1 | grep -c "atvetel (az elso korok: $(id -un), a kovetkezo kor: $T/zona/pr-marveen120.r3)")"
+check '... and makes no folder' 1 "$([ -e "$T/zona/pr-marveen120.r3" ] && echo 0 || echo 1)"
+printf '%s' "$C3" > "$T/fetched-head"; api 120 "{\"head\":{\"sha\":\"$C3\"}}"
+check 'a takeover round -> 0' 0 "$(pkm 120)"
+check '... into pr-marveen120.r3, its own folder' 0 "$([ -d "$T/zona/pr-marveen120.r3" ] && [ -s "$T/zona/pr-marveen120.r3/diff-v3.patch" ]; echo $?)"
+check '... the README names the round, the first packager, the PR and the task' 3 "$(grep -cE "^(marveen PR 120 3\. kor, atvett csomag \(az elso korok: pr-marveen120, $(id -un)\) |pr: KratoBal/acroveliq#120$|v3: task_id tcl-atvett, fej $C3, )" "$T/zona/pr-marveen120.r3/README.md")"
+check '... and its folder is not group-writable' 0 "$(find "$T/zona/pr-marveen120.r3" -perm /022 | wc -l)"
+check '... the first packager folder is untouched' 0 "$([ "$(cat "$T/zona/pr-marveen120/README.md")" = "$B120" ] && [ ! -e "$T/zona/pr-marveen120/diff-v3.patch" ]; echo $?)"
+check 'a second takeover round -> pr-marveen120.r4' 0 "$(pkm 120 >/dev/null; [ -s "$T/zona/pr-marveen120.r4/diff-v4.patch" ]; echo $?)"
+check 'the first packager next round counts the siblings: diff-v5 in its own folder' 1 \
+  "$(pkr 120 >/dev/null; grep -c "^v5: task_id tcl-proba, fej $C3," "$T/zona/pr-marveen120/README.md")"
+mkdir "$T/zona/pr-marveen120.r6"
+check 'a sibling name taken (even empty) holds its number: the next takeover is r7' 0 "$(pkm 120 >/dev/null; [ -s "$T/zona/pr-marveen120.r7/diff-v7.patch" ]; echo $?)"
+sed -e 's|^ME_UID=.*|ME_UID=999999|' "$S" > "$T/doc-masik.sh"
+check 'a document packet of another is still refused (the earlier doc-doc-proba)' '0 1' \
+  "$([ -d "$T/zona/doc-doc-proba" ]; echo $?) $(REVIEW_CSOMAG_ROOT="$R" REVIEW_CSOMAG_DIR="$T/zona" REVIEW_CSOMAG_GROUP=nincs-ilyen-csoport bash "$T/doc-masik.sh" docs exchange/acroveliq/terv.md doc-proba >"$T/pk.out" 2>&1; echo $?)"
+check '... with the old message' 1 "$(grep -c 'mar letezik, es nem az enyem' "$T/pk.out")"
 
 echo
 [ "$fails" = 0 ] && { echo 'all pass'; exit 0; }

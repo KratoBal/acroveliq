@@ -6,6 +6,8 @@
 #      repoja, KratoBal/acroveliq, 2026-10-15 elott KratoBal/marveen) vagy pr-ai<PR> (KratoBal/acropora-ai-agent), vagy pr-cap<PR> (KratoBal/caparium-napplo): diff.patch + README.md
 #      (pr: owner/repo#N, task_id, fej, merge-base, origin/main). Ha a mappa mar letezik, diff-vN.patch-et ir,
 #      a kovetkezo szabad N-nel, a README-hez egy sort fuz.
+#   Ha a pr-<N> mappa egy MASIK csomagoloe (atvett PR, kartya efdce058), a kor egy sajat testver-mappaba
+#   kerul: pr-<N>.r<K>, ahol K a PR kovetkezo kore az osszes mappaja felett (scripts/lib/review-kor.sh).
 #   A task_id KOTELEZO (TC-Lite L4): barracuda a verdict esemenyt erre irja, es eddig
 #   visszakerdezett, ha a kerdesben nem allt.
 #
@@ -51,12 +53,18 @@ set -uo pipefail
 GIT_AUTH=/home/marveen/marveen/scripts/git-auth.sh
 GH_API=https://api.github.com
 . "$(dirname "${BASH_SOURCE[0]}")/lib/github-token.sh"   # github_token <owner/repo> <role> (FLEET_GITHUB_APP)
+. "$(dirname "${BASH_SOURCE[0]}")/lib/review-kor.sh"     # kor_kovetkezo: a PR rounds across its folders (card efdce058)
+declare -F kor_legutobbi >/dev/null || { echo "FAIL: a kor-segedfuggvenyek nem toltodtek be (scripts/lib/review-kor.sh)" >&2; exit 1; }
+# the caller's uid, one line: the takeover test replaces it in a copy (a second real uid is not available there)
+ME_UID="$(id -u)"
 USAGE="usage: [REVIEW_CSOMAG_REPO=<sajat klon>] review-csomag.sh <os|commerce|marveen|ai|cap> <PR> <task_id> [cimke]
        review-csomag.sh docs <fajl> <task_id> [cimke]"
 ZONA="${REVIEW_CSOMAG_DIR:-/home/marveen/marveen/review-csomagok}"
 
 # The packet folder in the shared zone: created here, or this caller's own from an earlier
-# round. A folder someone else made first (or a symlink, or a file) is refused.
+# round. A symlink or a file is refused. A folder someone else owns returns 3: for a PR packet the
+# caller's round then goes into a sibling folder of its own (a taken-over PR, card efdce058); a
+# document packet still refuses it.
 claim_folder() {
   local d="$1"
   if [ ! -d "$ZONA" ] || [ -L "$ZONA" ]; then
@@ -67,10 +75,11 @@ claim_folder() {
     echo "FAIL: $d symlink. Nem irok bele: valaki mas tette oda." >&2; return 1
   fi
   if [ -e "$d" ]; then
-    if [ ! -d "$d" ] || [ "$(stat -c %u "$d")" != "$(id -u)" ]; then
-      echo "FAIL: $d mar letezik, es nem az enyem ($(stat -c %U "$d")). Elofoglalt csomag-mappa: nem irok bele, szolj acrobotnak." >&2
+    if [ ! -d "$d" ]; then
+      echo "FAIL: $d mar letezik, es nem mappa. Nem irok bele: szolj acrobotnak." >&2
       return 1
     fi
+    [ "$(stat -c %u "$d")" = "$ME_UID" ] || return 3
   else
     mkdir -m 755 "$d" || { echo "FAIL: $d nem hozhato letre (kozben letrejott?)" >&2; return 1; }
   fi
@@ -110,7 +119,12 @@ if [ "${1:-}" = docs ]; then
   SIZE="$(stat -c %s "$REAL")"
   { [ "$SIZE" -gt 0 ] && [ "$SIZE" -le 1048576 ]; } || { echo "FAIL: a fajl merete $SIZE bajt (1 es 1048576 kozott lehet)" >&2; exit 1; }
   D="$ZONA/doc-$TASK"
-  claim_folder "$D" || exit 1
+  claim_folder "$D"; rc=$?
+  if [ "$rc" = 3 ]; then
+    echo "FAIL: $D mar letezik, es nem az enyem ($(stat -c %U "$D")). Elofoglalt csomag-mappa: nem irok bele, szolj acrobotnak." >&2
+    exit 1
+  fi
+  [ "$rc" = 0 ] || exit 1
   [ "${REVIEW_CSOMAG_GUARD_ONLY:-0}" = 1 ] && { echo "ok: $D fajl: $REL umask=$(umask)"; exit 0; }
   n=1; while compgen -G "$D/v$n-*" > /dev/null; do n=$((n + 1)); done
   OUT="$D/v$n-${REL##*/}"
@@ -166,8 +180,13 @@ if ! [[ "$ORIGIN" =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.c
   echo "FAIL: a klon ($REPO) origin-ja nem a $SLUG repo: '${ORIGIN}'" >&2
   exit 1
 fi
-claim_folder "$D" || exit 1
-[ "${REVIEW_CSOMAG_GUARD_ONLY:-0}" = 1 ] && { echo "ok: $D pr: $PRREF umask=$(umask)"; exit 0; }
+claim_folder "$D"; rc=$?
+# a taken-over PR (card efdce058): the folder is another packager's, this round goes into a sibling of the caller's own;
+# the sibling is made only when the round is written, so a run that stops before leaves nothing behind
+ATVETEL=0
+if [ "$rc" = 3 ]; then ATVETEL=1; ELSO="$(stat -c %U "$D")"
+elif [ "$rc" != 0 ]; then exit 1; fi
+[ "${REVIEW_CSOMAG_GUARD_ONLY:-0}" = 1 ] && { echo "ok: $D$([ "$ATVETEL" = 1 ] && echo " atvetel (az elso korok: $ELSO, a kovetkezo kor: $D.r$(kor_kovetkezo "$ZONA" "${PFX}${PR}"))") pr: $PRREF umask=$(umask)"; exit 0; }
 cd "$REPO" || exit 1
 if ! ferr=$(bash "$GIT_AUTH" fetch origin main "pull/$PR/head:pr-$PR" -f 2>&1 >/dev/null); then
   echo "FAIL: fetch ($REPO): $ferr" >&2; exit 1
@@ -204,8 +223,18 @@ if [ "$H" != "$API_HEAD" ]; then
   echo "FAIL: a letoltott fej ($H) nem a PR mostani feje ($API_HEAD): a GitHub pull refje meg nem frissult. Nem csomagolok elavult diffet; probald ujra nehany masodperc mulva." >&2
   rmdir "$D" 2>/dev/null; exit 1
 fi
-if [ -e "$D/diff.patch" ]; then
-  n=2; while [ -e "$D/diff-v$n.patch" ]; do n=$((n + 1)); done
+if [ "$ATVETEL" = 1 ]; then
+  # the round number is the PR's next over every folder; mkdir refuses an existing name, so a round taken
+  # by someone else in the meantime is not written over
+  n="$(kor_kovetkezo "$ZONA" "${PFX}${PR}")"
+  DK="$D.r$n"
+  mkdir -m 755 "$DK" || { echo "FAIL: $DK nem hozhato letre (kozben letrejott?)" >&2; exit 1; }
+  OUT="$DK/diff-v$n.patch"
+  printf "%s PR %s %s. kor, atvett csomag (az elso korok: %s, %s) %s\npr: %s\nv%s: task_id %s, fej %s, merge-base %s, origin/main %s %s\n" \
+    "$1" "$PR" "$n" "${D##*/}" "$ELSO" "$LABEL" "$PRREF" "$n" "$TASK" "$H" "$B" "$M" "$LABEL" > "$DK/README.md"
+elif [ -e "$D/diff.patch" ]; then
+  # the next round over every folder: a sibling (a takeover's round) holds its number too
+  n="$(kor_kovetkezo "$ZONA" "${PFX}${PR}")"
   OUT="$D/diff-v$n.patch"
   printf "v%s: task_id %s, fej %s, merge-base %s, origin/main %s %s\n" "$n" "$TASK" "$H" "$B" "$M" "$LABEL" >> "$D/README.md"
 else
