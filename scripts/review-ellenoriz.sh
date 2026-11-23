@@ -99,6 +99,9 @@ ZONA=/home/marveen/marveen/review-csomagok
 FLEET_API=/home/marveen/marveen/scripts/fleet-api.sh
 FLEET_APPROVE=/usr/local/sbin/fleet-approve
 SUDO="sudo -n"
+KOR_LIB=/home/marveen/marveen/scripts/lib/review-kor.sh
+. "$KOR_LIB"   # the rounds of a PR packet across pr-<N> and its pr-<N>.r<K> siblings (card efdce058)
+declare -F kor_legutobbi >/dev/null || { echo "FAIL: a kor-segedfuggvenyek nem toltodtek be (scripts/lib/review-kor.sh)" >&2; exit 1; }
 
 usage() { echo "usage: review-ellenoriz.sh <csomag> <task_id> <APPROVE|CHANGES>" >&2; echo "       review-ellenoriz.sh --fajl <ut> doc-<task_id> <task_id> <APPROVE|CHANGES>" >&2; echo "       review-ellenoriz.sh --csak-github-review <csomag> <task_id>" >&2; exit 2; }
 # which of a document packet's files the verdict is on (card 5e47a789): one the README names, nothing else
@@ -145,6 +148,13 @@ esac
 
 D="$ZONA/$DIRNAME"
 { [ -d "$D" ] && [ ! -L "$D" ]; } || { echo "FAIL: nincs ilyen csomag, vagy symlink: $D" >&2; exit 1; }
+# A TAKEN-OVER PR (card efdce058): the verdict is on the LATEST round, which may sit in a pr-<N>.r<K> sibling of
+# another packager. Everything below (README, owner, task, head) is read from that round's folder.
+BASE="$D"
+if [ "$DOCS" = 0 ]; then
+  L="$(kor_legutobbi "$ZONA" "$DIRNAME")" || exit 1
+  D="${L#* }"
+fi
 README=""
 for r in README.md README; do
   [ -e "$D/$r" ] || [ -L "$D/$r" ] || continue
@@ -247,6 +257,17 @@ if ! bash "$FLEET_API" task-timeline "$TASK" > "$T/before" 2>&1; then
 fi
 grep -q '  esemeny  review_requested ' "$T/before" \
   || { echo "FAIL: a(z) $TASK feladaton nincs review_requested esemeny: nem kert senki reviewt" >&2; exit 1; }
+# A SIBLING ROUND'S AUTHOR MUST BE ONE WHO ASKED FOR THIS REVIEW (acrobot 59968): the highest round wins, and any
+# packager can create a pr-<N>.r<K> above the others, so its folder's owner is checked against the task's
+# review_requested actors. The first packager's own rounds (in pr-<N> itself) are checked as before.
+if [ "$D" != "$BASE" ]; then
+  SZERZO="$(kor_szereplo "$DO")"
+  KEROK=" $(awk '$3 == "esemeny" && $4 == "review_requested" { print $5 }' "$T/before" | sort -u | tr '\n' ' ')"
+  if [ -z "$SZERZO" ] || [[ "$KEROK" != *" $SZERZO "* ]]; then
+    echo "FAIL: a legutolso kor (${D##*/}) szerzoje $DO, de a(z) $TASK feladaton nem o kert reviewt (review_requested:${KEROK% }). Nem rogzitem az iteletet: egy testver-mappa barkie lehet." >&2
+    exit 1
+  fi
+fi
 
 if [ "$DOCS" = 1 ]; then
   REF="$V $FAJL $C sha256 ${SHA:0:12}"

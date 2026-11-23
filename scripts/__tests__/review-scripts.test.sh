@@ -44,6 +44,7 @@ EOF
 # the approver's two fixed lines: the main copy names one that is not there (CI, a container
 # before D4), so the cases below see the script as it was; the D4 section has its own copy
 sed -e "s|^ZONA=.*|ZONA=$Z|" -e "s|^FLEET_API=.*|FLEET_API=$T/fleet-api.sh|" -e 's|^ME=.*|ME=agent-tesztelo|' \
+  -e "s|^KOR_LIB=.*|KOR_LIB=$HERE/../lib/review-kor.sh|" \
   -e "s|^FLEET_APPROVE=.*|FLEET_APPROVE=$T/nincs-jovahagyo|" -e 's|^SUDO=.*|SUDO=""|' \
   "$HERE/../review-ellenoriz.sh" > "$T/ell.sh"
 sed -e 's|^ME=agent-tesztelo|ME=runner|' "$T/ell.sh" > "$T/ell-nem-agens.sh"
@@ -83,6 +84,7 @@ trap 'kill "$STUB" 2>/dev/null; rm -rf "$T"' EXIT
 for _ in $(seq 1 100); do [ -f "$T/api/port" ] && break; sleep 0.05; done
 GH="http://127.0.0.1:$(cat "$T/api/port")"
 sed -e "s|^ZONA=.*|ZONA=$Z|" -e "s|^GH_API=.*|GH_API=$GH|" -e "s|^FEJ_DIFF=.*|FEJ_DIFF=$HERE/../lib/review-fej-diff.py|" \
+  -e "s|^KOR_LIB=.*|KOR_LIB=$HERE/../lib/review-kor.sh|" \
   "$HERE/../review-olvas.sh" > "$T/olv.sh"
 check 'the olvas copy asks the stub GitHub, never the real one' 1 "$(grep -cxF "GH_API=$GH" "$T/olv.sh")"
 check 'the copies point at the test zone' 2 "$(grep -c "^ZONA=$Z\$" "$T/ell.sh" "$T/olv.sh" | grep -c ':1$')"
@@ -560,6 +562,52 @@ check 'review-fej-diff on binary files: only full, 40 hex blob ids that match' 0
 check 'review-fej-diff on a CRLF file: the same bytes match, an LF packet does not' 0 \
   "$(python3 -B -I "$(dirname "${BASH_SOURCE[0]}")/review-fej-diff-crlf.test.py" > "$T/crlf-suite" 2>&1; echo $?)"
 [ "$(tail -1 "$T/crlf-suite")" = 'all pass' ] || cat "$T/crlf-suite"
+
+# A TAKEN-OVER PR (card efdce058): the next round sits in a pr-<N>.r<K> sibling, its writer's. The latest round over
+# all folders is read and judged, and a sibling round's author must be one who asked for the review (acrobot 59968).
+# The owners here are all the runner, so the author check maps the runner to an actor of its own (tesztkero) in a
+# copy of the lib; every refusal is checked by the event log too.
+echo 'card efdce058: a taken-over round in a sibling folder'
+H1=1111111111111111111111111111111111111111; H2=2222222222222222222222222222222222222222
+mkdir "$Z/pr-marveen175" "$Z/pr-marveen175.r2"
+printf 'marveen PR 175 \npr: KratoBal/acroveliq#175\ntask_id: tsk-k\nfej: %s\nmerge-base: aaa\norigin/main: aaa\n' "$H1" > "$Z/pr-marveen175/README.md"
+cp "$Z/pr-marveen70/diff.patch" "$Z/pr-marveen175/diff.patch"
+printf 'marveen PR 175 2. kor, atvett csomag (az elso korok: pr-marveen175, x) \npr: KratoBal/acroveliq#175\nv2: task_id tsk-k, fej %s, merge-base aaa, origin/main aaa \n' "$H2" > "$Z/pr-marveen175.r2/README.md"
+{ cat "$Z/pr-marveen70/diff.patch"; printf 'diff --git a/h.txt b/h.txt\nnew file mode 100644\n--- /dev/null\n+++ b/h.txt\n@@ -0,0 +1 @@\n+v2\n'; } > "$Z/pr-marveen175.r2/diff-v2.patch"
+mkdir "$T/korlib"
+sed "s#^    agent-?\*) #    $RUNNER) echo tesztkero ;;\n    agent-?*) #" "$HERE/../lib/review-kor.sh" > "$T/korlib/review-kor.sh"
+check 'the lib copy maps the runner to tesztkero' 1 "$(grep -cF "$RUNNER) echo tesztkero ;;" "$T/korlib/review-kor.sh")"
+sed -e "s|^KOR_LIB=.*|KOR_LIB=$T/korlib/review-kor.sh|" "$T/ell.sh" > "$T/ell-kor.sh"
+ellk() { bash "$T/ell-kor.sh" "$@" >"$T/out" 2>&1; echo $?; }
+check 'olvas: the packet with a sibling round -> 0' 0 "$(olv marveen175)"
+check '... names the round reviewed, its folder and its AUTHOR' 1 "$(grep -cF "== A REVIEW ALAPJA: a(z) v2 kor, mappa: $Z/pr-marveen175.r2, SZERZO: $RUNNER" "$T/out")"
+check '... says loudly that it is a sibling round' 1 "$(grep -c '^!! TESTVER-MAPPA KOR: ' "$T/out")"
+check '... shows both READMEs and both patches' '2 2' "$(grep -cE '^== README\.md \(tulajdonos' "$T/out") $(grep -cE '^== pr-marveen175(\.r2)?/diff(-v2)?\.patch ' "$T/out")"
+pull 175 "$H2"; cp "$Z/pr-marveen175.r2/diff-v2.patch" "$T/api/compare-$H2.diff"
+check 'olvas --fej: the sibling round head and patch -> 0' 0 "$(olvf marveen175)"
+check '... compared with the sibling round patch' 1 "$(grep -c '^EGYEZIK: a csomag diff-v2.patch sorrol sorra' "$T/out")"
+printf '2026-11-23 20:00:00+0100  esemeny  review_requested tesztkero  KratoBal/acroveliq#175\n' > "$T/tl-tsk-k"
+n="$(events)"
+check 'ellenoriz: the sibling round author asked for the review -> 0' 0 "$(ellk marveen175 tsk-k APPROVE)"
+check '... the verdict names the LATEST round head' "task-event tsk-k verdict $ACTOR  APPROVE KratoBal/acroveliq#175 pr-marveen175 fej $H2" "$(tail -n1 "$EV")"
+printf '2026-11-23 20:00:00+0100  esemeny  review_requested murena     KratoBal/acroveliq#175\n' > "$T/tl-tsk-k"
+n="$(events)"
+check 'ellenoriz: someone else asked for the review -> 1' 1 "$(ellk marveen175 tsk-k APPROVE)"
+check '... names the author and who asked' 1 "$(grep -c "^FAIL: a legutolso kor (pr-marveen175.r2) szerzoje $RUNNER, de a(z) tsk-k feladaton nem o kert reviewt (review_requested: murena)" "$T/out")"
+check '... and writes nothing' "$n" "$(events)"
+check '... the main lib (runner is no fleet actor) refuses it too' 1 "$(ell marveen175 tsk-k APPROVE)"
+check '... and writes nothing' "$n" "$(events)"
+# a sibling whose README names another round is left out; two places claiming the same round stop
+mkdir "$Z/pr-marveen175.r3"; printf 'pr: KratoBal/acroveliq#175\nv2: task_id tsk-k, fej %s, merge-base a, origin/main a \n' "$H2" > "$Z/pr-marveen175.r3/README.md"
+printf '2026-11-23 20:00:00+0100  esemeny  review_requested tesztkero  KratoBal/acroveliq#175\n' > "$T/tl-tsk-k"
+check 'a sibling whose README names another round is left out -> still the v2 round' 0 "$(olv marveen175)"
+check '... and named' 1 "$(grep -c '^!! pr-marveen175.r3: a README-je nem a(z) v3 kort nevezi (hanem: 2), kihagyva$' "$T/out")"
+check '... the base folder naming v2 too: two places, one round -> ellenoriz 1' 1 "$(printf 'v2: task_id tsk-k, fej %s, merge-base a, origin/main a \n' "$H1" >> "$Z/pr-marveen175/README.md"; ellk marveen175 tsk-k APPROVE)"
+check '... and says nothing decides between them' 1 "$(grep -c '^FAIL: a(z) 2. kort ket hely is nevezi' "$T/out")"
+check '... and writes nothing' "$n" "$(events)"
+ln -s "$Z/pr-marveen175.r2" "$Z/pr-marveen176.r2"; mkdir "$Z/pr-marveen176"; cp "$Z/pr-marveen175/diff.patch" "$Z/pr-marveen176/"
+printf 'marveen PR 176 \ntask_id: tsk-k\nfej: %s\n' "$H1" > "$Z/pr-marveen176/README.md"
+check 'a symlinked sibling is not a round: the base round stays the latest' 1 "$(olv marveen176 >/dev/null; grep -cF "== A REVIEW ALAPJA: a(z) v1 kor, mappa: $Z/pr-marveen176, SZERZO: $RUNNER" "$T/out")"
 
 # the refs the script wrote, for the Task Core guard test (src/__tests__/review-ref-shape.test.ts)
 [ -n "${REVIEW_REFS_OUT:-}" ] && grep ' verdict ' "$EV" | sed -E 's/^task-event [^ ]+ verdict [^ ]+  //' > "$REVIEW_REFS_OUT"
