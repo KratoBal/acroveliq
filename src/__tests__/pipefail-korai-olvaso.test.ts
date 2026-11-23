@@ -161,9 +161,12 @@ function silentStops() {
 }
 
 describe('pipefail + errexit: no value reader on a pipe whose status stops the script', () => {
-  it('the premise: an assignment from a pipe into head stops a set -e script with no word, on SIGPIPE and on no match', () => {
+  // the SIGPIPE half reads with grep -m1, not head -1: on the CI runner `| head -1` let a 400 KB writer finish (the
+  // assignment passed, run of dc02b9a5), while here both gave 141 in 200 of 200; grep leaving early is what #403's
+  // premise already measured on CI, and the no-match half (r2) does not depend on any reader's timing
+  it('the premise: an assignment from a pipe into a value reader stops a set -e script with no word, on SIGPIPE and on no match', () => {
     const r1 = spawnSync('bash', ['-c', `set -euo pipefail
-x="$({ echo first; head -c 400000 /dev/zero; } | head -1)"
+x="$({ echo first; head -c 4000000 /dev/zero; } | grep -m1 first)"
 echo "after x=$x"`], { encoding: 'utf-8' })
     expect(r1.stdout).not.toContain('after')
     expect(r1.status).toBe(141)
