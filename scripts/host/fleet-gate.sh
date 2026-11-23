@@ -245,23 +245,29 @@ grant_block() {
     || deny "'fleet-ro-grant': a lista nem tölthető le ($GRANT_DOC a(z) $1 commiton)"
   blocks="$(printf '%s\n' "$doc" | grep -c '^```fleet-ro-grant[[:space:]]*$')"
   [ "$blocks" = 1 ] || deny "'fleet-ro-grant': a dokumentumban nem pontosan egy fleet-ro-grant blokk áll ($blocks)"
-  printf '%s\n' "$doc" | awk '/^```fleet-ro-grant[[:space:]]*$/ {f = 1; next} f && /^```/ {exit} f'
+  # A HERE-STRING, NOT A PIPE (task fleet-gate-sigpipe-20261123): awk leaves at the block's end, and under `pipefail` a printf still
+  # writing the rest of the document into a pipe got SIGPIPE, so the block read failed with 141 and the caller refused with no
+  # word. The document is 64 315 bytes, 51 637 of them after the block, against a 65 536-byte pipe: the same pipe failed 0/200
+  # times at today's size and 200/200 at 70 000 bytes (it failed the GRANT-DOC test twice in CI, 2026-10-19 and 2026-11-23).
+  awk '/^```fleet-ro-grant[[:space:]]*$/ {f = 1; next} f && /^```/ {exit} f' <<< "$doc"
 }
 # the list at a commit: only a commit on main (a branch of this public repository is not a
 # reviewed list), and only while its block is still main's (barracuda, #238 review: an older main
 # commit would bring back a line a later PR took out; the commit need not be main's head, or an
 # approval would lapse whenever another PR merges). Fetched anonymously.
 grant_fetch() {
-  local sha="$1" cmp head block headblock
+  local sha="$1" cmp head block headblock rc
   cmp="$("$CURL" -fsS --max-time 20 --max-filesize 4194304 -H 'Accept: application/vnd.github+json' "$GH_API/compare/$sha...main?per_page=1")" \
     || deny "'fleet-ro-grant': a commit nem ellenőrizhető a GitHubon"
-  printf '%s' "$cmp" | grep -Eq '"behind_by": *0[,}]' || deny "'fleet-ro-grant': a commit nincs a main ágon"
-  block="$(grant_block "$sha")" || exit 2
+  # the same here-string: grep -q leaves at the first match, and a compare answer over 64 KB (its file list) gave a false "not on main"
+  grep -Eq '"behind_by": *0[,}]' <<< "$cmp" || deny "'fleet-ro-grant': a commit nincs a main ágon"
+  # a failure that is not grant_block's own refusal (code 2, already said) is named, never a silent 2
+  block="$(grant_block "$sha")" || { rc=$?; [ "$rc" -eq 2 ] || deny "'fleet-ro-grant': a lista blokkja nem olvasható ki (kód $rc)"; exit 2; }
   head="$("$CURL" -fsS --max-time 20 -H 'Accept: application/vnd.github.sha' "$GH_API/commits/main")" \
     || deny "'fleet-ro-grant': a main feje nem kérdezhető le"
   [[ "$head" =~ ^[0-9a-f]{40}$ ]] || deny "'fleet-ro-grant': a main feje nem commit-azonosító"
   if [ "$head" != "$sha" ]; then
-    headblock="$(grant_block "$head")" || exit 2
+    headblock="$(grant_block "$head")" || { rc=$?; [ "$rc" -eq 2 ] || deny "'fleet-ro-grant': a main fejének listája nem olvasható ki (kód $rc)"; exit 2; }
     [ "$block" = "$headblock" ] || deny "'fleet-ro-grant': a lista a(z) $sha óta változott a main-en ($head): a mostani fejjel kérd újra"
   fi
   printf '%s\n' "$block"

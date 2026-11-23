@@ -550,7 +550,7 @@ install -o root -g root -m 0755 /tmp/fleet-gate.sh /usr/local/sbin/fleet-gate
 install -d -o root -g root -m 0755 /usr/local/lib/fleet-gate
 install -o root -g root -m 0644 /tmp/quote-templates-sync.mjs /usr/local/lib/fleet-gate/quote-templates-sync.mjs
 install -o root -g root -m 0755 /tmp/naplo-szuro.py /usr/local/lib/fleet-gate/naplo-szuro
-echo 'dd606c7d31200464a5a2d822298ed045aebb79027cb09ac8297c302cbf7397d2  /usr/local/sbin/fleet-gate' | sha256sum -c
+echo '937bd2511c9220887bf4a90120c747b73c5a8b8201d3517657e66d1328e1e3d4  /usr/local/sbin/fleet-gate' | sha256sum -c
 echo 'd958d5a4050ebbf52610ca70f3574a3e572bf349751fbd7b011411a68a322834  /usr/local/lib/fleet-gate/quote-templates-sync.mjs' | sha256sum -c
 echo '0508545f523d15461b0e9224fcc626f4ad51c09d3a127f2bdd042f6ad0752caa  /usr/local/lib/fleet-gate/naplo-szuro' | sha256sum -c
                                              # mindhárom: OK. Ha nem: állj meg, és szólj.
