@@ -11,7 +11,8 @@
 # dump proves the database works; only the stored copy proves the backup works.
 #
 # WHAT IT COVERS TODAY
-#   fleet  Acropora_Backup/acrobot-fleet/*.db.gz     sqlite integrity_check + row counts vs live
+#   fleet  Acropora_Backup/acrobot-fleet/*.db.gz     sqlite integrity_check, the four tables, row counts vs live,
+#                                                    and the newest rows as fresh as live was at the file's time
 #   ai     Acropora_Backup/acropora-ai/*.dump        pg_restore into a throwaway postgres:16
 #                                                    container on the stage machine, row counts
 #                                                    vs the live AI database, then removed
@@ -67,24 +68,9 @@ if [ "$WHAT" = all ] || [ "$WHAT" = fleet ]; then
     rm -f "$WORK/fleet.db.gz" "$WORK/fleet.db"
     nas_get "Acropora_Backup/acrobot-fleet/$F" "$WORK/fleet.db.gz"
     if ! gunzip -c "$WORK/fleet.db.gz" > "$WORK/fleet.db" 2>/dev/null; then fail fleet "$F nem bonthato ki"; else
-      python3 - "$WORK/fleet.db" "$ROOT/store/claudeclaw.db" "$F" <<'PY' || FAILS=$((FAILS + 1))
-import sqlite3, sys
-bak, live, name = sys.argv[1:4]
-b = sqlite3.connect("file:%s?mode=ro" % bak, uri=True)
-ok = b.execute("pragma integrity_check").fetchone()[0]
-tables = [r[0] for r in b.execute("select name from sqlite_master where type='table' and name not like 'sqlite_%'")]
-l = sqlite3.connect("file:%s?mode=ro" % live, uri=True)
-bad = []
-for t in ("memories", "kanban_cards", "agent_messages", "daily_logs"):
-    if t not in tables: continue
-    nb = b.execute('select count(*) from "%s"' % t).fetchone()[0]
-    nl = l.execute('select count(*) from "%s"' % t).fetchone()[0]
-    print("   %-14s mentes %7d   elo %7d" % (t, nb, nl))
-    if nb == 0 or nb > nl: bad.append(t)
-print("   %s: integrity %s, %d tabla" % (name, ok, len(tables)))
-if ok != "ok" or len(tables) < 10 or bad:
-    print("FAIL[fleet]: integrity=%s tablak=%d gyanus=%s" % (ok, len(tables), bad)); sys.exit(1)
-PY
+      # integrity, the four tables, their counts against live, and (card 1c3b73dc) the content's freshness against what the live
+      # database held at the file's time: scripts/visszaallitasi-proba-flotta.py
+      python3 "$ROOT/scripts/visszaallitasi-proba-flotta.py" "$WORK/fleet.db" "$ROOT/store/claudeclaw.db" "$F" || FAILS=$((FAILS + 1))
     fi
     rm -f "$WORK/fleet.db.gz" "$WORK/fleet.db"
   fi
