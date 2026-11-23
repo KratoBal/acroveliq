@@ -556,6 +556,10 @@ check 'without --fej nothing is asked of GitHub' "0|$(wc -l < "$T/api/requests")
 check 'review-fej-diff on binary files: only full, 40 hex blob ids that match' 0 \
   "$(python3 -B -I "$(dirname "${BASH_SOURCE[0]}")/review-fej-diff-binary.test.py" > "$T/bin-suite" 2>&1; echo $?)"
 [ "$(tail -1 "$T/bin-suite")" = 'all pass' ] || cat "$T/bin-suite"
+# a CRLF file: the packet's patch is read byte for byte, as the head's diff is (barracuda 47502)
+check 'review-fej-diff on a CRLF file: the same bytes match, an LF packet does not' 0 \
+  "$(python3 -B -I "$(dirname "${BASH_SOURCE[0]}")/review-fej-diff-crlf.test.py" > "$T/crlf-suite" 2>&1; echo $?)"
+[ "$(tail -1 "$T/crlf-suite")" = 'all pass' ] || cat "$T/crlf-suite"
 
 # the refs the script wrote, for the Task Core guard test (src/__tests__/review-ref-shape.test.ts)
 [ -n "${REVIEW_REFS_OUT:-}" ] && grep ' verdict ' "$EV" | sed -E 's/^task-event [^ ]+ verdict [^ ]+  //' > "$REVIEW_REFS_OUT"
