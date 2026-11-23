@@ -738,6 +738,29 @@ cat "$f"
       .toEqual([0, 125, true, true, true])
   })
 
+  // THE PIPE THAT BROKE ON SIZE (task fleet-gate-sigpipe-20261123): the block and the compare answer went through `printf | awk/grep -q`
+  // under pipefail, and a consumer that leaves early made a writer past the 64 KB pipe buffer die of SIGPIPE: a silent 2, or a false
+  // "not on main". With a document and a compare answer far past the buffer, the plan must still pass.
+  it('GRANT-DOC-BIG: a document and a compare answer far past a pipe buffer still give the plan, no silent 2', () => {
+    const g = grantWorld()
+    g.doc(BASE, 'x'.repeat(200_000) + '\n')
+    // pretty-printed, as GitHub sends it: grep -q leaves after the behind_by LINE, so a one-line answer would not show the break
+    const files = Array.from({ length: 3000 }, (_, i) => `    {"filename": "f${i}.ts", "status": "modified", "patch": "${'y'.repeat(60)}"}`).join(',\n')
+    writeFileSync(join(g.w.dir, 'compare.json'), `{\n  "status": "ahead",\n  "ahead_by": 3,\n  "behind_by": 0,\n  "files": [\n${files}\n  ]\n}\n`)
+    const r = g.run(`fleet-ro-grant ${OS_DB} acropora ${COMMIT} terv`)
+    expect([r.code, g.sql().includes("('ExternalBillingDocument', 'documentNumber')"), r.err.trim()], 'GRANT-DOC-BIG').toEqual([0, true, ''])
+  })
+
+  // UNTIL THE LIVE GATE IS REINSTALLED it is the old code (acrobot 59574): there the pipe breaks once the part of docs/fleet-gate.md after
+  // the list block passes the 64 KB pipe buffer (measured: 0/200 at 51 637 bytes, 200/200 at 70 000), and the live fleet-ro-grant refuses
+  // with no word. The CI keeps the margin; take this guard out only with the reinstall.
+  it('GRANT-DOC-MARGIN: the part of docs/fleet-gate.md after the list block stays under 60 000 bytes while the live gate is the old code', () => {
+    const doc = readFileSync(join(process.cwd(), 'docs', 'fleet-gate.md'))
+    const start = doc.indexOf('```fleet-ro-grant')
+    const end = doc.indexOf('```', start + 10)
+    expect([start > 0, end > start, doc.length - end < 60_000], `GRANT-DOC-MARGIN: ${doc.length - end} bytes after the block`).toEqual([true, true, true])
+  })
+
   it('GRANT-STALE: an older main commit whose list a later PR changed is refused; one whose list main still holds passes', () => {
     const OLDER = 'a'.repeat(40)
     const HEAD = 'b'.repeat(40)
