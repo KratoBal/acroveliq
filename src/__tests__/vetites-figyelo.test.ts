@@ -79,6 +79,15 @@ describe('vetites-figyelo.sh', () => {
     },
   )
 
+  it.each([
+    ['Infinity', 'Infinity', 'inf'],
+    ['a huge number', '1e300', '1e+300'],
+  ])('an age of %s with a timestamp still gives one line, without the time (barracuda, #411)', async (_label, age, shown) => {
+    const body = `{"timestamp":"2026-11-24T07:08:00.000Z","doseProjection":{"stale":false,"ageHours":${age},"rowCount":42,"failingSinceLastSuccess":false}}`
+    const r = await verdict(body)
+    expect(r).toEqual({ code: 0, line: `OK vetites (${base}): ${shown} oraja epult, 42 sor` })
+  })
+
   it('a stale projection names its build time too', async () => {
     const r = await verdict(
       health({ stale: true, ageHours: 30, rowCount: 42, failingSinceLastSuccess: false }, { timestamp: '2026-11-24T07:00:00.000Z' }),

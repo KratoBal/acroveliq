@@ -94,7 +94,12 @@ def built_at(age):
         return ""
     if now.tzinfo is None:
         return ""
-    at = (now - timedelta(hours=age)).astimezone(timezone.utc)
+    # json.load takes Infinity, and is_number lets it (and a huge age) through: the subtraction
+    # then raises instead of giving a time (barracuda, #411).
+    try:
+        at = (now - timedelta(hours=age)).astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        return ""
     return f" (kb. {at:%m-%d %H:%M} UTC)"
 
 # 0 rows from a fresh, working build is an empty source, not a stuck projection: the OS projects
