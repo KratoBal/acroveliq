@@ -63,7 +63,7 @@ REPO="${PR_REPO:-KratoBal/acropora-os}"
 [ "$#" -ge 1 ] || { echo "HASZNALAT: ci-naplo.sh <PR-szam> | --sha <sha> | --job <id>" >&2; exit 2; }
 
 GH_TOK="$(github_token "$REPO" olvas)" || exit 1
-TOKEN="$GH_TOK" REPO="$REPO" python3 - "$@" <<'PY'
+TOKEN="$GH_TOK" REPO="$REPO" REPO_MEGADVA="${PR_REPO:+1}" python3 - "$@" <<'PY'
 import json, os, re, subprocess, sys, datetime, tempfile, time
 
 tok, repo = os.environ["TOKEN"], os.environ["REPO"]
@@ -250,8 +250,9 @@ else:
             _c = api("/commits/" + fej)
             _teljes = _c.get("sha") if isinstance(_c, dict) else None
             if not _teljes or len(_teljes) != 40:
-                print("FAIL: a rovid SHA (%s) nem oldhato fel ebben a repoban. "
-                      "Add meg a teljes negyven karaktert." % fej, file=sys.stderr)
+                print("FAIL: a rovid SHA (%s) nem oldhato fel a %s repoban. "
+                      "Add meg a teljes negyven karaktert, vagy ha mas repo feje, a PR_REPO-t."
+                      % (fej, repo), file=sys.stderr)
                 sys.exit(1)
             print("    [a rovid SHA feloldva: %s -> %s]" % (fej, _teljes))
             fej = _teljes
@@ -271,8 +272,25 @@ else:
 # pr-allapot.sh). A time.strftime a C konyvtar zonajat olvassa.
 most = time.strftime("%H:%M:%S %Z (%z)")
 print("--- ci-naplo (lekerdezve %s, repo %s) ---" % (most, repo))
+# A REPO ALAPERTELMEZESE NEMA VOLT (2026-11-24, acroveliq #411): PR_REPO nelkul a szkript az
+# acropora-os-t kerdezi, es egy flotta-repo PR-szamara annak a reponak egy MASIK PR-jet adja.
+if not os.environ.get("REPO_MEGADVA"):
+    print("    [PR_REPO nincs megadva: az alapertelmezett repot kerdeztem; mas repohoz PR_REPO=<owner/repo>]")
 if fej: print("fej: %s" % fej[:12])
 if not job_idk:
+    # EGY MASIK REPO FEJE NEM "NEM INDULT EL" (2026-11-24, acroveliq #411). PR_REPO nelkul egy
+    # acroveliq fejre ugyanez a sor jott, se `?`, se success, es egy varo ciklus 20 percig allt
+    # rajta. A /commits/<sha> megmondja: ha a commit nincs ebben a repoban, 422 "No commit found".
+    if argv[0] == "--sha":
+        c = api("/commits/" + fej)
+        if isinstance(c, dict) and not c.get("sha") and "No commit found" in str(c.get("message", "")):
+            print("FAIL: a %s fej nincs a %s repoban, ezert futas sincs ra. Mas repo feje? "
+                  "PR_REPO=<owner/repo>" % (fej[:12], repo), file=sys.stderr)
+            sys.exit(1)
+        if not (isinstance(c, dict) and c.get("sha")):
+            print("NINCS FUTAS erre a fejre, es hogy a commit a %s repoban van-e, nem derult ki "
+                  "(a /commits valasza nem sha es nem 'No commit found')." % repo)
+            sys.exit(0)
     print("NINCS FUTAS erre a fejre. Nem azt jelenti, hogy zold: azt, hogy nem indult el.")
     sys.exit(0)
 
