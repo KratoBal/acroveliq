@@ -78,10 +78,11 @@ describe('ci-naplo.sh: the repo it asks', () => {
     expect(readFileSync(join(root, 'urls.log'), 'utf8')).toContain('/repos/KratoBal/acroveliq/commits/')
   })
 
-  it('an answer that is neither a sha nor "No commit found" claims neither', async () => {
+  it('an answer that is neither a sha nor "No commit found" claims neither, with its own line start and exit 3 (barracuda, #413)', async () => {
     const r = await run(['--sha', HEAD], { COMMIT_BODY: JSON.stringify({ message: 'Bad credentials' }) })
-    expect(r.code).toBe(0)
-    expect(r.out).toContain('a KratoBal/acropora-os repoban van-e, nem derult ki')
+    expect(r.code).toBe(3)
+    expect(r.out).toContain('NEM MERHETO: erre a fejre nincs futas, es hogy a commit a KratoBal/acropora-os repoban van-e, nem derult ki')
+    expect(r.out).not.toContain('NINCS FUTAS')
     expect(r.err).not.toContain('FAIL')
   })
 

@@ -19,6 +19,12 @@
 #   bash .../ci-naplo.sh --meres <sha>      # MERES-AG: a ZOLD naplot is lehuzza, es
 #                                           # MINDEN TAP allitas-sort kiir, sorrendben
 #
+# A REPO: PR_REPO=<owner/repo>, alapertelmezes KratoBal/acropora-os (a kimenet kimondja).
+# FUTAS NELKULI FEJRE (--sha) harom kulon valasz, egy varo ciklusnak mind a harom vegallapot:
+#   "NINCS FUTAS ..."  exit 0   a commit a repoban van, a CI meg nem indult el
+#   "FAIL: ..."        exit 1   a commit NINCS ebben a repoban (mas repo feje: PR_REPO)
+#   "NEM MERHETO: ..." exit 3   a GitHub valaszabol nem derult ki (pl. rossz token)
+#
 # A `--meres` AZERT KELL, MERT OTT A POLARITAS FORDITOTT: egy `meres/**` agon a zold
 # azt jelenti, hogy a szandekos rontas ELSULT, tehat eppen a ZOLD futas naplojat kell
 # elolvasni -- az alapertelmezes pedig a zold jobot at is lepi. Enelkul a kalibraciot
@@ -287,10 +293,12 @@ if not job_idk:
             print("FAIL: a %s fej nincs a %s repoban, ezert futas sincs ra. Mas repo feje? "
                   "PR_REPO=<owner/repo>" % (fej[:12], repo), file=sys.stderr)
             sys.exit(1)
+        # Its own line start and exit code (barracuda, #413): under a bad token or a GitHub error
+        # this is not "not started", and a loop reading exit 0 or "NINCS FUTAS" would wait again.
         if not (isinstance(c, dict) and c.get("sha")):
-            print("NINCS FUTAS erre a fejre, es hogy a commit a %s repoban van-e, nem derult ki "
-                  "(a /commits valasza nem sha es nem 'No commit found')." % repo)
-            sys.exit(0)
+            print("NEM MERHETO: erre a fejre nincs futas, es hogy a commit a %s repoban van-e, nem "
+                  "derult ki (a /commits valasza nem sha es nem 'No commit found')." % repo)
+            sys.exit(3)
     print("NINCS FUTAS erre a fejre. Nem azt jelenti, hogy zold: azt, hogy nem indult el.")
     sys.exit(0)
 
