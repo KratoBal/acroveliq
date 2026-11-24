@@ -41,6 +41,11 @@
 #   bash scripts/ticket-mail.sh auth-code <kod>   # a cimsorbol kimasolt code= ertek
 #   bash scripts/ticket-mail.sh whoami            # MELYIK postafiokra kotottuk
 #   bash scripts/ticket-mail.sh lista [n]         # a legutobbi levelek (felado, targy)
+#
+# AZ OLVASO TOKEN (kartya ec7b947b, acrobot 60314; Balazs Google-engedelye 2026-11-24 09:54 UTC):
+#   bash scripts/ticket-mail.sh auth-url-olvaso      # jovahagyasi link CSAK gmail.readonly-ra
+#   bash scripts/ticket-mail.sh auth-code-olvaso     # a cimsort a TERMINALBAN keri be (nem argv)
+#   bash scripts/ticket-mail.sh olvaso-ellenoriz     # a token hatokore, a postafiok, es hogy NEM kuld
 set -uo pipefail
 
 ROOT=/home/marveen/marveen
@@ -48,6 +53,14 @@ CID_FILE="$ROOT/store/.ticket-mail-client-id"
 SEC_FILE="$ROOT/store/.ticket-mail-client-secret"
 REFRESH_FILE="$ROOT/store/.ticket-mail-refresh-token"
 ACCESS_FILE="$ROOT/store/.ticket-mail-access-token"
+# AZ OLVASO TOKEN KULON FAJL, ES SOSEM A FENTI: a hibajegy-bevitel (GMAIL_TICKET_READ_*) sajat,
+# csak olvaso tokent kap, hogy az olvaso folyamat ne tudjon kuldeni. Ugyanaz a Desktop kliens
+# (ticket-mail-2026-10, emlek 2355), csak a hozzajarulas ker kevesebbet. A regi `auth-code` a
+# kuldo tokent irja; ha ugyanabba a fajlba irna, a kuldes csendben elhalna.
+READ_REFRESH_FILE="$ROOT/store/.ticket-mail-read-refresh-token"
+READ_ACCESS_FILE="$ROOT/store/.ticket-mail-read-access-token"
+READ_SCOPE="https://www.googleapis.com/auth/gmail.readonly"
+TICKET_USER="ticket@acropora.hu"
 REDIRECT="http://localhost:8765/"
 
 # A KET SCOPE, ES MIERT PONTOSAN EZ A KETTO:
@@ -194,11 +207,143 @@ for i in ids: print(" ", i)
 '
 }
 
+# === AZ OLVASO TOKEN ===
+#
+# A link CSAK a gmail.readonly-t keri, es `include_granted_scopes` NINCS benne: e nelkul a Google
+# a mar korabban megadott (send) jogot NEM teszi hozza, tehat az uj token valoban csak olvas.
+# A `login_hint` a ticket@ fiokot ajanlja a fiokvalasztoban: egy rossz fiokra kotott token
+# olvasna, csak nem azt a postafiokot.
+auth_url_olvaso() {
+  need_file "$CID_FILE"
+  local cid; cid="$(cat "$CID_FILE")"
+  [ -n "$cid" ] || die "ures: $CID_FILE"
+  CID="$cid" REDIRECT="$REDIRECT" SCOPE="$READ_SCOPE" HINT="$TICKET_USER" python3 -c '
+import os, urllib.parse
+q = {
+    "client_id": os.environ["CID"],
+    "redirect_uri": os.environ["REDIRECT"],
+    "response_type": "code",
+    "scope": os.environ["SCOPE"],
+    "access_type": "offline",
+    "prompt": "consent",
+    "login_hint": os.environ["HINT"],
+}
+print("https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(q))
+'
+  echo
+  echo "NYISD MEG ${TICKET_USER}-kent. A jovahagyas utan a bongeszo egy localhost cimre dob,"
+  echo "ami NEM TOLT BE -- ez NORMALIS. A TELJES cimsort masold ki, es a auth-code-olvaso kerje be."
+}
+
+# A KOD A TERMINALBOL JON, NEM ARGUMENTUMKENT: az argv-t minden folyamat-lista mutatja (P0-1).
+# A kod egyszer hasznalhato es percek alatt lejar, de a terminal-bekeres semmibe sem kerul.
+auth_code_olvaso() {
+  [ "$#" -eq 0 ] || die "a kodot NE argumentumkent add meg: auth-code-olvaso, utana a terminal kerdezi"
+  local cid sec code
+  cid="$(read_file "$CID_FILE")"; sec="$(read_file "$SEC_FILE")"
+  printf 'Illeszd be a localhost cimsort (vagy csak a code= erteket), majd Enter: ' >&2
+  IFS= read -r -s code || die "nem jott bemenet"
+  echo >&2
+  case "$code" in *code=*) code="${code#*code=}"; code="${code%%&*}";; esac
+  code="$(printf '%s' "$code" | python3 -c 'import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))')"
+  [ -n "$code" ] || die "ures kod"
+  local resp
+  resp="$(curl -s -m 30 -X POST https://oauth2.googleapis.com/token \
+    --data-urlencode "code@"<(printf '%s' "$code") --data-urlencode "redirect_uri=$REDIRECT" \
+    --data-urlencode "client_id=$cid" --data-urlencode "client_secret@"<(printf '%s' "$sec") \
+    --data-urlencode "grant_type=authorization_code")"
+  RESP="$resp" OUT="$READ_REFRESH_FILE" WANT="$READ_SCOPE" python3 -c '
+import json, os, sys
+try:
+    d = json.loads(os.environ["RESP"])
+except ValueError:
+    print("FAIL: a token-valasz nem JSON", file=sys.stderr); sys.exit(1)
+if "refresh_token" not in d:
+    # a hibaszoveg a Google sajatja (pl. invalid_grant: a kod lejart vagy mar felhasznaltak); titok nincs benne
+    print("FAIL: nincs refresh_token a valaszban: %s %s" % (d.get("error", ""), d.get("error_description", "")), file=sys.stderr)
+    sys.exit(1)
+scopes = set(d.get("scope", "").split())
+if scopes != {os.environ["WANT"]}:
+    # egy szelesebb token itt NEM kerul fajlba: a READ_* nev olvaso jogot iger
+    print("FAIL: a token hatokore nem csak gmail.readonly: %s -- nem irom ki" % " ".join(sorted(scopes)), file=sys.stderr)
+    sys.exit(1)
+p = os.environ["OUT"]
+old = os.umask(0o077)
+with open(p, "w") as f: f.write(d["refresh_token"])
+os.umask(old)
+print("OK, az olvaso refresh token kiirva:", p, "(hatokor: gmail.readonly)")
+'
+}
+
+read_access_token() {
+  local cid sec rt resp
+  cid="$(read_file "$CID_FILE")"; sec="$(read_file "$SEC_FILE")"; rt="$(read_file "$READ_REFRESH_FILE")"
+  resp="$(curl -s -m 30 -X POST https://oauth2.googleapis.com/token \
+    --data-urlencode "client_id=$cid" --data-urlencode "client_secret@"<(printf '%s' "$sec") \
+    --data-urlencode "refresh_token@"<(printf '%s' "$rt") --data-urlencode "grant_type=refresh_token")"
+  RESP="$resp" OUT="$READ_ACCESS_FILE" python3 -c '
+import json, os, sys
+try:
+    d = json.loads(os.environ["RESP"])
+except ValueError:
+    print("FAIL: a token-valasz nem JSON", file=sys.stderr); sys.exit(1)
+if "access_token" not in d:
+    print("FAIL: nincs access_token: %s %s" % (d.get("error", ""), d.get("error_description", "")), file=sys.stderr); sys.exit(1)
+old = os.umask(0o077)
+with open(os.environ["OUT"], "w") as f: f.write(d["access_token"])
+os.umask(old)
+'
+}
+
+# HAROM ALLITAS, MIND A MUNKA SAJAT VEGPONTJAN (a skill buktatoja: egy rossz vegpont hamis 403-at ad):
+#   1. a token hatokore PONTOSAN gmail.readonly  (tokeninfo, a token a TORZSBEN, nem az URL-ben)
+#   2. a postafiok a ticket@                     (users/me/profile)
+#   3. KULDENI NEM TUD                            (users/me/messages/send ures torzzsel: 403 kell;
+#      egy kuldo token erre 400-at adna, level akkor sem menne ki, mert nincs mit kuldeni)
+olvaso_ellenoriz() {
+  need_file "$CID_FILE"; need_file "$SEC_FILE"
+  [ -r "$READ_REFRESH_FILE" ] || die "nincs olvaso token. Sorrend: auth-url-olvaso -> jovahagyas -> auth-code-olvaso"
+  read_access_token || exit 1
+  local tok; tok="$(cat "$READ_ACCESS_FILE")"
+  [ -n "$tok" ] || die "ures access token"
+  local info prof send hibak=0
+  info="$(curl -s -m 30 -X POST https://oauth2.googleapis.com/tokeninfo --data-urlencode "access_token@"<(printf '%s' "$tok"))"
+  prof="$(curl -s -m 30 -H @<(printf 'Authorization: Bearer %s\n' "$tok") https://gmail.googleapis.com/gmail/v1/users/me/profile)"
+  send="$(curl -s -m 30 -o /dev/null -w '%{http_code}' -X POST -H @<(printf 'Authorization: Bearer %s\nContent-Type: application/json\n' "$tok") \
+    -d '{}' https://gmail.googleapis.com/gmail/v1/users/me/messages/send)"
+  INFO="$info" PROF="$prof" SEND="$send" WANT="$READ_SCOPE" USER_="$TICKET_USER" python3 -c '
+import json, os, sys
+def load(k):
+    try: return json.loads(os.environ[k])
+    except ValueError: return {}
+bad = 0
+scopes = set(load("INFO").get("scope", "").split())
+if scopes == {os.environ["WANT"]}:
+    print("OK    hatokor: csak gmail.readonly")
+else:
+    bad += 1; print("HIBA  hatokor: %s" % (" ".join(sorted(scopes)) or "(nem olvashato)"))
+mail = load("PROF").get("emailAddress")
+if mail == os.environ["USER_"]:
+    print("OK    postafiok: %s" % mail)
+else:
+    bad += 1; print("HIBA  postafiok: %s (a vart: %s)" % (mail, os.environ["USER_"]))
+if os.environ["SEND"] == "403":
+    print("OK    kuldes: 403, az olvaso token nem kuld")
+else:
+    bad += 1; print("HIBA  kuldes: %s (403 kellene)" % os.environ["SEND"])
+print("OSSZESEN: minden OK" if bad == 0 else "OSSZESEN: %d HIBA" % bad)
+sys.exit(1 if bad else 0)
+'
+}
+
 cmd="${1:-}"; shift || true
 case "$cmd" in
   auth-url|auth) auth_url ;;
   auth-code) auth_code "${1:-}" ;;
   whoami) whoami ;;
   lista) lista "${1:-10}" ;;
-  *) die "ismeretlen parancs: '${cmd:-}' -- auth-url | auth-code | whoami | lista" ;;
+  auth-url-olvaso) auth_url_olvaso ;;
+  auth-code-olvaso) auth_code_olvaso "$@" ;;
+  olvaso-ellenoriz) olvaso_ellenoriz ;;
+  *) die "ismeretlen parancs: '${cmd:-}' -- auth-url | auth-code | whoami | lista | auth-url-olvaso | auth-code-olvaso | olvaso-ellenoriz" ;;
 esac
