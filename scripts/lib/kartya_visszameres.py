@@ -31,6 +31,7 @@ ALIASES = {
     'commerce': 'KratoBal/acropora-commerce',
     'cap': 'KratoBal/caparium-napplo',
     'caparium': 'KratoBal/caparium-napplo',
+    'barka': 'KratoBal/Barka',
     'ai': 'KratoBal/acropora-ai-agent',
     'marveen': 'KratoBal/acroveliq',
     'acroveliq': 'KratoBal/acroveliq',
