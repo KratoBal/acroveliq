@@ -593,6 +593,15 @@ sed "s#^    agent-?\*) #    $RUNNER) echo tesztkero ;;\n    agent-?*) #" "$HERE/
 check 'the lib copy maps the runner to tesztkero' 1 "$(grep -cF "$RUNNER) echo tesztkero ;;" "$T/korlib/review-kor.sh")"
 sed -e "s|^KOR_LIB=.*|KOR_LIB=$T/korlib/review-kor.sh|" "$T/ell.sh" > "$T/ell-kor.sh"
 ellk() { bash "$T/ell-kor.sh" "$@" >"$T/out" 2>&1; echo $?; }
+# THE RUNNER MAY BE A FLEET ACTOR (a fleet agent running the suite is agent-<name>, which the main lib maps to <name>; the CI runner
+# is `runner`, which it maps to nothing). The refusal below is about an owner that stands for NO actor, so that is made explicit: a
+# second lib copy maps the runner to no actor whoever runs the test. On a runner the main lib already maps to nothing the copy
+# behaves like the main lib; on a fleet agent it is the only way the same case is measured (acrobot 60253, 2026-11-24).
+mkdir "$T/korlib-nincs-szereplo"
+sed "s#^    agent-?\*) #    $RUNNER) echo \"\" ;;\n    agent-?*) #" "$HERE/../lib/review-kor.sh" > "$T/korlib-nincs-szereplo/review-kor.sh"
+check 'the second lib copy maps the runner to no actor' 1 "$(grep -cF "$RUNNER) echo \"\" ;;" "$T/korlib-nincs-szereplo/review-kor.sh")"
+sed -e "s|^KOR_LIB=.*|KOR_LIB=$T/korlib-nincs-szereplo/review-kor.sh|" "$T/ell.sh" > "$T/ell-nincs-szereplo.sh"
+ellns() { bash "$T/ell-nincs-szereplo.sh" "$@" >"$T/out" 2>&1; echo $?; }
 check 'olvas: the packet with a sibling round -> 0' 0 "$(olv marveen175)"
 check '... names the round reviewed, its folder and its AUTHOR' 1 "$(grep -cF "== A REVIEW ALAPJA: a(z) v2 kor, mappa: $Z/pr-marveen175.r2, SZERZO: $RUNNER" "$T/out")"
 check '... says loudly that it is a sibling round' 1 "$(grep -c '^!! TESTVER-MAPPA KOR: ' "$T/out")"
@@ -609,7 +618,7 @@ n="$(events)"
 check 'ellenoriz: someone else asked for the review -> 1' 1 "$(ellk marveen175 tsk-k APPROVE)"
 check '... names the author and who asked' 1 "$(grep -c "^FAIL: a legutolso kor (pr-marveen175.r2) szerzoje $RUNNER, de a(z) tsk-k feladaton nem o kert reviewt (review_requested: murena)" "$T/out")"
 check '... and writes nothing' "$n" "$(events)"
-check '... the main lib (runner is no fleet actor) refuses it too' 1 "$(ell marveen175 tsk-k APPROVE)"
+check '... a lib in which the runner is no fleet actor refuses it too' 1 "$(ellns marveen175 tsk-k APPROVE)"
 check '... and writes nothing' "$n" "$(events)"
 # a sibling whose README names another round is left out; two places claiming the same round stop
 mkdir "$Z/pr-marveen175.r3"; printf 'pr: KratoBal/acroveliq#175\nv2: task_id tsk-k, fej %s, merge-base a, origin/main a \n' "$H2" > "$Z/pr-marveen175.r3/README.md"
