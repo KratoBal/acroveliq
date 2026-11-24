@@ -59,6 +59,43 @@ describe('vetites-figyelo.sh', () => {
     expect(r).toEqual({ code: 0, line: `OK vetites (${base}): 0.5 oraja epult, 42 sor` })
   })
 
+  it('the build time beside the age, from the /health timestamp (the same age every hour is not a stuck value)', async () => {
+    const r = await verdict(
+      health({ stale: false, ageHours: 0.37, rowCount: 42, failingSinceLastSuccess: false }, { timestamp: '2026-11-24T07:08:00.000Z' }),
+    )
+    expect(r).toEqual({ code: 0, line: `OK vetites (${base}): 0.37 oraja epult (kb. 11-24 06:45 UTC), 42 sor` })
+  })
+
+  it('0 rows from a fresh build says the source is empty', async () => {
+    const r = await verdict(health({ stale: false, ageHours: 0.1, rowCount: 0, failingSinceLastSuccess: false }))
+    expect(r).toEqual({ code: 0, line: `OK vetites (${base}): 0.1 oraja epult, 0 sor (ures forras: nincs ProductDoseEffect sor)` })
+  })
+
+  it.each([['not a time', 'tegnap'], ['no zone', '2026-11-24T07:08:00'], ['not a string', 1795504101]])(
+    'a timestamp that is %s leaves the time out and the verdict alone',
+    async (_label, timestamp) => {
+      const r = await verdict(health({ stale: false, ageHours: 0.5, rowCount: 42, failingSinceLastSuccess: false }, { timestamp }))
+      expect(r).toEqual({ code: 0, line: `OK vetites (${base}): 0.5 oraja epult, 42 sor` })
+    },
+  )
+
+  it.each([
+    ['Infinity', 'Infinity', 'inf'],
+    ['a huge number', '1e300', '1e+300'],
+  ])('an age of %s with a timestamp still gives one line, without the time (barracuda, #411)', async (_label, age, shown) => {
+    const body = `{"timestamp":"2026-11-24T07:08:00.000Z","doseProjection":{"stale":false,"ageHours":${age},"rowCount":42,"failingSinceLastSuccess":false}}`
+    const r = await verdict(body)
+    expect(r).toEqual({ code: 0, line: `OK vetites (${base}): ${shown} oraja epult, 42 sor` })
+  })
+
+  it('a stale projection names its build time too', async () => {
+    const r = await verdict(
+      health({ stale: true, ageHours: 30, rowCount: 42, failingSinceLastSuccess: false }, { timestamp: '2026-11-24T07:00:00.000Z' }),
+    )
+    expect(r.code).toBe(1)
+    expect(r.line).toMatch(/elavult: 30 oraja epult utoljara \(kb\. 11-23 01:00 UTC\) \(42 sor\)$/)
+  })
+
   it.each([
     ['stale', { stale: true, ageHours: 30, rowCount: 42, failingSinceLastSuccess: false }, /elavult: 30 oraja epult utoljara \(42 sor\)/],
     ['never built', { stale: true, ageHours: null, rowCount: 0, failingSinceLastSuccess: false }, /elavult: meg soha nem epult fel/],

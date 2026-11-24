@@ -77,13 +77,43 @@ known = (
 if not known:
     alarm(f"a doseProjection alakja ismeretlen (http {code})")
 
+# The build time beside the age (acrobot 60229). The OS rebuilds hourly in the phase of its start,
+# so a watcher run at the same minute each hour prints the same age all night, which reads like a
+# stuck value. The time itself is not in the field: it is the /health `timestamp` minus the age,
+# and the age is rounded to 0.01 h, so the minute is exact to about 18 seconds. When the timestamp
+# is missing or not a time, the line simply goes without it: it never changes the verdict.
+from datetime import datetime, timedelta, timezone
+
+def built_at(age):
+    stamp = health.get("timestamp")
+    if age is None or not isinstance(stamp, str):
+        return ""
+    try:
+        now = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if now.tzinfo is None:
+        return ""
+    # json.load takes Infinity, and is_number lets it (and a huge age) through: the subtraction
+    # then raises instead of giving a time (barracuda, #411).
+    try:
+        at = (now - timedelta(hours=age)).astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        return ""
+    return f" (kb. {at:%m-%d %H:%M} UTC)"
+
+# 0 rows from a fresh, working build is an empty source, not a stuck projection: the OS projects
+# every ProductDoseEffect row, archived ones included, with no filter.
+def rows(count):
+    return f"{count} sor" + (" (ures forras: nincs ProductDoseEffect sor)" if count == 0 else "")
+
+age = p.get("ageHours")
 reasons = []
 if p.get("failingSinceLastSuccess"):
     reasons.append("az ujraepites a legutobbi siker ota bukik")
 if p.get("stale"):
-    age = p.get("ageHours")
-    reasons.append("elavult: meg soha nem epult fel" if age is None else f"elavult: {age} oraja epult utoljara")
+    reasons.append("elavult: meg soha nem epult fel" if age is None else f"elavult: {age} oraja epult utoljara{built_at(age)}")
 if reasons:
     alarm("; ".join(reasons) + f" ({p.get('rowCount')} sor)")
-print(f"OK vetites ({base}): {p.get('ageHours')} oraja epult, {p.get('rowCount')} sor")
+print(f"OK vetites ({base}): {age} oraja epult{built_at(age)}, {rows(p.get('rowCount'))}")
 FIGYELO
