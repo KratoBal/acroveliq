@@ -50,6 +50,10 @@ const SEED: readonly Project[] = [
   // the first customer project of AcrovelIQ (Balázs 2026-10-19, Caparium thread msg 1561675800812462201:
   // its own repo, its own database, costs measured per project); none of the Acropora repos
   { id: 'caparium', name: 'Cápárium nAPPló', repos: ['KratoBal/caparium-napplo'], aliases: [], legacyMixed: false },
+  // the animal-park framework, a project of its own (acrobot 2026-11-24, task barka-projekt-20261124, card 9f47dd60; Balázs 2026-11-19: the
+  // animal-park frame is completely new, under its own name): its own repo, not part of Caparium and not of the fleet. Before this row
+  // a Barka review verdict was would_reject (the repo was on no project's list)
+  { id: 'barka', name: 'Barka', repos: ['KratoBal/Barka'], aliases: [], legacyMixed: false },
 ]
 
 /**
@@ -64,7 +68,7 @@ const FLEET_REPOS = ['KratoBal/acroveliq', 'KratoBal/marveen', 'KratoBal/acropor
  * names a customer repo is someone else's work (Balázs 2026-10-19: the Caparium project keeps its
  * files, access and secrets apart from Acropora's).
  */
-const CUSTOMER_PROJECTS = new Set(['caparium'])
+const CUSTOMER_PROJECTS = new Set(['caparium', 'barka'])
 
 export function ensureProjectsSchema(db: Database.Database): void {
   db.exec(`
