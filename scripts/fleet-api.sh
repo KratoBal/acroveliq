@@ -23,7 +23,7 @@
 #   bash scripts/fleet-api.sh kanban-list
 #   bash scripts/fleet-api.sh kanban-keres [--cim ELOTAG] [--statusz S] [--id ELOTAG] [--felelos NEV]
 #   bash scripts/fleet-api.sh kanban-archive <card_id>
-#   bash scripts/fleet-api.sh kanban-new "<title>" <status> <assignee> <priority>
+#   bash scripts/fleet-api.sh kanban-new "<title>" <status> <assignee> <priority> [projekt]
 #   bash scripts/fleet-api.sh kanban-move <card_id> <status> [actor]
 #   bash scripts/fleet-api.sh kanban-assign <card_id> <assignee> [--akkor-is-ki "<indok>"]   # a basis-os kartyat kiadas elott visszameri
 #   bash scripts/fleet-api.sh kanban-visszameres <card_id>        # a kartya basis-at megmeri a main agon (T6.5), kilepes 4: DIVERGED
@@ -1147,9 +1147,22 @@ sys.exit(3 if bad else 0)'
     exit $?
     ;;
   kanban-new)
-    argc_max 4 "$#" "fleet-api.sh kanban-new - < cim.txt [status] [assignee] [priority]"
-    : "${1:?title required}"; TITLE="$(arg "$1")"; STATUS="${2:-planned}"; ASSIGNEE="${3:-}"; PRIORITY="${4:-normal}"
-    post /kanban "$(json_obj title "$TITLE" status "$STATUS" assignee "$ASSIGNEE" priority "$PRIORITY")"
+    argc_max 5 "$#" "fleet-api.sh kanban-new - < cim.txt [status] [assignee] [priority] [projekt]"
+    : "${1:?title required}"; TITLE="$(arg "$1")"; STATUS="${2:-planned}"; ASSIGNEE="${3:-}"; PRIORITY="${4:-normal}"; PROJECT="${5:-}"
+    # THE ORDER IS title, status, assignee, priority, project (2026-11-26: `kanban-new acrobot "cim"` sent the title as
+    # "acrobot" and "cim" as the status, and the server answered a bare 500). A status or priority the board does not know is
+    # refused here, with the order, before anything is sent.
+    case "$STATUS" in planned|in_progress|testing|waiting|done) ;; *)
+      echo "FAIL: kanban-new: ismeretlen status: '${STATUS}' (planned|in_progress|testing|waiting|done)." >&2
+      echo "  A sorrend: kanban-new <cim> [status] [assignee] [priority] [projekt]" >&2; exit 1 ;; esac
+    case "$PRIORITY" in low|normal|high|urgent) ;; *)
+      echo "FAIL: kanban-new: ismeretlen priority: '${PRIORITY}' (low|normal|high|urgent)." >&2
+      echo "  A sorrend: kanban-new <cim> [status] [assignee] [priority] [projekt]" >&2; exit 1 ;; esac
+    if [ -n "$PROJECT" ]; then
+      post /kanban "$(json_obj title "$TITLE" status "$STATUS" assignee "$ASSIGNEE" priority "$PRIORITY" project "$PROJECT")"
+    else
+      post /kanban "$(json_obj title "$TITLE" status "$STATUS" assignee "$ASSIGNEE" priority "$PRIORITY")"
+    fi
     ;;
   kanban-move)
     # `actor` is optional but should always be passed: it tells the board WHO moved

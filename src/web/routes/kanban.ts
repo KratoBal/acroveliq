@@ -19,6 +19,7 @@ import {
 } from '../../db.js'
 import { kanbanMeasureState } from '../../kanban-measure.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
+import { kanbanCreateProblem } from '../kanban-create-validate.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
@@ -323,9 +324,21 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/kanban' && method === 'POST') {
     const body = await readBody(req)
-    const data = JSON.parse(body.toString())
+    let data: unknown
+    try {
+      data = JSON.parse(body.toString())
+    } catch {
+      json(res, { error: 'A kérés törzse nem érvényes JSON.' }, 400)
+      return true
+    }
+    // a wrong field is the caller's error, named, before anything is written (2026-11-26: a status of "cim" was a bare 500)
+    const problem = kanbanCreateProblem(data)
+    if (problem) {
+      json(res, { error: problem }, 400)
+      return true
+    }
     const id = randomUUID().slice(0, 8)
-    createKanbanCard({ id, ...data })
+    createKanbanCard({ id, ...(data as Omit<Parameters<typeof createKanbanCard>[0], 'id'>) })
     json(res, { ok: true, id })
     return true
   }
