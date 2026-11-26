@@ -24,6 +24,9 @@ function runWrapper(stateDir: string, childCode: string): Promise<{ stdout: stri
     child.on('exit', (code) => resolve({ stdout, stderr, code }))
     // MCP-contract: the parent owns the wrapper's stdin; close it so the
     // wrapper can exit once its child is done (mirrors a client disconnect).
+    // a script that exits before reading its stdin closes the pipe: EPIPE on this write is expected, not a failure
+    // (2026-11-26: an unhandled EPIPE here ended the whole run with exit 1 under load)
+    child.stdin?.on('error', (e: NodeJS.ErrnoException) => { if (e.code !== 'EPIPE') throw e })
     child.stdin.end()
   })
 }
