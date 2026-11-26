@@ -23,6 +23,7 @@ absolute path, a `..`, or a newline in a name stops the run (exit 1): nothing of
 import hashlib
 import io
 import os
+import re
 import sys
 import tarfile
 
@@ -57,6 +58,9 @@ def main(argv: list[str]) -> None:
         header = "# teljes\n"
     elif len(argv) == 5 and argv[0] == "diff":
         kind, archive, listing, base_list, base_date = argv
+        # the header names the base by its day, and the restore makes a path of it: a day, nothing else
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", base_date):
+            fail(f"az alap napja nem datum: {base_date!r}")
         base = read_list(base_list)
         header = f"# kulonbseg {base_date}\n"
     else:

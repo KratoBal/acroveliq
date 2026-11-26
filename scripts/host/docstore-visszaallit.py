@@ -19,8 +19,12 @@ was checked against a list.
 """
 import hashlib
 import os
+import re
 import sys
 import tarfile
+
+
+DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
 def fail(message: str) -> None:
@@ -75,7 +79,8 @@ def main(argv: list[str]) -> None:
             wanted[name] = (digest, int(size))
     if header == ["#", "teljes"]:
         archives = [os.path.join(backups, f"{day}.full.tar.gz")]
-    elif len(header) == 3 and header[:2] == ["#", "kulonbseg"]:
+    # the base is a day, nothing else: its name becomes a path (barracuda on #415, a hand-written or broken list)
+    elif len(header) == 3 and header[:2] == ["#", "kulonbseg"] and DAY.fullmatch(header[2]):
         archives = [os.path.join(backups, f"{header[2]}.full.tar.gz"), os.path.join(backups, f"{day}.diff.tar.gz")]
     else:
         fail(f"ismeretlen lista-fejlec: {' '.join(header)!r}")
