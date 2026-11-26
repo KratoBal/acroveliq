@@ -134,7 +134,17 @@ while read -r m; do
   [ -s "$WORK/m.sql" ] || stop "a migracio nem olvashato: $m"
   python3 -B "$HERE/lib/migracio_kapu.py" "$WORK/m.sql" > "$WORK/hit.txt" 2>&1
   RC=$?
-  [ "$RC" = 0 ] || stop "nem bovito migracio, ember nezze meg: $m :: $(head -3 "$WORK/hit.txt" | sed "s#^$WORK/m.sql: ##" | tr '\n' ' ')"
+  # A REVIEWED non-additive migration (2026-11-26, #2947: a unique index swapped for a partial one) passes only
+  # with its path AND the sha256 of the exact text in store/eles-felhozas/migracio-atnezve.txt, one
+  # "<path> <sha256>" line per review, written by whoever read the SQL and measured production against it.
+  # The hash binds the review to the text: an edited file stops again.
+  if [ "$RC" != 0 ]; then
+    MSUM=$(sha256sum "$WORK/m.sql" | cut -d' ' -f1)
+    if grep -qx "$m $MSUM" "$ALLAPOT/migracio-atnezve.txt" 2>/dev/null; then
+      say "atnezett nem bovito migracio: $m ($MSUM)"; RC=0
+    fi
+  fi
+  [ "$RC" = 0 ] || stop "nem bovito migracio, ember nezze meg: $m :: $(head -3 "$WORK/hit.txt" | sed "s#^$WORK/m.sql: ##" | tr '\n' ' ') (atnezes utan: '$m <sha256>' sor a store/eles-felhozas/migracio-atnezve.txt-be)"
 done < "$WORK/mig.txt"
 
 # 4a. a switch turned on in .env.production.example within P..S (a missing patch is a stop: then it cannot be read)

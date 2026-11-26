@@ -40,7 +40,12 @@ const height = Number(hArg) || 900
 const { chromium } = require('/home/marveen/marveen/node_modules/playwright')
 
 ;(async () => {
-  const browser = await chromium.launch()
+  // The container lacks the chrome system libs (libnspr4, libnss3, ...); they are unpacked in
+  // marveen's home, reachable by full path for the fleet group (/home/marveen is 0710 fleet).
+  // Without this every launch fails with "Target page, context or browser has been closed".
+  const LIBS = "/home/marveen/.local/chromelibs/usr/lib/x86_64-linux-gnu"
+  const ld = [LIBS, process.env.LD_LIBRARY_PATH].filter(Boolean).join(":")
+  const browser = await chromium.launch({ env: { ...process.env, LD_LIBRARY_PATH: ld, LANG: "hu_HU.UTF-8", LANGUAGE: "hu" } })
   try {
     const page = await browser.newPage({
       viewport: { width, height },
