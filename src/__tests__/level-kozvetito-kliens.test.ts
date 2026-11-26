@@ -207,6 +207,9 @@ describe('level-kozvetito.sh', () => {
       const p = execFile('bash', [LVK, ...args], { env: env(over), timeout: 30_000 }, (e, stdout, stderr) =>
         resolve({ code: e ? ((e as { code?: number }).code ?? 1) : 0, out: stdout, err: stderr }),
       )
+      // a script that exits before reading its stdin closes the pipe: EPIPE on this write is expected, not a failure
+      // (2026-11-26: an unhandled EPIPE here ended the whole run with exit 1 under load)
+      p.stdin?.on('error', (e: NodeJS.ErrnoException) => { if (e.code !== 'EPIPE') throw e })
       p.stdin?.end(input)
       void child
     })

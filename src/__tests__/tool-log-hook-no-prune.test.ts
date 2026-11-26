@@ -65,6 +65,9 @@ describe('tool-log-capture.py', () => {
     const code = await new Promise<number | null>((resolve) => {
       const child = spawn('python3', ['-c', runner, hook], { env: { ...process.env, WEB_PORT: String(port) } })
       child.on('close', resolve)
+      // a script that exits before reading its stdin closes the pipe: EPIPE on this write is expected, not a failure
+      // (2026-11-26: an unhandled EPIPE here ended the whole run with exit 1 under load)
+      child.stdin?.on('error', (e: NodeJS.ErrnoException) => { if (e.code !== 'EPIPE') throw e })
       child.stdin.end(payload)
     })
     expect(code).toBe(0)

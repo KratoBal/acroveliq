@@ -65,6 +65,9 @@ function run(args: string[], env: Record<string, string> = {}, input = ''): Prom
       env: { PATH: `${join(root, 'bin')}:${process.env.PATH}`, HOME: root, ...env },
     }, (error, stdout, stderr) =>
       resolve({ code: error ? Number((error as { code?: number }).code ?? 1) : 0, out: stdout, err: stderr }))
+    // a script that exits before reading its stdin closes the pipe: EPIPE on this write is expected, not a failure
+    // (2026-11-26: an unhandled EPIPE here ended the whole run with exit 1 under load)
+    child.stdin?.on('error', (e: NodeJS.ErrnoException) => { if (e.code !== 'EPIPE') throw e })
     child.stdin?.end(input)
   })
 }
@@ -142,5 +145,15 @@ describe('ticket-mail.sh: the reader token', () => {
       expect(r.code).toBe(1)
       expect(r.err).toContain('auth-url-olvaso -> jovahagyas -> auth-code-olvaso')
     })
+  })
+})
+
+// THE CLOSED STDIN, MADE DETERMINISTIC (2026-11-26): a megabyte overflows the pipe's buffer, and the script refuses an unknown
+// command before reading any of it, so the write always meets a closed pipe. What turns this red: the EPIPE not handled in
+// `run`, which vitest reports as an unhandled error and the whole run ends with exit 1.
+describe('ticket-mail.sh: a script that exits before reading its stdin', () => {
+  it('a large input to a refused command is not an unhandled error', async () => {
+    const r = await run(['nincs-ilyen-parancs'], {}, 'x'.repeat(1 << 20))
+    expect(r.code).not.toBe(0)
   })
 })
