@@ -294,7 +294,9 @@ exit 0
   // A REVIEWED NON-ADDITIVE MIGRATION (2026-11-26, #2947: a unique index swapped for a partial one; the live script's branch, brought
   // to main, d35f97f1) passes only with its path AND the sha256 of its exact text in store/eles-felhozas/migracio-atnezve.txt.
   // WHAT TURNS IT RED: a listed migration still stopping, or passing without a log line naming it; an edited text (another hash)
-  // passing on an old review; the path alone, or another path with the same hash, passing; the stop not saying how to record one.
+  // passing on an old review; the path alone, or another path with the same hash, passing; the stop not saying how to record one;
+  // a listed line read as a pattern (barracuda on #421: the path's dot matched any character, so "migrationXsql" was a review of
+  // "migration.sql").
   it('ELES-FELHOZAS-MIGRACIO-ATNEZVE: a reviewed text passes and is logged; an edited text, a bare path or another path stops', () => {
     const sql = 'DROP VIEW "WorksheetLatestVersion";\n'
     const sum = createHash('sha256').update(sql).digest('hex')
@@ -302,6 +304,7 @@ exit 0
     const edited = run({ migration: `${sql}-- egy sor kesobb\n`, reviewed: [`${MIG} ${sum}`] })
     const otherPath = run({ migration: sql, reviewed: [`${MIG.replace('_x/', '_y/')} ${sum}`] })
     const pathOnly = run({ migration: sql, reviewed: [MIG] })
+    const lookalike = run({ migration: sql, reviewed: [`${MIG.replace('migration.sql', 'migrationXsql')} ${sum}`] })
     expect(
       {
         ok: ok.code,
@@ -310,9 +313,10 @@ exit 0
         editedSays: edited.last.includes(`(atnezes utan: '${MIG} <sha256>' sor a store/eles-felhozas/migracio-atnezve.txt-be)`),
         otherPath: otherPath.code,
         pathOnly: pathOnly.code,
+        lookalike: lookalike.code,
       },
       'ELES-FELHOZAS-MIGRACIO-ATNEZVE',
-    ).toEqual({ ok: 0, logged: true, edited: 1, editedSays: true, otherPath: 1, pathOnly: 1 })
+    ).toEqual({ ok: 0, logged: true, edited: 1, editedSays: true, otherPath: 1, pathOnly: 1, lookalike: 1 })
   })
 
   // A SWITCH BALAZS ALREADY TURNED ON is named in store/eles-felhozas/kapcsolo-elfogadva.txt (NAME, a tab, the decision): it no longer

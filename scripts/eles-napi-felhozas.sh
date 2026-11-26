@@ -137,10 +137,11 @@ while read -r m; do
   # A REVIEWED non-additive migration (2026-11-26, #2947: a unique index swapped for a partial one) passes only
   # with its path AND the sha256 of the exact text in store/eles-felhozas/migracio-atnezve.txt, one
   # "<path> <sha256>" line per review, written by whoever read the SQL and measured production against it.
-  # The hash binds the review to the text: an edited file stops again.
+  # The hash binds the review to the text: an edited file stops again. A literal whole-line match (-F): as a pattern
+  # the path's dots would match any character (barracuda on #421).
   if [ "$RC" != 0 ]; then
     MSUM=$(sha256sum "$WORK/m.sql" | cut -d' ' -f1)
-    if grep -qx "$m $MSUM" "$ALLAPOT/migracio-atnezve.txt" 2>/dev/null; then
+    if grep -qxF "$m $MSUM" "$ALLAPOT/migracio-atnezve.txt" 2>/dev/null; then
       say "atnezett nem bovito migracio: $m ($MSUM)"; RC=0
     fi
   fi
