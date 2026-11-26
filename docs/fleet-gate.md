@@ -555,8 +555,8 @@ install -o root -g root -m 0755 /tmp/docstore-visszaallit.py /usr/local/lib/flee
 echo 'a9238381b90486f72a6da0de333b767e9451a071c65137267d71ac9e0e5c58b2  /usr/local/sbin/fleet-gate' | sha256sum -c
 echo 'd958d5a4050ebbf52610ca70f3574a3e572bf349751fbd7b011411a68a322834  /usr/local/lib/fleet-gate/quote-templates-sync.mjs' | sha256sum -c
 echo '0508545f523d15461b0e9224fcc626f4ad51c09d3a127f2bdd042f6ad0752caa  /usr/local/lib/fleet-gate/naplo-szuro' | sha256sum -c
-echo '8189f15adc0dea52c01202fcd47602ef9dc6a945b94c211445a1f40003c84ecc  /usr/local/lib/fleet-gate/docstore-csomag' | sha256sum -c
-echo '0dc0bc3a229371b2b90992b6f5be82220e3c3883830be3d9c03df72f132eba1f  /usr/local/lib/fleet-gate/docstore-visszaallit' | sha256sum -c
+echo 'd91fb3d777553d9b8a928e8dadc215a0b479a5c8b93d8c61f9d78b86ac2effdb  /usr/local/lib/fleet-gate/docstore-csomag' | sha256sum -c
+echo '5c2dd27671322b749f32087edbfbfd6d271527a3e4ecb39f4d46f055ee45f6b9  /usr/local/lib/fleet-gate/docstore-visszaallit' | sha256sum -c
                                              # mind az öt: OK. Ha nem: állj meg, és szólj.
 ```
 

@@ -510,10 +510,28 @@ describe('fleet-gate: what passes', () => {
     writeFileSync(join(docs, '2026-11-22.lista'), '# kulonbseg 2026-11-15\n')
     writeFileSync(join(docs, '2026-11-22.diff.tar.gz'), '')
     const noBase = run('2026-11-22')
+    // a base that is not a day (barracuda on #415): its name would become a path; refused before any archive is opened
+    writeFileSync(join(docs, '2026-11-23.lista'), '# kulonbseg ../../x\n')
+    const notADay = run('2026-11-23')
+    const pack = spawnSync(
+      'python3',
+      [join(process.cwd(), 'scripts', 'host', 'docstore-csomag.py'), 'diff', join(p.dir, 'd.diff.tar.gz'), join(p.dir, 'd.lista'), lista, '../x'],
+      { input: '', encoding: 'utf-8' },
+    )
     expect(
-      [differs.status, differs.stderr.includes('elter: document-store/2.pdf'), noBase.status, noBase.stderr.includes('hianyzik')],
+      [
+        differs.status,
+        differs.stderr.includes('elter: document-store/2.pdf'),
+        noBase.status,
+        noBase.stderr.includes('hianyzik'),
+        notADay.status,
+        notADay.stderr.includes('ismeretlen lista-fejlec'),
+        pack.status,
+        pack.stderr.includes('nem datum'),
+        existsSync(join(p.dir, 'd.lista')),
+      ],
       'GATE-DOCSTORE-RESTORE-CHECKS',
-    ).toEqual([1, true, 1, true])
+    ).toEqual([1, true, 1, true, 1, true, 1, true, false])
   })
 
   it('GATE-DOCSTORE-PART: a stream that is not a tar leaves no archive, no list and no part file', () => {
