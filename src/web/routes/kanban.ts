@@ -338,7 +338,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const id = randomUUID().slice(0, 8)
-    createKanbanCard({ id, ...(data as Omit<Parameters<typeof createKanbanCard>[0], 'id'>) })
+    // the server's id wins (barracuda on #418): an id in the body made the card under that id while the answer gave this
+    // one, so the caller went on with an id that did not exist, and a body id already taken was a primary-key 500
+    createKanbanCard({ ...(data as Omit<Parameters<typeof createKanbanCard>[0], 'id'>), id })
     json(res, { ok: true, id })
     return true
   }
