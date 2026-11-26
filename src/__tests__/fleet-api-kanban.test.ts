@@ -146,3 +146,36 @@ describe('fleet-api.sh kanban-merve (T6.5)', () => {
     expect(requests).toEqual([])
   })
 })
+
+/*
+  fleet-api.sh kanban-new (2026-11-26, acrobot 63298): `kanban-new acrobot "cim"` sent "cim" as the status and got a bare 500.
+  What turns this red: a status or priority the board does not know reaching the server; a project not sent; the old
+  four-argument call changed.
+*/
+describe('fleet-api.sh kanban-new', () => {
+  it('the swapped call (title, then a non-status) is refused here with the order, and nothing is sent', async () => {
+    const r = await new Promise<{ code: number; err: string }>((resolve) => {
+      execFile('bash', [script, 'kanban-new', 'acrobot', 'cim'], { env: { ...process.env, MARVEEN_WEB_PORT: String(port) } }, (error, _out, stderr) =>
+        resolve({ code: error ? Number((error as { code?: number }).code ?? 1) : 0, err: stderr }),
+      )
+    })
+    expect(r.code).toBe(1)
+    expect(r.err).toContain("ismeretlen status: 'cim'")
+    expect(r.err).toContain('A sorrend: kanban-new <cim>')
+    expect(requests).toEqual([])
+  })
+
+  it('a bad priority is refused the same way', async () => {
+    expect((await run(['kanban-new', 'x', 'planned', 'nautilus', 'surgos'])).code).toBe(1)
+    expect(requests).toEqual([])
+  })
+
+  it('a project goes along when given; the four-argument call is as before', async () => {
+    expect((await run(['kanban-new', '[flotta] kartya', 'planned', 'nautilus', 'high', 'acropora-os'])).code).toBe(0)
+    expect((await run(['kanban-new', 'masik', 'waiting', 'acrobot', 'low'])).code).toBe(0)
+    expect(requests.map((q) => q.body)).toEqual([
+      { title: '[flotta] kartya', status: 'planned', assignee: 'nautilus', priority: 'high', project: 'acropora-os' },
+      { title: 'masik', status: 'waiting', assignee: 'acrobot', priority: 'low' },
+    ])
+  })
+})
