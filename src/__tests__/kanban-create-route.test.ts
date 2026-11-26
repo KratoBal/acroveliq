@@ -70,4 +70,18 @@ describe('POST /api/kanban', () => {
     expect(card?.project).toBe('acropora-os')
     expect(card?.priority).toBe('high')
   })
+
+  // barracuda on #418: an id in the body must not decide the card's id, or the answer names a card that is not there
+  it("the server's id wins over one in the body: the answer names the card that exists, and a taken body id is no 500", async () => {
+    const first = await call({ title: 'egy', id: 'kliens01' })
+    expect(first.status).toBe(200)
+    expect(first.json.id).not.toBe('kliens01')
+    expect(getKanbanCard(first.json.id)?.title).toBe('egy')
+    expect(getKanbanCard('kliens01')).toBeUndefined()
+
+    const second = await call({ title: 'ketto', id: first.json.id })
+    expect(second.status).toBe(200)
+    expect(second.json.id).not.toBe(first.json.id)
+    expect(getKanbanCard(first.json.id)?.title).toBe('egy')
+  })
 })
