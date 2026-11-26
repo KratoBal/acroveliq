@@ -113,6 +113,8 @@ esac`,
       `QUOTE_SYNC_OWNER="${OWNER}"`,
       // the secret filter every log goes through (point G): the real one, from this tree
       `LOG_FILTER=${join(process.cwd(), 'scripts', 'host', 'naplo-szuro.py')}`,
+      // the document store's packer (card 976dd43f): the real one, from this tree
+      `DOCSTORE_PACK=${join(process.cwd(), 'scripts', 'host', 'docstore-csomag.py')}`,
       `export TMPDIR=${tmp}`,
     ].join('\n') + '\n',
   )
@@ -126,7 +128,7 @@ esac`,
     writeFileSync(log, '')
     return { code: r.status, out: r.stdout.toString('latin1'), err: r.stderr.toString(), calls }
   }
-  return { dir, run, sql, data, prog, lib, tmp, backups: join(dir, 'backups') }
+  return { dir, run, sql, data, prog, lib, tmp, backups: join(dir, 'backups'), store: join(store, 'document-store') }
 }
 
 const sha = (text: string) => createHash('sha256').update(Buffer.from(text, 'latin1')).digest('hex')
@@ -378,14 +380,14 @@ describe('fleet-gate: what passes', () => {
     const put = s.run(`backup-put dump acropora ${day} ${hash}`, got.out)
     const again = s.run(`backup-put dump acropora ${day} ${sha('MASIK')}`, 'MASIK')
     const stored = readFileSync(join(s.backups, 'tavoli', 'acropora', `${day}.dump`), 'utf-8')
-    const docsGot = p.run(`backup-get docstore ${day}`)
-    const docsPut = s.run(`backup-put docstore ${day} ${sha(docsGot.out)}`, docsGot.out)
+    const docsGot = p.run(`backup-get docstore ${day} full`)
+    const docsPut = s.run(`backup-put docstore ${day} full ${sha(docsGot.out)}`, docsGot.out)
     const old = s.run(`backup-put dump acropora 2026-01-01 ${sha('x')}`, 'x') // only today or yesterday
     const leftovers = spawnSync('find', [s.backups, '-name', '*.part*'], { encoding: 'utf-8' }).stdout.trim()
     expect(
       [db.code, db.out.trim(), docs.code, docs.out.trim().split(' ').slice(2), got.out, [hash, bytes], put.code, again.code, stored, docsPut.code, old.code, leftovers],
       'GATE-BACKUP',
-    ).toEqual([0, 'acropora 8 3', 0, ['2', '2'], 'DUMPDATA', [sha('DUMPDATA'), '8'], 0, 2, 'DUMPDATA', 0, 2, ''])
+    ).toEqual([0, 'acropora 8 3', 0, ['2', '2', 'full', '2'], 'DUMPDATA', [sha('DUMPDATA'), '8'], 0, 2, 'DUMPDATA', 0, 2, ''])
   })
 
   it('GATE-BACKUP-INTACT: a copy whose sha256 is not the source\'s (cut off halfway, or another file) is thrown away, and the right one can still come', () => {
@@ -408,6 +410,139 @@ describe('fleet-gate: what passes', () => {
     expect(s.run(`backup-put dump acropora ${today()} ${sha('x')}`, 'x').code, 'GATE-BACKUP-SPACE').toBe(2)
   })
 
+  /*
+    THE DOCUMENT STORE, WEEKLY FULL AND DAILY DIFFERENCE (card 976dd43f; Balázs 2026-09-18: past 1 GB, incremental). WHAT TURNS
+    THIS RED: the day after a full packs the whole store again; a file written over under the same name, or a new one, is left
+    out of the difference; a deleted file comes back on restore; a restore does not give the day's store byte for byte (or does
+    not fail when a file differs from the list); a full is not made again once the newest is older than a week; a stopped pack
+    leaves a part file or a half archive behind.
+  */
+  it('GATE-DOCSTORE-INC: a full, then only what changed, and the restore gives each day back exactly', () => {
+    const p = world(PROD)
+    const env = join(p.dir, 'test.env')
+    const on = (day: string) => {
+      writeFileSync(env, readFileSync(env, 'utf-8') + `BACKUP_TODAY=${day}\n`)
+      return p.run('backup-docstore')
+    }
+    const docs = join(p.backups, 'dokumentumok')
+    const restore = (day: string) => {
+      const target = mkdtempSync(join(p.dir, `vissza-${day}-`))
+      const r = spawnSync('python3', [join(process.cwd(), 'scripts', 'host', 'docstore-visszaallit.py'), docs, day, target], { encoding: 'utf-8' })
+      const tree = spawnSync('bash', ['-c', `cd "${target}" && find . -type f | sort | while read -r f; do printf '%s=%s;' "$f" "$(cat "$f")"; done`], {
+        encoding: 'utf-8',
+      }).stdout
+      return { code: r.status, out: r.stdout.trim(), tree }
+    }
+
+    // a document that does not change: the difference must leave it out
+    mkdirSync(join(p.store, 'c'))
+    writeFileSync(join(p.store, 'c', '4.pdf'), 'w')
+    const full = on('2026-11-20')
+    // the store changes: a document written over under its name, one deleted, one new
+    writeFileSync(join(p.store, 'a', '1.pdf'), 'x2')
+    rmSync(join(p.store, '2.pdf'))
+    mkdirSync(join(p.store, 'b'))
+    writeFileSync(join(p.store, 'b', '3.pdf'), 'z')
+    const diff = on('2026-11-21')
+    const files = readdirSync(docs).sort()
+    const fullBack = restore('2026-11-20')
+    const diffBack = restore('2026-11-21')
+
+    // a week on, the next is a full again
+    spawnSync('touch', ['-d', '8 days ago', join(docs, '2026-11-20.full.tar.gz')])
+    const next = on('2026-11-28')
+
+    expect(
+      [
+        full.code,
+        full.out.trim().split(' ').slice(2),
+        diff.code,
+        diff.out.trim().split(' ').slice(2),
+        files,
+        fullBack,
+        diffBack,
+        next.out.trim().split(' ').slice(4),
+      ],
+      'GATE-DOCSTORE-INC',
+    ).toEqual([
+      0,
+      ['3', '3', 'full', '3'],
+      0,
+      // the list holds the day's three files; the archive only the written-over one and the new one
+      ['3', '3', 'diff', '2'],
+      ['2026-11-20.full.tar.gz', '2026-11-20.lista', '2026-11-21.diff.tar.gz', '2026-11-21.lista'],
+      { code: 0, out: 'visszaallitva 3 fajl, torolve 0, elter 0', tree: './document-store/2.pdf=y;./document-store/a/1.pdf=x;./document-store/c/4.pdf=w;' },
+      // the full's 2.pdf is removed (the day's list does not name it), 1.pdf is the new content
+      {
+        code: 0,
+        out: 'visszaallitva 3 fajl, torolve 1, elter 0',
+        tree: './document-store/a/1.pdf=x2;./document-store/b/3.pdf=z;./document-store/c/4.pdf=w;',
+      },
+      ['full', '3'],
+    ])
+  })
+
+  it('GATE-DOCSTORE-UNCHANGED: a day with nothing changed packs nothing, and its list is still the whole store', () => {
+    const p = world(PROD)
+    const env = join(p.dir, 'test.env')
+    writeFileSync(env, readFileSync(env, 'utf-8') + 'BACKUP_TODAY=2026-11-20\n')
+    p.run('backup-docstore')
+    writeFileSync(env, readFileSync(env, 'utf-8') + 'BACKUP_TODAY=2026-11-21\n')
+    const r = p.run('backup-docstore')
+    expect(r.out.trim().split(' ').slice(2), 'GATE-DOCSTORE-UNCHANGED').toEqual(['2', '2', 'diff', '0'])
+  })
+
+  it('GATE-DOCSTORE-RESTORE-CHECKS: a file that differs from the list, or a missing archive, fails the restore', () => {
+    const p = world(PROD)
+    const env = join(p.dir, 'test.env')
+    writeFileSync(env, readFileSync(env, 'utf-8') + 'BACKUP_TODAY=2026-11-20\n')
+    p.run('backup-docstore')
+    const docs = join(p.backups, 'dokumentumok')
+    const run = (day: string) =>
+      spawnSync('python3', [join(process.cwd(), 'scripts', 'host', 'docstore-visszaallit.py'), docs, day, mkdtempSync(join(p.dir, 'v-'))], {
+        encoding: 'utf-8',
+      })
+    // the list says another content for 2.pdf: the restored file does not match it
+    const lista = join(docs, '2026-11-20.lista')
+    writeFileSync(lista, readFileSync(lista, 'utf-8').replace(/^\S+ (\d+ document-store\/2\.pdf)$/m, `${sha('MAS')} $1`))
+    const differs = run('2026-11-20')
+    // a difference whose full is gone
+    writeFileSync(join(docs, '2026-11-22.lista'), '# kulonbseg 2026-11-15\n')
+    writeFileSync(join(docs, '2026-11-22.diff.tar.gz'), '')
+    const noBase = run('2026-11-22')
+    expect(
+      [differs.status, differs.stderr.includes('elter: document-store/2.pdf'), noBase.status, noBase.stderr.includes('hianyzik')],
+      'GATE-DOCSTORE-RESTORE-CHECKS',
+    ).toEqual([1, true, 1, true])
+  })
+
+  it('GATE-DOCSTORE-PART: a stream that is not a tar leaves no archive, no list and no part file', () => {
+    const dir = mkdtempSync(join(root, 'pack-'))
+    const r = spawnSync(
+      'python3',
+      [join(process.cwd(), 'scripts', 'host', 'docstore-csomag.py'), 'full', join(dir, 'd.full.tar.gz'), join(dir, 'd.lista')],
+      { input: 'nem tar', encoding: 'utf-8' },
+    )
+    expect([r.status, readdirSync(dir)], 'GATE-DOCSTORE-PART').toEqual([1, []])
+  })
+
+  it('GATE-DOCSTORE-GET: get, sum and put know the three parts, and a day before the change still by its single archive', () => {
+    const p = world(PROD)
+    const s = world(STAGE)
+    const day = today()
+    p.run('backup-docstore')
+    const legacy = join(p.backups, 'dokumentumok', '2026-11-01.tar.gz')
+    writeFileSync(legacy, 'REGI')
+    const lista = p.run(`backup-get docstore ${day} lista`)
+    const put = s.run(`backup-put docstore ${day} lista ${sha(lista.out)}`, lista.out)
+    const old = p.run('backup-sum docstore 2026-11-01')
+    const bad = p.run(`backup-get docstore ${day} masik`)
+    expect(
+      [lista.out.startsWith('# teljes\n'), put.code, existsSync(join(s.backups, 'tavoli', 'dokumentumok', `${day}.lista`)), old.out.trim(), bad.code],
+      'GATE-DOCSTORE-GET',
+    ).toEqual([true, 0, true, `${sha('REGI')} 4`, 2])
+  })
+
   it('GATE-BACKUP-PRUNE: dumps older than 14 days and document archives older than 7 go, the rest stays', () => {
     const w = world(PROD)
     const old = (rel: string, days: number) => {
@@ -423,9 +558,19 @@ describe('fleet-gate: what passes', () => {
       old('dokumentumok/2026-10-01.tar.gz', 10),
       old('dokumentumok/2026-10-08.tar.gz', 3),
       old('tavoli/acropora_ai/2026-09-02.dump', 20),
+      // the weekly full and the lists stay 14 days, so a difference still kept has its full (card 976dd43f)
+      old('dokumentumok/2026-11-10.full.tar.gz', 10),
+      old('dokumentumok/2026-11-10.lista', 10),
+      old('dokumentumok/2026-11-11.diff.tar.gz', 9),
+      old('dokumentumok/2026-11-14.diff.tar.gz', 6),
+      old('tavoli/dokumentumok/2026-10-20.full.tar.gz', 20),
+      old('tavoli/dokumentumok/2026-10-20.lista', 20),
     ]
     const r = w.run('backup-prune')
-    expect([r.code, files.map(existsSync)], 'GATE-BACKUP-PRUNE').toEqual([0, [false, true, false, true, false]])
+    expect([r.code, files.map(existsSync)], 'GATE-BACKUP-PRUNE').toEqual([
+      0,
+      [false, true, false, true, false, true, true, false, true, false, false],
+    ])
   })
 })
 
@@ -823,9 +968,11 @@ describe('fleet-gate: the install step', () => {
         docs.includes(`echo '${fileSha('scripts/host/fleet-gate.sh')}  /usr/local/sbin/fleet-gate' | sha256sum -c`),
         docs.includes(`echo '${fileSha('scripts/host/quote-templates-sync.mjs')}  /usr/local/lib/fleet-gate/quote-templates-sync.mjs' | sha256sum -c`),
         docs.includes(`echo '${fileSha('scripts/host/naplo-szuro.py')}  /usr/local/lib/fleet-gate/naplo-szuro' | sha256sum -c`),
+        docs.includes(`echo '${fileSha('scripts/host/docstore-csomag.py')}  /usr/local/lib/fleet-gate/docstore-csomag' | sha256sum -c`),
+        docs.includes(`echo '${fileSha('scripts/host/docstore-visszaallit.py')}  /usr/local/lib/fleet-gate/docstore-visszaallit' | sha256sum -c`),
       ],
       'GATE-INSTALL-SHA',
-    ).toEqual([true, true, true])
+    ).toEqual([true, true, true, true, true])
   })
 })
 

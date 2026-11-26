@@ -59,6 +59,10 @@ GRANT_TODAY=""   # empty: today in Europe/Budapest (a test sets it)
 HOSTI_CLIENT=/usr/local/lib/fleet-gate/hosti-kliens
 # the secret filter every log that leaves the host goes through (the plan's point G; docs/fleet-gate.md "naplo-szuro")
 LOG_FILTER=/usr/local/lib/fleet-gate/naplo-szuro
+# backup-docstore: the weekly full and the daily difference (card 976dd43f; docs/fleet-gate.md "A dokumentumtár mentése")
+DOCSTORE_PACK=/usr/local/lib/fleet-gate/docstore-csomag
+DOCSTORE_FULL_DAYS=7   # a full is made when the newest one is older than this many days
+BACKUP_TODAY=""        # empty: today (a test sets it)
 
 # Tests only. The authorized_keys line runs the gate with no arguments and an
 # SSH client cannot add any, so this is reachable only from a shell on the host.
@@ -630,23 +634,38 @@ case "$OP" in
     [ "$toc" -gt 0 ] || exit 1
     ;;
   backup-docstore)
-    # the document store to dokumentumok/<today>.tar.gz; prints
-    # "dokumentumok <bytes> <files in the archive> <files in the store>", fails on a mismatch
+    # the document store (card 976dd43f): a FULL archive when the newest one is older than DOCSTORE_FULL_DAYS, else the
+    # DIFFERENCE to that full (not chained: a restore is the full plus one day), and the day's whole list for both
+    #   dokumentumok/<day>.full.tar.gz or <day>.diff.tar.gz, and dokumentumok/<day>.lista
+    # prints "dokumentumok <bytes> <files in the list> <files in the store> <full|diff> <files in the archive>", and fails
+    # when the list does not hold every file of the store
     args 0
     C="$(resolve "$DOCSTORE_KEY")" || exit 2
+    [ -x "$DOCSTORE_PACK" ] || deny "'backup-docstore': a docstore-csomag nincs telepitve"
     allow backup-docstore
-    dir="$BACKUP_ROOT/dokumentumok"; file="$dir/$(date +%F).tar.gz"
+    dir="$BACKUP_ROOT/dokumentumok"; day="${BACKUP_TODAY:-$(date +%F)}"
     mkdir -p "$dir" || exit 1
-    "$DOCKER" exec "$C" tar -C /data -cf - document-store | gzip -1 > "$file" || { echo "fleet-gate: a tar hibával tért vissza" >&2; exit 1; }
-    packed=$(tar -tzf "$file" | grep -vc '/$')
+    base="$(find "$dir" -maxdepth 1 -name '*.full.tar.gz' -mtime -"$DOCSTORE_FULL_DAYS" -printf '%f\n' | sort | tail -1)"
+    base="${base%.full.tar.gz}"
+    if [ -n "$base" ] && [ "$base" != "$day" ] && [ -f "$dir/$base.lista" ]; then
+      kind=diff; file="$dir/$day.diff.tar.gz"
+      counts=$("$DOCKER" exec "$C" tar -C /data -cf - document-store | "$DOCSTORE_PACK" diff "$file" "$dir/$day.lista" "$dir/$base.lista" "$base") \
+        || { echo "fleet-gate: a különbség-csomag nem készült el" >&2; exit 1; }
+    else
+      kind=full; file="$dir/$day.full.tar.gz"
+      counts=$("$DOCKER" exec "$C" tar -C /data -cf - document-store | "$DOCSTORE_PACK" full "$file" "$dir/$day.lista") \
+        || { echo "fleet-gate: a teljes csomag nem készült el" >&2; exit 1; }
+    fi
+    read -r packed listed <<< "$counts"
     stored=$("$DOCKER" exec "$C" find /data/document-store -type f | wc -l)
-    echo "dokumentumok $(stat -c %s "$file") $packed $stored"
-    [ "$packed" -eq "$stored" ] || exit 1
+    echo "dokumentumok $(stat -c %s "$file") $listed $stored $kind $packed"
+    [ "$listed" -eq "$stored" ] || exit 1
     ;;
   backup-get|backup-sum|backup-put)
-    # backup-get dump <db> <date> | backup-get docstore <date>: the file to stdout
+    # backup-get dump <db> <date> | backup-get docstore <date> [full|diff|lista]: the file to stdout (docstore without a part:
+    # the single archive of a day before the weekly full, <date>.tar.gz)
     # backup-sum (same arguments): "<sha256> <bytes>" of that file
-    # backup-put dump <db> <date> <sha256> | backup-put docstore <date> <sha256>:
+    # backup-put dump <db> <date> <sha256> | backup-put docstore <date> [full|diff|lista] <sha256>:
     #   stdin to tavoli/..., the other host's copy, kept only if its sha256 is
     #   the source's: a get that died halfway must not become the day's copy
     #   (barracuda, #28)
@@ -654,7 +673,14 @@ case "$OP" in
     case "$((NARGS - extra)):${W[1]:-}" in
       3:dump) what="dump:${W[2]}"; date="${W[3]}"; rel="${W[2]}/${W[3]}.dump" ;;
       2:docstore) what="docstore"; date="${W[2]}"; rel="dokumentumok/${W[2]}.tar.gz" ;;
-      *) deny "'$OP': dump <adatbázis> <dátum> vagy docstore <dátum>$([ "$extra" = 1 ] && echo ' <sha256>')" ;;
+      3:docstore)
+        what="docstore"; date="${W[2]}"
+        case "${W[3]}" in
+          full|diff) rel="dokumentumok/${W[2]}.${W[3]}.tar.gz" ;;
+          lista) rel="dokumentumok/${W[2]}.lista" ;;
+          *) deny "'$OP': a dokumentumtár része full, diff vagy lista" ;;
+        esac ;;
+      *) deny "'$OP': dump <adatbázis> <dátum> vagy docstore <dátum> [full|diff|lista]$([ "$extra" = 1 ] && echo ' <sha256>')" ;;
     esac
     case "$date" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) deny "'$OP': a dátum ÉÉÉÉ-HH-NN alakú" ;; esac
     if [ "$OP" != backup-put ]; then
@@ -688,11 +714,13 @@ case "$OP" in
     echo "$what $(stat -c %s "$file")"
     ;;
   backup-prune)
-    # the retention: dumps 14 days, the document store 7, here and in tavoli/
+    # the retention, here and in tavoli/: dumps 14 days; the document store's daily differences (and a day's single archive
+    # from before the weekly full) 7 days; its weekly fulls and the lists 14, so every difference still kept has its full
     args 0; allow backup-prune
     [ -d "$BACKUP_ROOT" ] || exit 0
     find "$BACKUP_ROOT" -name '*.dump' -mtime +14 -print -delete
-    find "$BACKUP_ROOT" -path '*/dokumentumok/*' -name '*.tar.gz' -mtime +7 -print -delete
+    find "$BACKUP_ROOT" -path '*/dokumentumok/*' -name '*.tar.gz' ! -name '*.full.tar.gz' -mtime +7 -print -delete
+    find "$BACKUP_ROOT" -path '*/dokumentumok/*' \( -name '*.full.tar.gz' -o -name '*.lista' \) -mtime +14 -print -delete
     ;;
   hosti-kerj|hosti-vegrehajt|hosti-allapot|hosti-kep|hosti-naplo)
     # hosti-kerj <projekt> <ige> <commit|-> <kero> | hosti-vegrehajt <R> <discord-uzenet-id> | hosti-allapot [<R>]

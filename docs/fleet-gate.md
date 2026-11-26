@@ -37,11 +37,11 @@ akkor az éles, ha a próba-sor (lent) minden sora zöld rajta.
 | `hosti-kep <projekt>`, `hosti-naplo <projekt> [sorok]` | a hosti végrehajtó két olvasó igéje (`docs/hosti-vegrehajto.md`): a projekt kép- és konténer-mezői, illetve szolgáltatásainak naplója (1 és 1000 sor között, alapból 200) a `naplo-szuro`n át; a kapu csak az alakot ellenőrzi | éles |
 | `restore-probe` | eldobható `postgres:16-alpine` hálózat nélkül, memória-, CPU- és folyamat-korláttal, a dump a stdin-ről, egy rögzített számláló-lekérdezés, utána törlés; a képet a kapu nem tölti le | stage |
 | `backup-db <kulcs> <adatbázis> <felhasználó>` | `~/backups/<adatbázis>/<mai dátum>.dump`, utána `pg_restore --list` szám | mindkettő |
-| `backup-docstore` | `~/backups/dokumentumok/<mai dátum>.tar.gz`, a fájlszám egyezésével | éles |
-| `backup-get dump <adatbázis> <dátum>`, `backup-get docstore <dátum>` | egy meglévő mentés a stdout-ra | ahol a mentés készül |
-| `backup-sum dump <adatbázis> <dátum>`, `backup-sum docstore <dátum>` | ugyanannak a mentésnek a sha256-ja és mérete | ahol a mentés készül |
-| `backup-put dump <adatbázis> <dátum> <sha256>`, `backup-put docstore <dátum> <sha256>` | a stdin előbb ideiglenes fájlba, és csak akkor lesz a `~/backups/tavoli/` alatti végleges másolat, ha a sha256-ja a forrásé; eltérésnél törli és hibával lép ki. Csak a mai vagy a tegnapi dátum, legfeljebb 2 GB, és csak ha a lemezen a korlát kétszerese szabad; meglévőt soha nem ír felül | a másik gép |
-| `backup-prune` | a dumpok 14, a dokumentum-csomagok 7 nap után törlődnek | mindkettő |
+| `backup-docstore` | hetente egy TELJES csomag (`<nap>.full.tar.gz`), a többi napon csak a KÜLÖNBSÉG a héthez képest (`<nap>.diff.tar.gz`), és minden nap a tár teljes listája (`<nap>.lista`), a fájlszám egyezésével; lásd „A dokumentumtár mentése” | éles |
+| `backup-get dump <adatbázis> <dátum>`, `backup-get docstore <dátum> full\|diff\|lista` | egy meglévő mentés a stdout-ra (a `docstore <dátum>` rész nélkül a váltás előtti napok egyetlen `<dátum>.tar.gz` csomagja) | ahol a mentés készül |
+| `backup-sum dump <adatbázis> <dátum>`, `backup-sum docstore <dátum> full\|diff\|lista` | ugyanannak a mentésnek a sha256-ja és mérete | ahol a mentés készül |
+| `backup-put dump <adatbázis> <dátum> <sha256>`, `backup-put docstore <dátum> full\|diff\|lista <sha256>` | a stdin előbb ideiglenes fájlba, és csak akkor lesz a `~/backups/tavoli/` alatti végleges másolat, ha a sha256-ja a forrásé; eltérésnél törli és hibával lép ki. Csak a mai vagy a tegnapi dátum, legfeljebb 2 GB, és csak ha a lemezen a korlát kétszerese szabad; meglévőt soha nem ír felül | a másik gép |
+| `backup-prune` | a dumpok 14, a dokumentumtár napi különbségei (és a váltás előtti napi csomagok) 7, a heti teljes csomagjai és a listák 14 nap után törlődnek: amíg egy különbség megvan, a teljese is | mindkettő |
 
 A konténert a kapu a neve **elejéből** oldja fel (a Coolify az alkalmazás uuid-jával kezdi), a
 futók közül, így egy újratelepítés után is megtalálja.
@@ -532,7 +532,7 @@ Minden napló, ami elhagyja a hostot (`app-log`, `hosti-naplo`), a root-tulajdon
 
  A két fájl a PR
 beolvadása és a flotta frissítése után itt áll: `/opt/marveen-docker/data/marveen/scripts/host/`.
-Vidd át őket (a `scripts/host/fleet-gate.sh`, a `quote-templates-sync.mjs` és a `naplo-szuro.py`) a gép `/tmp`-jébe úgy, mint a kaput (fent), utána:
+Vidd át őket (a `scripts/host/fleet-gate.sh`, a `quote-templates-sync.mjs`, a `naplo-szuro.py`, a `docstore-csomag.py` és a `docstore-visszaallit.py`) a gép `/tmp`-jébe úgy, mint a kaput (fent), utána:
 
 Előbb a program útjának szülőmappái: a kapu csak a fájlt és a saját mappáját nézi, és Debianon a
 `/usr/local` lehet `root:staff 2775`, ahol a `staff` tagja átnevezhetné a mappát (barracuda, #97):
@@ -550,14 +550,18 @@ install -o root -g root -m 0755 /tmp/fleet-gate.sh /usr/local/sbin/fleet-gate
 install -d -o root -g root -m 0755 /usr/local/lib/fleet-gate
 install -o root -g root -m 0644 /tmp/quote-templates-sync.mjs /usr/local/lib/fleet-gate/quote-templates-sync.mjs
 install -o root -g root -m 0755 /tmp/naplo-szuro.py /usr/local/lib/fleet-gate/naplo-szuro
-echo 'befcb01d7133b820996b8b1a40be9bbeed8115ba7486a040ab171cd1d59eb8fa  /usr/local/sbin/fleet-gate' | sha256sum -c
+install -o root -g root -m 0755 /tmp/docstore-csomag.py /usr/local/lib/fleet-gate/docstore-csomag
+install -o root -g root -m 0755 /tmp/docstore-visszaallit.py /usr/local/lib/fleet-gate/docstore-visszaallit
+echo 'a9238381b90486f72a6da0de333b767e9451a071c65137267d71ac9e0e5c58b2  /usr/local/sbin/fleet-gate' | sha256sum -c
 echo 'd958d5a4050ebbf52610ca70f3574a3e572bf349751fbd7b011411a68a322834  /usr/local/lib/fleet-gate/quote-templates-sync.mjs' | sha256sum -c
 echo '0508545f523d15461b0e9224fcc626f4ad51c09d3a127f2bdd042f6ad0752caa  /usr/local/lib/fleet-gate/naplo-szuro' | sha256sum -c
-                                             # mindhárom: OK. Ha nem: állj meg, és szólj.
+echo '8189f15adc0dea52c01202fcd47602ef9dc6a945b94c211445a1f40003c84ecc  /usr/local/lib/fleet-gate/docstore-csomag' | sha256sum -c
+echo '0dc0bc3a229371b2b90992b6f5be82220e3c3883830be3d9c03df72f132eba1f  /usr/local/lib/fleet-gate/docstore-visszaallit' | sha256sum -c
+                                             # mind az öt: OK. Ha nem: állj meg, és szólj.
 ```
 
-A három lenyomat a repó fájljaié (a `naplo-szuro` a `scripts/host/naplo-szuro.py`); a teszt (`GATE-INSTALL-SHA`) piros, ha valamelyik fájl úgy
-változik, hogy ez a három sor nem követi.
+Az öt lenyomat a repó fájljaié (a `naplo-szuro` a `scripts/host/naplo-szuro.py`, a `docstore-csomag` és a `docstore-visszaallit` a `scripts/host/` azonos nevű `.py` fájljai); a teszt (`GATE-INSTALL-SHA`) piros, ha valamelyik fájl úgy
+változik, hogy ez az öt sor nem követi.
 
 Próba a flotta konténeréből (csak olvas):
 
@@ -664,7 +668,7 @@ A teszt gépen előbb a stage-sorok, az élesítés után az éles sorok. A két
 | az éles verziók | éles | `cd /home/marveen/marveen && bash scripts/eles-verziok.sh` | az alkalmazások sora, nincs „FAIL” |
 | a számla-dupla ellenőrzés | éles | `cd /home/marveen/marveen && bash scripts/szamla-dupla-ellenorzo.sh; echo $?` | „KIMENO: nincs dupla.” (0) vagy a duplák (1), de nem „NEM MERHETO” (2) |
 | a JEV ismert-szó lista | éles | `cd /home/marveen/marveen && python3 scripts/jev/build_known.py` | lefut, nincs „FAIL psql” |
-| a napi mentés | mindkettő | az ütemezett `napi-adatbazis-mentes` egy kézi futtatása | három `backup-db` sor (`<db> <bájt> <toc>`, toc > 0), egy `backup-docstore` sor egyező fájlszámmal, a kereszt-másolás `backup-get` és `backup-put` párjai |
+| a napi mentés | mindkettő | az ütemezett `napi-adatbazis-mentes` egy kézi futtatása | három `backup-db` sor (`<db> <bájt> <toc>`, toc > 0), egy `backup-docstore` sor (`dokumentumok <bájt> <listázott> <tárban> <full\|diff> <csomagolt>`, a listázott = a tárban), a kereszt-másolás `backup-get` és `backup-put` párjai (a dokumentumoknál a nap csomagja ÉS a listája) |
 | a heti frissítés-átnézés | mindkettő | az ütemezett `heti-frissites-atnezes` egy kézi futtatása | `apt-check` és `reboot-required` kimenet; élesen az `env-get` két sora |
 | az éles lemez-takarítás | éles | az ütemezett `eles-lemez-takaritas` egy kézi futtatása | `df`, `system-df`, `builder-prune` kimenete |
 | a JEV heti pilot | éles | az ütemezett `jev-pilot-heti` egy kézi futtatása | a lekérdezés eredménye `psql-ro`-n át |
@@ -676,7 +680,7 @@ elutasítást kap). A megfeleltetés:
 |---|---|
 | `docker exec <c> pg_dump ... > ~/backups/<db>/<dátum>.dump` és a `pg_restore --list` ellenőrzés | `backup-db <kulcs> <db> <user>` |
 | `docker exec $c tar ... \| gzip -1 > ~/backups/dokumentumok/...` és a `find ... \| wc -l` ellenőrzés | `backup-docstore` |
-| a kereszt-másolás | `h=$(ssh <forrás> backup-sum dump <db> <dátum> \| cut -d' ' -f1)`, utána `ssh <forrás> backup-get dump <db> <dátum> \| ssh <cél> backup-put dump <db> <dátum> "$h"` (a dokumentumoknál `docstore <dátum>`). Egy félúton elhalt másolat így nem lesz végleges, és az ismételt futás a jót még aznap fel tudja tenni |
+| a kereszt-másolás | `h=$(ssh <forrás> backup-sum dump <db> <dátum> \| cut -d' ' -f1)`, utána `ssh <forrás> backup-get dump <db> <dátum> \| ssh <cél> backup-put dump <db> <dátum> "$h"` (a dokumentumoknál két pár: `docstore <dátum> full` vagy `diff`, a `backup-docstore` sorának 5. mezője szerint, és `docstore <dátum> lista`). Egy félúton elhalt másolat így nem lesz végleges, és az ismételt futás a jót még aznap fel tudja tenni |
 | `find ~/backups -name '*.dump' -mtime +14 -delete` | `backup-prune` (a dokumentum-csomagokat 7 nap után) |
 | `apt-check --human-readable \| head -4`, `reboot-required` | `apt-check`, `reboot-required` (a `head` a konténerben), és új: `sshd-match` (áll-e még a kapu; a 0-s kilépést és a `match=1` sort kell látni) |
 | `docker ps --filter name=proxy ...`, `docker ps --format "{{.Image}}" \| sort -u` | `ps`, a szűrés a konténerben |
@@ -722,6 +726,41 @@ elutasítást kap). A megfeleltetés:
 - **A `fleet` a docker csoportban marad.** Ha valaha új belépési út nyílik a `fleet`
   felhasználóhoz (jelszó, második kulcs), az megkerüli a kaput: a fenti ellenőrzést érdemes
   időnként újrafuttatni.
+
+## A dokumentumtár mentése (kártya 976dd43f)
+
+Balázs 2026-09-18-i döntése: amikor a napi teljes csomag eléri az 1 GB-ot, a mentés növekményes. 2026-11-26-án 980,5 MB volt,
+naponta kb. +2 MB-tal.
+
+**Az alak: heti teljes, napi különbség a héthez képest, nem láncolva.** A `backup-docstore` a konténer `tar` folyamát (ugyanazt,
+mint eddig) a root-tulajdonú `docstore-csomag`-on vezeti át (`scripts/host/docstore-csomag.py`):
+
+- ha a legújabb `<nap>.full.tar.gz` 7 napnál régebbi vagy nincs, TELJES csomag készül (`<nap>.full.tar.gz`);
+- különben csak azok a fájlok kerülnek a `<nap>.diff.tar.gz`-be, amelyek a hét teljeséhez képest újak, vagy a TARTALMUK (sha256)
+  más: egy dokumentum ugyanazon a néven felülírható, és ezt nem az időbélyeg dönti el;
+- minden nap készül a tár TELJES listája (`<nap>.lista`: egy fejléc-sor, `# teljes` vagy `# kulonbseg <a teljes napja>`, utána
+  fájlonként `<sha256> <méret> <út>`). Ebből látszik a törlés: amit a nap listája nem nevez meg, az aznapra törölve volt.
+
+Mindkét kimenet ideiglenes néven íródik, és csak készen nevezi át: egy megszakadt futás nem hagy félig kész csomagot, amit egy
+későbbi nap egésznek venne. A visszaállításhoz így mindig KÉT fájl kell (a hét teljese és a nap különbsége), nem egy lánc.
+
+**A kereszt-másolás** (az ütemezett feladat, acrobot írja): a `backup-docstore` sorának 5. mezője (`full` vagy `diff`) mondja meg,
+melyik csomag készült; azt és a `lista`-t kell átvinni, mindkettőt a `backup-sum`/`backup-get`/`backup-put` hármassal
+(`docstore <nap> full|diff|lista`). A rész nélküli `docstore <nap>` csak a váltás előtti napok `<nap>.tar.gz` csomagját adja.
+
+**Visszaállítás**, egy adott nap állapota egy ÜRES mappába (a mentés gépén, vagy a másik gép `tavoli/dokumentumok` másolatán):
+
+```bash
+cd /root && python3 /usr/local/lib/fleet-gate/docstore-visszaallit ~fleet/backups/dokumentumok <nap> /tmp/dokumentumtar-<nap>
+```
+
+(A `scripts/host/docstore-visszaallit.py` a repóból is futtatható ugyanígy, telepítés nélkül.) A program a nap listájának fejléce
+szerint kibontja a hét teljesét, rá a nap különbségét, törli, amit a lista nem nevez meg, és MINDEN fájl méretét és sha256-ját
+összeveti a listával. Kimenet: `visszaallitva <fájlok> fajl, torolve <n>, elter 0`; bármilyen eltérésnél, hiányzó csomagnál vagy a
+mappán kívülre mutató névnél 1-gyel lép ki. A visszaállított `document-store` mappát utána lehet a kötetbe másolni.
+
+**Ami nem változott:** a NAS-ra az éles gép a mentések saját azonosítójával rsync-tükröt tart; az eleve növekményes, és a heti
+`acropora-restore-probe` sha256-tal ellenőrzi. Ez a rész csak a hostokon tartott csomagokról szól.
 
 ## Visszaállítás (rootként, a gépen)
 
