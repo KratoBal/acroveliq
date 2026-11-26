@@ -21,7 +21,10 @@ LABELS = {
     "be_pdf_nincs_egyezes": "bejövő, nincs egyező PDF",
     "be_hianyos_osszeg": "hiányos összeg",
     "atnezesre_var": "átnézésre vár",
-    "terheles_szamla_nelkul": "számla nélküli banki terhelés",
+    # The raw row is every debit without a MANUAL pairing: bank fees and cash withdrawals the OS already files as
+    # "nem kér számlát" are in it too (2026-11-26: two KP.FELVÉT/-BEFIZ. DÍJA rows read as missing invoices). The
+    # label says so; the OS's own verdict is the terheles-parositas file, not this list.
+    "terheles_szamla_nelkul": "kézi párosítás nélküli banki terhelés (az OS besorolása nélkül, bankdíj is lehet)",
 }
 
 

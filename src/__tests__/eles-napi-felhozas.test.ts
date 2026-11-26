@@ -10,6 +10,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { createHash } from 'node:crypto'
 
 const SCRIPT = join(process.cwd(), 'scripts', 'eles-napi-felhozas.sh')
 const GATE = join(process.cwd(), 'scripts', 'lib', 'migracio_kapu.py')
@@ -159,6 +160,7 @@ describe('eles-napi-felhozas.sh', () => {
     envKeys?: string[]
     savedKeys?: string[] | null
     accepted?: string[] // the lines of kapcsolo-elfogadva.txt: NAME<TAB>the decision
+    reviewed?: string[] // the lines of migracio-atnezve.txt: <path> <sha256>
     medusa?: string
     savedMedusa?: string | null
     live?: boolean // the real run: pins, deploys (into the stand-ins); default --nez
@@ -198,6 +200,7 @@ describe('eles-napi-felhozas.sh', () => {
     const savedKeys = w.savedKeys === undefined ? ['MEDUSA_PROJECTION_SCHEDULE_ENABLED'] : w.savedKeys
     if (savedKeys) writeFileSync(join(allapot, 'env-kulcsok.txt'), savedKeys.map((k) => `${k}\n`).join(''))
     if (w.accepted) writeFileSync(join(allapot, 'kapcsolo-elfogadva.txt'), w.accepted.map((l) => `${l}\n`).join(''))
+    if (w.reviewed) writeFileSync(join(allapot, 'migracio-atnezve.txt'), w.reviewed.map((l) => `${l}\n`).join(''))
     const savedMedusa = w.savedMedusa === undefined ? '1|2026-09-04T16:02:00.000' : w.savedMedusa
     if (savedMedusa) writeFileSync(join(allapot, 'medusa-ref.txt'), `${savedMedusa}\n`)
 
@@ -279,9 +282,37 @@ exit 0
       { drop: brief(run({ migration: 'DROP VIEW "WorksheetLatestVersion";\n' })), changed: brief(run({ migrationStatus: 'modified' })) },
       'ELES-FELHOZAS-MIGRACIO',
     ).toEqual({
-      drop: { code: 1, last: `MEGALLT: nem bovito migracio, ember nezze meg: ${MIG} :: DROP of a schema object: DROP VIEW "ID"` },
+      // the stop also says how a reviewed migration is recorded (the review list, ELES-FELHOZAS-MIGRACIO-ATNEZVE)
+      drop: {
+        code: 1,
+        last: `MEGALLT: nem bovito migracio, ember nezze meg: ${MIG} :: DROP of a schema object: DROP VIEW "ID"  (atnezes utan: '${MIG} <sha256>' sor a store/eles-felhozas/migracio-atnezve.txt-be)`,
+      },
       changed: { code: 1, last: `MEGALLT: egy mar letezo migracios fajl valtozott, ember nezze meg: modified ${MIG}` },
     })
+  })
+
+  // A REVIEWED NON-ADDITIVE MIGRATION (2026-11-26, #2947: a unique index swapped for a partial one; the live script's branch, brought
+  // to main, d35f97f1) passes only with its path AND the sha256 of its exact text in store/eles-felhozas/migracio-atnezve.txt.
+  // WHAT TURNS IT RED: a listed migration still stopping, or passing without a log line naming it; an edited text (another hash)
+  // passing on an old review; the path alone, or another path with the same hash, passing; the stop not saying how to record one.
+  it('ELES-FELHOZAS-MIGRACIO-ATNEZVE: a reviewed text passes and is logged; an edited text, a bare path or another path stops', () => {
+    const sql = 'DROP VIEW "WorksheetLatestVersion";\n'
+    const sum = createHash('sha256').update(sql).digest('hex')
+    const ok = run({ migration: sql, reviewed: [`${MIG} ${sum}`] })
+    const edited = run({ migration: `${sql}-- egy sor kesobb\n`, reviewed: [`${MIG} ${sum}`] })
+    const otherPath = run({ migration: sql, reviewed: [`${MIG.replace('_x/', '_y/')} ${sum}`] })
+    const pathOnly = run({ migration: sql, reviewed: [MIG] })
+    expect(
+      {
+        ok: ok.code,
+        logged: ok.log.includes(`atnezett nem bovito migracio: ${MIG} (${sum})`),
+        edited: edited.code,
+        editedSays: edited.last.includes(`(atnezes utan: '${MIG} <sha256>' sor a store/eles-felhozas/migracio-atnezve.txt-be)`),
+        otherPath: otherPath.code,
+        pathOnly: pathOnly.code,
+      },
+      'ELES-FELHOZAS-MIGRACIO-ATNEZVE',
+    ).toEqual({ ok: 0, logged: true, edited: 1, editedSays: true, otherPath: 1, pathOnly: 1 })
   })
 
   // A SWITCH BALAZS ALREADY TURNED ON is named in store/eles-felhozas/kapcsolo-elfogadva.txt (NAME, a tab, the decision): it no longer
