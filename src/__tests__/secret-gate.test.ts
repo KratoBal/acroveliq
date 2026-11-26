@@ -78,6 +78,38 @@ describe('detector 2: content', () => {
     expect(r.findings[0].detector).toBe('content');
   });
 
+  /*
+    THE SHAPES THE CI'S TRIVY KNOWS, AND THE PROVIDERS WE HOLD KEYS OF (card 9ff5f090). Each sample is built from pieces, so
+    no key-shaped literal sits in this file. WHAT TURNS THIS RED: a shape the image scan refuses passes the local gate (the
+    OS #2856 case: `sk_live_` and sixteen characters), or one of our providers' keys is not known at all.
+  */
+  it.each([
+    ['stripe key of sixteen (the OS #2856 shape)', ['sk', 'live', 'Ab12Cd34Ef56Gh78'].join('_')],
+    ['stripe key of ten, upper case', ['SK', 'LIVE', 'AB12CD34EF'].join('_')],
+    ['stripe restricted key', ['rk', 'test', 'Ab12Cd34Ef56'].join('_')],
+    ['github fine-grained token', ['github', 'pat', 'Ab12'.repeat(13)].join('_')],
+    ['github oauth token', ['gho', 'Ab12'.repeat(9)].join('_')],
+    ['google api key', 'AI' + 'za' + 'Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr7'],
+    ['brevo api key', ['xkey', 'sib-', '0a1b2c3d'.repeat(8), '-', 'Ab12Cd34Ef56Gh78'].join('')],
+    ['brevo smtp key', ['xsmtp', 'sib-', '0a1b2c3d'.repeat(8), '-', 'Ab12Cd34Ef56Gh78'].join('')],
+    ['aws session key id', 'AS' + 'IA' + 'ABCD2345EFGH6789'],
+    ['coolify api token', ['12', 'Ab12Cd34Ef'.repeat(4)].join('|')],
+    ['anthropic api key', ['sk', 'ant', 'api03', 'Ab12Cd34Ef56Gh78Ij90Kl'].join('-')],
+    ['openai legacy key', 'sk-' + 'Ab12Cd34Ef56Gh78Ij90' + 'T3Blbk' + 'FJ' + 'Ab12Cd34Ef56Gh78Ij90'],
+  ])('blocks a %s (card 9ff5f090)', (_name, value) => {
+    const r = runGate([f('docs/notes.md', `key: ${value}`)]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0].detector).toBe('content');
+  });
+
+  it('a shorter Stripe-like word is still not a key, and a bar in a table is not a Coolify token', () => {
+    const r = runGate([
+      f('docs/a.md', 'see sk_live_docs for the naming'),
+      f('docs/b.md', '| 12 | Ab12Cd34Ef |'),
+    ]);
+    expect(r.ok).toBe(true);
+  });
+
   it('catches BOTH separators and does not assume a length (Boni traps, EVIDLEAK818)', () => {
     // (a) Boni's first detector looked for `sk-` and returned ZERO on a key that
     //     used `sk_`. Zero looks reassuring, which is what makes it dangerous.

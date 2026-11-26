@@ -70,12 +70,21 @@ export const DENIED_PATH_PATTERNS: { pattern: RegExp; reason: string }[] = [
  */
 export const SECRET_PATTERNS: { name: string; pattern: RegExp }[] = [
   { name: 'private key block', pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
-  { name: 'Stripe secret/restricted key', pattern: /\b(sk|rk)_(live|test)_[A-Za-z0-9]{16,}/ },
+  // ten, not sixteen, and any case: the CI image scan's trivy rule `stripe-secret-token` is `(?i)sk_(test|live)_[0-9a-z]{10,32}`
+  // (card 9ff5f090; OS #2856 carried sixteen characters and only the image scan stopped it). A local gate looser than the
+  // authoritative one only moves the refusal to CI.
+  { name: 'Stripe secret/restricted key', pattern: /\b(sk|rk)_(live|test)_[A-Za-z0-9]{10,}/i },
   { name: 'ElevenLabs key header', pattern: /xi-api-key["'\s:=]+[A-Za-z0-9_-]{16,}/i },
   { name: 'ElevenLabs key literal', pattern: /\bsk_[a-f0-9]{32,}/ },
   { name: 'bearer token literal', pattern: /\bBearer\s+[A-Za-z0-9_-]{24,}\.?[A-Za-z0-9_.-]*/ },
   { name: 'JWT', pattern: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/ },
   { name: 'GitHub token', pattern: /\bgh[pousr]_[A-Za-z0-9]{30,}/ },
+  { name: 'GitHub fine-grained token', pattern: /\bgithub_pat_[A-Za-z0-9_]{50,}/ },
+  { name: 'Google API key', pattern: /\bAIza[0-9A-Za-z_-]{35}\b/ },
+  // Brevo (trivy: sendinblue-api-token): we send mail through it; the SMTP key has the same shape
+  { name: 'Brevo API/SMTP key', pattern: /\bx(?:keysib|smtpsib)-[a-f0-9]{64}-[A-Za-z0-9]{16}\b/ },
+  // Coolify issues Laravel Sanctum tokens: the token's id, a bar, forty characters
+  { name: 'Coolify API token', pattern: /\b\d+\|[A-Za-z0-9]{40}\b/ },
   { name: 'Slack token', pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}/ },
   { name: 'OpenAI project key', pattern: /\bsk-proj-[A-Za-z0-9_-]{20,}/ },
   // BOTH separators, on purpose. Boni's first detector looked for `sk-` only
@@ -83,7 +92,8 @@ export const SECRET_PATTERNS: { name: string; pattern: RegExp }[] = [
   // No upper length bound either: the leaked key was 51 chars, a rule written
   // around "32 hex" would have missed it.
   { name: 'generic vendor secret key (sk_ or sk-)', pattern: /\bsk[-_][A-Za-z0-9_-]{24,}/ },
-  { name: 'AWS access key id', pattern: /\bAKIA[0-9A-Z]{16}\b/ },
+  // every prefix trivy's aws-access-key-id knows, not only the long-term AKIA (ASIA is a session key)
+  { name: 'AWS access key id', pattern: /\b(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}\b/ },
   { name: 'Supabase service_role JWT hint', pattern: /service_role["'\s:=]+eyJ/ },
 ];
 
